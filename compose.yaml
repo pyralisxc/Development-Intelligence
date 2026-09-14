@@ -1,0 +1,14 @@
+services:
+  development-intelligence:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    env_file:
+      - .env
+    volumes:
+      - ./config/projects.json:/config/projects.json:ro
+      - development-intelligence-data:/data
+
+volumes:
+  development-intelligence-data:

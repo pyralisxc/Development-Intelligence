@@ -1,0 +1,16 @@
+{
+  "ExampleProject": {
+    "repository": "https://github.com/example/example-project.git",
+    "defaultRef": "refs/heads/main",
+    "allowedRefs": ["refs/heads/main"],
+    "credential": {
+      "type": "token-env",
+      "tokenEnv": "EXAMPLE_GITHUB_TOKEN",
+      "username": "x-access-token"
+    },
+    "runtimeOrigins": ["https://example.com"],
+    "runtimeHeaders": [
+      { "name": "Authorization", "valueEnv": "EXAMPLE_RUNTIME_AUTHORIZATION" }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+.git
+.data
+node_modules
+dist
+.env
+config/projects.json
+*.log
