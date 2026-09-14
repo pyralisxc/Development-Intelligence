@@ -18,6 +18,7 @@ Development Intelligence is tooling, not a development methodology. It contains 
 - Naming differences are preserved rather than normalized away.
 - Heuristic relationships retain strategy/evidence/confidence and never silently become facts.
 - `unresolved` and `unavailable` are valid results.
+- Secret-like values in structured repository observations are redacted before scans are persisted or returned.
 - Runtime observation is read-only.
 - Development Intelligence may mutate only its own derived source mirrors, Codebase Memory indexes, and parity scan state.
 
@@ -139,6 +140,8 @@ The durable suite currently protects:
 - clean public project identity;
 - universal Parity discovery without project rules;
 - secret-like structured-value redaction;
+- collision rejection for project identities that would share derived storage;
+- accurate MCP read-only/destructive tool annotations;
 - tool-only public MCP surface;
 - MCP `2026-07-28` discovery/header/result/cache contract;
 - generic-boundary source guardrail.

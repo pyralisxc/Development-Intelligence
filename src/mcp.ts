@@ -9,6 +9,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations?: Record<string, boolean>;
   handler: (args: Record<string, unknown>) => Promise<unknown>;
 }
 
@@ -77,7 +78,15 @@ export const tools: ToolDefinition[] = [
   { name: 'parity_status', description: 'Report the latest Parity Engine scan provenance/counts without performing a scan or assigning a health score.', inputSchema: projectOnly, handler: async args => await parityStatus(s(args, 'project')) },
 ];
 
-export function listTools() { return tools.map(({ handler: _handler, ...tool }) => tool); }
+function annotationsFor(name: string): Record<string, boolean> {
+  if (name === 'delete_project') return { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
+  if (name === 'refresh_codebase' || name === 'ingest_traces') return { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
+  return { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+}
+
+export function listTools() {
+  return tools.map(({ handler: _handler, ...tool }) => ({ ...tool, annotations: tool.annotations ?? annotationsFor(tool.name) }));
+}
 export async function callTool(name: string, args: Record<string, unknown> = {}) {
   const tool = tools.find(item => item.name === name);
   if (!tool) throw new Error(`Unknown tool: ${name}`);

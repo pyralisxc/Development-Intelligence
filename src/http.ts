@@ -23,7 +23,7 @@ async function readJson(req: any): Promise<any> {
 
 function rpcResult(id: unknown, result: unknown) { return { jsonrpc: '2.0', id, result }; }
 function rpcError(id: unknown, code: number, message: string, data?: unknown) { return { jsonrpc: '2.0', id, error: { code, message, ...(data === undefined ? {} : { data }) } }; }
-const SERVER_INFO = { name: 'Development Intelligence', version: '1.0.0' };
+const SERVER_INFO = { name: 'Development Intelligence', version: '1.0.1' };
 function complete(result: Record<string, unknown>, modern: boolean): Record<string, unknown> {
   return modern ? { resultType: 'complete', _meta: { 'io.modelcontextprotocol/serverInfo': SERVER_INFO }, ...result } : result;
 }
@@ -71,7 +71,7 @@ export async function handleRpc(body: any, requestInfo: { modern: boolean }): Pr
   }
   if (!modern && (body.method === 'notifications/initialized' || body.method === 'notifications/cancelled')) return { status: 202 };
   if (!modern && body.method === 'initialize') {
-    return { status: 200, body: rpcResult(id, { protocolVersion: LEGACY_VERSION, capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'Development Intelligence', version: '1.0.0' } }) };
+    return { status: 200, body: rpcResult(id, { protocolVersion: LEGACY_VERSION, capabilities: { tools: { listChanged: false } }, serverInfo: SERVER_INFO }) };
   }
   if (modern && body.method === 'server/discover') {
     return { status: 200, body: rpcResult(id, complete({

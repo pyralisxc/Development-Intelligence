@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { projectsFile } from './paths.js';
+import { projectsFile, safeSegment } from './paths.js';
 import type { ProjectConfig, ProjectRegistry } from '../types.js';
 
 function assertRepositoryUrl(value: string): void {
@@ -45,7 +45,16 @@ export async function loadRegistry(): Promise<ProjectRegistry> {
   const raw = await fs.readFile(projectsFile(), 'utf8');
   const parsed = JSON.parse(raw) as ProjectRegistry;
   const validated: ProjectRegistry = {};
-  for (const [name, config] of Object.entries(parsed)) validated[name] = validateProject(name, config);
+  const storageKeys = new Map<string, string>();
+  for (const [name, config] of Object.entries(parsed)) {
+    const storageKey = safeSegment(name);
+    const existing = storageKeys.get(storageKey);
+    if (existing && existing !== name) {
+      throw new Error(`Project identities ${existing} and ${name} collide on derived storage key ${storageKey}`);
+    }
+    storageKeys.set(storageKey, name);
+    validated[name] = validateProject(name, config);
+  }
   return validated;
 }
 

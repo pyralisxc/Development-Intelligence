@@ -1,8 +1,6 @@
 import type { AnalyzeContext, AnalyzeResult } from '../model.js';
 import type { Observation } from '../../types.js';
-import { observation } from '../model.js';
-
-const SENSITIVE_FIELD = /(^|[._-])(password|passwd|secret|token|api[-_]?key|authorization|cookie|credential|private[-_]?key|access[-_]?token|refresh[-_]?token)($|[._-])/i;
+import { observation, redactSensitiveValue } from '../model.js';
 
 export function analyzeJson(context: AnalyzeContext): AnalyzeResult {
   const observations: Observation[] = [];
@@ -11,9 +9,16 @@ export function analyzeJson(context: AnalyzeContext): AnalyzeResult {
     if (depth > 8) return;
     if (current === null || ['string', 'number', 'boolean'].includes(typeof current)) {
       const name = path.split('.').at(-1) ?? '$';
-      const sensitive = SENSITIVE_FIELD.test(path);
-      const base = { sourceId: context.source.id, kind: 'structured-value', locator: `${context.locatorBase}:${path || '$'}`, field: path || '$', name, value: sensitive ? '<redacted>' : current };
-      observations.push(observation(sensitive ? { ...base, raw: '<redacted>' } : base));
+      const redacted = redactSensitiveValue(path, current);
+      observations.push(observation({
+        sourceId: context.source.id,
+        kind: 'structured-value',
+        locator: `${context.locatorBase}:${path || '$'}`,
+        field: path || '$',
+        name,
+        value: redacted.value,
+        ...(redacted.raw ? { raw: redacted.raw } : {}),
+      }));
       return;
     }
     if (Array.isArray(current)) {

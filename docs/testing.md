@@ -32,7 +32,11 @@ Deterministic syntax relationships remain resolved; similarity relationships rem
 
 ### Sensitive values
 
-Secret-like structured JSON values are redacted from persisted parity observations.
+Secret-like structured JSON and TypeScript declaration values are redacted from persisted parity observations.
+
+### Project identity isolation
+
+Project identities that would normalize to the same derived storage key are rejected during registry loading.
 
 ### Tool boundary
 
@@ -41,6 +45,10 @@ Development Intelligence exposes technical intelligence tools and excludes workf
 ### MCP protocol
 
 The HTTP acceptance test covers modern `2026-07-28` discovery, routing headers, complete results, cache hints, tool calls, and header mismatch rejection.
+
+### MCP safety metadata
+
+Read-only tools expose `readOnlyHint`; derived-state writes and derived-state deletion expose accurate mutation/destructive annotations.
 
 ### Generic source boundary
 

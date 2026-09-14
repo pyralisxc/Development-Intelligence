@@ -65,7 +65,7 @@ Generic analyzers currently include:
 
 Repository analyzers are selected from file type/technical evidence only. Runtime analysis is selected from response content type only.
 
-The TypeScript analyzer can observe ordinary structured declarations, UI controls/handlers, HTTP calls, navigation calls, MCP registrations, and local symbol relationships. It does not know project-specific nouns.
+The TypeScript analyzer can observe ordinary structured declarations, UI controls/handlers, HTTP calls, navigation calls, MCP registrations, and local symbol relationships. It does not know project-specific nouns. Secret-like structured values are redacted before observations are persisted or returned, regardless of whether they were found in JSON or TypeScript.
 
 Cross-source similarity produces candidates rather than facts. Naming divergence is only derived after a relationship has already been resolved.
 

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { refreshCodebase, readProjectState, listPublicProjects } from '../src/codebase/sourceManager.js';
+import { loadRegistry } from '../src/config/registry.js';
 import { projectStatus } from '../src/projectStatus.js';
 import { scanParity } from '../src/parity/scanner.js';
 import { queryParity } from '../src/parity/query.js';
@@ -44,6 +45,7 @@ export const actionDefinition = {
   automation: { kind: 'published-tool', tools: ['manage_item'] },
   result: 'mutation',
 };
+export const privateServiceConfig = { authorization: 'must-not-be-persisted-by-parity' };
 server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: true }));
 `);
   await fs.writeFile(path.join(source, 'README.md'), '# Sample Project\n\n- Manage item from the application.\n');
@@ -161,6 +163,7 @@ test('parity scan discovers metadata-light and declared semantics without projec
     assert.ok(scan.observations.some(obs => obs.kind === 'declared-field' && obs.field === 'ownerFeature' && obs.value === 'storage'));
     assert.equal(scan.observations.some(obs => obs.raw.includes('must-not-be-persisted-by-parity')), false, 'secret-like structured values must be redacted from parity observations');
     assert.ok(scan.observations.some(obs => obs.field === 'access_token' && obs.value === '<redacted>'));
+    assert.ok(scan.observations.some(obs => obs.field === 'authorization' && obs.value === '<redacted>'));
     assert.equal(scan.observations.some(obs => obs.raw.includes('outside-managed-source')), false, 'tracked symlinks must not let parity read outside the managed source root');
     assert.ok(scan.sources.find(source => source.kind === 'repository')?.warnings?.some(warning => warning.includes('non-regular tracked file')));
     assert.ok(scan.resolutions.some(rel => rel.kind === 'handled_by' && rel.strategy === 'syntax' && rel.status === 'resolved'));
@@ -186,9 +189,28 @@ test('parity scan discovers metadata-light and declared semantics without projec
 });
 
 test('public MCP tool surface stays tool-only and excludes workflow/intent operations', () => {
-  const names = listTools().map(tool => tool.name);
+  const listed = listTools();
+  const names = listed.map(tool => tool.name);
   for (const expected of ['refresh_codebase', 'search_graph', 'trace_path', 'scan_parity', 'query_parity', 'diff_parity', 'parity_status']) assert.ok(names.includes(expected), expected);
   for (const forbidden of ['manage_adr', 'index_repository', 'authorize_build', 'create_pull_request', 'developer_os']) assert.equal(names.includes(forbidden), false, forbidden);
+  const byName = new Map(listed.map(tool => [tool.name, tool]));
+  assert.equal(byName.get('list_projects')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('refresh_codebase')?.annotations?.readOnlyHint, false);
+  assert.equal(byName.get('delete_project')?.annotations?.destructiveHint, true);
+});
+
+test('registry rejects project identities that collide in derived storage', async () => {
+  const fixture = await makeFixture();
+  try {
+    process.env.DEVINT_PROJECTS_FILE = fixture.config;
+    await fs.writeFile(fixture.config, JSON.stringify({
+      'Sample/Project': { repository: pathToFileURL(fixture.remote).href, defaultRef: 'refs/heads/main', allowedRefs: ['refs/heads/main'], credential: { type: 'none' } },
+      'Sample-Project': { repository: pathToFileURL(fixture.remote).href, defaultRef: 'refs/heads/main', allowedRefs: ['refs/heads/main'], credential: { type: 'none' } },
+    }, null, 2));
+    await assert.rejects(loadRegistry(), /collide on derived storage key/);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test('modern MCP HTTP surface follows the 2026-07-28 stateless contract', async () => {

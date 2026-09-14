@@ -1,6 +1,6 @@
 import ts from 'typescript';
 import type { AnalyzeContext, AnalyzeResult } from '../model.js';
-import { normalizeName, observation, resolution, stringifyValue } from '../model.js';
+import { normalizeName, observation, redactSensitiveValue, resolution, stringifyValue } from '../model.js';
 import type { Observation } from '../../types.js';
 
 const UI_TAGS = new Set(['button', 'a', 'input', 'select', 'textarea', 'form', 'label']);
@@ -57,13 +57,15 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       const field = prefix ? `${prefix}.${key}` : key;
       const value = scalar(property.initializer);
       if (value !== undefined) {
+        const redacted = redactSensitiveValue(field, value);
         const obs = observation({
           sourceId: context.source.id,
           kind: 'declared-field',
           locator: locator(property, `:${field}`),
           field,
           name: key,
-          value,
+          value: redacted.value,
+          ...(redacted.raw ? { raw: redacted.raw } : {}),
         });
         observations.push(obs);
         resolutions.push(resolution({
