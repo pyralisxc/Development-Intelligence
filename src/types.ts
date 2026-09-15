@@ -20,29 +20,6 @@ export interface ProjectRegistry {
   [project: string]: ProjectConfig;
 }
 
-export interface ProjectGeneration {
-  generation: string;
-  sha: string;
-  worktree: string;
-  cbmProject: string;
-  indexedAt: string;
-}
-
-export interface ProjectState {
-  project: string;
-  repository: string;
-  ref: string;
-  selectedSha: string | null;
-  selectedGeneration: string | null;
-  selectedWorktree: string | null;
-  selectedCbmProject: string | null;
-  indexedAt: string | null;
-  refreshedAt: string | null;
-  lastFetchAt: string | null;
-  lastError?: string | null;
-  generations?: ProjectGeneration[];
-}
-
 export interface SourceDescriptor {
   id: string;
   kind: string;
@@ -54,7 +31,7 @@ export interface SourceDescriptor {
   warnings?: string[];
 }
 
-export interface Observation {
+export interface GraphNode {
   id: string;
   sourceId: string;
   kind: string;
@@ -66,16 +43,16 @@ export interface Observation {
   tags?: string[];
 }
 
-export type ResolutionStatus = 'resolved' | 'candidate' | 'unresolved';
+export type RelationshipStatus = 'resolved' | 'candidate' | 'unresolved';
 
-export interface Resolution {
+export interface GraphEdge {
   id: string;
   from: string | null;
   to: string | null;
   kind: string;
   strategy: string;
   confidence: number | null;
-  status: ResolutionStatus;
+  status: RelationshipStatus;
   evidence: string[];
 }
 
@@ -95,16 +72,52 @@ export interface ExplicitValueConflict {
   rightValue: unknown;
 }
 
-export interface ParityScan {
-  scanId: string;
+export interface GraphCoverage {
+  trackedFiles: number;
+  eligibleFiles: number;
+  analyzedFiles: number;
+  skippedOversizedFiles: number;
+  skippedNonRegularFiles: number;
+}
+
+export type GraphRole = 'A' | 'W' | 'B';
+
+export interface IntelligenceGraph {
+  schemaVersion: 1;
+  graphId: string;
   project: string;
+  role: GraphRole;
   createdAt: string;
   repositoryRevision: string | null;
+  sourceFingerprint: string | null;
   sources: SourceDescriptor[];
-  observations: Observation[];
-  resolutions: Resolution[];
+  nodes: GraphNode[];
+  edges: GraphEdge[];
   namingDivergences: NamingDivergence[];
   explicitValueConflicts: ExplicitValueConflict[];
-  unmatchedObservationIds: string[];
+  unmatchedNodeIds: string[];
   unavailableSourceIds: string[];
+  coverage?: GraphCoverage;
 }
+
+export interface GraphCheckpointMeta {
+  type: 'meta';
+  schemaVersion: 1;
+  format: 'sharded-ndjson';
+  sourceFingerprint: string;
+  shards: string[];
+  summary: {
+    nodes: number;
+    edges: number;
+    unresolved: number;
+    candidate: number;
+    kinds: Record<string, number>;
+  };
+}
+
+// Compatibility aliases for analyzer internals and the public Parity lens. They do
+// not represent separate storage or lifecycle owners.
+export type Observation = GraphNode;
+export type Resolution = GraphEdge;
+export type ResolutionStatus = RelationshipStatus;
+export type ParityScan = IntelligenceGraph;

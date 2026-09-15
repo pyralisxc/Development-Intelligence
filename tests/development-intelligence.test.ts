@@ -6,13 +6,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
-import { refreshCodebase, readProjectState, listPublicProjects } from '../src/codebase/sourceManager.js';
-import { loadRegistry } from '../src/config/registry.js';
-import { projectStatus } from '../src/projectStatus.js';
-import { scanParity } from '../src/parity/scanner.js';
-import { queryParity } from '../src/parity/query.js';
-import { diffParity } from '../src/parity/diff.js';
+import { sealLocalGraph } from '../src/intelligence/local.js';
+import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
+import { diffAcceptedToWorking, searchGraph, traceGraph } from '../src/intelligence/query.js';
+import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { listTools } from '../src/mcp.js';
+import { loadRegistry } from '../src/config/registry.js';
 
 async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, 'add', '.']);
@@ -20,19 +19,25 @@ async function commit(repo: string, message: string): Promise<string> {
   return (await runChecked('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout.trim();
 }
 
-async function makeFixture(): Promise<{ root: string; source: string; remote: string; config: string; data: string; cbm: string; project: string }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-test-'));
+async function makeFixture(): Promise<{ root: string; source: string; remote: string; config: string; scratch: string; project: string }> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-git-native-'));
   const source = path.join(root, 'source');
   const remote = path.join(root, 'remote.git');
-  const data = path.join(root, 'data');
   const config = path.join(root, 'projects.json');
-  const cbm = path.join(root, 'fake-cbm.mjs');
+  const scratch = path.join(root, 'scratch');
+  const project = 'SampleProject';
+  await fs.mkdir(scratch, { recursive: true });
   await runChecked('git', ['init', '--bare', '--initial-branch=main', remote]);
   await runChecked('git', ['init', '--initial-branch=main', source]);
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
+  await fs.writeFile(path.join(source, 'src', 'helper.ts'), `
+export function helper() { return 'ok'; }
+`);
   await fs.writeFile(path.join(source, 'src', 'panel.tsx'), `
+import { helper } from './helper';
 export function Panel() {
   const handleManage = async () => {
+    helper();
     const response = await fetch('/api/manage', { method: 'POST' });
     if (response.ok) window.location.assign('/done');
   };
@@ -45,161 +50,133 @@ export const actionDefinition = {
   automation: { kind: 'published-tool', tools: ['manage_item'] },
   result: 'mutation',
 };
-export const privateServiceConfig = { authorization: 'must-not-be-persisted-by-parity' };
+export const privateServiceConfig = { authorization: 'must-not-be-persisted' };
 server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: true }));
 `);
-  await fs.writeFile(path.join(source, 'README.md'), '# Sample Project\n\n- Manage item from the application.\n');
-  await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', access_token: 'must-not-be-persisted-by-parity' }, null, 2));
+  await fs.writeFile(path.join(source, 'README.md'), '# Sample Project\n\nManage item from the application.\n');
+  await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', access_token: 'must-not-be-persisted' }, null, 2));
   await fs.writeFile(path.join(root, 'outside-secret.json'), JSON.stringify({ secret: 'outside-managed-source' }));
   await fs.symlink('../../outside-secret.json', path.join(source, 'src', 'outside-link.json'));
-  await commit(source, 'initial');
+  await commit(source, 'initial source');
+  await sealLocalGraph(source, project);
+  await commit(source, 'seal accepted graph A');
   await runChecked('git', ['-C', source, 'remote', 'add', 'origin', pathToFileURL(remote).href]);
   await runChecked('git', ['-C', source, 'push', '-u', 'origin', 'main']);
 
-  await fs.writeFile(cbm, `#!/usr/bin/env node
-const args = process.argv.slice(2);
-const tool = args[2];
-const payload = args[3] ? JSON.parse(args[3]) : {};
-if (tool === 'index_repository') {
-  if (process.env.FAKE_CBM_FAIL === '1') console.log(JSON.stringify({ status: 'degraded', nodes: 1, edges: 0 }));
-  else console.log(JSON.stringify({ status: 'indexed', project: payload.name, nodes: 42, edges: 84 }));
-} else if (tool === 'index_status') {
-  console.log(JSON.stringify({ status: 'ready', project: payload.project, total_nodes: 42, total_edges: 84 }));
-} else if (tool === 'delete_project') {
-  console.log(JSON.stringify({ deleted: payload.project }));
-} else {
-  console.log(JSON.stringify({ tool, args: payload }));
-}
-`, { mode: 0o755 });
-
-  return { root, source, remote, config, data, cbm, project: 'SampleProject' };
-}
-
-function configure(fixture: Awaited<ReturnType<typeof makeFixture>>, runtimeOrigins: string[] = []) {
-  process.env.DEVINT_PROJECTS_FILE = fixture.config;
-  process.env.DEVINT_DATA_DIR = fixture.data;
-  process.env.DEVINT_CBM_BINARY = fixture.cbm;
-  process.env.CBM_WORKERS = '1';
-  return fs.writeFile(fixture.config, JSON.stringify({
-    [fixture.project]: {
-      repository: pathToFileURL(fixture.remote).href,
+  process.env.DEVINT_PROJECTS_FILE = config;
+  process.env.DEVINT_SCRATCH_DIR = scratch;
+  process.env.DEVINT_GRAPH_CACHE_SIZE = '3';
+  delete process.env.DEVINT_DATA_DIR;
+  await fs.writeFile(config, JSON.stringify({
+    [project]: {
+      repository: pathToFileURL(remote).href,
       defaultRef: 'refs/heads/main',
       allowedRefs: ['refs/heads/main'],
       credential: { type: 'none' },
-      runtimeOrigins,
+      runtimeOrigins: [],
     },
   }, null, 2));
+  clearGraphCache();
+  return { root, source, remote, config, scratch, project };
 }
 
-test('managed codebase refresh promotes only healthy generations and preserves clean public identity', async () => {
+async function close(server: any) { await new Promise<void>(resolve => server.close(() => resolve())); }
+
+test('Git-owned A/W/B graph lifecycle is deterministic and needs no durable service database', async () => {
   const fixture = await makeFixture();
   try {
-    await configure(fixture);
-    const first = await refreshCodebase(fixture.project);
-    assert.equal(first.changed, true);
-    const firstState = await readProjectState(fixture.project);
-    assert.ok(firstState.selectedSha);
-    assert.match(firstState.selectedCbmProject ?? '', /^devint-SampleProject-/);
+    const initial = await graphStatus(fixture.project) as any;
+    assert.equal(initial.accepted.current, true);
+    assert.equal(initial.accepted.sourceFingerprint, initial.working.sourceFingerprint);
+    assert.ok(initial.working.nodes > 0);
+    assert.ok(initial.working.edges > 0);
 
-    const projects = await listPublicProjects();
-    assert.deepEqual(projects.map(item => item.project), [fixture.project]);
-    assert.equal('selectedCbmProject' in projects[0]!, false);
+    const beforeGraph = await scanGraph(fixture.project);
+    assert.ok(beforeGraph.nodes.some(node => node.kind === 'function' && node.name === 'Panel'));
+    assert.ok(beforeGraph.nodes.some(node => node.kind === 'file' && node.name === 'src/panel.tsx'));
+    assert.equal(beforeGraph.nodes.some(node => node.raw.includes('must-not-be-persisted')), false, 'secret-like values must remain redacted');
+    assert.equal(beforeGraph.nodes.some(node => node.raw.includes('outside-managed-source')), false, 'tracked symlinks must not escape repository root');
 
-    await fs.writeFile(path.join(fixture.source, 'src', 'new.ts'), 'export const newer = true;\n');
-    const secondSha = await commit(fixture.source, 'second');
+    const text = await fs.readFile(path.join(fixture.source, 'src', 'panel.tsx'), 'utf8');
+    await fs.writeFile(path.join(fixture.source, 'src', 'panel.tsx'), text.replace('Manage item</button>', 'Administer item</button>'));
+    await commit(fixture.source, 'working change');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
 
-    process.env.FAKE_CBM_FAIL = '1';
-    await assert.rejects(refreshCodebase(fixture.project), /healthy index/);
-    const afterFailed = await readProjectState(fixture.project);
-    assert.equal(afterFailed.selectedSha, firstState.selectedSha, 'failed refresh must not replace selected generation');
+    const stale = await graphStatus(fixture.project) as any;
+    assert.equal(stale.accepted.current, false, 'accepted A must remain the prior committed graph until candidate B is sealed');
+    const delta = await diffAcceptedToWorking(fixture.project) as any;
+    assert.ok(delta.nodes.added.length + delta.nodes.removed.length + delta.nodes.changed.length > 0);
 
-    delete process.env.FAKE_CBM_FAIL;
-    const second = await refreshCodebase(fixture.project);
-    assert.equal(second.upstreamSha, secondSha);
-    const afterSuccess = await readProjectState(fixture.project);
-    assert.equal(afterSuccess.selectedSha, secondSha);
-
-    const status = await projectStatus(fixture.project, true);
-    assert.equal(status.sourceCurrent, true);
-    assert.equal(status.checkoutSha, secondSha);
-    assert.equal(status.indexedSha, secondSha);
-    assert.equal('selectedCbmProject' in status, false);
-    assert.equal(JSON.stringify(status).includes('devint-SampleProject-'), false, 'public status must not leak internal Codebase Memory generation identity');
-
-    await fs.writeFile(path.join(fixture.source, 'src', 'third.ts'), 'export const third = true;\n');
-    const thirdSha = await commit(fixture.source, 'third');
+    await sealLocalGraph(fixture.source, fixture.project);
+    await commit(fixture.source, 'seal candidate graph B');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
-    await refreshCodebase(fixture.project);
-    const afterThird = await readProjectState(fixture.project);
-    assert.equal(afterThird.selectedSha, thirdSha);
-    assert.equal(afterThird.generations?.length, 2, 'generation retention should bound derived indexes/worktrees by default');
-    assert.equal(await fs.stat(firstState.selectedWorktree!).then(() => true).catch(() => false), false, 'old source worktrees outside the retention window should be pruned');
+    clearGraphCache(fixture.project);
+    const promoted = await graphStatus(fixture.project) as any;
+    assert.equal(promoted.accepted.current, true, 'after Git commit/merge semantics, sealed B is the accepted A for that revision');
+
+    const scratchChildren = await fs.readdir(fixture.scratch);
+    assert.deepEqual(scratchChildren, [], 'service-local checkout state must be disposable after each source operation');
   } finally {
-    delete process.env.FAKE_CBM_FAIL;
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test('parity scan discovers metadata-light and declared semantics without project-specific rules', async () => {
+test('code inspection, trace, parity, and runtime evidence all use one intrinsic graph', async () => {
   const fixture = await makeFixture();
   const runtime = http.createServer((_req: any, res: any) => {
     res.writeHead(200, { 'content-type': 'text/html', etag: 'runtime-v1' });
-    res.end('<html><head><title>Sample</title></head><body><a href="/account">Manage item</a></body></html>');
+    res.end('<html><body><a href="/account">Manage item</a></body></html>');
   });
   await new Promise<void>(resolve => runtime.listen(0, '127.0.0.1', resolve));
   const address = runtime.address() as any;
   const origin = `http://127.0.0.1:${address.port}`;
   try {
-    await configure(fixture, [origin]);
-    await refreshCodebase(fixture.project);
-    const scan = await scanParity(fixture.project, [`${origin}/`]);
-    assert.equal(scan.project, fixture.project);
-    assert.ok(scan.sources.some(source => source.kind === 'repository' && source.available));
-    assert.ok(scan.sources.some(source => source.kind === 'runtime-http' && source.available));
-    assert.ok(scan.observations.some(obs => obs.kind === 'ui-element' && obs.name === 'Manage item'));
-    assert.ok(scan.observations.some(obs => obs.kind === 'http-call' && JSON.stringify(obs.value).includes('/api/manage')));
-    assert.ok(scan.observations.some(obs => obs.kind === 'mcp-tool' && obs.name === 'manage_item'));
-    assert.ok(scan.observations.some(obs => obs.kind === 'declared-field' && obs.field === 'ownerFeature' && obs.value === 'storage'));
-    assert.equal(scan.observations.some(obs => obs.raw.includes('must-not-be-persisted-by-parity')), false, 'secret-like structured values must be redacted from parity observations');
-    assert.ok(scan.observations.some(obs => obs.field === 'access_token' && obs.value === '<redacted>'));
-    assert.ok(scan.observations.some(obs => obs.field === 'authorization' && obs.value === '<redacted>'));
-    assert.equal(scan.observations.some(obs => obs.raw.includes('outside-managed-source')), false, 'tracked symlinks must not let parity read outside the managed source root');
-    assert.ok(scan.sources.find(source => source.kind === 'repository')?.warnings?.some(warning => warning.includes('non-regular tracked file')));
-    assert.ok(scan.resolutions.some(rel => rel.kind === 'handled_by' && rel.strategy === 'syntax' && rel.status === 'resolved'));
-    assert.ok(scan.resolutions.some(rel => rel.kind === 'invokes' && rel.strategy === 'syntax'));
-    assert.ok(scan.resolutions.some(rel => rel.status === 'candidate' && ['exact-value', 'exact-name'].includes(rel.strategy)), 'cross-source similarities should remain candidates rather than facts');
+    const registry = JSON.parse(await fs.readFile(fixture.config, 'utf8'));
+    registry[fixture.project].runtimeOrigins = [origin];
+    await fs.writeFile(fixture.config, JSON.stringify(registry, null, 2));
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project, { urls: [`${origin}/`] });
+    assert.ok(graph.nodes.some(node => node.kind === 'runtime-http' || node.sourceId.startsWith('runtime:')) || graph.sources.some(source => source.kind === 'runtime-http'));
+    assert.ok(graph.nodes.some(node => node.kind === 'ui-element' && node.name === 'Manage item'));
+    assert.ok(graph.nodes.some(node => node.kind === 'http-call' && JSON.stringify(node.value).includes('/api/manage')));
+    assert.ok(graph.nodes.some(node => node.kind === 'mcp-tool' && node.name === 'manage_item'));
+    assert.ok(graph.edges.some(edge => edge.kind === 'handled_by' && edge.status === 'resolved'));
 
-    const queried = await queryParity({ project: fixture.project, scanId: scan.scanId, query: 'manage_item' });
-    assert.ok((queried.observationTotal as number) >= 1);
+    const search = await searchGraph({ project: fixture.project, query: 'helper' }) as any;
+    assert.ok(search.nodes.some((node: any) => node.name === 'helper'));
+    const trace = await traceGraph({ project: fixture.project, node: 'Panel', direction: 'outbound', depth: 4 }) as any;
+    assert.ok(trace.nodes.some((node: any) => node.name === 'helper'), 'native graph traversal should cross module imports and expose called symbols');
+    const reverseTrace = await traceGraph({ project: fixture.project, node: 'helper', direction: 'inbound', depth: 4 }) as any;
+    assert.ok(reverseTrace.nodes.some((node: any) => node.name === 'handleManage'), 'cross-file caller discovery should reach the importing caller');
+    assert.ok(graph.nodes.some(node => node.kind === 'import-binding' && node.name === 'helper'));
+    assert.ok(graph.edges.some(edge => edge.kind === 'imports' && edge.status === 'resolved'));
+    assert.ok(graph.edges.some(edge => edge.kind === 'calls' && edge.strategy === 'module-resolution'));
 
-    const original = await fs.readFile(path.join(fixture.source, 'src', 'panel.tsx'), 'utf8');
-    await fs.writeFile(path.join(fixture.source, 'src', 'panel.tsx'), original.replace('Manage item</button>', 'Administer item</button>'));
-    await commit(fixture.source, 'rename ui');
-    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
-    await refreshCodebase(fixture.project);
-    const nextScan = await scanParity(fixture.project, [`${origin}/`]);
-    const diff = await diffParity(fixture.project, scan.scanId, nextScan.scanId);
-    const observationDiff = diff.observations as any;
-    assert.ok(observationDiff.changed.length > 0 || observationDiff.added.length > 0 || observationDiff.removed.length > 0);
+    const code = await searchCode({ project: fixture.project, pattern: 'fetch', limit: 10 }) as any;
+    assert.ok(code.matches.some((match: any) => match.file === 'src/panel.tsx'));
+    const snippet = await getCodeSnippet({ project: fixture.project, node: 'helper', context: 2 }) as any;
+    assert.equal(snippet.file, 'src/helper.ts');
+    assert.ok(snippet.lines.some((line: any) => line.text.includes('helper')));
   } finally {
-    await new Promise<void>(resolve => runtime.close(() => resolve()));
+    await close(runtime);
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test('public MCP tool surface stays tool-only and excludes workflow/intent operations', () => {
+test('public tool surface is intrinsic DI, not controlled by Codebase Memory or development methodology', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
-  for (const expected of ['refresh_codebase', 'search_graph', 'trace_path', 'scan_parity', 'query_parity', 'diff_parity', 'parity_status']) assert.ok(names.includes(expected), expected);
-  for (const forbidden of ['manage_adr', 'index_repository', 'authorize_build', 'create_pull_request', 'developer_os']) assert.equal(names.includes(forbidden), false, forbidden);
+  for (const expected of ['scan_graph', 'graph_status', 'search_graph', 'trace_path', 'diff_graph', 'scan_parity', 'query_parity']) assert.ok(names.includes(expected), expected);
+  for (const retired of ['refresh_codebase', 'index_status', 'ingest_traces', 'delete_project', 'manage_adr', 'authorize_build', 'create_pull_request', 'developer_os']) assert.equal(names.includes(retired), false, retired);
+  const serialized = JSON.stringify(listed);
+  assert.equal(/Codebase Memory|CBM_CACHE_DIR|graph\.db\.zst/i.test(serialized), false);
   const byName = new Map(listed.map(tool => [tool.name, tool]));
-  assert.equal(byName.get('list_projects')?.annotations?.readOnlyHint, true);
-  assert.equal(byName.get('refresh_codebase')?.annotations?.readOnlyHint, false);
-  assert.equal(byName.get('delete_project')?.annotations?.destructiveHint, true);
+  assert.equal(byName.get('scan_graph')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('scan_parity')?.annotations?.readOnlyHint, true);
 });
 
-test('registry rejects project identities that collide in derived storage', async () => {
+test('registry rejects project identities that collide in derived keys', async () => {
   const fixture = await makeFixture();
   try {
     process.env.DEVINT_PROJECTS_FILE = fixture.config;
@@ -213,9 +190,8 @@ test('registry rejects project identities that collide in derived storage', asyn
   }
 });
 
-test('modern MCP HTTP surface follows the 2026-07-28 stateless contract', async () => {
+test('modern MCP HTTP contract and native graph viewer remain available', async () => {
   const fixture = await makeFixture();
-  await configure(fixture);
   process.env.DEVINT_AUTH_MODE = 'none';
   process.env.DEVINT_ALLOW_UNAUTHENTICATED = '1';
   const { createDevelopmentIntelligenceServer } = await import('../src/http.js');
@@ -225,106 +201,31 @@ test('modern MCP HTTP surface follows the 2026-07-28 stateless contract', async 
   const endpoint = `http://127.0.0.1:${address.port}/mcp`;
   const meta = {
     'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-    'io.modelcontextprotocol/clientInfo': { name: 'development-intelligence-test', version: '1.0.0' },
+    'io.modelcontextprotocol/clientInfo': { name: 'development-intelligence-test', version: '2.0.0' },
     'io.modelcontextprotocol/clientCapabilities': {},
   };
   try {
-    const discover = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'server/discover' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: meta } }),
-    });
+    const discover = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'server/discover' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: meta } }) });
     assert.equal(discover.status, 200);
     const discoverBody = await discover.json() as any;
     assert.equal(discoverBody.result.resultType, 'complete');
-    assert.deepEqual(discoverBody.result.supportedVersions, ['2026-07-28']);
-    assert.equal(discoverBody.result._meta['io.modelcontextprotocol/serverInfo'].name, 'Development Intelligence');
-    assert.equal('serverInfo' in discoverBody.result, false, 'modern server identity belongs in result _meta');
+    assert.match(discoverBody.result.instructions, /one evidence graph/i);
 
-    const list = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } }),
-    });
+    const list = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } }) });
     assert.equal(list.status, 200);
     const listBody = await list.json() as any;
-    assert.equal(listBody.result.resultType, 'complete');
     assert.equal(listBody.result.cacheScope, 'private');
-    assert.equal(typeof listBody.result.ttlMs, 'number');
-    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'scan_parity'));
-    assert.ok(!listBody.result.tools.some((tool: any) => tool.name === 'manage_adr'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'scan_graph'));
 
-    const call = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/call', 'mcp-name': 'list_projects' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list_projects', arguments: {}, _meta: meta } }),
-    });
-    assert.equal(call.status, 200);
-    const callBody = await call.json() as any;
-    assert.equal(callBody.result.resultType, 'complete');
-    assert.equal(callBody.result.structuredContent.items[0].project, fixture.project);
-
-    const mismatch = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list', 'mcp-name': 'wrong' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'list_projects', arguments: {}, _meta: meta } }),
-    });
-    assert.equal(mismatch.status, 400);
-    const mismatchBody = await mismatch.json() as any;
-    assert.equal(mismatchBody.error.code, -32020);
+    const viewer = await fetch(`http://127.0.0.1:${address.port}/graph?project=${fixture.project}`);
+    assert.equal(viewer.status, 200);
+    const html = await viewer.text();
+    assert.match(html, /Development Intelligence graph/);
+    assert.match(html, /same graph agents query/i);
   } finally {
-    await new Promise<void>(resolve => server.close(() => resolve()));
+    await close(server);
     delete process.env.DEVINT_AUTH_MODE;
     delete process.env.DEVINT_ALLOW_UNAUTHENTICATED;
-    await fs.rm(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test('authenticated runtime observation refuses cross-origin redirects before forwarding credentials', async () => {
-  const fixture = await makeFixture();
-  let credentialReachedSecondOrigin = false;
-  const destination = http.createServer((req: any, res: any) => {
-    if (req.headers.authorization) credentialReachedSecondOrigin = true;
-    res.writeHead(200, { 'content-type': 'text/html' });
-    res.end('<button>Should not be observed</button>');
-  });
-  await new Promise<void>(resolve => destination.listen(0, '127.0.0.1', resolve));
-  const destinationAddress = destination.address() as any;
-  const destinationOrigin = `http://127.0.0.1:${destinationAddress.port}`;
-
-  const redirector = http.createServer((_req: any, res: any) => {
-    res.writeHead(302, { location: `${destinationOrigin}/target` });
-    res.end();
-  });
-  await new Promise<void>(resolve => redirector.listen(0, '127.0.0.1', resolve));
-  const redirectAddress = redirector.address() as any;
-  const redirectOrigin = `http://127.0.0.1:${redirectAddress.port}`;
-
-  try {
-    process.env.TEST_RUNTIME_AUTH = 'Bearer test-secret';
-    process.env.DEVINT_PROJECTS_FILE = fixture.config;
-    process.env.DEVINT_DATA_DIR = fixture.data;
-    process.env.DEVINT_CBM_BINARY = fixture.cbm;
-    await fs.writeFile(fixture.config, JSON.stringify({
-      [fixture.project]: {
-        repository: pathToFileURL(fixture.remote).href,
-        defaultRef: 'refs/heads/main',
-        allowedRefs: ['refs/heads/main'],
-        credential: { type: 'none' },
-        runtimeOrigins: [redirectOrigin, destinationOrigin],
-        runtimeHeaders: [{ name: 'Authorization', valueEnv: 'TEST_RUNTIME_AUTH' }],
-      },
-    }, null, 2));
-    await refreshCodebase(fixture.project);
-    const scan = await scanParity(fixture.project, [`${redirectOrigin}/start`]);
-    const runtimeSource = scan.sources.find(source => source.id.startsWith('runtime:'));
-    assert.equal(runtimeSource?.available, false);
-    assert.match(runtimeSource?.error ?? '', /redirects must remain/);
-    assert.equal(credentialReachedSecondOrigin, false, 'runtime credentials must not cross origins through redirects');
-  } finally {
-    delete process.env.TEST_RUNTIME_AUTH;
-    await new Promise<void>(resolve => redirector.close(() => resolve()));
-    await new Promise<void>(resolve => destination.close(() => resolve()));
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });

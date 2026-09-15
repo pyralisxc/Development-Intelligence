@@ -10,16 +10,12 @@ RUN npm run verify
 FROM node:22-bookworm-slim AS runtime
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && npm install -g --no-audit --no-fund codebase-memory-mcp@0.10.8
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production \
     DEVINT_HOST=0.0.0.0 \
     DEVINT_PORT=8787 \
-    DEVINT_PROJECTS_FILE=/config/projects.json \
-    DEVINT_DATA_DIR=/data/development-intelligence \
-    CBM_CACHE_DIR=/data/codebase-memory \
-    CBM_WORKERS=1
+    DEVINT_PROJECTS_FILE=/config/projects.json
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

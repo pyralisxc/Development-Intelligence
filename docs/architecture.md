@@ -3,93 +3,102 @@
 ## System shape
 
 ```text
-Development Intelligence MCP
-├── Codebase Memory
-│   ├── managed Git source lifecycle
-│   ├── atomic index generations
-│   └── upstream Codebase Memory query proxy
-└── Parity Engine
-    ├── generic technology analyzers
-    ├── observations/evidence
-    ├── deterministic + candidate resolution
-    └── scan/query/diff/status
+                            Development Intelligence
+                                     │
+                      one intrinsic evidence graph
+                                     │
+        ┌────────────────────────────┼───────────────────────────┐
+        │                            │                           │
+  source/Git analyzers        runtime/protocol evidence    future tools
+        │                            │                     (evidence only)
+        └────────────────────────────┼───────────────────────────┘
+                                     │
+                    Source → Observation → Relationship
+                               + evidence/confidence
+                                     │
+             ┌───────────────────────┼──────────────────────┐
+             │                       │                      │
+        search / trace         parity / diff        architecture / viewer
 ```
 
-The two engines do not depend on one another.
+Development Intelligence is the engine. “Code inspection” and “Parity” are capabilities/lenses, not independent graph owners.
 
-## Project registry
+## Authority and lifecycle
 
-The registry is operator-controlled access configuration. A project entry defines repository/ref access and optional allowlisted runtime origins. It does not define product semantics.
+Git/source owns implementation truth. Development Intelligence produces rebuildable technical projections.
 
-Public project identity is the registry key. Internal Codebase Memory generation names and managed worktree paths are derived implementation details and are removed from public proxy results.
+The accepted checkpoint is `/.development-intelligence/manifest.json` plus deterministic sharded NDJSON records under `/.development-intelligence/graph/` in the project being inspected.
 
-## Codebase Memory lifecycle
+- **A** — the checkpoint already accepted in the branch/revision being reasoned about.
+- **W** — the working graph generated from the exact current source/ref. W may include ephemeral runtime evidence.
+- **B** — a sealed deterministic repository checkpoint generated for a candidate and committed with that candidate.
+- Git merge/history naturally turns B into A and retains previous A revisions.
 
-Development Intelligence treats Git as canonical source revision mechanics and Codebase Memory as the code graph/index engine.
+Development Intelligence does not maintain a central graph-history database or promotion pointer.
 
-For each project it maintains:
+## Checkpoint format
 
-- a bare managed Git mirror;
-- immutable detached worktrees by source SHA;
-- generation metadata;
-- one selected last-known-good Codebase Memory generation;
-- bounded previous generations for rollback/debugging.
+The current schema is deterministic sharded NDJSON:
 
-Each index attempt gets a unique internal Codebase Memory project identity, even when re-indexing the same SHA after derived-state damage. Selection changes only after both `index_repository` and `index_status` are healthy.
+1. one `manifest.json` containing schema version, source fingerprint, shard list, and summary;
+2. stable `node` and `edge` records sorted by ID;
+3. records assigned deterministically to hexadecimal shard files by record identity.
 
-`project_status` keeps source freshness and graph freshness separate.
+The fingerprint covers tracked project content but excludes the `.development-intelligence/` directory so graph generation does not create a self-referential hash/commit cycle.
 
-## Parity Engine model
+Checkpoint records intentionally omit volatile observation timestamps and service-local paths. Runtime/provider observations are not automatically sealed because they may not be reproducible from repository source; they remain overlays unless a future explicit evidence contract says otherwise.
+
+## Graph model
 
 Durable primitives:
 
-- **Source** — where an observation came from.
-- **Observation** — a directly observed technical value/entity/structure.
-- **Evidence** — support for an observation/resolution.
-- **Resolution** — a relationship between observations.
-- **Revision** — source-specific revision or observation point.
+- **Source** — where evidence was observed.
+- **Node/Observation** — a directly observed entity/value/structure.
+- **Edge/Relationship** — a relationship between nodes.
+- **Evidence** — why an observation/relationship exists.
+- **Revision** — the source revision/observation point.
 
-Resolution states:
+Relationship states:
 
 - `resolved`
 - `candidate`
 - `unresolved`
 
-Generic analyzers currently include:
+Current generic analyzers understand TypeScript/JavaScript/JSX/TSX, JSON, Markdown/MDX, HTML, and read-only runtime HTTP HTML/JSON. File nodes and containment edges make source topology part of the same graph. TypeScript/JavaScript analysis also resolves module imports/re-exports and cross-file call relationships where the syntax and module resolver can prove them.
 
-- TypeScript / JavaScript / JSX / TSX
-- JSON (secret-like structured values are redacted)
-- Markdown / MDX
-- HTML
-- read-only runtime HTTP HTML/JSON
+No analyzer behavior may branch on project identity.
 
-Repository analyzers are selected from file type/technical evidence only. Runtime analysis is selected from response content type only.
+## Source acquisition
 
-The TypeScript analyzer can observe ordinary structured declarations, UI controls/handlers, HTTP calls, navigation calls, MCP registrations, and local symbol relationships. It does not know project-specific nouns. Secret-like structured values are redacted before observations are persisted or returned, regardless of whether they were found in JSON or TypeScript.
+For remote projects, DI resolves an allowlisted Git ref to an exact SHA, materializes a shallow checkout in disposable scratch space, verifies the fetched SHA, analyzes it, and deletes the checkout.
 
-Cross-source similarity produces candidates rather than facts. Naming divergence is only derived after a relationship has already been resolved.
+Local filesystem is therefore **compute**, not authority.
 
-## Runtime boundary
+A future Vercel Sandbox may retain disposable warm working state for performance. Losing it must never lose accepted graph history or project truth.
 
-Runtime URLs must use an operator-allowlisted HTTP(S) origin. Every redirect is revalidated against the allowlist. Runtime requests are GET-only, bounded by timeout/response-size limits, and may receive credentials only through server-side environment-backed headers.
+## Query model
 
-Credentials are never persisted as observations. Secret-like structured JSON fields are redacted.
+The service keeps a bounded in-process cache keyed by project + exact source SHA. It is acceleration only.
 
-## MCP transport
+Queries operate on the canonical graph:
 
-HTTP supports modern stateless MCP revision `2026-07-28` including:
+- text/kind/source/status search;
+- relationship traversal;
+- architecture projections;
+- source search/snippets from the exact Git revision;
+- A→W graph diff;
+- parity filtering over cross-representation nodes/relationships.
 
-- `server/discover`;
-- `MCP-Protocol-Version`, `Mcp-Method`, and applicable `Mcp-Name` header validation;
-- `resultType: complete`;
-- response `_meta` server identity;
-- per-request protocol-version/client-capabilities metadata;
-- `tools/list` cache hints.
+No provider-specific database query language is part of the public contract.
 
-A limited initialize-era compatibility path remains. The service itself does not require MCP sessions.
+## Runtime observation boundary
 
-Authentication is deliberately outside product semantics:
+Runtime URLs must use an operator-allowlisted HTTP(S) origin. Every redirect is revalidated. Authenticated redirects remain on the original origin. Requests are GET-only and bounded by timeout/size. Credentials come from server-side environment-backed headers and never enter accepted graph checkpoints.
 
-- bearer token mode;
-- trusted reverse-proxy shared-secret mode (for an existing OAuth/auth gateway);
-- explicit local unauthenticated mode for development only.
+## Visualization
+
+The `/graph` viewer is a bounded visual projection of the same canonical graph agents query. It must not maintain separate nodes, edges, identities, or lifecycle semantics.
+
+## Tool boundary
+
+External analyzers may be integrated later when they contribute useful evidence (for example language-precise symbol/reference data). They must adapt into DI Source/Node/Edge/Evidence primitives and may not become lifecycle/storage authorities.

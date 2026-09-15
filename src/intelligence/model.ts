@@ -27,13 +27,6 @@ export function stringifyValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-const SENSITIVE_FIELD = /(^|[._-])(password|passwd|secret|token|api[-_]?key|authorization|cookie|credential|private[-_]?key|access[-_]?token|refresh[-_]?token)($|[._-])/i;
-
-export function redactSensitiveValue(field: string, value: unknown): { value: unknown; raw?: string } {
-  if (!SENSITIVE_FIELD.test(field)) return { value };
-  return { value: '<redacted>', raw: '<redacted>' };
-}
-
 export function normalizeName(value: string): string {
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -43,4 +36,11 @@ export function normalizeName(value: string): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ');
+}
+
+const SENSITIVE_FIELD = /(^|[._-])(password|passwd|secret|token|api[-_]?key|authorization|cookie|credential|private[-_]?key|access[-_]?token|refresh[-_]?token)($|[._-])/i;
+
+export function redactSensitiveValue(field: string, value: unknown): { value: unknown; raw?: string } {
+  if (!SENSITIVE_FIELD.test(field)) return { value };
+  return { value: '<redacted>', raw: '<redacted>' };
 }

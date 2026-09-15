@@ -1,0 +1,96 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { withProjectCheckout } from '../source/git.js';
+import { runChecked } from '../util/process.js';
+import { currentGraph } from './service.js';
+import { locatorFileAndLine } from './query.js';
+import { GRAPH_DIRECTORY } from './repository.js';
+
+const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? 1_000_000);
+
+async function trackedTextFiles(root: string): Promise<string[]> {
+  const result = await runChecked('git', ['-C', root, 'ls-files', '-z']);
+  return result.stdout.split('\0').filter(Boolean).filter(file => !file.startsWith(`${GRAPH_DIRECTORY}/`));
+}
+
+export async function searchCode(input: {
+  project: string;
+  ref?: string | undefined;
+  pattern: string;
+  filePattern?: string | undefined;
+  regex?: boolean | undefined;
+  context?: number | undefined;
+  limit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  if (!input.pattern) throw new Error('pattern must be a non-empty string');
+  return await withProjectCheckout(input.project, input.ref, async checkout => {
+    const files = await trackedTextFiles(checkout.root);
+    const matcher = input.regex ? new RegExp(input.pattern, 'i') : null;
+    const fileMatcher = input.filePattern ? new RegExp(input.filePattern, 'i') : null;
+    const context = Math.min(Math.max(input.context ?? 2, 0), 20);
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
+    const matches: Array<Record<string, unknown>> = [];
+    for (const relative of files) {
+      if (fileMatcher && !fileMatcher.test(relative)) continue;
+      const absolute = path.join(checkout.root, relative);
+      let stat;
+      try { stat = await fs.lstat(absolute); } catch { continue; }
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) continue;
+      let text: string;
+      try { text = await fs.readFile(absolute, 'utf8'); } catch { continue; }
+      if (text.includes('\0')) continue;
+      const lines: string[] = text.split(/\r?\n/u);
+      for (let index = 0; index < lines.length && matches.length < limit; index += 1) {
+        const line = lines[index]!;
+        const hit = matcher ? matcher.test(line) : line.toLowerCase().includes(input.pattern.toLowerCase());
+        if (!hit) continue;
+        matches.push({
+          file: relative,
+          line: index + 1,
+          text: line,
+          before: lines.slice(Math.max(0, index - context), index),
+          after: lines.slice(index + 1, index + 1 + context),
+        });
+      }
+      if (matches.length >= limit) break;
+    }
+    return { project: input.project, ref: checkout.ref, revision: checkout.sha, matches, total: matches.length };
+  });
+}
+
+export async function getCodeSnippet(input: {
+  project: string;
+  ref?: string | undefined;
+  node?: string | undefined;
+  context?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref);
+  const needle = input.node?.trim().toLowerCase();
+  if (!needle) throw new Error('node must be a non-empty graph node id/name/query');
+  const node = graph.nodes.find(item => item.id === input.node)
+    ?? graph.nodes.find(item => item.name?.toLowerCase() === needle)
+    ?? graph.nodes.find(item => `${item.name ?? ''} ${item.locator}`.toLowerCase().includes(needle));
+  if (!node) throw new Error(`Graph node not found: ${input.node}`);
+  const locator = locatorFileAndLine(node.locator);
+  return await withProjectCheckout(input.project, input.ref, async checkout => {
+    const absolute = path.resolve(checkout.root, locator.file);
+    const root = path.resolve(checkout.root);
+    if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) throw new Error('Graph node locator escapes repository root');
+    const stat = await fs.lstat(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Graph node source is not a regular file: ${locator.file}`);
+    const lines: string[] = String(await fs.readFile(absolute, 'utf8')).split(/\r?\n/u);
+    const context = Math.min(Math.max(input.context ?? 8, 0), 100);
+    const center = locator.line ? locator.line - 1 : 0;
+    const start = Math.max(0, center - context);
+    const end = Math.min(lines.length, center + context + 1);
+    return {
+      project: input.project,
+      revision: checkout.sha,
+      node,
+      file: locator.file,
+      startLine: start + 1,
+      endLine: end,
+      lines: lines.slice(start, end).map((text, index) => ({ line: start + index + 1, text })),
+    };
+  });
+}

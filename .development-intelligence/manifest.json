@@ -1,0 +1,42 @@
+{
+  "type": "meta",
+  "schemaVersion": 1,
+  "format": "sharded-ndjson",
+  "sourceFingerprint": "e46705521068d91eebef6cbcbd3694069bd9a3134b2389bf9b6f437f06962863",
+  "shards": [
+    "0.ndjson",
+    "1.ndjson",
+    "2.ndjson",
+    "3.ndjson",
+    "4.ndjson",
+    "5.ndjson",
+    "6.ndjson",
+    "7.ndjson",
+    "8.ndjson",
+    "9.ndjson",
+    "a.ndjson",
+    "b.ndjson",
+    "c.ndjson",
+    "d.ndjson",
+    "e.ndjson",
+    "f.ndjson"
+  ],
+  "summary": {
+    "nodes": 677,
+    "edges": 1531,
+    "unresolved": 0,
+    "candidate": 368,
+    "kinds": {
+      "declaration": 26,
+      "declared-field": 105,
+      "document-heading": 48,
+      "document-statement": 65,
+      "file": 41,
+      "function": 132,
+      "import-binding": 186,
+      "interface": 25,
+      "structured-value": 40,
+      "type": 9
+    }
+  }
+}
