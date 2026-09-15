@@ -25,6 +25,35 @@ jobs:
             npm run graph:check -- --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
           fi
 
+  self-seal:
+    if: github.event_name == 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - name: Seal candidate B from exact PR head
+        run: |
+          node dist/src/graphCli.js seal --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
+          node dist/src/graphCli.js check --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
+      - name: Upload sealed B
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-sealed-b
+          path: .development-intelligence
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
   cardforge-benchmark:
     needs: verify
     runs-on: ubuntu-latest
