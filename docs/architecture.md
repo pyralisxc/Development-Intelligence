@@ -27,7 +27,7 @@ Development Intelligence is the engine. “Code inspection” and “Parity” a
 
 Git/source owns implementation truth. Development Intelligence produces rebuildable technical projections.
 
-The accepted checkpoint is `/.development-intelligence/graph.ndjson` in the project being inspected.
+The accepted checkpoint is `/.development-intelligence/manifest.json` plus deterministic sharded NDJSON records under `/.development-intelligence/graph/` in the project being inspected.
 
 - **A** — the checkpoint already accepted in the branch/revision being reasoned about.
 - **W** — the working graph generated from the exact current source/ref. W may include ephemeral runtime evidence.
@@ -38,11 +38,11 @@ Development Intelligence does not maintain a central graph-history database or p
 
 ## Checkpoint format
 
-The current schema is record-oriented NDJSON:
+The current schema is deterministic sharded NDJSON:
 
-1. one `meta` record containing schema version, source fingerprint, and summary;
-2. stable `node` records sorted by ID;
-3. stable `edge` records sorted by ID.
+1. one `manifest.json` containing schema version, source fingerprint, shard list, and summary;
+2. stable `node` and `edge` records sorted by ID;
+3. records assigned deterministically to hexadecimal shard files by record identity.
 
 The fingerprint covers tracked project content but excludes the `.development-intelligence/` directory so graph generation does not create a self-referential hash/commit cycle.
 
@@ -64,7 +64,7 @@ Relationship states:
 - `candidate`
 - `unresolved`
 
-Current generic analyzers understand TypeScript/JavaScript/JSX/TSX, JSON, Markdown/MDX, HTML, and read-only runtime HTTP HTML/JSON. File nodes and containment edges make source topology part of the same graph.
+Current generic analyzers understand TypeScript/JavaScript/JSX/TSX, JSON, Markdown/MDX, HTML, and read-only runtime HTTP HTML/JSON. File nodes and containment edges make source topology part of the same graph. TypeScript/JavaScript analysis also resolves module imports/re-exports and cross-file call relationships where the syntax and module resolver can prove them.
 
 No analyzer behavior may branch on project identity.
 

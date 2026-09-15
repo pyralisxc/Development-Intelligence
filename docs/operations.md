@@ -4,7 +4,7 @@
 
 Development Intelligence does not require a permanently administered server, persistent graph disk, external object bucket, or graph database.
 
-Durable accepted intelligence lives with each inspected Git project as `/.development-intelligence/graph.ndjson` and therefore follows normal Git history, review, branching, backup, and access controls.
+Durable accepted intelligence lives with each inspected Git project as `/.development-intelligence/manifest.json` plus deterministic sharded NDJSON records under `/.development-intelligence/graph/` and therefore follows normal Git history, review, branching, backup, and access controls.
 
 The hosted service needs only:
 
@@ -54,7 +54,7 @@ Graph sealing belongs in the inspected project's own candidate workflow:
 1. make the intended source changes;
 2. generate B with `graphCli seal` against the candidate working tree;
 3. review/check the A→B delta as appropriate;
-4. commit the source + graph checkpoint together;
+4. commit the source + `.development-intelligence/` checkpoint together;
 5. merge through the project's normal review/release process;
 6. after merge, B is the new A by ordinary Git semantics.
 
