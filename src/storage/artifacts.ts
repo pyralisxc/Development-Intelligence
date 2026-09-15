@@ -33,6 +33,13 @@ function localPath(key: string): string {
   return resolved;
 }
 
+async function assertLocalCreate(key: string): Promise<string> {
+  const destination = localPath(key);
+  if (await pathExists(destination)) throw new Error(`Immutable artifact already exists: ${key}`);
+  await ensureDir(path.dirname(destination));
+  return destination;
+}
+
 export function projectArtifactPrefix(project: string): string {
   return `projects/${safeSegment(project)}`;
 }
@@ -42,12 +49,15 @@ export async function uploadArtifact(key: string, sourceFile: string): Promise<v
   requireBackend();
   const bucketName = gcsBucketName();
   if (bucketName) {
-    await gcs().bucket(bucketName).upload(sourceFile, { destination: key, resumable: false, validation: 'crc32c' });
+    await gcs().bucket(bucketName).upload(sourceFile, {
+      destination: key,
+      resumable: false,
+      validation: 'crc32c',
+      preconditionOpts: { ifGenerationMatch: 0 },
+    });
     return;
   }
-  const destination = localPath(key);
-  await ensureDir(path.dirname(destination));
-  await fs.copyFile(sourceFile, destination);
+  await fs.copyFile(sourceFile, await assertLocalCreate(key));
 }
 
 export async function downloadArtifact(key: string, destination: string): Promise<void> {
@@ -68,12 +78,15 @@ export async function writeArtifactJson(key: string, value: unknown): Promise<vo
   const content = JSON.stringify(value, null, 2) + '\n';
   const bucketName = gcsBucketName();
   if (bucketName) {
-    await gcs().bucket(bucketName).file(key).save(content, { contentType: 'application/json', resumable: false, validation: 'crc32c' });
+    await gcs().bucket(bucketName).file(key).save(content, {
+      contentType: 'application/json',
+      resumable: false,
+      validation: 'crc32c',
+      preconditionOpts: { ifGenerationMatch: 0 },
+    });
     return;
   }
-  const destination = localPath(key);
-  await ensureDir(path.dirname(destination));
-  await fs.writeFile(destination, content, { mode: 0o600 });
+  await fs.writeFile(await assertLocalCreate(key), content, { mode: 0o600 });
 }
 
 export async function readArtifactJson<T>(key: string): Promise<T> {

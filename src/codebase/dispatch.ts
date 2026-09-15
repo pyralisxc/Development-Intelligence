@@ -1,6 +1,6 @@
 import { GoogleAuth } from 'google-auth-library';
 
-export async function dispatchIndexJob(project: string, ref: string): Promise<{ operationName: string | null }> {
+export async function dispatchIndexJob(project: string, ref: string, sha: string): Promise<{ operationName: string | null }> {
   const resource = process.env.DEVINT_CLOUD_RUN_JOB_RESOURCE?.trim();
   if (!resource) throw new Error('DEVINT_CLOUD_RUN_JOB_RESOURCE is not configured');
   if (!/^projects\/[^/]+\/locations\/[^/]+\/jobs\/[^/]+$/.test(resource)) throw new Error('DEVINT_CLOUD_RUN_JOB_RESOURCE must be a full Cloud Run v2 job resource name');
@@ -17,6 +17,7 @@ export async function dispatchIndexJob(project: string, ref: string): Promise<{ 
             { name: 'DEVINT_INDEX_EXECUTION', value: '1' },
             { name: 'DEVINT_INDEX_PROJECT', value: project },
             { name: 'DEVINT_INDEX_REF', value: ref },
+            { name: 'DEVINT_INDEX_SHA', value: sha },
           ],
         }],
       },

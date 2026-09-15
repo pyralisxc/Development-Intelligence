@@ -30,7 +30,9 @@ Codebase Memory and Parity Engine remain independent siblings. The Revision Bund
 
 ## Revision Bundle
 
-A Revision Bundle is immutable and identified by source SHA plus bundle/engine schema versions. It records:
+A Revision Bundle is immutable. Its identity includes the exact source SHA, bundle/engine schema fingerprint, and a unique indexing-generation suffix. More than one valid immutable bundle may therefore exist for the same repository SHA when an analysis is intentionally rebuilt; the selected control pointer decides which validated generation is current.
+
+The manifest records:
 
 - public project identity and repository;
 - requested ref and exact source commit SHA;
@@ -46,26 +48,35 @@ Artifacts:
 - `repository-parity.json` contains repository observations/resolutions generated once during indexing.
 - `manifest.json` is written last and acts as the bundle commit marker.
 
+Production Cloud Storage writes use create-only generation-match preconditions. A bundle object cannot be silently overwritten by another indexing execution. Local test/development storage enforces the same create-only rule.
+
 The selected bundle pointer is durable control state. Local CBM project names, caches, checkouts, and extraction directories are not durable state.
 
 ## Index lifecycle
 
-Indexing is a short-lived execution:
+`refresh_codebase` resolves the mutable repository ref once and transactionally claims the exact observed SHA. Repeated requests for the same queued/running SHA deduplicate before provider dispatch. A newer SHA may replace the active claim; an older worker then loses ownership and cannot update that project's current index state.
 
-1. validate the project/ref policy;
-2. resolve and fetch a bounded Git checkout into ephemeral storage;
-3. retain bounded default-branch history where useful for common branch/PR diff analysis;
-4. run Codebase Memory full indexing with a job-local `CBM_CACHE_DIR`;
-5. require healthy CBM status **and** a real non-empty `.codebase-memory/graph.db.zst`;
-6. run repository Parity analyzers against the same exact checkout;
-7. archive source/Git context;
-8. hash and upload bundle artifacts;
-9. write the immutable manifest;
-10. re-check the upstream ref;
-11. atomically replace the selected pointer only if the completed SHA is still the ref head;
-12. exit and delete all local indexing state.
+Managed indexing receives **project + ref + expected SHA**. A short-lived execution:
 
-A ref moving during indexing may leave a valid historical bundle, but that bundle is not promoted current. Duplicate jobs for the same project/SHA/version are correctness-safe because the bundle identity is deterministic and immutable.
+1. transactionally transitions its exact SHA claim from queued to running;
+2. re-checks that the ref still points at that expected SHA before expensive work;
+3. fetches a bounded Git checkout into ephemeral storage and verifies the checkout still equals the expected SHA;
+4. retains bounded default-branch history where useful for common branch/PR diff analysis;
+5. runs Codebase Memory full indexing with a job-local `CBM_CACHE_DIR`;
+6. requires healthy CBM status **and** a real non-empty `.codebase-memory/graph.db.zst`;
+7. runs repository Parity analyzers against the same exact checkout;
+8. archives source/Git context;
+9. creates a unique immutable bundle generation;
+10. hashes and uploads bundle artifacts with create-only storage preconditions;
+11. writes `manifest.json` last;
+12. re-checks the upstream ref;
+13. uploads the queryable repository Parity scan;
+14. transactionally promotes the selected bundle and repository-Parity pointer only if the execution still owns the expected SHA claim;
+15. exits and deletes all local indexing state.
+
+If the ref moves before or during indexing, that execution becomes `superseded`. If a newer request has already claimed another SHA, the stale worker cannot mark the newer request failed/succeeded and cannot replace its eventual selected bundle.
+
+Multiple valid immutable analysis generations may exist for one SHA; object keys never alias those generations. Repeated active requests for the same SHA are deduplicated at the control plane rather than by allowing multiple workers to write one supposedly immutable object key.
 
 ## Query lifecycle
 
@@ -103,14 +114,16 @@ Resolution states:
 
 Repository analysis occurs at index time and is stored with the Revision Bundle. Runtime HTTP observations occur only when requested and are combined with the selected repository observation set without treating runtime as authority.
 
+A runtime/combined scan advances the project's latest Parity pointer only while its `repositoryRevision` still matches the selected repository SHA. This prevents a slow observation against an old revision from becoming the current Parity view after a newer bundle is promoted.
+
 Generic analyzers currently include TypeScript/JavaScript/JSX/TSX, JSON, Markdown/MDX, HTML, and read-only runtime HTTP HTML/JSON. Analyzer selection is based on technical evidence only. Cross-source similarity remains a candidate rather than a fact. Naming divergence is derived only after a relationship is resolved.
 
 ## Storage/control ownership
 
 Production adapters:
 
-- **Google Cloud Storage** — private immutable bundle/scans.
-- **Firestore** — project selected-bundle pointer, index-run status, and parity latest/recent pointers.
+- **Google Cloud Storage** — private immutable bundle/scans, written create-only.
+- **Firestore** — project selected-bundle pointer, exact-SHA index claim/status, and parity latest/recent pointers. Claim/transition/promotion operations that establish current truth use transactions.
 - **Cloud Run service** — MCP/API query surface; minimum instances may be zero.
 - **Cloud Run Job** — indexing execution using the same container image with `src/indexJob.ts` as entrypoint.
 

@@ -5,6 +5,7 @@ import type { ParityScanSummary, ProjectState } from '../types.js';
 import { atomicWriteJson, readJson } from '../util/fs.js';
 
 let firestore: Firestore | null = null;
+const ACTIVE_INDEX_STATES = new Set(['queued', 'running']);
 
 function cloudEnabled(): boolean {
   return process.env.DEVINT_FIRESTORE_ENABLED === '1' || process.env.NODE_ENV === 'production';
@@ -55,6 +56,62 @@ export async function patchStoredProjectState(project: string, patch: Partial<Pr
   await atomicWriteJson(localStateFile(project), { ...current, ...patch });
 }
 
+export async function claimIndexRequest(project: string, sha: string, patch: Partial<ProjectState>): Promise<boolean> {
+  if (!sha) throw new Error('Index request SHA is required');
+  if (cloudEnabled()) {
+    const ref = document(project);
+    return await db().runTransaction(async transaction => {
+      const snapshot = await transaction.get(ref);
+      const current = snapshot.exists ? snapshot.data() as Partial<ProjectState> : {};
+      if (current.indexingSha === sha && current.lastIndexStatus && ACTIVE_INDEX_STATES.has(current.lastIndexStatus)) return false;
+      transaction.set(ref, { ...patch, indexingSha: sha }, { merge: true });
+      return true;
+    });
+  }
+  const current = await readStoredProjectState(project) ?? {};
+  if (current.indexingSha === sha && current.lastIndexStatus && ACTIVE_INDEX_STATES.has(current.lastIndexStatus)) return false;
+  await atomicWriteJson(localStateFile(project), { ...current, ...patch, indexingSha: sha });
+  return true;
+}
+
+export async function transitionIndexState(project: string, expectedSha: string, patch: Partial<ProjectState>): Promise<boolean> {
+  if (cloudEnabled()) {
+    const ref = document(project);
+    return await db().runTransaction(async transaction => {
+      const snapshot = await transaction.get(ref);
+      const current = snapshot.exists ? snapshot.data() as Partial<ProjectState> : {};
+      if (current.indexingSha !== expectedSha) return false;
+      transaction.set(ref, patch, { merge: true });
+      return true;
+    });
+  }
+  const current = await readStoredProjectState(project) ?? {};
+  if (current.indexingSha !== expectedSha) return false;
+  await atomicWriteJson(localStateFile(project), { ...current, ...patch });
+  return true;
+}
+
+export async function promoteIndexSuccess(project: string, expectedSha: string, patch: Partial<ProjectState>, parity: ParityScanSummary): Promise<boolean> {
+  if (cloudEnabled()) {
+    const ref = document(project);
+    return await db().runTransaction(async transaction => {
+      const snapshot = await transaction.get(ref);
+      const current = snapshot.exists ? snapshot.data() as Partial<ProjectState> : {};
+      if (current.indexingSha !== expectedSha) return false;
+      const recent = Array.isArray(current.recentParityScans) ? current.recentParityScans : [];
+      const deduped = [parity, ...recent.filter(item => item.scanId !== parity.scanId)].slice(0, 100);
+      transaction.set(ref, { ...patch, latestParityScanId: parity.scanId, recentParityScans: deduped }, { merge: true });
+      return true;
+    });
+  }
+  const current = await readStoredProjectState(project) ?? {};
+  if (current.indexingSha !== expectedSha) return false;
+  const recent = Array.isArray(current.recentParityScans) ? current.recentParityScans : [];
+  const deduped = [parity, ...recent.filter(item => item.scanId !== parity.scanId)].slice(0, 100);
+  await atomicWriteJson(localStateFile(project), { ...current, ...patch, latestParityScanId: parity.scanId, recentParityScans: deduped });
+  return true;
+}
+
 export async function deleteStoredProjectState(project: string): Promise<void> {
   if (cloudEnabled()) {
     await document(project).delete();
@@ -64,20 +121,23 @@ export async function deleteStoredProjectState(project: string): Promise<void> {
   await fs.promises.rm(localStateFile(project), { force: true });
 }
 
-export async function recordParityScan(project: string, summary: ParityScanSummary): Promise<void> {
+export async function recordParityScan(project: string, summary: ParityScanSummary, repositoryRevision: string | null): Promise<boolean> {
   if (cloudEnabled()) {
     const ref = document(project);
-    await db().runTransaction(async transaction => {
+    return await db().runTransaction(async transaction => {
       const snapshot = await transaction.get(ref);
       const current = snapshot.exists ? snapshot.data() as Partial<ProjectState> : {};
+      if ((current.selectedSha ?? null) !== repositoryRevision) return false;
       const recent = Array.isArray(current.recentParityScans) ? current.recentParityScans : [];
       const deduped = [summary, ...recent.filter(item => item.scanId !== summary.scanId)].slice(0, 100);
       transaction.set(ref, { latestParityScanId: summary.scanId, recentParityScans: deduped }, { merge: true });
+      return true;
     });
-    return;
   }
   const current = await readStoredProjectState(project) ?? {};
+  if ((current.selectedSha ?? null) !== repositoryRevision) return false;
   const recent = Array.isArray(current.recentParityScans) ? current.recentParityScans : [];
   const deduped = [summary, ...recent.filter(item => item.scanId !== summary.scanId)].slice(0, 100);
   await atomicWriteJson(localStateFile(project), { ...current, latestParityScanId: summary.scanId, recentParityScans: deduped });
+  return true;
 }

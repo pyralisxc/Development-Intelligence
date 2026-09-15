@@ -12,7 +12,15 @@ The permanent suite protects durable product/infrastructure contracts rather tha
 
 ### Selected-bundle atomicity
 
-A failed, stale, or incomplete indexing execution cannot replace the selected last-known-good Revision Bundle.
+A failed, stale, incomplete, or superseded indexing execution cannot replace the selected last-known-good Revision Bundle.
+
+### Exact-revision request ownership
+
+An accepted index request is bound to the exact SHA observed when the mutable ref was resolved. Repeated queued/running requests for the same SHA deduplicate before provider dispatch. A worker that loses the active SHA claim cannot mark a newer request failed/succeeded and cannot promote its bundle.
+
+### Immutable artifact creation
+
+Every bundle generation has unique object keys. Production Cloud Storage uploads use create-only generation-match preconditions; local test/development storage also refuses to overwrite an existing artifact key.
 
 ### Portable artifact presence
 
@@ -34,7 +42,7 @@ Internal Codebase Memory identities and ephemeral filesystem paths do not leak t
 
 An unknown project with no project-specific analyzer or semantic mapping can still produce useful technical observations and relationships from ordinary source/runtime structures.
 
-Repository observations are produced at index time for an exact revision. Runtime observations remain timestamped, optional, and read-only.
+Repository observations are produced at index time for an exact revision. Runtime observations remain timestamped, optional, and read-only. A runtime scan may become `latest` only while its repository revision still matches the selected SHA.
 
 ### Evidence discipline
 
@@ -72,7 +80,7 @@ Read-only tools expose `readOnlyHint`; index requests/runtime parity scans and d
 
 Use focused unit/contract evidence while changing a boundary, then one full repository `npm run verify` candidate gate.
 
-Cloud-provider deployment, IAM, and real Codebase Memory portable-artifact behavior require provider/upstream-backed acceptance before production cutover. Local fake-CBM tests deliberately prove Development Intelligence-owned promotion, integrity, and lifecycle rules; they do not claim to prove the upstream binary or Google Cloud configuration.
+Cloud-provider deployment, IAM, and real Codebase Memory portable-artifact behavior require provider/upstream-backed acceptance before production cutover. Local fake-CBM tests deliberately prove Development Intelligence-owned promotion, integrity, concurrency, and lifecycle rules; they do not claim to prove the upstream binary or Google Cloud configuration.
 
 ## Temporary evidence
 

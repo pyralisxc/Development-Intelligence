@@ -20,7 +20,7 @@ export interface ProjectRegistry {
   [project: string]: ProjectConfig;
 }
 
-export type IndexRunStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed';
+export type IndexRunStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed' | 'superseded';
 
 export interface ParityScanSummary {
   scanId: string;

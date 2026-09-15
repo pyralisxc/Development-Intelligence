@@ -11,7 +11,7 @@ function scanKey(project: string, scanId: string): string {
 
 export async function saveScan(scan: ParityScan, recordLatest = true): Promise<void> {
   await writeArtifactJson(scanKey(scan.project, scan.scanId), scan);
-  if (recordLatest) await recordParityScan(scan.project, { scanId: scan.scanId, createdAt: scan.createdAt });
+  if (recordLatest) await recordParityScan(scan.project, { scanId: scan.scanId, createdAt: scan.createdAt }, scan.repositoryRevision);
 }
 
 export async function loadScan(project: string, scanId: string): Promise<ParityScan> {

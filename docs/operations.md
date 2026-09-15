@@ -29,7 +29,7 @@ The indexing job runs:
 node dist/src/indexJob.js
 ```
 
-The query service dispatches the configured Cloud Run Job with `DEVINT_INDEX_PROJECT` and `DEVINT_INDEX_REF`. The job sets `DEVINT_INDEX_EXECUTION=1` so it performs indexing directly rather than dispatching itself.
+The query service dispatches the configured Cloud Run Job with `DEVINT_INDEX_PROJECT`, `DEVINT_INDEX_REF`, and the exact `DEVINT_INDEX_SHA` observed when the request was accepted. The job sets `DEVINT_INDEX_EXECUTION=1` so it performs indexing directly rather than dispatching itself.
 
 ## Required production configuration
 
@@ -70,7 +70,7 @@ Query service needs:
 
 Index job needs:
 
-- read/write access to bundle/parity objects;
+- create/read access to bundle/parity objects;
 - read/write access to the control collection;
 - source-repository credentials;
 - no requirement to receive public user traffic.
@@ -108,17 +108,25 @@ DEVINT_ALLOW_UNAUTHENTICATED=1
 
 The dedicated MCP OAuth protected-resource implementation remains a separate security candidate; do not expand project semantics to implement identity.
 
-## Indexing behavior
+## Index request and concurrency behavior
 
-`refresh_codebase` resolves the upstream allowlisted ref before dispatch.
+`refresh_codebase` resolves the upstream allowlisted ref before dispatch and transactionally claims that exact SHA.
 
 - Current selected SHA + valid manifest: returns unchanged.
-- Managed production: records queued status and invokes the Cloud Run Job.
-- Local/test: executes indexing inline.
+- Same SHA already queued/running: returns a deduplicated accepted result without invoking another job.
+- Newer SHA while an older job is queued/running: the newer SHA replaces the active claim. The old job can no longer mutate current index status or promote a bundle.
+- Managed production: the exact claimed SHA is passed to the Cloud Run Job.
+- Local/test: the same exact-SHA indexing function executes inline.
 
-The job uses an ephemeral bounded-history Git checkout. It requires Codebase Memory to produce a healthy index and a non-empty `graph.db.zst`. It then runs repository Parity analysis, creates a source archive, hashes every artifact, uploads artifacts, and writes `manifest.json` last.
+The job revalidates the mutable ref before expensive indexing and again before promotion. A job whose ref moved becomes `superseded`; it does not follow the mutable ref to a different commit.
 
-The upstream ref is resolved again before selected-pointer promotion. If the ref moved, the completed bundle is historical/unselected. Failed or stale indexing never replaces the previous selected bundle.
+Every bundle generation receives unique object keys. Cloud Storage uploads use `ifGenerationMatch: 0` create-only preconditions, so a concurrent writer cannot overwrite an immutable artifact. Firestore transactions guard exact-SHA claim, status transition, and selected-bundle/Parity promotion.
+
+## Indexing behavior
+
+The job uses an ephemeral bounded-history Git checkout. It requires Codebase Memory to produce a healthy index and a non-empty `graph.db.zst`. It then runs repository Parity analysis, creates a source archive, hashes every artifact, uploads artifacts create-only, and writes `manifest.json` last.
+
+The upstream ref is resolved again before selected-pointer promotion. Failed or superseded indexing never replaces the previous selected bundle.
 
 ## Query behavior
 
@@ -130,7 +138,9 @@ A query instance can disappear at any time without recovery work because all dur
 
 Repository Parity is generated once per indexed revision and stored with the bundle. `scan_parity` without runtime URLs returns that indexed repository scan rather than rescanning a source checkout.
 
-Authorized runtime URLs are observed on demand. Those timestamped combined scans are persisted as derived artifacts and referenced by Firestore latest/recent pointers. Runtime unavailable/error state is preserved rather than treated as empty or authoritative.
+Authorized runtime URLs are observed on demand. Those timestamped combined scans are persisted as derived artifacts. A runtime scan may become the latest Parity pointer only while its repository revision still matches the currently selected SHA; a slow scan from an older revision cannot replace current Parity truth after a newer bundle is promoted.
+
+Runtime unavailable/error state is preserved rather than treated as empty or authoritative.
 
 ## Project onboarding (current implementation)
 
@@ -139,7 +149,7 @@ Authorized runtime URLs are observed on demand. Those timestamped combined scans
 3. Inject repository credentials through the referenced environment variable where needed.
 4. Optionally allowlist runtime origins and environment-backed request headers.
 5. Call `refresh_codebase`.
-6. Watch `index_status` until the requested SHA is selected or the run fails.
+6. Watch `index_status` until the requested SHA is selected, failed, or superseded.
 7. Query graph/Parity only from the validated selected bundle.
 
 No semantic project mapping is created.
