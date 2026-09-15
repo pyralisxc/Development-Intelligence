@@ -1,6 +1,6 @@
 {
   "name": "development-intelligence",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "description": "Project-neutral MCP tooling for codebase structure and cross-representation technical parity.",
@@ -10,9 +10,13 @@
     "test": "npm run build && node --test dist/tests/*.test.js",
     "verify": "npm run build && node --test dist/tests/*.test.js && node scripts/check-generic-boundary.mjs",
     "start": "node dist/src/http.js",
+    "index-job": "node dist/src/indexJob.js",
     "stdio": "node dist/src/stdio.js"
   },
   "dependencies": {
+    "@google-cloud/firestore": "9.1.0",
+    "@google-cloud/storage": "8.1.0",
+    "google-auth-library": "11.0.2",
     "typescript": "5.8.3"
   }
 }

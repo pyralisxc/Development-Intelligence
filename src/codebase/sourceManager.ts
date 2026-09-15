@@ -1,135 +1,69 @@
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { getProjectConfig, loadRegistry } from '../config/registry.js';
-import { projectDataDir, safeSegment } from '../config/paths.js';
-import type { ProjectGeneration, ProjectState } from '../types.js';
-import { atomicWriteJson, ensureDir, pathExists, readJson, withDirectoryLock } from '../util/fs.js';
+import { ephemeralDir, safeSegment } from '../config/paths.js';
+import type { ParityScan, ProjectConfig, ProjectState, RevisionBundleManifest } from '../types.js';
+import { ensureDir, pathExists } from '../util/fs.js';
 import { runChecked } from '../util/process.js';
-import { cbmCall, isHealthyIndexResult } from './cbm.js';
+import { stableHash } from '../util/hash.js';
+import { sha256File } from '../util/checksum.js';
+import { artifactExists, deleteArtifactPrefix, projectArtifactPrefix, uploadArtifact, writeArtifactJson } from '../storage/artifacts.js';
+import { deleteStoredProjectState, patchStoredProjectState, readStoredProjectState, writeStoredProjectState } from '../storage/control.js';
+import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from '../parity/resolver.js';
+import { scanRepositoryPath } from '../parity/repository.js';
+import { saveScan } from '../parity/store.js';
+import { cbmCall, codebaseSummary, isHealthyIndexResult } from './cbm.js';
+import { BUNDLE_SCHEMA_VERSION, DEFAULT_CBM_VERSION, PARITY_SCHEMA_VERSION, bundleManifestKey, bundlePrefix, loadBundleManifest } from './bundles.js';
+import { dispatchIndexJob } from './dispatch.js';
 import { gitAuth } from './gitAuth.js';
 
-function stateFile(project: string): string { return path.join(projectDataDir(project), 'state.json'); }
-function mirrorDir(project: string): string { return path.join(projectDataDir(project), 'repo.git'); }
-function generationsDir(project: string): string { return path.join(projectDataDir(project), 'generations'); }
-function lockDir(project: string): string { return path.join(projectDataDir(project), '.refresh-lock'); }
-function internalProjectPrefix(project: string): string { return `devint-${safeSegment(project)}-`; }
-
-export async function readProjectState(project: string): Promise<ProjectState> {
-  const config = await getProjectConfig(project);
-  return await readJson<ProjectState>(stateFile(project), {
+function defaultState(project: string, config: ProjectConfig): ProjectState {
+  return {
     project,
     repository: config.repository,
     ref: config.defaultRef,
     selectedSha: null,
-    selectedGeneration: null,
-    selectedWorktree: null,
-    selectedCbmProject: null,
+    selectedBundleId: null,
     indexedAt: null,
     refreshedAt: null,
     lastFetchAt: null,
-    generations: [],
-  });
+    lastError: null,
+    lastIndexStatus: 'idle',
+    lastIndexOperation: null,
+    lastIndexRequestedAt: null,
+    lastIndexStartedAt: null,
+    lastIndexFinishedAt: null,
+    indexingSha: null,
+    latestParityScanId: null,
+    recentParityScans: [],
+  };
 }
 
-async function ensureMirror(project: string): Promise<void> {
+export async function readProjectState(project: string): Promise<ProjectState> {
   const config = await getProjectConfig(project);
-  const mirror = mirrorDir(project);
-  await ensureDir(projectDataDir(project));
-  if (await pathExists(path.join(mirror, 'HEAD'))) return;
-  const auth = await gitAuth(config);
-  try {
-    await runChecked('git', ['clone', '--mirror', config.repository, mirror], { env: auth.env, timeoutMs: 5 * 60_000 });
-  } finally {
-    await auth.cleanup();
-  }
+  const stored = await readStoredProjectState(project);
+  const defaults = defaultState(project, config);
+  if (!stored) return defaults;
+  return {
+    ...defaults,
+    ...stored,
+    project,
+    repository: config.repository,
+    ref: typeof stored.ref === 'string' && stored.ref ? stored.ref : config.defaultRef,
+    recentParityScans: Array.isArray(stored.recentParityScans) ? stored.recentParityScans : [],
+  };
 }
 
-async function fetchMirror(project: string): Promise<void> {
-  const config = await getProjectConfig(project);
-  const auth = await gitAuth(config);
-  try {
-    await runChecked('git', ['--git-dir', mirrorDir(project), 'remote', 'update', '--prune'], { env: auth.env, timeoutMs: 5 * 60_000 });
-  } finally {
-    await auth.cleanup();
-  }
-}
-
-async function resolveRef(project: string, ref: string): Promise<string> {
-  const result = await runChecked('git', ['--git-dir', mirrorDir(project), 'rev-parse', `${ref}^{commit}`]);
-  return result.stdout.trim();
-}
-
-async function materializeGeneration(project: string, sha: string): Promise<string> {
-  const dir = path.join(generationsDir(project), sha);
-  if (await pathExists(path.join(dir, '.git'))) return dir;
-  await ensureDir(generationsDir(project));
-  if (await pathExists(dir)) await fs.rm(dir, { recursive: true, force: true });
-  await runChecked('git', ['--git-dir', mirrorDir(project), 'worktree', 'add', '--detach', dir, sha], { timeoutMs: 2 * 60_000 });
-  return dir;
-}
-
-async function changedFileCount(project: string, previousSha: string | null, nextSha: string): Promise<number | null> {
-  if (!previousSha || previousSha === nextSha) return previousSha === nextSha ? 0 : null;
-  try {
-    const result = await runChecked('git', ['--git-dir', mirrorDir(project), 'diff', '--name-only', previousSha, nextSha]);
-    return result.stdout.split('\n').filter(Boolean).length;
-  } catch {
-    return null;
-  }
-}
-
-function makeGenerationId(sha: string): string {
-  return `${sha.slice(0, 12)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function extractCbmProjectNames(value: unknown): string[] {
-  if (Array.isArray(value)) return value.flatMap(item => typeof item === 'string' ? [item] : item && typeof item === 'object' && typeof (item as Record<string, unknown>).name === 'string' ? [(item as Record<string, unknown>).name as string] : []);
-  if (!value || typeof value !== 'object') return [];
-  const record = value as Record<string, unknown>;
-  const candidates = record.projects ?? record.results ?? record.items;
-  return Array.isArray(candidates) ? extractCbmProjectNames(candidates) : [];
-}
-
-async function deleteCbmProject(name: string): Promise<void> {
-  try { await cbmCall('delete_project', { project: name }); } catch { /* derived-state cleanup is best effort */ }
-}
-
-async function pruneGenerations(project: string, state: ProjectState): Promise<ProjectState> {
-  const keepCount = Math.max(1, Number(process.env.DEVINT_KEEP_GENERATIONS ?? 2));
-  const history = (state.generations ?? []).slice(0, Math.max(keepCount, 1));
-  const keptCbm = new Set(history.map(item => item.cbmProject));
-  const keptWorktrees = new Set(history.map(item => item.worktree));
-  const dropped = (state.generations ?? []).slice(history.length);
-  for (const generation of dropped) {
-    if (!keptCbm.has(generation.cbmProject)) await deleteCbmProject(generation.cbmProject);
-  }
-
-  // Also remove orphaned internal indexes left by failed/interrupted generations.
-  try {
-    const listed = await cbmCall('list_projects', {});
-    for (const name of extractCbmProjectNames(listed)) {
-      if (name.startsWith(internalProjectPrefix(project)) && !keptCbm.has(name)) await deleteCbmProject(name);
-    }
-  } catch { /* old Codebase Memory versions may not expose list_projects via CLI */ }
-
-  if (await pathExists(generationsDir(project))) {
-    const dirs = await fs.readdir(generationsDir(project), { withFileTypes: true });
-    for (const entry of dirs) {
-      if (!entry.isDirectory()) continue;
-      const worktree = path.join(generationsDir(project), entry.name);
-      if (keptWorktrees.has(worktree)) continue;
-      try { await runChecked('git', ['--git-dir', mirrorDir(project), 'worktree', 'remove', '--force', worktree], { timeoutMs: 60_000 }); }
-      catch { await fs.rm(worktree, { recursive: true, force: true }); }
-    }
-    try { await runChecked('git', ['--git-dir', mirrorDir(project), 'worktree', 'prune']); } catch { /* best effort */ }
-  }
-  return { ...state, generations: history };
+function assertAllowedRef(project: string, config: ProjectConfig, ref: string): void {
+  const allowed = config.allowedRefs?.length ? config.allowedRefs : [config.defaultRef];
+  if (!allowed.includes(ref)) throw new Error(`Ref is not allowlisted for ${project}: ${ref}`);
 }
 
 export async function upstreamStatus(project: string, ref?: string): Promise<{ ref: string; upstreamSha: string | null; error?: string }> {
   const config = await getProjectConfig(project);
   const selectedRef = ref ?? config.defaultRef;
-  if (!(config.allowedRefs ?? [config.defaultRef]).includes(selectedRef)) throw new Error(`Ref is not allowlisted for ${project}: ${selectedRef}`);
+  assertAllowedRef(project, config, selectedRef);
   const auth = await gitAuth(config);
   try {
     const result = await runChecked('git', ['ls-remote', config.repository, selectedRef], { env: auth.env, timeoutMs: 60_000 });
@@ -142,96 +76,283 @@ export async function upstreamStatus(project: string, ref?: string): Promise<{ r
   }
 }
 
-export async function refreshCodebase(project: string, ref?: string): Promise<Record<string, unknown>> {
+function branchName(ref: string): string | null {
+  return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : null;
+}
+
+async function prepareSource(project: string, config: ProjectConfig, selectedRef: string, root: string): Promise<{ sourceDir: string; sha: string }> {
+  const sourceDir = path.join(root, 'source');
+  await runChecked('git', ['init', '--initial-branch=devint', sourceDir], { timeoutMs: 60_000 });
+  await runChecked('git', ['-C', sourceDir, 'remote', 'add', 'origin', config.repository]);
+  const depth = Math.min(Math.max(Number(process.env.DEVINT_SOURCE_HISTORY_DEPTH ?? 32), 1), 500);
+  const auth = await gitAuth(config);
+  try {
+    await runChecked('git', ['-C', sourceDir, 'fetch', `--depth=${depth}`, 'origin', selectedRef], { env: auth.env, timeoutMs: 5 * 60_000 });
+    const sha = (await runChecked('git', ['-C', sourceDir, 'rev-parse', 'FETCH_HEAD'])).stdout.trim();
+    await runChecked('git', ['-C', sourceDir, 'checkout', '--detach', sha], { timeoutMs: 2 * 60_000 });
+    const selectedBranch = branchName(selectedRef);
+    if (selectedBranch) await runChecked('git', ['-C', sourceDir, 'branch', '-f', selectedBranch, sha]);
+
+    if (config.defaultRef !== selectedRef) {
+      await runChecked('git', ['-C', sourceDir, 'fetch', `--depth=${depth}`, 'origin', config.defaultRef], { env: auth.env, timeoutMs: 5 * 60_000 });
+      const baseSha = (await runChecked('git', ['-C', sourceDir, 'rev-parse', 'FETCH_HEAD'])).stdout.trim();
+      const baseBranch = branchName(config.defaultRef);
+      if (baseBranch) await runChecked('git', ['-C', sourceDir, 'branch', '-f', baseBranch, baseSha]);
+    }
+    return { sourceDir, sha };
+  } finally {
+    await auth.cleanup();
+  }
+}
+
+function repositoryParityScan(project: string, createdAt: string, revision: string, source: Awaited<ReturnType<typeof scanRepositoryPath>>): ParityScan {
+  const resolutions = resolveCrossSource(source.observations, source.resolutions);
+  return {
+    scanId: `${createdAt.replace(/[-:.TZ]/g, '').slice(0, 14)}-${stableHash([project, revision, 'repository']).slice(0, 8)}`,
+    project,
+    createdAt,
+    repositoryRevision: revision,
+    sources: [source.source],
+    observations: source.observations,
+    resolutions,
+    namingDivergences: deriveNamingDivergences(source.observations, resolutions),
+    explicitValueConflicts: [],
+    unmatchedObservationIds: deriveUnmatched(source.observations, resolutions),
+    unavailableSourceIds: [],
+  };
+}
+
+function makeBundleId(project: string, sha: string, cbmVersion: string): string {
+  const fingerprint = stableHash([project, sha, `bundle:${BUNDLE_SCHEMA_VERSION}`, `cbm:${cbmVersion}`, `parity:${PARITY_SCHEMA_VERSION}`]).slice(0, 16);
+  return `${sha.slice(0, 16)}-${fingerprint}`;
+}
+
+export async function indexRevisionNow(project: string, ref?: string): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(project);
   const selectedRef = ref ?? config.defaultRef;
-  if (!(config.allowedRefs ?? [config.defaultRef]).includes(selectedRef)) throw new Error(`Ref is not allowlisted for ${project}: ${selectedRef}`);
+  assertAllowedRef(project, config, selectedRef);
+  const previous = await readProjectState(project);
+  const requestedAt = previous.lastIndexRequestedAt ?? new Date().toISOString();
+  const startedAt = new Date().toISOString();
+  await patchStoredProjectState(project, { ref: selectedRef, lastIndexStatus: 'running', lastIndexStartedAt: startedAt, lastError: null });
 
-  return await withDirectoryLock(lockDir(project), async () => {
-    const previous = await readProjectState(project);
-    await ensureMirror(project);
-    await fetchMirror(project);
-    const fetchAt = new Date().toISOString();
-    const sha = await resolveRef(project, selectedRef);
-    if (previous.selectedSha === sha && previous.selectedCbmProject) {
-      const status = await cbmCall('index_status', { project: previous.selectedCbmProject });
-      if (isHealthyIndexResult(status)) {
-        return {
+  const rootBase = ephemeralDir();
+  await ensureDir(rootBase);
+  const root = await fs.mkdtemp(path.join(rootBase, `index-${safeSegment(project)}-`));
+  try {
+    const prepared = await prepareSource(project, config, selectedRef, root);
+    const { sourceDir, sha } = prepared;
+    await patchStoredProjectState(project, { indexingSha: sha });
+
+    const cbmVersion = process.env.DEVINT_CBM_VERSION ?? DEFAULT_CBM_VERSION;
+    const bundleId = makeBundleId(project, sha, cbmVersion);
+    const manifestKey = bundleManifestKey(project, bundleId);
+    if (await artifactExists(manifestKey)) {
+      const existing = await loadBundleManifest(project, bundleId);
+      const current = await upstreamStatus(project, selectedRef);
+      const now = new Date().toISOString();
+      if (current.upstreamSha === sha) {
+        await writeStoredProjectState(project, {
+          ...previous,
           project,
+          repository: config.repository,
           ref: selectedRef,
-          changed: false,
-          upstreamSha: sha,
-          checkoutSha: sha,
-          indexedSha: sha,
-          indexStatus: status,
-        };
+          selectedSha: sha,
+          selectedBundleId: bundleId,
+          indexedAt: existing.createdAt,
+          refreshedAt: now,
+          lastFetchAt: now,
+          lastError: null,
+          lastIndexStatus: 'succeeded',
+          lastIndexRequestedAt: requestedAt,
+          lastIndexStartedAt: startedAt,
+          lastIndexFinishedAt: now,
+          indexingSha: null,
+        });
       }
-      // A selected generation can become unusable if its derived cache is damaged.
-      // Re-index the same immutable checkout into a new generation rather than mutating the selected one in place.
+      return { project, ref: selectedRef, accepted: true, changed: previous.selectedSha !== sha, reused: true, promoted: current.upstreamSha === sha, upstreamSha: current.upstreamSha, indexedSha: sha, bundleId };
     }
 
-    const worktree = await materializeGeneration(project, sha);
-    const generation = makeGenerationId(sha);
-    const internalProject = `${internalProjectPrefix(project)}${generation}`;
-    let indexResult: unknown;
-    try {
-      indexResult = await cbmCall('index_repository', {
-        repo_path: worktree,
-        mode: 'full',
-        name: internalProject,
-        persistence: false,
-      }, { timeoutMs: Number(process.env.DEVINT_INDEX_TIMEOUT_MS ?? 20 * 60_000), env: { CBM_ALLOWED_ROOT: generationsDir(project) } });
+    const cbmCache = path.join(root, 'cbm-cache');
+    await ensureDir(cbmCache);
+    const internalProject = `devint-index-${safeSegment(project)}-${bundleId}`;
+    const cbmEnv = { CBM_CACHE_DIR: cbmCache, CBM_ALLOWED_ROOT: sourceDir };
+    const indexResult = await cbmCall('index_repository', {
+      repo_path: sourceDir,
+      mode: 'full',
+      name: internalProject,
+      persistence: true,
+    }, { timeoutMs: Number(process.env.DEVINT_INDEX_TIMEOUT_MS ?? 20 * 60_000), env: cbmEnv });
+    if (!isHealthyIndexResult(indexResult)) throw new Error(`Codebase Memory did not produce a healthy index for ${project}@${sha}: ${JSON.stringify(indexResult).slice(0, 1000)}`);
+    const indexStatus = await cbmCall('index_status', { project: internalProject }, { env: cbmEnv });
+    if (!isHealthyIndexResult(indexStatus)) throw new Error(`Codebase Memory status is not healthy for ${project}@${sha}: ${JSON.stringify(indexStatus).slice(0, 1000)}`);
 
-      if (!isHealthyIndexResult(indexResult)) {
-        throw new Error(`Codebase Memory did not produce a healthy index for ${project}@${sha}: ${JSON.stringify(indexResult).slice(0, 1000)}`);
-      }
-      const indexStatus = await cbmCall('index_status', { project: internalProject });
-      if (!isHealthyIndexResult(indexStatus)) {
-        throw new Error(`Codebase Memory status is not healthy for ${project}@${sha}: ${JSON.stringify(indexStatus).slice(0, 1000)}`);
-      }
+    const graphFile = path.join(sourceDir, '.codebase-memory', 'graph.db.zst');
+    if (!await pathExists(graphFile) || (await fs.stat(graphFile)).size <= 0) {
+      throw new Error(`Codebase Memory reported a healthy index but did not produce the required portable graph artifact for ${project}@${sha}`);
+    }
 
-      const changedFiles = await changedFileCount(project, previous.selectedSha, sha);
-      const now = new Date().toISOString();
-      const record: ProjectGeneration = { generation, sha, worktree, cbmProject: internalProject, indexedAt: now };
-      const next: ProjectState = {
+    const createdAt = new Date().toISOString();
+    const repositoryAnalysis = await scanRepositoryPath({ project, repository: config.repository, revision: sha, sourceDir, observedAt: createdAt });
+    const repoScan = repositoryParityScan(project, createdAt, sha, repositoryAnalysis);
+    const parityFile = path.join(root, 'repository-parity.json');
+    await fs.writeFile(parityFile, JSON.stringify(repoScan, null, 2) + '\n', { mode: 0o600 });
+
+    const sourceArchive = path.join(root, 'source.tgz');
+    await runChecked('tar', ['--exclude=.codebase-memory', '-czf', sourceArchive, '-C', sourceDir, '.'], { timeoutMs: 5 * 60_000 });
+
+    const prefix = bundlePrefix(project, bundleId);
+    const sourceKey = `${prefix}/source.tgz`;
+    const graphKey = `${prefix}/graph.db.zst`;
+    const parityKey = `${prefix}/repository-parity.json`;
+    const sourceDigest = await sha256File(sourceArchive);
+    const graphDigest = await sha256File(graphFile);
+    const parityDigest = await sha256File(parityFile);
+    await uploadArtifact(sourceKey, sourceArchive);
+    await uploadArtifact(graphKey, graphFile);
+    await uploadArtifact(parityKey, parityFile);
+
+    const summary = codebaseSummary(indexStatus);
+    const manifest: RevisionBundleManifest = {
+      schemaVersion: BUNDLE_SCHEMA_VERSION,
+      bundleId,
+      project,
+      repository: config.repository,
+      ref: selectedRef,
+      sourceSha: sha,
+      createdAt,
+      cbmVersion,
+      parityVersion: PARITY_SCHEMA_VERSION,
+      codebase: summary,
+      artifacts: {
+        sourceArchive: { key: sourceKey, ...sourceDigest },
+        graph: { key: graphKey, ...graphDigest },
+        repositoryParity: { key: parityKey, ...parityDigest },
+      },
+    };
+    await writeArtifactJson(manifestKey, manifest);
+    await loadBundleManifest(project, bundleId);
+
+    const current = await upstreamStatus(project, selectedRef);
+    const finishedAt = new Date().toISOString();
+    const promoted = current.upstreamSha === sha;
+    if (promoted) {
+      await writeStoredProjectState(project, {
+        ...previous,
         project,
         repository: config.repository,
         ref: selectedRef,
         selectedSha: sha,
-        selectedGeneration: generation,
-        selectedWorktree: worktree,
-        selectedCbmProject: internalProject,
-        indexedAt: now,
-        refreshedAt: now,
-        lastFetchAt: fetchAt,
+        selectedBundleId: bundleId,
+        indexedAt: createdAt,
+        refreshedAt: finishedAt,
+        lastFetchAt: finishedAt,
         lastError: null,
-        generations: [record, ...(previous.generations ?? []).filter(item => item.cbmProject !== internalProject && item.generation !== generation)],
-      };
-      const pruned = await pruneGenerations(project, next);
-      await atomicWriteJson(stateFile(project), pruned);
-      return {
-        project,
-        ref: selectedRef,
-        changed: previous.selectedSha !== sha,
-        reindexed: previous.selectedSha === sha,
-        previousSha: previous.selectedSha,
-        upstreamSha: sha,
-        checkoutSha: sha,
-        indexedSha: sha,
-        changedFileCount: changedFiles,
-        indexResult,
-        indexStatus,
-      };
+        lastIndexStatus: 'succeeded',
+        lastIndexRequestedAt: requestedAt,
+        lastIndexStartedAt: startedAt,
+        lastIndexFinishedAt: finishedAt,
+        indexingSha: null,
+      });
+      await saveScan(repoScan);
+    } else {
+      await patchStoredProjectState(project, {
+        lastIndexStatus: 'succeeded',
+        lastIndexFinishedAt: finishedAt,
+        indexingSha: null,
+        lastError: current.error ?? `Indexed ${sha}, but ${selectedRef} moved before promotion`,
+      });
+    }
+    return {
+      project,
+      ref: selectedRef,
+      accepted: true,
+      changed: previous.selectedSha !== sha,
+      promoted,
+      upstreamSha: current.upstreamSha,
+      indexedSha: sha,
+      bundleId,
+      codebase: summary,
+    };
+  } catch (error) {
+    const finishedAt = new Date().toISOString();
+    await patchStoredProjectState(project, {
+      lastIndexStatus: 'failed',
+      lastIndexFinishedAt: finishedAt,
+      indexingSha: null,
+      lastError: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+export async function refreshCodebase(project: string, ref?: string): Promise<Record<string, unknown>> {
+  const config = await getProjectConfig(project);
+  const selectedRef = ref ?? config.defaultRef;
+  assertAllowedRef(project, config, selectedRef);
+  const state = await readProjectState(project);
+  const upstream = await upstreamStatus(project, selectedRef);
+  if (!upstream.upstreamSha) throw new Error(`Unable to resolve ${project}@${selectedRef}: ${upstream.error ?? 'no revision returned'}`);
+  if (state.selectedSha === upstream.upstreamSha && state.selectedBundleId) {
+    try {
+      await loadBundleManifest(project, state.selectedBundleId);
+      return { project, ref: selectedRef, accepted: true, changed: false, promoted: true, upstreamSha: upstream.upstreamSha, indexedSha: state.selectedSha, bundleId: state.selectedBundleId };
+    } catch {
+      // A missing/corrupt manifest is derived-state damage: rebuild the same immutable revision.
+    }
+  }
+
+  const requestedAt = new Date().toISOString();
+  if (process.env.DEVINT_CLOUD_RUN_JOB_RESOURCE && process.env.DEVINT_INDEX_EXECUTION !== '1') {
+    await patchStoredProjectState(project, {
+      project,
+      repository: config.repository,
+      ref: selectedRef,
+      lastFetchAt: requestedAt,
+      lastIndexStatus: 'queued',
+      lastIndexRequestedAt: requestedAt,
+      lastIndexStartedAt: null,
+      lastIndexFinishedAt: null,
+      lastError: null,
+      indexingSha: upstream.upstreamSha,
+    });
+    try {
+      const dispatched = await dispatchIndexJob(project, selectedRef);
+      await patchStoredProjectState(project, { lastIndexOperation: dispatched.operationName });
+      return { project, ref: selectedRef, accepted: true, queued: true, upstreamSha: upstream.upstreamSha, operationName: dispatched.operationName };
     } catch (error) {
-      await deleteCbmProject(internalProject);
-      if (worktree !== previous.selectedWorktree) {
-        try { await runChecked('git', ['--git-dir', mirrorDir(project), 'worktree', 'remove', '--force', worktree], { timeoutMs: 60_000 }); }
-        catch { await fs.rm(worktree, { recursive: true, force: true }); }
-        try { await runChecked('git', ['--git-dir', mirrorDir(project), 'worktree', 'prune']); } catch { /* best effort */ }
-      }
+      await patchStoredProjectState(project, { lastIndexStatus: 'failed', lastIndexFinishedAt: new Date().toISOString(), indexingSha: null, lastError: error instanceof Error ? error.message : String(error) });
       throw error;
     }
-  });
+  }
+
+  await patchStoredProjectState(project, { lastIndexRequestedAt: requestedAt, indexingSha: upstream.upstreamSha });
+  return await indexRevisionNow(project, selectedRef);
+}
+
+export async function indexStatus(project: string): Promise<Record<string, unknown>> {
+  const state = await readProjectState(project);
+  let bundle: RevisionBundleManifest | null = null;
+  if (state.selectedBundleId) {
+    try { bundle = await loadBundleManifest(project, state.selectedBundleId); } catch { bundle = null; }
+  }
+  return {
+    project,
+    ref: state.ref,
+    status: state.lastIndexStatus,
+    indexingSha: state.indexingSha,
+    selectedSha: state.selectedSha,
+    selectedBundleId: state.selectedBundleId,
+    indexedAt: state.indexedAt,
+    requestedAt: state.lastIndexRequestedAt,
+    startedAt: state.lastIndexStartedAt,
+    finishedAt: state.lastIndexFinishedAt,
+    operationName: state.lastIndexOperation,
+    error: state.lastError,
+    bundle: bundle ? { schemaVersion: bundle.schemaVersion, cbmVersion: bundle.cbmVersion, parityVersion: bundle.parityVersion, codebase: bundle.codebase } : null,
+  };
 }
 
 export async function listPublicProjects(): Promise<Array<Record<string, unknown>>> {
@@ -243,23 +364,17 @@ export async function listPublicProjects(): Promise<Array<Record<string, unknown
       repository: registry[project]?.repository,
       defaultRef: registry[project]?.defaultRef,
       selectedSha: state.selectedSha,
+      selectedBundleId: state.selectedBundleId,
       indexedAt: state.indexedAt,
-      hasCodebaseIndex: Boolean(state.selectedCbmProject),
+      hasCodebaseIndex: Boolean(state.selectedBundleId),
+      indexStatus: state.lastIndexStatus,
     };
   }));
 }
 
 export async function removeDerivedProjectState(project: string): Promise<Record<string, unknown>> {
-  // Delete every internal generation rather than only the selected one.
-  const prefix = internalProjectPrefix(project);
-  const state = await readProjectState(project);
-  const known = new Set((state.generations ?? []).map(item => item.cbmProject));
-  if (state.selectedCbmProject) known.add(state.selectedCbmProject);
-  try {
-    const listed = await cbmCall('list_projects', {});
-    for (const name of extractCbmProjectNames(listed)) if (name.startsWith(prefix)) known.add(name);
-  } catch { /* best effort */ }
-  for (const name of known) await deleteCbmProject(name);
-  await fs.rm(projectDataDir(project), { recursive: true, force: true });
-  return { project, deletedDerivedState: true, deletedCodebaseGenerations: known.size };
+  await getProjectConfig(project);
+  await deleteArtifactPrefix(projectArtifactPrefix(project));
+  await deleteStoredProjectState(project);
+  return { project, deletedDerivedState: true };
 }

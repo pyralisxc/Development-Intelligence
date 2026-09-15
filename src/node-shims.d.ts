@@ -2,7 +2,7 @@ declare const process: any;
 declare const Buffer: any;
 declare namespace NodeJS { interface ProcessEnv { [key: string]: string | undefined } interface ErrnoException extends Error { code?: string } }
 declare module 'node:crypto' { export const createHash: any; export const timingSafeEqual: any; }
-declare module 'node:fs' { export const promises: any; }
+declare module 'node:fs' { export const promises: any; export const createReadStream: any; }
 declare module 'node:path' { const value: any; export default value; }
 declare module 'node:os' { const value: any; export default value; }
 declare module 'node:child_process' { export const spawn: any; }

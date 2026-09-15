@@ -1,59 +1,13 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { getProjectConfig } from '../config/registry.js';
-import { readProjectState } from '../codebase/sourceManager.js';
 import type { Observation, ParityScan, Resolution, SourceDescriptor } from '../types.js';
-import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
-import { analyzeByTechnology, analyzeHtml, analyzeJson } from './analyzers/index.js';
+import { analyzeHtml, analyzeJson } from './analyzers/index.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { saveScan } from './store.js';
+import { loadSelectedBundleManifest } from '../codebase/bundles.js';
+import { readArtifactJson } from '../storage/artifacts.js';
 
-const MAX_FILE_BYTES = Number(process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
-const MAX_FILES = Number(process.env.DEVINT_PARITY_MAX_FILES ?? 5000);
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
-const TEXT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.mdx', '.html', '.htm']);
-
-async function trackedFiles(worktree: string): Promise<{ files: string[]; eligible: number }> {
-  const result = await runChecked('git', ['-C', worktree, 'ls-files', '-z']);
-  const eligibleFiles = result.stdout.split('\0').filter(Boolean).filter(file => TEXT_EXTENSIONS.has(path.extname(file).toLowerCase()));
-  return { files: eligibleFiles.slice(0, MAX_FILES), eligible: eligibleFiles.length };
-}
-
-async function scanRepository(project: string): Promise<{ source: SourceDescriptor; observations: Observation[]; resolutions: Resolution[] }> {
-  const state = await readProjectState(project);
-  const now = new Date().toISOString();
-  if (!state.selectedWorktree || !state.selectedSha) {
-    return {
-      source: { id: 'repository', kind: 'repository', locator: state.repository, revision: null, observedAt: now, available: false, error: 'No selected managed source generation. Run refresh_codebase first.' },
-      observations: [],
-      resolutions: [],
-    };
-  }
-  const tracked = await trackedFiles(state.selectedWorktree);
-  const warnings: string[] = [];
-  if (tracked.eligible > tracked.files.length) warnings.push(`Parity scan file limit reached: analyzed ${tracked.files.length} of ${tracked.eligible} eligible tracked files.`);
-  let oversizedFiles = 0;
-  const source: SourceDescriptor = { id: 'repository', kind: 'repository', locator: state.repository, revision: state.selectedSha, observedAt: now, available: true };
-  const observations: Observation[] = [];
-  const resolutions: Resolution[] = [];
-  for (const relative of tracked.files) {
-    const worktreeRoot = path.resolve(state.selectedWorktree);
-    const absolute = path.resolve(worktreeRoot, relative);
-    if (absolute !== worktreeRoot && !absolute.startsWith(`${worktreeRoot}${path.sep}`)) { warnings.push(`Skipped tracked path outside managed source root: ${relative}`); continue; }
-    const stat = await fs.lstat(absolute);
-    if (!stat.isFile() || stat.isSymbolicLink()) { warnings.push(`Skipped non-regular tracked file: ${relative}`); continue; }
-    if (stat.size > MAX_FILE_BYTES) { oversizedFiles += 1; continue; }
-    const text = await fs.readFile(absolute, 'utf8');
-    const fileSource: SourceDescriptor = { id: `repo:${relative}`, kind: 'repository-file', locator: relative, revision: state.selectedSha, observedAt: now, available: true };
-    const result = analyzeByTechnology({ source: fileSource, text, locatorBase: relative });
-    observations.push(...result.observations);
-    resolutions.push(...result.resolutions);
-  }
-  if (oversizedFiles > 0) warnings.push(`Skipped ${oversizedFiles} tracked files larger than ${MAX_FILE_BYTES} bytes.`);
-  if (warnings.length > 0) source.warnings = warnings;
-  return { source, observations, resolutions };
-}
 
 function runtimeHeaders(projectHeaders: Array<{ name: string; valueEnv: string }> | undefined): HeadersInit {
   const headers: Record<string, string> = {};
@@ -63,6 +17,30 @@ function runtimeHeaders(projectHeaders: Array<{ name: string; valueEnv: string }
     headers[item.name] = value;
   }
   return headers;
+}
+
+async function repositoryBaseline(project: string): Promise<ParityScan> {
+  const config = await getProjectConfig(project);
+  const manifest = await loadSelectedBundleManifest(project);
+  if (!manifest) {
+    const createdAt = new Date().toISOString();
+    return {
+      scanId: `${createdAt.replace(/[-:.TZ]/g, '').slice(0, 14)}-${stableHash([project, createdAt, 'unavailable']).slice(0, 8)}`,
+      project,
+      createdAt,
+      repositoryRevision: null,
+      sources: [{ id: 'repository', kind: 'repository', locator: config.repository, revision: null, observedAt: createdAt, available: false, error: 'No selected revision bundle. Run refresh_codebase first.' }],
+      observations: [],
+      resolutions: [],
+      namingDivergences: [],
+      explicitValueConflicts: [],
+      unmatchedObservationIds: [],
+      unavailableSourceIds: ['repository'],
+    };
+  }
+  const scan = await readArtifactJson<ParityScan>(manifest.artifacts.repositoryParity.key);
+  if (scan.repositoryRevision !== manifest.sourceSha) throw new Error(`Repository parity revision mismatch for ${project}/${manifest.bundleId}`);
+  return scan;
 }
 
 async function scanRuntimeUrl(project: string, urlText: string): Promise<{ source: SourceDescriptor; observations: Observation[]; resolutions: Resolution[] }> {
@@ -117,11 +95,13 @@ async function scanRuntimeUrl(project: string, urlText: string): Promise<{ sourc
 }
 
 export async function scanParity(project: string, urls: string[] = []): Promise<ParityScan> {
+  const baseline = await repositoryBaseline(project);
+  if (urls.length === 0 && baseline.repositoryRevision) return baseline;
+
   const createdAt = new Date().toISOString();
-  const repo = await scanRepository(project);
-  const sources = [repo.source];
-  const observations = [...repo.observations];
-  let resolutions = [...repo.resolutions];
+  const sources = [...baseline.sources];
+  const observations = [...baseline.observations];
+  let resolutions = [...baseline.resolutions];
   for (const url of urls) {
     const runtime = await scanRuntimeUrl(project, url);
     sources.push(runtime.source);
@@ -133,12 +113,12 @@ export async function scanParity(project: string, urls: string[] = []): Promise<
     scanId: `${createdAt.replace(/[-:.TZ]/g, '').slice(0, 14)}-${stableHash([project, createdAt, observations.length]).slice(0, 8)}`,
     project,
     createdAt,
-    repositoryRevision: repo.source.revision,
+    repositoryRevision: baseline.repositoryRevision,
     sources,
     observations,
     resolutions,
     namingDivergences: deriveNamingDivergences(observations, resolutions),
-    explicitValueConflicts: [],
+    explicitValueConflicts: baseline.explicitValueConflicts,
     unmatchedObservationIds: deriveUnmatched(observations, resolutions),
     unavailableSourceIds: sources.filter(source => !source.available).map(source => source.id),
   };

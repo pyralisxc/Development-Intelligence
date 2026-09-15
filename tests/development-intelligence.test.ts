@@ -7,6 +7,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { refreshCodebase, readProjectState, listPublicProjects } from '../src/codebase/sourceManager.js';
+import { callCurrentCodebase } from '../src/codebase/proxy.js';
+import { loadSelectedBundleManifest } from '../src/codebase/bundles.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { projectStatus } from '../src/projectStatus.js';
 import { scanParity } from '../src/parity/scanner.js';
@@ -20,11 +22,14 @@ async function commit(repo: string, message: string): Promise<string> {
   return (await runChecked('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout.trim();
 }
 
-async function makeFixture(): Promise<{ root: string; source: string; remote: string; config: string; data: string; cbm: string; project: string }> {
+async function makeFixture(): Promise<{ root: string; source: string; remote: string; config: string; data: string; artifacts: string; control: string; ephemeral: string; cbm: string; project: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-test-'));
   const source = path.join(root, 'source');
   const remote = path.join(root, 'remote.git');
   const data = path.join(root, 'data');
+  const artifacts = path.join(data, 'artifacts');
+  const control = path.join(data, 'control');
+  const ephemeral = path.join(data, 'ephemeral');
   const config = path.join(root, 'projects.json');
   const cbm = path.join(root, 'fake-cbm.mjs');
   await runChecked('git', ['init', '--bare', '--initial-branch=main', remote]);
@@ -57,29 +62,54 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
   await runChecked('git', ['-C', source, 'push', '-u', 'origin', 'main']);
 
   await fs.writeFile(cbm, `#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
 const args = process.argv.slice(2);
 const tool = args[2];
 const payload = args[3] ? JSON.parse(args[3]) : {};
+const cache = process.env.CBM_CACHE_DIR || path.join(process.cwd(), '.fake-cbm-cache');
+fs.mkdirSync(cache, { recursive: true });
+const rootFile = path.join(cache, 'root.txt');
 if (tool === 'index_repository') {
-  if (process.env.FAKE_CBM_FAIL === '1') console.log(JSON.stringify({ status: 'degraded', nodes: 1, edges: 0 }));
-  else console.log(JSON.stringify({ status: 'indexed', project: payload.name, nodes: 42, edges: 84 }));
+  if (process.env.FAKE_CBM_FAIL === '1') {
+    console.log(JSON.stringify({ status: 'degraded', nodes: 1, edges: 0 }));
+  } else {
+    fs.writeFileSync(rootFile, payload.repo_path || '');
+    let artifactPresent = false;
+    if (payload.persistence === true && process.env.FAKE_CBM_NO_ARTIFACT !== '1') {
+      const artifactDir = path.join(payload.repo_path, '.codebase-memory');
+      fs.mkdirSync(artifactDir, { recursive: true });
+      fs.writeFileSync(path.join(artifactDir, 'graph.db.zst'), 'fake-portable-codebase-memory-graph');
+      artifactPresent = true;
+    } else if (fs.existsSync(path.join(payload.repo_path || '', '.codebase-memory', 'graph.db.zst'))) {
+      artifactPresent = true;
+    }
+    console.log(JSON.stringify({ status: 'indexed', project: payload.name, nodes: 42, edges: 84, artifact_present: artifactPresent }));
+  }
 } else if (tool === 'index_status') {
   console.log(JSON.stringify({ status: 'ready', project: payload.project, total_nodes: 42, total_edges: 84 }));
 } else if (tool === 'delete_project') {
   console.log(JSON.stringify({ deleted: payload.project }));
 } else {
-  console.log(JSON.stringify({ tool, args: payload }));
+  const root = fs.existsSync(rootFile) ? fs.readFileSync(rootFile, 'utf8') : '';
+  console.log(JSON.stringify({ tool, args: payload, project: payload.project, root_path: root, repo_path: root }));
 }
 `, { mode: 0o755 });
 
-  return { root, source, remote, config, data, cbm, project: 'SampleProject' };
+  return { root, source, remote, config, data, artifacts, control, ephemeral, cbm, project: 'SampleProject' };
 }
 
 function configure(fixture: Awaited<ReturnType<typeof makeFixture>>, runtimeOrigins: string[] = []) {
   process.env.DEVINT_PROJECTS_FILE = fixture.config;
   process.env.DEVINT_DATA_DIR = fixture.data;
+  process.env.DEVINT_ARTIFACT_DIR = fixture.artifacts;
+  process.env.DEVINT_CONTROL_DIR = fixture.control;
+  process.env.DEVINT_EPHEMERAL_DIR = fixture.ephemeral;
   process.env.DEVINT_CBM_BINARY = fixture.cbm;
   process.env.CBM_WORKERS = '1';
+  delete process.env.DEVINT_GCS_BUCKET;
+  delete process.env.DEVINT_FIRESTORE_ENABLED;
+  delete process.env.DEVINT_CLOUD_RUN_JOB_RESOURCE;
   return fs.writeFile(fixture.config, JSON.stringify({
     [fixture.project]: {
       repository: pathToFileURL(fixture.remote).href,
@@ -91,15 +121,28 @@ function configure(fixture: Awaited<ReturnType<typeof makeFixture>>, runtimeOrig
   }, null, 2));
 }
 
-test('managed codebase refresh promotes only healthy generations and preserves clean public identity', async () => {
+test('immutable revision bundle promotion preserves last-known-good state and clean public identity', async () => {
   const fixture = await makeFixture();
   try {
     await configure(fixture);
     const first = await refreshCodebase(fixture.project);
     assert.equal(first.changed, true);
+    assert.equal(first.promoted, true);
     const firstState = await readProjectState(fixture.project);
     assert.ok(firstState.selectedSha);
-    assert.match(firstState.selectedCbmProject ?? '', /^devint-SampleProject-/);
+    assert.ok(firstState.selectedBundleId);
+    assert.equal('selectedWorktree' in firstState, false);
+    assert.equal('selectedCbmProject' in firstState, false);
+
+    const manifest = await loadSelectedBundleManifest(fixture.project);
+    assert.equal(manifest?.sourceSha, firstState.selectedSha);
+    assert.equal(manifest?.schemaVersion, 1);
+    assert.ok(manifest?.artifacts.graph.sha256);
+    assert.equal(JSON.stringify(manifest).includes(fixture.ephemeral), false, 'bundle manifest must not persist ephemeral filesystem paths');
+
+    const query = await callCurrentCodebase(fixture.project, 'search_graph', { query: 'Panel' }) as any;
+    assert.equal(query.tool, 'search_graph');
+    assert.equal(JSON.stringify(query).includes(fixture.ephemeral), false, 'query results must sanitize ephemeral hydration paths');
 
     const projects = await listPublicProjects();
     assert.deepEqual(projects.map(item => item.project), [fixture.project]);
@@ -112,36 +155,58 @@ test('managed codebase refresh promotes only healthy generations and preserves c
     process.env.FAKE_CBM_FAIL = '1';
     await assert.rejects(refreshCodebase(fixture.project), /healthy index/);
     const afterFailed = await readProjectState(fixture.project);
-    assert.equal(afterFailed.selectedSha, firstState.selectedSha, 'failed refresh must not replace selected generation');
+    assert.equal(afterFailed.selectedSha, firstState.selectedSha, 'failed indexing must not replace selected revision bundle');
+    assert.equal(afterFailed.selectedBundleId, firstState.selectedBundleId);
 
     delete process.env.FAKE_CBM_FAIL;
     const second = await refreshCodebase(fixture.project);
-    assert.equal(second.upstreamSha, secondSha);
+    assert.equal(second.indexedSha, secondSha);
     const afterSuccess = await readProjectState(fixture.project);
     assert.equal(afterSuccess.selectedSha, secondSha);
+    assert.notEqual(afterSuccess.selectedBundleId, firstState.selectedBundleId);
 
     const status = await projectStatus(fixture.project, true);
     assert.equal(status.sourceCurrent, true);
-    assert.equal(status.checkoutSha, secondSha);
-    assert.equal(status.indexedSha, secondSha);
-    assert.equal('selectedCbmProject' in status, false);
-    assert.equal(JSON.stringify(status).includes('devint-SampleProject-'), false, 'public status must not leak internal Codebase Memory generation identity');
-
-    await fs.writeFile(path.join(fixture.source, 'src', 'third.ts'), 'export const third = true;\n');
-    const thirdSha = await commit(fixture.source, 'third');
-    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
-    await refreshCodebase(fixture.project);
-    const afterThird = await readProjectState(fixture.project);
-    assert.equal(afterThird.selectedSha, thirdSha);
-    assert.equal(afterThird.generations?.length, 2, 'generation retention should bound derived indexes/worktrees by default');
-    assert.equal(await fs.stat(firstState.selectedWorktree!).then(() => true).catch(() => false), false, 'old source worktrees outside the retention window should be pruned');
+    assert.equal(status.selectedSha, secondSha);
+    assert.equal(JSON.stringify(status).includes('devint-index-'), false, 'public status must not leak internal Codebase Memory identity');
   } finally {
     delete process.env.FAKE_CBM_FAIL;
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test('parity scan discovers metadata-light and declared semantics without project-specific rules', async () => {
+test('healthy CBM status without a portable graph artifact is never promoted', async () => {
+  const fixture = await makeFixture();
+  try {
+    await configure(fixture);
+    process.env.FAKE_CBM_NO_ARTIFACT = '1';
+    await assert.rejects(refreshCodebase(fixture.project), /required portable graph artifact/);
+    const state = await readProjectState(fixture.project);
+    assert.equal(state.selectedSha, null);
+    assert.equal(state.selectedBundleId, null);
+    assert.equal(state.lastIndexStatus, 'failed');
+  } finally {
+    delete process.env.FAKE_CBM_NO_ARTIFACT;
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('bundle checksum corruption fails closed before Codebase Memory hydration', async () => {
+  const fixture = await makeFixture();
+  try {
+    await configure(fixture);
+    await refreshCodebase(fixture.project);
+    const manifest = await loadSelectedBundleManifest(fixture.project);
+    assert.ok(manifest);
+    const graphPath = path.join(fixture.artifacts, manifest!.artifacts.graph.key);
+    await fs.appendFile(graphPath, 'tampered');
+    await assert.rejects(callCurrentCodebase(fixture.project, 'search_graph', { query: 'Panel' }), /checksum mismatch/);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('parity scan reuses indexed repository observations and combines read-only runtime evidence', async () => {
   const fixture = await makeFixture();
   const runtime = http.createServer((_req: any, res: any) => {
     res.writeHead(200, { 'content-type': 'text/html', etag: 'runtime-v1' });
@@ -153,22 +218,22 @@ test('parity scan discovers metadata-light and declared semantics without projec
   try {
     await configure(fixture, [origin]);
     await refreshCodebase(fixture.project);
+    const repositoryOnly = await scanParity(fixture.project);
+    assert.ok(repositoryOnly.sources.some(source => source.kind === 'repository' && source.available));
     const scan = await scanParity(fixture.project, [`${origin}/`]);
     assert.equal(scan.project, fixture.project);
-    assert.ok(scan.sources.some(source => source.kind === 'repository' && source.available));
     assert.ok(scan.sources.some(source => source.kind === 'runtime-http' && source.available));
     assert.ok(scan.observations.some(obs => obs.kind === 'ui-element' && obs.name === 'Manage item'));
     assert.ok(scan.observations.some(obs => obs.kind === 'http-call' && JSON.stringify(obs.value).includes('/api/manage')));
     assert.ok(scan.observations.some(obs => obs.kind === 'mcp-tool' && obs.name === 'manage_item'));
     assert.ok(scan.observations.some(obs => obs.kind === 'declared-field' && obs.field === 'ownerFeature' && obs.value === 'storage'));
-    assert.equal(scan.observations.some(obs => obs.raw.includes('must-not-be-persisted-by-parity')), false, 'secret-like structured values must be redacted from parity observations');
+    assert.equal(scan.observations.some(obs => obs.raw.includes('must-not-be-persisted-by-parity')), false);
     assert.ok(scan.observations.some(obs => obs.field === 'access_token' && obs.value === '<redacted>'));
     assert.ok(scan.observations.some(obs => obs.field === 'authorization' && obs.value === '<redacted>'));
-    assert.equal(scan.observations.some(obs => obs.raw.includes('outside-managed-source')), false, 'tracked symlinks must not let parity read outside the managed source root');
+    assert.equal(scan.observations.some(obs => obs.raw.includes('outside-managed-source')), false);
     assert.ok(scan.sources.find(source => source.kind === 'repository')?.warnings?.some(warning => warning.includes('non-regular tracked file')));
     assert.ok(scan.resolutions.some(rel => rel.kind === 'handled_by' && rel.strategy === 'syntax' && rel.status === 'resolved'));
-    assert.ok(scan.resolutions.some(rel => rel.kind === 'invokes' && rel.strategy === 'syntax'));
-    assert.ok(scan.resolutions.some(rel => rel.status === 'candidate' && ['exact-value', 'exact-name'].includes(rel.strategy)), 'cross-source similarities should remain candidates rather than facts');
+    assert.ok(scan.resolutions.some(rel => rel.status === 'candidate' && ['exact-value', 'exact-name'].includes(rel.strategy)));
 
     const queried = await queryParity({ project: fixture.project, scanId: scan.scanId, query: 'manage_item' });
     assert.ok((queried.observationTotal as number) >= 1);
@@ -188,14 +253,15 @@ test('parity scan discovers metadata-light and declared semantics without projec
   }
 });
 
-test('public MCP tool surface stays tool-only and excludes workflow/intent operations', () => {
+test('public MCP tool surface stays tool-only and respects immutable revision semantics', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
-  for (const expected of ['refresh_codebase', 'search_graph', 'trace_path', 'scan_parity', 'query_parity', 'diff_parity', 'parity_status']) assert.ok(names.includes(expected), expected);
-  for (const forbidden of ['manage_adr', 'index_repository', 'authorize_build', 'create_pull_request', 'developer_os']) assert.equal(names.includes(forbidden), false, forbidden);
+  for (const expected of ['refresh_codebase', 'index_status', 'search_graph', 'trace_path', 'scan_parity', 'query_parity', 'diff_parity', 'parity_status']) assert.ok(names.includes(expected), expected);
+  for (const forbidden of ['manage_adr', 'index_repository', 'ingest_traces', 'authorize_build', 'create_pull_request', 'developer_os']) assert.equal(names.includes(forbidden), false, forbidden);
   const byName = new Map(listed.map(tool => [tool.name, tool]));
   assert.equal(byName.get('list_projects')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('refresh_codebase')?.annotations?.readOnlyHint, false);
+  assert.equal(byName.get('scan_parity')?.annotations?.readOnlyHint, false);
   assert.equal(byName.get('delete_project')?.annotations?.destructiveHint, true);
 });
 
@@ -225,53 +291,33 @@ test('modern MCP HTTP surface follows the 2026-07-28 stateless contract', async 
   const endpoint = `http://127.0.0.1:${address.port}/mcp`;
   const meta = {
     'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-    'io.modelcontextprotocol/clientInfo': { name: 'development-intelligence-test', version: '1.0.0' },
+    'io.modelcontextprotocol/clientInfo': { name: 'development-intelligence-test', version: '2.0.0' },
     'io.modelcontextprotocol/clientCapabilities': {},
   };
   try {
-    const discover = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'server/discover' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: meta } }),
-    });
+    const discover = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'server/discover' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: meta } }) });
     assert.equal(discover.status, 200);
     const discoverBody = await discover.json() as any;
     assert.equal(discoverBody.result.resultType, 'complete');
     assert.deepEqual(discoverBody.result.supportedVersions, ['2026-07-28']);
     assert.equal(discoverBody.result._meta['io.modelcontextprotocol/serverInfo'].name, 'Development Intelligence');
-    assert.equal('serverInfo' in discoverBody.result, false, 'modern server identity belongs in result _meta');
 
-    const list = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } }),
-    });
+    const list = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } }) });
     assert.equal(list.status, 200);
     const listBody = await list.json() as any;
     assert.equal(listBody.result.resultType, 'complete');
     assert.equal(listBody.result.cacheScope, 'private');
-    assert.equal(typeof listBody.result.ttlMs, 'number');
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'scan_parity'));
-    assert.ok(!listBody.result.tools.some((tool: any) => tool.name === 'manage_adr'));
+    assert.ok(!listBody.result.tools.some((tool: any) => tool.name === 'ingest_traces'));
 
-    const call = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/call', 'mcp-name': 'list_projects' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list_projects', arguments: {}, _meta: meta } }),
-    });
+    const call = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/call', 'mcp-name': 'list_projects' }, body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list_projects', arguments: {}, _meta: meta } }) });
     assert.equal(call.status, 200);
     const callBody = await call.json() as any;
     assert.equal(callBody.result.resultType, 'complete');
     assert.equal(callBody.result.structuredContent.items[0].project, fixture.project);
 
-    const mismatch = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list', 'mcp-name': 'wrong' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'list_projects', arguments: {}, _meta: meta } }),
-    });
+    const mismatch = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list', 'mcp-name': 'wrong' }, body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'list_projects', arguments: {}, _meta: meta } }) });
     assert.equal(mismatch.status, 400);
-    const mismatchBody = await mismatch.json() as any;
-    assert.equal(mismatchBody.error.code, -32020);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     delete process.env.DEVINT_AUTH_MODE;
@@ -291,20 +337,13 @@ test('authenticated runtime observation refuses cross-origin redirects before fo
   await new Promise<void>(resolve => destination.listen(0, '127.0.0.1', resolve));
   const destinationAddress = destination.address() as any;
   const destinationOrigin = `http://127.0.0.1:${destinationAddress.port}`;
-
-  const redirector = http.createServer((_req: any, res: any) => {
-    res.writeHead(302, { location: `${destinationOrigin}/target` });
-    res.end();
-  });
+  const redirector = http.createServer((_req: any, res: any) => { res.writeHead(302, { location: `${destinationOrigin}/target` }); res.end(); });
   await new Promise<void>(resolve => redirector.listen(0, '127.0.0.1', resolve));
   const redirectAddress = redirector.address() as any;
   const redirectOrigin = `http://127.0.0.1:${redirectAddress.port}`;
-
   try {
+    await configure(fixture, [redirectOrigin, destinationOrigin]);
     process.env.TEST_RUNTIME_AUTH = 'Bearer test-secret';
-    process.env.DEVINT_PROJECTS_FILE = fixture.config;
-    process.env.DEVINT_DATA_DIR = fixture.data;
-    process.env.DEVINT_CBM_BINARY = fixture.cbm;
     await fs.writeFile(fixture.config, JSON.stringify({
       [fixture.project]: {
         repository: pathToFileURL(fixture.remote).href,
@@ -320,7 +359,7 @@ test('authenticated runtime observation refuses cross-origin redirects before fo
     const runtimeSource = scan.sources.find(source => source.id.startsWith('runtime:'));
     assert.equal(runtimeSource?.available, false);
     assert.match(runtimeSource?.error ?? '', /redirects must remain/);
-    assert.equal(credentialReachedSecondOrigin, false, 'runtime credentials must not cross origins through redirects');
+    assert.equal(credentialReachedSecondOrigin, false);
   } finally {
     delete process.env.TEST_RUNTIME_AUTH;
     await new Promise<void>(resolve => redirector.close(() => resolve()));

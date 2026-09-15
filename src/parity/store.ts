@@ -1,42 +1,34 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import { projectDataDir } from '../config/paths.js';
 import type { ParityScan } from '../types.js';
-import { atomicWriteJson, ensureDir, readJson } from '../util/fs.js';
+import { safeSegment } from '../config/paths.js';
+import { projectArtifactPrefix, readArtifactJson, writeArtifactJson } from '../storage/artifacts.js';
+import { readStoredProjectState, recordParityScan } from '../storage/control.js';
 
-function parityDir(project: string): string { return path.join(projectDataDir(project), 'parity'); }
-function latestFile(project: string): string { return path.join(parityDir(project), 'latest.json'); }
-function scanFile(project: string, scanId: string): string { return path.join(parityDir(project), 'scans', `${scanId}.json`); }
+function scanKey(project: string, scanId: string): string {
+  const safe = safeSegment(scanId);
+  if (safe !== scanId) throw new Error(`Invalid parity scan identity: ${scanId}`);
+  return `${projectArtifactPrefix(project)}/parity/scans/${safe}.json`;
+}
 
-export async function saveScan(scan: ParityScan): Promise<void> {
-  await ensureDir(path.dirname(scanFile(scan.project, scan.scanId)));
-  await atomicWriteJson(scanFile(scan.project, scan.scanId), scan);
-  await atomicWriteJson(latestFile(scan.project), { scanId: scan.scanId, createdAt: scan.createdAt });
+export async function saveScan(scan: ParityScan, recordLatest = true): Promise<void> {
+  await writeArtifactJson(scanKey(scan.project, scan.scanId), scan);
+  if (recordLatest) await recordParityScan(scan.project, { scanId: scan.scanId, createdAt: scan.createdAt });
 }
 
 export async function loadScan(project: string, scanId: string): Promise<ParityScan> {
-  const value = await readJson<ParityScan | null>(scanFile(project, scanId), null);
-  if (!value) throw new Error(`Parity scan not found: ${project}/${scanId}`);
-  return value;
+  try {
+    return await readArtifactJson<ParityScan>(scanKey(project, scanId));
+  } catch (error) {
+    throw new Error(`Parity scan not found: ${project}/${scanId}`, { cause: error });
+  }
 }
 
 export async function latestScan(project: string): Promise<ParityScan | null> {
-  const latest = await readJson<{ scanId: string } | null>(latestFile(project), null);
-  return latest ? await loadScan(project, latest.scanId) : null;
+  const state = await readStoredProjectState(project);
+  if (!state?.latestParityScanId) return null;
+  return await loadScan(project, state.latestParityScanId);
 }
 
 export async function listScans(project: string): Promise<Array<{ scanId: string; createdAt: string }>> {
-  const dir = path.join(parityDir(project), 'scans');
-  try {
-    const files = (await fs.readdir(dir)).filter((file: string) => file.endsWith('.json')).sort().reverse();
-    const scans = [];
-    for (const file of files.slice(0, 100)) {
-      const scan = await readJson<ParityScan | null>(path.join(dir, file), null);
-      if (scan) scans.push({ scanId: scan.scanId, createdAt: scan.createdAt });
-    }
-    return scans;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw error;
-  }
+  const state = await readStoredProjectState(project);
+  return Array.isArray(state?.recentParityScans) ? state.recentParityScans.slice(0, 100) : [];
 }

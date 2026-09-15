@@ -20,12 +20,11 @@ export interface ProjectRegistry {
   [project: string]: ProjectConfig;
 }
 
-export interface ProjectGeneration {
-  generation: string;
-  sha: string;
-  worktree: string;
-  cbmProject: string;
-  indexedAt: string;
+export type IndexRunStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed';
+
+export interface ParityScanSummary {
+  scanId: string;
+  createdAt: string;
 }
 
 export interface ProjectState {
@@ -33,14 +32,47 @@ export interface ProjectState {
   repository: string;
   ref: string;
   selectedSha: string | null;
-  selectedGeneration: string | null;
-  selectedWorktree: string | null;
-  selectedCbmProject: string | null;
+  selectedBundleId: string | null;
   indexedAt: string | null;
   refreshedAt: string | null;
   lastFetchAt: string | null;
-  lastError?: string | null;
-  generations?: ProjectGeneration[];
+  lastError: string | null;
+  lastIndexStatus: IndexRunStatus;
+  lastIndexOperation: string | null;
+  lastIndexRequestedAt: string | null;
+  lastIndexStartedAt: string | null;
+  lastIndexFinishedAt: string | null;
+  indexingSha: string | null;
+  latestParityScanId: string | null;
+  recentParityScans: ParityScanSummary[];
+}
+
+export interface BundleArtifactDescriptor {
+  key: string;
+  sha256: string;
+  bytes: number;
+}
+
+export interface RevisionBundleManifest {
+  schemaVersion: 1;
+  bundleId: string;
+  project: string;
+  repository: string;
+  ref: string;
+  sourceSha: string;
+  createdAt: string;
+  cbmVersion: string;
+  parityVersion: string;
+  codebase: {
+    status: string;
+    nodes: number | null;
+    edges: number | null;
+  };
+  artifacts: {
+    sourceArchive: BundleArtifactDescriptor;
+    graph: BundleArtifactDescriptor;
+    repositoryParity: BundleArtifactDescriptor;
+  };
 }
 
 export interface SourceDescriptor {

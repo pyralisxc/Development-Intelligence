@@ -1,45 +1,87 @@
 # Operations
 
-## Production layout
+## Production topology
 
-Development Intelligence is host-neutral. A production deployment needs:
+Development Intelligence production is designed for managed, scale-to-zero infrastructure rather than a permanently administered server.
 
-- Node.js 22+;
-- Git;
-- Codebase Memory executable;
-- persistent `DEVINT_DATA_DIR`;
-- persistent `CBM_CACHE_DIR`;
-- project registry mounted read-only;
-- secrets injected through environment variables;
-- TLS/auth at the service or a trusted reverse proxy.
+Required components:
 
-No Oracle, Vercel, Google Cloud, or other provider is part of the product contract.
+- one private Google Cloud Storage bucket for immutable artifacts;
+- Firestore for project/index/parity control state;
+- one Cloud Run service for HTTP/MCP queries;
+- one Cloud Run Job for indexing using the same container image;
+- Secret Manager/environment injection for credentials;
+- TLS/auth at the service or an existing trusted OAuth/auth gateway.
 
-## Important environment variables
+No persistent VM disk, Git mirror, worktree directory, or durable Codebase Memory cache is required.
+
+## Container roles
+
+The default container command runs the query service:
+
+```text
+node dist/src/http.js
+```
+
+The indexing job runs:
+
+```text
+node dist/src/indexJob.js
+```
+
+The query service dispatches the configured Cloud Run Job with `DEVINT_INDEX_PROJECT` and `DEVINT_INDEX_REF`. The job sets `DEVINT_INDEX_EXECUTION=1` so it performs indexing directly rather than dispatching itself.
+
+## Required production configuration
 
 | Variable | Purpose |
 |---|---|
-| `DEVINT_PROJECTS_FILE` | Project access registry path |
-| `DEVINT_DATA_DIR` | Managed mirrors/worktrees/parity scans/state |
+| `DEVINT_PROJECTS_FILE` | Current operational project access registry |
+| `DEVINT_GCS_BUCKET` | Private Revision Bundle / parity artifact bucket |
+| `DEVINT_FIRESTORE_ENABLED` | Set `1` outside production auto-detection when Firestore should be used |
+| `DEVINT_FIRESTORE_DATABASE` | Optional non-default Firestore database ID |
+| `DEVINT_FIRESTORE_COLLECTION` | Control document collection (default `development-intelligence-projects`) |
+| `DEVINT_CLOUD_RUN_JOB_RESOURCE` | Full Cloud Run v2 job resource name used by `refresh_codebase` |
+| `DEVINT_EPHEMERAL_DIR` | Scratch/hydration root; `/tmp/development-intelligence` in the image |
 | `DEVINT_CBM_BINARY` | Codebase Memory executable |
-| `DEVINT_KEEP_GENERATIONS` | Selected + prior derived generations to retain (default 2) |
-| `DEVINT_INDEX_TIMEOUT_MS` | Codebase Memory indexing timeout |
-| `DEVINT_LOCK_STALE_MS` | Stale refresh-lock recovery window; active operations heartbeat the lock |
-| `CBM_WORKERS` | Codebase Memory worker bound (default 1) |
-| `CBM_MEM_BUDGET_MB` | Optional explicit Codebase Memory memory budget |
-| `CBM_CACHE_DIR` | Persistent Codebase Memory cache |
-| `DEVINT_PARITY_MAX_FILES` | Maximum eligible tracked files scanned per parity run |
+| `DEVINT_CBM_VERSION` | Version recorded in Revision Bundle identity/provenance |
+| `DEVINT_INDEX_TIMEOUT_MS` | Indexing timeout |
+| `DEVINT_HYDRATE_TIMEOUT_MS` | Bundle-to-query hydration timeout |
+| `DEVINT_HYDRATION_CACHE_SIZE` | Warm-instance idle hydration bound |
+| `DEVINT_SOURCE_HISTORY_DEPTH` | Bounded Git history retained in `source.tgz` (default 32, max 500) |
+| `CBM_WORKERS` | Codebase Memory worker bound |
+| `CBM_MEM_BUDGET_MB` | Optional Codebase Memory memory budget |
+| `DEVINT_PARITY_MAX_FILES` | Repository parity file cap |
 | `DEVINT_PARITY_MAX_FILE_BYTES` | Per-file parity scan cap |
 | `DEVINT_PARITY_MAX_RUNTIME_BYTES` | Runtime response cap |
 | `DEVINT_RUNTIME_TIMEOUT_MS` | Runtime GET timeout |
-| `DEVINT_AUTH_MODE` | `bearer`, `proxy`, or development-only `none` |
-| `DEVINT_ALLOWED_HOSTS` | Optional Host allowlist |
+
+Do **not** set a production `CBM_CACHE_DIR` as durable infrastructure. Index/hydration paths provide job/instance-local cache directories to Codebase Memory.
+
+## IAM boundary
+
+Use separate service identities where practical.
+
+Query service needs:
+
+- read access to private bundle/parity objects;
+- read/write access to its Firestore control collection (runtime parity scans and status reads);
+- permission to invoke the indexing Cloud Run Job;
+- access only to secrets required for MCP/runtime observation.
+
+Index job needs:
+
+- read/write access to bundle/parity objects;
+- read/write access to the control collection;
+- source-repository credentials;
+- no requirement to receive public user traffic.
+
+Cloud Storage objects must not be public. Canonical repository credentials and runtime observation headers belong in Secret Manager/runtime configuration, never bundle artifacts.
 
 ## Authentication
 
-### Bearer
+Current service modes remain:
 
-Set:
+### Bearer
 
 ```text
 DEVINT_AUTH_MODE=bearer
@@ -48,14 +90,12 @@ DEVINT_BEARER_TOKEN=<secret>
 
 ### Existing OAuth/reverse proxy
 
-Keep OAuth/provider identity at the gateway and configure the upstream service as:
-
 ```text
 DEVINT_AUTH_MODE=proxy
 DEVINT_PROXY_SHARED_SECRET=<gateway-to-service-secret>
 ```
 
-The proxy sends `X-Devint-Proxy-Secret`. This lets an existing OAuth boundary remain authoritative without embedding OAuth/product identity logic in Development Intelligence.
+The proxy sends `X-Devint-Proxy-Secret`.
 
 ### Local only
 
@@ -66,49 +106,56 @@ DEVINT_AUTH_MODE=none
 DEVINT_ALLOW_UNAUTHENTICATED=1
 ```
 
-Do not use this for public deployment.
+The dedicated MCP OAuth protected-resource implementation remains a separate security candidate; do not expand project semantics to implement identity.
 
-## Codebase Memory
+## Indexing behavior
 
-The candidate is tested against the public Codebase Memory CLI contract used by version 0.10.8. Pin production installs until a newer release is explicitly verified.
+`refresh_codebase` resolves the upstream allowlisted ref before dispatch.
 
-Start with `CBM_WORKERS=1` in constrained containers. Increase only after observing memory headroom. A repeated OOM/SIGKILL is a capacity signal, not a retry strategy.
+- Current selected SHA + valid manifest: returns unchanged.
+- Managed production: records queued status and invokes the Cloud Run Job.
+- Local/test: executes indexing inline.
 
-## Project onboarding
+The job uses an ephemeral bounded-history Git checkout. It requires Codebase Memory to produce a healthy index and a non-empty `graph.db.zst`. It then runs repository Parity analysis, creates a source archive, hashes every artifact, uploads artifacts, and writes `manifest.json` last.
+
+The upstream ref is resolved again before selected-pointer promotion. If the ref moved, the completed bundle is historical/unselected. Failed or stale indexing never replaces the previous selected bundle.
+
+## Query behavior
+
+Graph/source tools hydrate the selected bundle on demand. Hydration verifies manifest identity, artifact byte counts, and SHA-256 before extracting source or bootstrapping Codebase Memory. Cold hydration may be slower; warm instances share the hydrated bundle across concurrent requests.
+
+A query instance can disappear at any time without recovery work because all durable state is outside the instance.
+
+## Parity lifecycle
+
+Repository Parity is generated once per indexed revision and stored with the bundle. `scan_parity` without runtime URLs returns that indexed repository scan rather than rescanning a source checkout.
+
+Authorized runtime URLs are observed on demand. Those timestamped combined scans are persisted as derived artifacts and referenced by Firestore latest/recent pointers. Runtime unavailable/error state is preserved rather than treated as empty or authoritative.
+
+## Project onboarding (current implementation)
 
 1. Add the public project identity and canonical repository to the operator registry.
-2. Allowlist only refs Development Intelligence is permitted to observe.
-3. Inject repository credentials through the referenced environment variable.
-4. Optionally allowlist live runtime origins and environment-backed request headers.
+2. Allowlist only refs Development Intelligence may observe.
+3. Inject repository credentials through the referenced environment variable where needed.
+4. Optionally allowlist runtime origins and environment-backed request headers.
 5. Call `refresh_codebase`.
-6. Verify `project_status` reports exact upstream/checkout/indexed SHA alignment.
-7. Call `scan_parity` with repository-only observation first; add live URLs only when useful and authorized.
+6. Watch `index_status` until the requested SHA is selected or the run fails.
+7. Query graph/Parity only from the validated selected bundle.
 
 No semantic project mapping is created.
 
-## Migrating the current hosted Development Intelligence service
+GitHub App installation-token onboarding is the intended production replacement for long-lived Git credentials. It is deliberately isolated from this bundle-lifecycle cut and must reuse the same repository/ref authorization seam rather than creating another intelligence path.
 
-The current deployment can be migrated without changing the public plugin identity:
+## Backup/recovery
 
-1. deploy this repository beside the existing service;
-2. preserve the existing external OAuth/auth gateway where practical using proxy auth mode;
-3. register the same canonical projects with clean public names;
-4. run `refresh_codebase` and prove exact SHA/index status;
-5. run a repository-only parity scan;
-6. for the first proving project, compare generic Parity output with the existing project-specific Product Reality checkpoint;
-7. add authorized live runtime scans and verify unavailable/auth states are truthful;
-8. switch the existing MCP hostname/gateway to the new service only after the above acceptance passes;
-9. retain the old service as rollback until a normal observation window succeeds;
-10. retire the duplicate project-specific parity implementation once generic replacement evidence is sufficient.
+Canonical repositories do not depend on Development Intelligence state.
 
-Do not combine this migration with a cloud-provider move unless the current host still cannot meet measured resource requirements after Codebase Memory worker/memory tuning.
+Back up or retain according to policy:
 
-## Backup and recovery
+- private Cloud Storage Revision Bundles and runtime parity history you care to preserve;
+- Firestore control documents;
+- operator access configuration (without duplicating secrets).
 
-Back up:
+No local service filesystem needs backup. A lost hydration/index scratch directory is disposable.
 
-- project registry (without secrets if separately managed);
-- `DEVINT_DATA_DIR` parity scans/state if scan history is valuable;
-- `CBM_CACHE_DIR` if avoiding reindex cost matters.
-
-Canonical repositories do not depend on Development Intelligence state. All service state is derived and can be rebuilt from source, though historical parity scans are not reproducible if live/runtime sources have changed.
+Cloud Storage lifecycle policy should eventually expire unreferenced PR/branch bundles after the chosen retention period while retaining selected/default/history artifacts required by product policy. Do not delete referenced bundles merely to reduce storage.
