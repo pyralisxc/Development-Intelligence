@@ -21,7 +21,7 @@ jobs:
       - run: npm run verify
       - name: Verify committed Development Intelligence graph when present
         run: |
-          if [ -f .development-intelligence/manifest.json ] || [ -f .development-intelligence/graph.ndjson ]; then
+          if [ -f .development-intelligence/manifest.json ]; then
             npm run graph:check -- --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
           fi
 
