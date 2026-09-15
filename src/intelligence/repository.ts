@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import ts from 'typescript';
 import type { GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
@@ -13,7 +14,9 @@ export const GRAPH_CHECKPOINT_PATH = `${GRAPH_DIRECTORY}/graph.ndjson`;
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
-const TEXT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.mdx', '.html', '.htm']);
+const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm']);
+const SYMBOL_KINDS = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);
 
 interface TrackedFile {
   path: string;
@@ -85,6 +88,223 @@ function containsEdge(file: GraphNode, child: GraphNode, relative: string): Grap
   });
 }
 
+interface ModuleBinding {
+  local: string;
+  imported: string;
+  module: string;
+  targetFile: string | null;
+  line: number;
+  bindingNode: GraphNode;
+}
+
+interface ReexportBinding {
+  imported: string;
+  targetFile: string;
+}
+
+interface ModuleInfo {
+  sourceFile: ts.SourceFile;
+  imports: Map<string, ModuleBinding>;
+  reexports: Map<string, ReexportBinding>;
+  exportAll: string[];
+}
+
+function scriptKindFor(file: string): ts.ScriptKind {
+  if (file.endsWith('.tsx')) return ts.ScriptKind.TSX;
+  if (file.endsWith('.jsx')) return ts.ScriptKind.JSX;
+  if (file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.cjs')) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+function repositoryPath(root: string, absolute: string): string | null {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(absolute);
+  if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) return null;
+  const relative = path.relative(resolvedRoot, resolved).split(path.sep).join('/');
+  return relative && !relative.startsWith('../') ? relative : null;
+}
+
+function loadCompilerOptions(root: string): ts.CompilerOptions {
+  const fallback: ts.CompilerOptions = {
+    allowJs: true,
+    jsx: ts.JsxEmit.Preserve,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noEmit: true,
+  };
+  const configPath = ts.findConfigFile(root, ts.sys.fileExists, 'tsconfig.json');
+  if (!configPath) return fallback;
+  const read = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (read.error) return fallback;
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, path.dirname(configPath), undefined, configPath);
+  const options = { ...fallback, ...parsed.options, allowJs: true, noEmit: true };
+  if (options.paths && !options.baseUrl) options.baseUrl = path.dirname(configPath);
+  return options;
+}
+
+function dedupeEdges(edges: GraphEdge[]): GraphEdge[] {
+  return [...new Map(edges.map(edge => [edge.id, edge])).values()];
+}
+
+async function crossFileTypeScriptGraph(
+  root: string,
+  sourceTexts: Map<string, string>,
+  graphNodes: GraphNode[],
+  fileNodes: Map<string, GraphNode>,
+): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+  const options = loadCompilerOptions(root);
+  const symbolsByFile = new Map<string, Map<string, GraphNode[]>>();
+  for (const node of graphNodes) {
+    if (!SYMBOL_KINDS.has(node.kind) || !node.name || !node.sourceId.startsWith('repo:')) continue;
+    const file = node.sourceId.slice('repo:'.length);
+    const byName = symbolsByFile.get(file) ?? new Map<string, GraphNode[]>();
+    const bucket = byName.get(node.name) ?? [];
+    bucket.push(node);
+    byName.set(node.name, bucket);
+    symbolsByFile.set(file, byName);
+  }
+
+  const moduleInfos = new Map<string, ModuleInfo>();
+  const addedNodes: GraphNode[] = [];
+  const addedEdges: GraphEdge[] = [];
+
+  const resolveTargetFile = (fromFile: string, specifier: string): string | null => {
+    const resolved = ts.resolveModuleName(specifier, path.join(root, fromFile), options, ts.sys).resolvedModule?.resolvedFileName;
+    if (!resolved) return null;
+    const relative = repositoryPath(root, resolved);
+    if (!relative) return null;
+    if (fileNodes.has(relative)) return relative;
+    if (relative.endsWith('.d.ts')) {
+      const withoutDeclaration = relative.slice(0, -5);
+      for (const ext of CODE_EXTENSIONS) if (fileNodes.has(`${withoutDeclaration}${ext}`)) return `${withoutDeclaration}${ext}`;
+    }
+    return null;
+  };
+
+  for (const [relative, text] of sourceTexts) {
+    const sourceFile = ts.createSourceFile(relative, text, ts.ScriptTarget.Latest, true, scriptKindFor(relative));
+    const imports = new Map<string, ModuleBinding>();
+    const reexports = new Map<string, ReexportBinding>();
+    const exportAll: string[] = [];
+    const lineOf = (node: ts.Node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+    const fromFile = fileNodes.get(relative);
+
+    for (const statement of sourceFile.statements) {
+      if (ts.isImportDeclaration(statement) && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+        const module = statement.moduleSpecifier.text;
+        const targetFile = resolveTargetFile(relative, module);
+        const targetFileNode = targetFile ? fileNodes.get(targetFile) : null;
+        if (fromFile && targetFileNode) addedEdges.push(resolution({
+          from: fromFile.id, to: targetFileNode.id, kind: 'imports', strategy: 'module-resolution', confidence: 1, status: 'resolved', evidence: [`${relative}:${lineOf(statement)}`],
+        }));
+        const clause = statement.importClause;
+        const bindings: Array<{ local: string; imported: string }> = [];
+        if (clause?.name) bindings.push({ local: clause.name.text, imported: 'default' });
+        if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+          for (const element of clause.namedBindings.elements) bindings.push({ local: element.name.text, imported: element.propertyName?.text ?? element.name.text });
+        } else if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+          bindings.push({ local: clause.namedBindings.name.text, imported: '*' });
+        }
+        for (const binding of bindings) {
+          const bindingNode = observation({
+            sourceId: `repo:${relative}`, kind: 'import-binding', locator: `${relative}:${lineOf(statement)}:import:${binding.local}`, name: binding.local, field: 'import',
+            value: { module, imported: binding.imported, targetFile },
+          });
+          addedNodes.push(bindingNode);
+          if (fromFile) addedEdges.push(containsEdge(fromFile, bindingNode, relative));
+          imports.set(binding.local, { ...binding, module, targetFile, line: lineOf(statement), bindingNode });
+        }
+      }
+
+      if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+        const targetFile = resolveTargetFile(relative, statement.moduleSpecifier.text);
+        if (!targetFile) continue;
+        const targetFileNode = fileNodes.get(targetFile);
+        if (fromFile && targetFileNode) addedEdges.push(resolution({
+          from: fromFile.id, to: targetFileNode.id, kind: 'reexports', strategy: 'module-resolution', confidence: 1, status: 'resolved', evidence: [`${relative}:${lineOf(statement)}`],
+        }));
+        if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+          for (const element of statement.exportClause.elements) {
+            reexports.set(element.name.text, { imported: element.propertyName?.text ?? element.name.text, targetFile });
+          }
+        } else if (!statement.exportClause) {
+          exportAll.push(targetFile);
+        }
+      }
+    }
+    moduleInfos.set(relative, { sourceFile, imports, reexports, exportAll });
+  }
+
+  const resolveExportedSymbol = (file: string, name: string, seen = new Set<string>()): GraphNode | null => {
+    const key = `${file}#${name}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const direct = symbolsByFile.get(file)?.get(name)?.[0];
+    if (direct) return direct;
+    const info = moduleInfos.get(file);
+    const reexport = info?.reexports.get(name);
+    if (reexport) {
+      const resolved = resolveExportedSymbol(reexport.targetFile, reexport.imported, seen);
+      if (resolved) return resolved;
+    }
+    for (const target of info?.exportAll ?? []) {
+      const resolved = resolveExportedSymbol(target, name, new Set(seen));
+      if (resolved) return resolved;
+    }
+    return null;
+  };
+
+  for (const [relative, info] of moduleInfos) {
+    const fromFile = fileNodes.get(relative);
+    for (const binding of info.imports.values()) {
+      if (!binding.targetFile || binding.imported === '*') continue;
+      const target = resolveExportedSymbol(binding.targetFile, binding.imported);
+      if (target) addedEdges.push(resolution({
+        from: binding.bindingNode.id, to: target.id, kind: 'resolves_to', strategy: 'module-resolution', confidence: 1, status: 'resolved', evidence: [`${relative}:${binding.line}`],
+      }));
+    }
+
+    const sourceFile = info.sourceFile;
+    const lineOf = (node: ts.Node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+    const owners: GraphNode[] = [];
+    const ownerFor = (name: string, line: number): GraphNode | null => {
+      const candidates = symbolsByFile.get(relative)?.get(name) ?? [];
+      return candidates.find(node => node.locator.startsWith(`${relative}:${line}`)) ?? candidates[0] ?? null;
+    };
+    const visit = (node: ts.Node): void => {
+      let pushed = false;
+      let owner: GraphNode | null = null;
+      if (ts.isFunctionDeclaration(node) && node.name) owner = ownerFor(node.name.text, lineOf(node));
+      else if (ts.isMethodDeclaration(node) && node.name && ts.isIdentifier(node.name)) owner = ownerFor(node.name.text, lineOf(node));
+      else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) owner = ownerFor(node.name.text, lineOf(node));
+      if (owner) { owners.push(owner); pushed = true; }
+
+      if (ts.isCallExpression(node)) {
+        let target: GraphNode | null = null;
+        if (ts.isIdentifier(node.expression)) {
+          const binding = info.imports.get(node.expression.text);
+          if (binding?.targetFile && binding.imported !== '*') target = resolveExportedSymbol(binding.targetFile, binding.imported);
+        } else if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)) {
+          const binding = info.imports.get(node.expression.expression.text);
+          if (binding?.targetFile && binding.imported === '*') target = resolveExportedSymbol(binding.targetFile, node.expression.name.text);
+        }
+        if (target) {
+          const caller = owners.at(-1) ?? fromFile ?? null;
+          if (caller && caller.id !== target.id) addedEdges.push(resolution({
+            from: caller.id, to: target.id, kind: 'calls', strategy: 'module-resolution', confidence: 1, status: 'resolved', evidence: [`${relative}:${lineOf(node)}`],
+          }));
+        }
+      }
+
+      ts.forEachChild(node, visit);
+      if (pushed) owners.pop();
+    };
+    visit(sourceFile);
+  }
+
+  return { nodes: addedNodes, edges: dedupeEdges(addedEdges) };
+}
+
 export async function buildRepositoryGraph(input: {
   project: string;
   repository: string;
@@ -104,6 +324,8 @@ export async function buildRepositoryGraph(input: {
   let analyzedFiles = 0;
   const nodes: GraphNode[] = [];
   let edges: GraphEdge[] = [];
+  const fileNodes = new Map<string, GraphNode>();
+  const sourceTexts = new Map<string, string>();
 
   for (const trackedFile of selected) {
     const root = path.resolve(input.root);
@@ -132,7 +354,9 @@ export async function buildRepositoryGraph(input: {
       available: true,
     };
     const file = fileNode(fileSource, trackedFile.path);
+    fileNodes.set(trackedFile.path, file);
     const text = await fs.readFile(absolute, 'utf8');
+    if (CODE_EXTENSIONS.has(path.extname(trackedFile.path).toLowerCase())) sourceTexts.set(trackedFile.path, text);
     const result = analyzeByTechnology({ source: fileSource, text, locatorBase: trackedFile.path });
     nodes.push(file, ...result.observations);
     edges.push(...result.resolutions, ...result.observations.map(node => containsEdge(file, node, trackedFile.path)));
@@ -150,7 +374,10 @@ export async function buildRepositoryGraph(input: {
     ...(warnings.length ? { warnings } : {}),
   };
 
-  edges = resolveCrossSource(nodes, edges);
+  const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
+  nodes.push(...crossFile.nodes);
+  edges.push(...crossFile.edges);
+  edges = dedupeEdges(resolveCrossSource(nodes, edges));
   const fingerprint = await sourceFingerprint(input.root);
   const coverage: GraphCoverage = {
     trackedFiles: tracked.length,
