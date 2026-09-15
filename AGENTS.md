@@ -1,45 +1,38 @@
 # Development Intelligence agent guide
 
-This repository owns the Development Intelligence MCP service.
+This repository owns the standalone Development Intelligence technical-intelligence service.
 
 ## Product boundary
 
-Development Intelligence provides technical evidence. It does not decide product intent or development workflow.
+Development Intelligence owns **one intrinsic evidence graph**. Source inspection, runtime observation, parity analysis, Git history, and future external analyzers are inputs/lenses over that graph; no external tool owns Development Intelligence truth, persistence, or lifecycle.
 
-Two sibling capabilities exist:
-
-- `codebase/` — hosted lifecycle and proxying around upstream Codebase Memory.
-- `parity/` — cross-representation technical observation and evidence-backed resolution.
-
-Do not couple either capability to custom agent skills or project-specific vocabulary.
+Development Intelligence provides technical evidence. It does not decide product intent or development workflow and must not depend on custom agent methodologies.
 
 ## Non-negotiable invariants
 
-1. No project-specific analyzer/extractor in production source.
-2. No required semantic project configuration.
-3. No inferred intent or source-authority hierarchy.
-4. Preserve raw names; do not normalize away naming divergence.
-5. Candidate/heuristic relationships retain evidence and confidence.
-6. Unresolved is preferable to invented certainty.
-7. Runtime scanning is read-only and origin-allowlisted.
-8. Git credentials remain process-scoped and never appear in output/state.
-9. A failed refresh never replaces the last-known-good source/index generation.
-10. Public tool output uses public project identities and does not leak internal generation names or managed filesystem paths.
-11. Do not add workflow/PR/deployment orchestration to this service.
-12. Do not fork Codebase Memory to solve wrapper/hosting concerns.
+1. One canonical Development Intelligence graph model; do not create separate code/parity/provider graph authorities.
+2. Git/source is authoritative implementation evidence. The accepted graph is a rebuildable projection committed with the project that it describes.
+3. A/W/B lifecycle: accepted A lives in Git, working W is disposable, sealed B is committed with a candidate and becomes A through normal Git merge/history.
+4. Optional expectation evidence may be overlaid by a caller, but Development Intelligence never requires a particular product/development methodology.
+5. No project-specific analyzer/extractor in generic production source.
+6. No required semantic project configuration or hidden source-authority hierarchy.
+7. Preserve observed naming differences. Candidate/heuristic relationships retain evidence and confidence; unresolved/unavailable is preferable to invented certainty.
+8. Runtime observation is read-only, bounded, and allowlisted. Credentials remain process-scoped and never enter graph checkpoints.
+9. Local checkouts, parser caches, indexes, and Vercel/Sandbox files are disposable computation space, never durable graph authority.
+10. External tools may contribute evidence but may not dictate DI graph schema, lifecycle, query semantics, hosting, or storage.
+11. Do not add development workflow, PR orchestration, or Build-authorization policy to the public intelligence API.
+12. The human graph viewer and agent tools project the same canonical graph.
 
-## Naming
+## Accepted checkpoint
 
-Use the names exposed to users and agents:
+The portable accepted graph path is:
 
-- Development Intelligence
-- Codebase Memory
-- Parity Engine
+`/.development-intelligence/graph.ndjson`
 
-Avoid alternate product aliases.
+The checkpoint is deterministic, text-oriented, excludes its own directory from source fingerprinting, and belongs to the inspected project repository. Git owns accepted history.
 
 ## Verification
 
 Run `npm run verify` for every meaningful change.
 
-Permanent tests should protect public protocol, provenance, safety, and universality contracts—not incidental implementation shape.
+Permanent evidence should protect durable product/infrastructure contracts rather than historical implementation shape.

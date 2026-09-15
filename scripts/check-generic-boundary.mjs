@@ -3,13 +3,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = new URL('../src/', import.meta.url);
-const forbidden = [
+const forbiddenProjectCoupling = [
   /cardforge/i,
   /\bdesk\b/i,
   /\bpipeline\b/i,
   /game\s*studio/i,
   /founder[- ]to[- ]feature/i,
   /developer\s*os/i,
+];
+const forbiddenArchitectureDependencies = [
+  /codebase-memory-mcp/i,
+  /CBM_CACHE_DIR/i,
+  /@google-cloud\//i,
+  /\bFirestore\b/i,
+  /\bCloud Run\b/i,
 ];
 
 async function walk(dir) {
@@ -27,12 +34,15 @@ const files = await walk(fileURLToPath(root));
 const violations = [];
 for (const file of files) {
   const text = await fs.readFile(file, 'utf8');
-  for (const pattern of forbidden) {
+  for (const pattern of [...forbiddenProjectCoupling, ...forbiddenArchitectureDependencies]) {
     if (pattern.test(text)) violations.push(`${path.relative(process.cwd(), file)} matches ${pattern}`);
   }
 }
+const packageText = await fs.readFile(new URL('../package.json', import.meta.url), 'utf8');
+for (const pattern of forbiddenArchitectureDependencies) if (pattern.test(packageText)) violations.push(`package.json matches ${pattern}`);
+
 if (violations.length) {
-  console.error('Project-specific/workflow coupling found in generic source:\n' + violations.join('\n'));
+  console.error('Development Intelligence boundary violation:\n' + violations.join('\n'));
   process.exit(1);
 }
 console.log('generic-boundary: ok');

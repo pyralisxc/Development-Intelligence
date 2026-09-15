@@ -6,54 +6,52 @@ Run:
 npm run verify
 ```
 
-The permanent suite protects durable infrastructure contracts rather than implementation details.
+Permanent evidence protects durable Development Intelligence contracts, not historical analyzer/provider implementation.
 
 ## Durable contracts
 
-### Source/index atomicity
+### One intrinsic graph
 
-A failed Codebase Memory generation cannot replace the selected last-known-good source/index pair.
+Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.
 
-### Bounded derived state
+### Git-owned A/W/B lifecycle
 
-Old Codebase Memory generations and detached worktrees are pruned according to the configured retention window.
+A committed checkpoint whose source fingerprint matches the project source is current A. Source changes make A stale while W reflects working reality. Sealing and committing B restores checkpoint/source parity; Git owns accepted history.
 
-### Public identity
+### No durable service database
 
-Internal Codebase Memory generation IDs and managed filesystem paths do not leak through normal public project/status/query responses.
+Remote analysis uses disposable exact-revision checkouts. Scratch state is removed after use. Losing service-local files/caches must not lose accepted intelligence.
 
-### Universal parity
+### Deterministic checkpoint
 
-An unknown project with no project-specific analyzer or semantic mapping can still produce useful technical observations and relationships from ordinary source/runtime structures.
+`/.development-intelligence/graph.ndjson` contains deterministic stable records and excludes its own directory from source fingerprinting. Volatile observation timestamps/service paths do not enter the checkpoint.
+
+### Source provenance and safety
+
+Remote reads are exact-SHA. Tracked symlinks are never followed as source content. Repository/runtime credentials never enter graph output. Secret-like structured values are redacted.
+
+### Universal analysis
+
+An unknown project with no project-specific semantic mapping can still produce useful file/symbol/UI/API/MCP/config/document observations and relationships. The generic source guard prevents known project/workflow nouns from entering production analyzers.
 
 ### Evidence discipline
 
-Deterministic syntax relationships remain resolved; similarity relationships remain candidates; unresolved relationships remain unresolved.
+Syntax-proven relationships may be resolved. Heuristic cross-source matches remain candidates. Unresolved relationships remain explicit rather than being silently promoted.
 
-### Sensitive values
+### Runtime isolation
 
-Secret-like structured JSON and TypeScript declaration values are redacted from persisted parity observations.
+Runtime observation is allowlisted, GET-only, bounded, and must not forward configured credentials across origins through redirects.
 
-### Project identity isolation
+### Agent/human graph parity
 
-Project identities that would normalize to the same derived storage key are rejected during registry loading.
-
-### Tool boundary
-
-Development Intelligence exposes technical intelligence tools and excludes workflow/intent operations such as ADR management, Build authorization, or PR creation.
+The human `/graph` viewer renders the same canonical graph records used by MCP query/trace tools.
 
 ### MCP protocol
 
-The HTTP acceptance test covers modern `2026-07-28` discovery, routing headers, complete results, cache hints, tool calls, and header mismatch rejection.
+Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, and tool listing.
 
-### MCP safety metadata
+## Evidence strategy
 
-Read-only tools expose `readOnlyHint`; derived-state writes and derived-state deletion expose accurate mutation/destructive annotations.
+Use focused deterministic proof while changing graph/analyzer boundaries, then one full `npm run verify` candidate gate. Provider/host behavior should be proven at that real boundary only when hosting configuration is actually changed.
 
-### Generic source boundary
-
-`scripts/check-generic-boundary.mjs` prevents known project/workflow names from entering generic production source.
-
-## Temporary evidence
-
-Benchmarks, one-off deployment probes, and migration comparison scripts are temporary by default. Promote them only when they protect a durable operational guarantee.
+Do not preserve tests merely because they protected retired persistent-cache or external-engine behavior. Preserve the guarantees that still matter under the intrinsic Git-native architecture.

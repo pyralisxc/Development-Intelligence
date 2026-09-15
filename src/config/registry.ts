@@ -49,9 +49,7 @@ export async function loadRegistry(): Promise<ProjectRegistry> {
   for (const [name, config] of Object.entries(parsed)) {
     const storageKey = safeSegment(name);
     const existing = storageKeys.get(storageKey);
-    if (existing && existing !== name) {
-      throw new Error(`Project identities ${existing} and ${name} collide on derived storage key ${storageKey}`);
-    }
+    if (existing && existing !== name) throw new Error(`Project identities ${existing} and ${name} collide on derived storage key ${storageKey}`);
     storageKeys.set(storageKey, name);
     validated[name] = validateProject(name, config);
   }

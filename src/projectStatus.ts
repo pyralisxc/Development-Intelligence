@@ -1,34 +1,21 @@
 import { getProjectConfig } from './config/registry.js';
-import { callCurrentCodebase } from './codebase/proxy.js';
-import { readProjectState, upstreamStatus } from './codebase/sourceManager.js';
-import { parityStatus } from './parity/query.js';
+import { graphStatus } from './intelligence/service.js';
+import { upstreamStatus } from './source/git.js';
 
 export async function projectStatus(project: string, checkUpstream = true): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(project);
-  const state = await readProjectState(project);
-  let upstream: Awaited<ReturnType<typeof upstreamStatus>> | null = null;
-  if (checkUpstream) upstream = await upstreamStatus(project, state.ref || config.defaultRef);
-  let codebaseStatus: unknown = null;
-  let codebaseError: string | null = null;
-  if (state.selectedCbmProject) {
-    try { codebaseStatus = await callCurrentCodebase(project, 'index_status', {}); }
-    catch (error) { codebaseError = error instanceof Error ? error.message : String(error); }
-  }
-  const parity = await parityStatus(project);
+  const upstream = checkUpstream ? await upstreamStatus(project, config.defaultRef) : null;
+  let graph: Record<string, unknown> | null = null;
+  let graphError: string | null = null;
+  try { graph = await graphStatus(project, config.defaultRef); }
+  catch (error) { graphError = error instanceof Error ? error.message : String(error); }
   return {
     project,
     repository: config.repository,
-    ref: state.ref || config.defaultRef,
+    ref: config.defaultRef,
     upstreamSha: upstream?.upstreamSha ?? null,
     upstreamError: upstream?.error ?? null,
-    checkoutSha: state.selectedSha,
-    indexedSha: state.selectedSha && state.selectedCbmProject ? state.selectedSha : null,
-    sourceCurrent: upstream?.upstreamSha ? upstream.upstreamSha === state.selectedSha : null,
-    indexedAt: state.indexedAt,
-    refreshedAt: state.refreshedAt,
-    lastFetchAt: state.lastFetchAt,
-    codebaseStatus,
-    codebaseError,
-    parity,
+    graph,
+    graphError,
   };
 }

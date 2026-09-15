@@ -1,149 +1,118 @@
 # Development Intelligence
 
-Development Intelligence is a project-neutral MCP tool service for technical software truth.
+Development Intelligence is a standalone, project-neutral technical-intelligence service for software development.
 
-It exposes two independent capabilities:
+Its core is **one intrinsic evidence graph**. Code structure, runtime/API observations, UI/MCP relationships, configuration, documentation, tests, and future analyzer outputs all contribute evidence to the same graph. Search, tracing, architecture, parity, diffing, and visualization are lenses over that shared reality.
 
-- **Codebase Memory** — structural code intelligence (search, architecture, call/data-flow tracing, blast radius, coverage).
-- **Parity Engine** — evidence-backed comparison across observable technical representations such as source, UI/runtime, HTTP/API, MCP, structured configuration, tests, and documentation.
-
-Development Intelligence is tooling, not a development methodology. It contains no product intent, workflow stages, build authorization, PR orchestration, or agent-routing policy.
+External tools can improve what Development Intelligence observes. They do not own its graph model, lifecycle, query semantics, storage, or hosting.
 
 ## Core rules
 
-- Codebase Memory and Parity Engine are independent siblings.
-- Parity Engine has **no project-specific extractors** and requires **no semantic project configuration**.
-- Generic analyzers may understand languages, frameworks, protocols, and formats; analyzer behavior may never branch on project identity.
-- Project-declared semantics are observations, not universal schema.
-- Naming differences are preserved rather than normalized away.
-- Heuristic relationships retain strategy/evidence/confidence and never silently become facts.
-- `unresolved` and `unavailable` are valid results.
-- Secret-like values in structured repository observations are redacted before scans are persisted or returned.
-- Runtime observation is read-only.
-- Development Intelligence may mutate only its own derived source mirrors, Codebase Memory indexes, and parity scan state.
+- Git/source remains authoritative implementation evidence.
+- Accepted graph history belongs to the project being inspected, not to a central Development Intelligence database.
+- No project-specific extractors or required semantic project configuration.
+- Generic analyzers may understand languages, frameworks, protocols, and formats.
+- Raw names are preserved; naming differences are evidence rather than normalized away.
+- Deterministic relationships may be resolved; heuristics remain candidates with evidence/confidence.
+- `unresolved` and unavailable observations are legitimate results.
+- Secret-like structured values are redacted before they enter the graph.
+- Runtime observation is allowlisted, bounded, GET-only, and read-only.
+- Temporary checkouts/caches are disposable compute, not durable state.
 
-See [Architecture](docs/architecture.md) and [Operations](docs/operations.md).
+See [Architecture](docs/architecture.md), [Operations](docs/operations.md), and [Testing](docs/testing.md).
+
+## A / W / B lifecycle
+
+Development Intelligence uses the Git-native reality lifecycle proven by Product Reality-style workflows:
+
+- **A — accepted:** `/.development-intelligence/graph.ndjson` committed in the accepted branch.
+- **W — working:** a graph generated from the current working/ref state; disposable and not automatically persisted.
+- **B — sealed candidate:** a deterministic checkpoint generated for a candidate immediately before commit/promotion.
+- After normal Git merge, B is simply the new A. Previous A remains in Git history.
+
+Expectation overlays (sometimes called E by development methodologies) are optional caller evidence, not an intrinsic code-analysis requirement.
+
+The checkpoint source fingerprint excludes `/.development-intelligence/` itself, avoiding a self-referential commit-SHA problem while still detecting source changes.
 
 ## Public MCP surface
 
-Shared:
+Shared/status:
 
 - `list_projects`
 - `project_status`
-- `refresh_codebase`
-- `delete_project` (derived state only)
+- `scan_graph`
+- `graph_status`
+- `clear_cache` (disposable acceleration only)
 
-Codebase Memory:
+Intrinsic graph/code:
 
-- `index_status`
 - `search_graph`
+- `query_graph`
+- `trace_path`
 - `search_code`
 - `get_code_snippet`
-- `trace_path`
-- `query_graph`
 - `get_graph_schema`
 - `get_architecture`
-- `check_index_coverage`
-- `detect_changes`
-- `ingest_traces`
+- `check_graph_coverage`
+- `diff_graph`
 
-Parity Engine:
+Parity lens over the same graph:
 
 - `scan_parity`
 - `query_parity`
 - `diff_parity`
-- `parity_status`
 
-`index_repository(repo_path=...)` is intentionally an internal hosting primitive rather than the normal public interface. `manage_adr` is intentionally absent because decisions/intent are not neutral technical observations.
+There is no separate Parity database and no external code-graph engine dependency.
 
-## Requirements
+## Human graph viewer
+
+Authenticated HTTP deployments expose:
+
+`GET /graph?project=<project>[&ref=<allowlisted-ref>]`
+
+The viewer renders a bounded projection of the same graph queried by agents. It is intentionally a presentation layer, not a second graph model.
+
+## Local development
+
+Requirements:
 
 - Node.js 22+
 - Git
-- `codebase-memory-mcp` 0.10.8 (or a separately verified compatible release) available as `codebase-memory-mcp`
-- persistent storage for `DEVINT_DATA_DIR` and, in production, Codebase Memory cache state
-
-The Parity Engine uses TypeScript 5.8.3 as a runtime parser for JS/TS/JSX/TSX.
-
-## Quick start
 
 ```bash
 cp config/projects.example.json config/projects.json
 cp .env.example .env
 npm install
 npm run verify
-npm run build
 npm start
 ```
 
-Configure at least one project in `config/projects.json` and set any referenced credential environment variables.
+MCP endpoint: `POST /mcp`
 
-Health:
+Health endpoint: `GET /health`
+
+## Sealing/checking a project graph
+
+When the Development Intelligence package is available in a project checkout:
 
 ```bash
-curl http://127.0.0.1:8787/health
+npm run build
+node dist/src/graphCli.js seal --repo-path /path/to/project --project project-id
+node dist/src/graphCli.js check --repo-path /path/to/project --project project-id
 ```
 
-MCP endpoint:
+`seal` writes `/.development-intelligence/graph.ndjson`. The project then commits that file with its candidate according to its own repository workflow.
 
-```text
-POST /mcp
-```
+Development Intelligence itself does not commit or merge projects on behalf of callers merely to maintain graph state.
 
-The modern MCP protocol revision `2026-07-28` is served statelessly. A limited initialize-era compatibility path is retained for older clients.
+## Project access configuration
 
-## Project configuration
-
-Project configuration tells Development Intelligence **where it may observe**, never what a project means.
-
-Allowed operational configuration includes:
+Operational configuration may declare only where DI is allowed to observe:
 
 - repository URL;
 - default/allowlisted Git refs;
-- server-side Git credential environment variable;
+- process-scoped Git credentials;
 - allowlisted runtime origins;
-- runtime request header values loaded from environment variables.
+- environment-backed runtime request headers.
 
-Not allowed as architecture:
-
-- surface/capability ontologies;
-- project-specific action maps;
-- human↔MCP parity maps;
-- per-project semantic extractors;
-- project-specific analyzer code.
-
-## Refresh model
-
-`refresh_codebase`:
-
-1. verifies the requested ref is allowlisted;
-2. fetches the managed bare mirror with server-side credentials;
-3. resolves the exact commit SHA;
-4. materializes an immutable detached worktree;
-5. indexes that worktree into a **new internal Codebase Memory generation**;
-6. verifies the new index is healthy;
-7. atomically selects the new source/index pair;
-8. prunes old derived generations according to `DEVINT_KEEP_GENERATIONS` (default `2`).
-
-A failed index never replaces the selected last-known-good generation.
-
-## Verification
-
-```bash
-npm run verify
-```
-
-The durable suite currently protects:
-
-- atomic last-known-good Codebase Memory promotion;
-- bounded generation retention;
-- clean public project identity;
-- universal Parity discovery without project rules;
-- secret-like structured-value redaction;
-- collision rejection for project identities that would share derived storage;
-- accurate MCP read-only/destructive tool annotations;
-- tool-only public MCP surface;
-- MCP `2026-07-28` discovery/header/result/cache contract;
-- generic-boundary source guardrail.
-
-See [Testing](docs/testing.md).
+It must not define project-specific semantic ontologies, product intent, source-authority maps, or analyzer branches keyed by project identity.

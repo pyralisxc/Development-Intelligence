@@ -94,7 +94,10 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       functionStack.push(addSymbol(node.name.text, 'method', node));
       pushed = true;
     } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
-      functionStack.push(addSymbol(node.name.text, 'function', node));
+      const parentFunction = functionOwner();
+      const nested = addSymbol(node.name.text, 'function', node);
+      if (parentFunction) resolutions.push(resolution({ from: parentFunction.id, to: nested.id, kind: 'contains', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`] }));
+      functionStack.push(nested);
       pushed = true;
     } else if (ts.isClassDeclaration(node) && node.name) {
       addSymbol(node.name.text, 'class', node);

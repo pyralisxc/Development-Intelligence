@@ -1,114 +1,90 @@
 # Operations
 
-## Production layout
+## Hosting principle
 
-Development Intelligence is host-neutral. A production deployment needs:
+Development Intelligence does not require a permanently administered server, persistent graph disk, external object bucket, or graph database.
+
+Durable accepted intelligence lives with each inspected Git project as `/.development-intelligence/graph.ndjson` and therefore follows normal Git history, review, branching, backup, and access controls.
+
+The hosted service needs only:
 
 - Node.js 22+;
 - Git;
-- Codebase Memory executable;
-- persistent `DEVINT_DATA_DIR`;
-- persistent `CBM_CACHE_DIR`;
-- project registry mounted read-only;
-- secrets injected through environment variables;
-- TLS/auth at the service or a trusted reverse proxy.
+- temporary filesystem capacity sufficient for an exact-revision checkout;
+- the project access registry and referenced credentials;
+- HTTP/MCP authentication.
 
-No Oracle, Vercel, Google Cloud, or other provider is part of the product contract.
+This fits a GitHub + Vercel shape: GitHub owns source/history; Vercel can host the API/MCP/viewer and provide disposable Sandbox compute when heavier analysis warrants it. Vercel is not required to become durable graph authority.
 
-## Important environment variables
+## Configuration
 
 | Variable | Purpose |
 |---|---|
-| `DEVINT_PROJECTS_FILE` | Project access registry path |
-| `DEVINT_DATA_DIR` | Managed mirrors/worktrees/parity scans/state |
-| `DEVINT_CBM_BINARY` | Codebase Memory executable |
-| `DEVINT_KEEP_GENERATIONS` | Selected + prior derived generations to retain (default 2) |
-| `DEVINT_INDEX_TIMEOUT_MS` | Codebase Memory indexing timeout |
-| `DEVINT_LOCK_STALE_MS` | Stale refresh-lock recovery window; active operations heartbeat the lock |
-| `CBM_WORKERS` | Codebase Memory worker bound (default 1) |
-| `CBM_MEM_BUDGET_MB` | Optional explicit Codebase Memory memory budget |
-| `CBM_CACHE_DIR` | Persistent Codebase Memory cache |
-| `DEVINT_PARITY_MAX_FILES` | Maximum eligible tracked files scanned per parity run |
-| `DEVINT_PARITY_MAX_FILE_BYTES` | Per-file parity scan cap |
-| `DEVINT_PARITY_MAX_RUNTIME_BYTES` | Runtime response cap |
+| `DEVINT_PROJECTS_FILE` | Operational repository/ref/runtime allowlist registry |
+| `DEVINT_SCRATCH_DIR` | Optional disposable checkout root (defaults to OS temp) |
+| `DEVINT_GRAPH_CACHE_SIZE` | Warm in-process exact-revision graph cache bound |
+| `DEVINT_GRAPH_MAX_FILES` | Maximum eligible tracked files analyzed in one graph build |
+| `DEVINT_GRAPH_MAX_FILE_BYTES` | Maximum individual text file size analyzed |
+| `DEVINT_GRAPH_MAX_RUNTIME_BYTES` | Runtime response body cap |
 | `DEVINT_RUNTIME_TIMEOUT_MS` | Runtime GET timeout |
-| `DEVINT_AUTH_MODE` | `bearer`, `proxy`, or development-only `none` |
-| `DEVINT_ALLOWED_HOSTS` | Optional Host allowlist |
+| `DEVINT_VIEWER_MAX_NODES` | Human viewer first-frame node bound |
+
+There is no required durable `DEVINT_DATA_DIR`, graph database, or provider-specific storage configuration.
+
+## Repository credentials
+
+Repository URLs must not contain credentials. Token credentials are read from configured environment variables and supplied through a short-lived Git askpass helper. Scratch checkout paths and credentials are never graph identities.
+
+## Normal remote read
+
+1. Validate project/ref against the registry.
+2. Resolve the exact remote SHA.
+3. Create a disposable checkout.
+4. Fetch only the requested ref at shallow depth.
+5. Verify fetched SHA still matches the resolved SHA.
+6. Build/query the graph.
+7. Delete the checkout.
+
+Warm process-memory graph reuse is allowed but never authoritative.
+
+## Candidate sealing
+
+Graph sealing belongs in the inspected project's own candidate workflow:
+
+1. make the intended source changes;
+2. generate B with `graphCli seal` against the candidate working tree;
+3. review/check the A→B delta as appropriate;
+4. commit the source + graph checkpoint together;
+5. merge through the project's normal review/release process;
+6. after merge, B is the new A by ordinary Git semantics.
+
+If the checkpoint is absent, DI can still generate W and answer technical questions. Absence of a checkpoint means there is no accepted A for graph-diff purposes; it does not make source unavailable.
 
 ## Authentication
 
+Current service modes:
+
 ### Bearer
 
-Set:
+`DEVINT_AUTH_MODE=bearer` + `DEVINT_BEARER_TOKEN`.
 
-```text
-DEVINT_AUTH_MODE=bearer
-DEVINT_BEARER_TOKEN=<secret>
-```
+### Trusted proxy
 
-### Existing OAuth/reverse proxy
+`DEVINT_AUTH_MODE=proxy` + `DEVINT_PROXY_SHARED_SECRET`; the proxy supplies `X-Devint-Proxy-Secret`.
 
-Keep OAuth/provider identity at the gateway and configure the upstream service as:
+### Local development only
 
-```text
-DEVINT_AUTH_MODE=proxy
-DEVINT_PROXY_SHARED_SECRET=<gateway-to-service-secret>
-```
+Unauthenticated mode fails closed unless both `DEVINT_AUTH_MODE=none` and `DEVINT_ALLOW_UNAUTHENTICATED=1` are present.
 
-The proxy sends `X-Devint-Proxy-Secret`. This lets an existing OAuth boundary remain authoritative without embedding OAuth/product identity logic in Development Intelligence.
+The eventual hosted OAuth boundary remains separable from graph semantics.
 
-### Local only
+## Recovery
 
-Unauthenticated mode fails closed unless both are set:
+There is almost no service-local recovery procedure:
 
-```text
-DEVINT_AUTH_MODE=none
-DEVINT_ALLOW_UNAUTHENTICATED=1
-```
+- lost scratch checkout → regenerate from Git;
+- lost in-process cache → regenerate from Git;
+- lost host instance → regenerate from Git;
+- accepted graph checkpoint damaged → regenerate/seal from the corresponding source revision and review the repair through Git.
 
-Do not use this for public deployment.
-
-## Codebase Memory
-
-The candidate is tested against the public Codebase Memory CLI contract used by version 0.10.8. Pin production installs until a newer release is explicitly verified.
-
-Start with `CBM_WORKERS=1` in constrained containers. Increase only after observing memory headroom. A repeated OOM/SIGKILL is a capacity signal, not a retry strategy.
-
-## Project onboarding
-
-1. Add the public project identity and canonical repository to the operator registry.
-2. Allowlist only refs Development Intelligence is permitted to observe.
-3. Inject repository credentials through the referenced environment variable.
-4. Optionally allowlist live runtime origins and environment-backed request headers.
-5. Call `refresh_codebase`.
-6. Verify `project_status` reports exact upstream/checkout/indexed SHA alignment.
-7. Call `scan_parity` with repository-only observation first; add live URLs only when useful and authorized.
-
-No semantic project mapping is created.
-
-## Migrating the current hosted Development Intelligence service
-
-The current deployment can be migrated without changing the public plugin identity:
-
-1. deploy this repository beside the existing service;
-2. preserve the existing external OAuth/auth gateway where practical using proxy auth mode;
-3. register the same canonical projects with clean public names;
-4. run `refresh_codebase` and prove exact SHA/index status;
-5. run a repository-only parity scan;
-6. for the first proving project, compare generic Parity output with the existing project-specific Product Reality checkpoint;
-7. add authorized live runtime scans and verify unavailable/auth states are truthful;
-8. switch the existing MCP hostname/gateway to the new service only after the above acceptance passes;
-9. retain the old service as rollback until a normal observation window succeeds;
-10. retire the duplicate project-specific parity implementation once generic replacement evidence is sufficient.
-
-Do not combine this migration with a cloud-provider move unless the current host still cannot meet measured resource requirements after Codebase Memory worker/memory tuning.
-
-## Backup and recovery
-
-Back up:
-
-- project registry (without secrets if separately managed);
-- `DEVINT_DATA_DIR` parity scans/state if scan history is valuable;
-- `CBM_CACHE_DIR` if avoiding reindex cost matters.
-
-Canonical repositories do not depend on Development Intelligence state. All service state is derived and can be rebuilt from source, though historical parity scans are not reproducible if live/runtime sources have changed.
+The canonical repository remains usable even if Development Intelligence is unavailable.
