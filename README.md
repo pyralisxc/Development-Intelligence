@@ -25,14 +25,14 @@ See [Architecture](docs/architecture.md), [Operations](docs/operations.md), and 
 
 Development Intelligence uses the Git-native reality lifecycle proven by Product Reality-style workflows:
 
-- **A — accepted:** `/.development-intelligence/graph.ndjson` committed in the accepted branch.
+- **A — accepted:** `/.development-intelligence/manifest.json` plus deterministic text shards under `/.development-intelligence/graph/` committed in the accepted branch.
 - **W — working:** a graph generated from the current working/ref state; disposable and not automatically persisted.
 - **B — sealed candidate:** a deterministic checkpoint generated for a candidate immediately before commit/promotion.
 - After normal Git merge, B is simply the new A. Previous A remains in Git history.
 
 Expectation overlays (sometimes called E by development methodologies) are optional caller evidence, not an intrinsic code-analysis requirement.
 
-The checkpoint source fingerprint excludes `/.development-intelligence/` itself, avoiding a self-referential commit-SHA problem while still detecting source changes.
+The checkpoint source fingerprint excludes `/.development-intelligence/` itself, avoiding a self-referential commit-SHA problem while still detecting source changes. Records are deterministically assigned to hexadecimal NDJSON shards so large accepted graphs do not become one giant binary or text blob in Git.
 
 ## Public MCP surface
 
@@ -101,7 +101,7 @@ node dist/src/graphCli.js seal --repo-path /path/to/project --project project-id
 node dist/src/graphCli.js check --repo-path /path/to/project --project project-id
 ```
 
-`seal` writes `/.development-intelligence/graph.ndjson`. The project then commits that file with its candidate according to its own repository workflow.
+`seal` writes `/.development-intelligence/manifest.json` and deterministic NDJSON shards under `/.development-intelligence/graph/`. The project then commits that directory with its candidate according to its own repository workflow.
 
 Development Intelligence itself does not commit or merge projects on behalf of callers merely to maintain graph state.
 
