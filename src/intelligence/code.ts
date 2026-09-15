@@ -65,12 +65,24 @@ export async function getCodeSnippet(input: {
   context?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref);
-  const needle = input.node?.trim().toLowerCase();
-  if (!needle) throw new Error('node must be a non-empty graph node id/name/query');
-  const node = graph.nodes.find(item => item.id === input.node)
-    ?? graph.nodes.find(item => item.name?.toLowerCase() === needle)
-    ?? graph.nodes.find(item => `${item.name ?? ''} ${item.locator}`.toLowerCase().includes(needle));
-  if (!node) throw new Error(`Graph node not found: ${input.node}`);
+  const query = input.node?.trim();
+  if (!query) throw new Error('node must be a non-empty graph node id/name/query');
+  const needle = query.toLowerCase();
+  const exactId = graph.nodes.find(item => item.id === query);
+  let candidates = exactId ? [exactId] : graph.nodes.filter(item => item.name?.toLowerCase() === needle);
+  if (!candidates.length) candidates = graph.nodes.filter(item => `${item.name ?? ''} ${item.locator}`.toLowerCase().includes(needle)).slice(0, 25);
+  if (!candidates.length) throw new Error(`Graph node not found: ${input.node}`);
+  if (!exactId && candidates.length > 1) {
+    return {
+      project: input.project,
+      revision: graph.repositoryRevision,
+      ambiguous: true,
+      query,
+      candidates: candidates.slice(0, 12).map(item => ({ id: item.id, kind: item.kind, layer: item.layer ?? 'structural', name: item.name ?? null, locator: item.locator })),
+      instruction: 'Retry get_code_snippet with an exact node id.',
+    };
+  }
+  const node = exactId ?? candidates[0]!;
   const locator = locatorFileAndLine(node.locator);
   return await withProjectCheckout(input.project, input.ref, async checkout => {
     const absolute = path.resolve(checkout.root, locator.file);
@@ -86,6 +98,7 @@ export async function getCodeSnippet(input: {
     return {
       project: input.project,
       revision: checkout.sha,
+      ambiguous: false,
       node,
       file: locator.file,
       startLine: start + 1,
