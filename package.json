@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "verify": "npm run build && node --test dist/tests/*.test.js && node scripts/check-generic-boundary.mjs",
+    "smoke:cbm": "node scripts/smoke-real-cbm.mjs",
     "start": "node dist/src/http.js",
     "index-job": "node dist/src/indexJob.js",
     "stdio": "node dist/src/stdio.js"

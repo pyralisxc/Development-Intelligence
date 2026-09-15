@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,3 +19,7 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run verify
+      - name: Install pinned Codebase Memory
+        run: npm install -g --no-audit --no-fund codebase-memory-mcp@0.10.8
+      - name: Smoke portable Codebase Memory bundle round-trip
+        run: npm run smoke:cbm

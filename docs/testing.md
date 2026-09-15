@@ -26,6 +26,10 @@ Every bundle generation has unique object keys. Production Cloud Storage uploads
 
 A healthy Codebase Memory status is not sufficient for promotion. Indexing must also produce a non-empty portable `graph.db.zst` artifact.
 
+### Stable bundle-scoped Codebase Memory identity
+
+The explicit index that creates a portable graph artifact and every later hydration of that artifact use the same hidden Codebase Memory project identity derived from the immutable Revision Bundle. Process role (`index` versus `query`) never changes artifact identity.
+
 ### Bundle integrity
 
 Revision Bundle artifacts carry byte counts and SHA-256 checksums. Query hydration fails closed before Codebase Memory consumes a source/graph artifact whose stored bytes do not match the manifest.
@@ -80,7 +84,9 @@ Read-only tools expose `readOnlyHint`; index requests/runtime parity scans and d
 
 Use focused unit/contract evidence while changing a boundary, then one full repository `npm run verify` candidate gate.
 
-Cloud-provider deployment, IAM, and real Codebase Memory portable-artifact behavior require provider/upstream-backed acceptance before production cutover. Local fake-CBM tests deliberately prove Development Intelligence-owned promotion, integrity, concurrency, and lifecycle rules; they do not claim to prove the upstream binary or Google Cloud configuration.
+GitHub CI additionally installs the pinned upstream `codebase-memory-mcp@0.10.8` binary and runs `npm run smoke:cbm`. That smoke creates a real throwaway Git repository, performs an explicit full CBM index, verifies the portable `graph.db.zst` was captured in a Revision Bundle, hydrates that bundle into a clean ephemeral cache using the same bundle-scoped CBM identity, and resolves a known symbol from the hydrated graph.
+
+The real-CBM smoke proves the upstream artifact boundary used by Development Intelligence. It does not claim to prove Google Cloud deployment, IAM, Firestore transaction behavior, or Cloud Storage preconditions; those still require provider-backed acceptance before production cutover.
 
 ## Temporary evidence
 

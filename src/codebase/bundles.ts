@@ -15,6 +15,10 @@ export function bundleManifestKey(project: string, bundleId: string): string {
   return `${bundlePrefix(project, bundleId)}/manifest.json`;
 }
 
+export function bundleCbmProject(project: string, bundleId: string): string {
+  return `devint-index-${safeSegment(project)}-${safeSegment(bundleId)}`;
+}
+
 export async function loadBundleManifest(project: string, bundleId: string): Promise<RevisionBundleManifest> {
   const key = bundleManifestKey(project, bundleId);
   if (!await artifactExists(key)) throw new Error(`Revision bundle manifest not found: ${project}/${bundleId}`);

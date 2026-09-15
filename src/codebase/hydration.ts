@@ -8,7 +8,7 @@ import { sha256File } from '../util/checksum.js';
 import { downloadArtifact } from '../storage/artifacts.js';
 import { readStoredProjectState } from '../storage/control.js';
 import { cbmCall, isHealthyIndexResult } from './cbm.js';
-import { loadBundleManifest } from './bundles.js';
+import { bundleCbmProject, loadBundleManifest } from './bundles.js';
 
 export interface HydratedBundle {
   project: string;
@@ -57,7 +57,7 @@ async function hydrate(project: string, manifest: RevisionBundleManifest): Promi
 
     const cacheDir = path.join(root, 'cbm-cache');
     await ensureDir(cacheDir);
-    const cbmProject = `devint-query-${safeSegment(project)}-${safeSegment(manifest.bundleId)}`.slice(0, 180);
+    const cbmProject = bundleCbmProject(project, manifest.bundleId);
     const cbmEnv = { CBM_CACHE_DIR: cacheDir, CBM_ALLOWED_ROOT: sourceDir };
     const indexed = await cbmCall('index_repository', { repo_path: sourceDir, mode: 'full', name: cbmProject, persistence: false }, { env: cbmEnv, timeoutMs: Number(process.env.DEVINT_HYDRATE_TIMEOUT_MS ?? 10 * 60_000) });
     if (!isHealthyIndexResult(indexed)) throw new Error(`Codebase Memory failed to hydrate revision bundle ${project}/${manifest.bundleId}: ${JSON.stringify(indexed).slice(0, 1000)}`);
