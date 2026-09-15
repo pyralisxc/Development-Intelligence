@@ -31,6 +31,18 @@ export interface SourceDescriptor {
   warnings?: string[];
 }
 
+export type GraphNodeLayer = 'semantic' | 'structural' | 'representation';
+
+export interface EvidenceRecord {
+  id: string;
+  sourceId: string;
+  kind: string;
+  locator: string;
+  message?: string;
+  field?: string;
+  value?: unknown;
+}
+
 export interface GraphNode {
   id: string;
   sourceId: string;
@@ -41,6 +53,9 @@ export interface GraphNode {
   value: unknown;
   raw: string;
   tags?: string[];
+  layer?: GraphNodeLayer;
+  checkpoint?: boolean;
+  evidenceIds?: string[];
 }
 
 export type RelationshipStatus = 'resolved' | 'candidate' | 'unresolved';
@@ -54,6 +69,9 @@ export interface GraphEdge {
   confidence: number | null;
   status: RelationshipStatus;
   evidence: string[];
+  layer?: GraphNodeLayer;
+  checkpoint?: boolean;
+  evidenceIds?: string[];
 }
 
 export interface NamingDivergence {
@@ -83,14 +101,18 @@ export interface GraphCoverage {
 export type GraphRole = 'A' | 'W' | 'B';
 
 export interface IntelligenceGraph {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  analyzerVersion: string;
   graphId: string;
   project: string;
   role: GraphRole;
   createdAt: string;
   repositoryRevision: string | null;
   sourceFingerprint: string | null;
+  topologyFingerprint: string | null;
+  evidenceFingerprint: string | null;
   sources: SourceDescriptor[];
+  evidence: EvidenceRecord[];
   nodes: GraphNode[];
   edges: GraphEdge[];
   namingDivergences: NamingDivergence[];
@@ -100,20 +122,36 @@ export interface IntelligenceGraph {
   coverage?: GraphCoverage;
 }
 
-export interface GraphCheckpointMeta {
+export interface GraphCheckpointSummary {
+  nodes: number;
+  edges: number;
+  unresolved: number;
+  candidate: number;
+  kinds: Record<string, number>;
+}
+
+export interface GraphCheckpointMetaV1 {
   type: 'meta';
   schemaVersion: 1;
   format: 'sharded-ndjson';
   sourceFingerprint: string;
   shards: string[];
-  summary: {
-    nodes: number;
-    edges: number;
-    unresolved: number;
-    candidate: number;
-    kinds: Record<string, number>;
-  };
+  summary: GraphCheckpointSummary;
 }
+
+export interface GraphCheckpointMetaV2 {
+  type: 'meta';
+  schemaVersion: 2;
+  format: 'sharded-ndjson';
+  analyzerVersion: string;
+  sourceFingerprint: string;
+  topologyFingerprint: string;
+  evidenceFingerprint: string;
+  shards: string[];
+  summary: GraphCheckpointSummary;
+}
+
+export type GraphCheckpointMeta = GraphCheckpointMetaV1 | GraphCheckpointMetaV2;
 
 // Compatibility aliases for analyzer internals and the public Parity lens. They do
 // not represent separate storage or lifecycle owners.
