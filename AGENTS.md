@@ -25,11 +25,11 @@ Development Intelligence provides technical evidence. It does not decide product
 
 ## Accepted checkpoint
 
-The portable accepted graph path is:
+The portable accepted graph lives under:
 
-`/.development-intelligence/graph.ndjson`
+`/.development-intelligence/`
 
-The checkpoint is deterministic, text-oriented, excludes its own directory from source fingerprinting, and belongs to the inspected project repository. Git owns accepted history.
+with a deterministic `manifest.json` and hexadecimal NDJSON shards under `graph/`. The checkpoint belongs to the inspected project repository; Git owns accepted history. The source fingerprint excludes the generated directory itself.
 
 ## Verification
 
