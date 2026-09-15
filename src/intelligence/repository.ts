@@ -10,7 +10,6 @@ import { observation, resolution } from './model.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const GRAPH_CHECKPOINT_PATH = `${GRAPH_DIRECTORY}/graph.ndjson`;
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
