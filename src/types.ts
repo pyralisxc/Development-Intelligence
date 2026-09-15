@@ -103,7 +103,9 @@ export interface IntelligenceGraph {
 export interface GraphCheckpointMeta {
   type: 'meta';
   schemaVersion: 1;
+  format: 'sharded-ndjson';
   sourceFingerprint: string;
+  shards: string[];
   summary: {
     nodes: number;
     edges: number;
