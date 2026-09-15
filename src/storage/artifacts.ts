@@ -82,7 +82,7 @@ export async function readArtifactJson<T>(key: string): Promise<T> {
   const bucketName = gcsBucketName();
   if (bucketName) {
     const [buffer] = await gcs().bucket(bucketName).file(key).download();
-    return JSON.parse(buffer.toString('utf8')) as T;
+    return JSON.parse(new TextDecoder().decode(buffer)) as T;
   }
   return JSON.parse(await fs.readFile(localPath(key), 'utf8')) as T;
 }
