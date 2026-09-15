@@ -52,9 +52,17 @@ Production Cloud Storage writes use create-only generation-match preconditions. 
 
 The selected bundle pointer is durable control state. Local CBM project names, caches, checkouts, and extraction directories are not durable state.
 
+## Codebase Memory artifact identity
+
+The explicit full index that creates `graph.db.zst` and every later clean hydration of that bundle use the same hidden Codebase Memory project identity derived from **public project identity + immutable bundle ID**.
+
+That identity is an adapter detail. It is never a public project identifier and never appears in normal public results. Keeping it stable across index and hydration aligns Development Intelligence with Codebase Memory's portable-artifact bootstrap instead of treating the graph artifact as an undocumented database format.
+
 ## Index lifecycle
 
 `refresh_codebase` resolves the mutable repository ref once and transactionally claims the exact observed SHA. Repeated requests for the same queued/running SHA deduplicate before provider dispatch. A newer SHA may replace the active claim; an older worker then loses ownership and cannot update that project's current index state.
+
+A selected bundle is reused only when it still represents the exact upstream SHA, its bundle/CBM/Parity versions match the running service, and all referenced artifacts still exist. Missing artifacts or analysis-version changes cause the same source SHA to be compiled into a fresh immutable bundle generation. `force=true` explicitly rebuilds the same SHA when integrity damage is suspected but the artifact objects still exist.
 
 Managed indexing receives **project + ref + expected SHA**. A short-lived execution:
 
@@ -62,7 +70,7 @@ Managed indexing receives **project + ref + expected SHA**. A short-lived execut
 2. re-checks that the ref still points at that expected SHA before expensive work;
 3. fetches a bounded Git checkout into ephemeral storage and verifies the checkout still equals the expected SHA;
 4. retains bounded default-branch history where useful for common branch/PR diff analysis;
-5. runs Codebase Memory full indexing with a job-local `CBM_CACHE_DIR`;
+5. runs Codebase Memory full indexing with a job-local `CBM_CACHE_DIR` and the bundle-scoped CBM identity;
 6. requires healthy CBM status **and** a real non-empty `.codebase-memory/graph.db.zst`;
 7. runs repository Parity analyzers against the same exact checkout;
 8. archives source/Git context;
@@ -90,7 +98,7 @@ On a graph/source query:
 4. verify byte counts and SHA-256 checksums;
 5. extract source/Git context;
 6. place `graph.db.zst` at the upstream bootstrap location;
-7. invoke Codebase Memory against an instance-local cache;
+7. invoke Codebase Memory with the same bundle-scoped project identity used to create the artifact, against an instance-local cache;
 8. serve the query through the upstream public CLI contract;
 9. sanitize internal project names/paths from output.
 

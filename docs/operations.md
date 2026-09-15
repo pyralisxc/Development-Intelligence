@@ -65,7 +65,7 @@ Query service needs:
 
 - read access to private bundle/parity objects;
 - read/write access to its Firestore control collection (runtime parity scans and status reads);
-- permission to invoke the indexing Cloud Run Job;
+- permission to invoke the indexing Cloud Run Job, including execution overrides;
 - access only to secrets required for MCP/runtime observation.
 
 Index job needs:
@@ -112,7 +112,9 @@ The dedicated MCP OAuth protected-resource implementation remains a separate sec
 
 `refresh_codebase` resolves the upstream allowlisted ref before dispatch and transactionally claims that exact SHA.
 
-- Current selected SHA + valid manifest: returns unchanged.
+- Current selected SHA + current analysis versions + all referenced artifacts present: returns unchanged.
+- Missing referenced artifact or analysis-version mismatch: requests a fresh immutable bundle for the same SHA automatically.
+- `force=true`: requests a fresh immutable bundle for the same SHA even when the objects still exist; use this after checksum/integrity failure or another confirmed derived-state problem.
 - Same SHA already queued/running: returns a deduplicated accepted result without invoking another job.
 - Newer SHA while an older job is queued/running: the newer SHA replaces the active claim. The old job can no longer mutate current index status or promote a bundle.
 - Managed production: the exact claimed SHA is passed to the Cloud Run Job.
@@ -126,13 +128,15 @@ Every bundle generation receives unique object keys. Cloud Storage uploads use `
 
 The job uses an ephemeral bounded-history Git checkout. It requires Codebase Memory to produce a healthy index and a non-empty `graph.db.zst`. It then runs repository Parity analysis, creates a source archive, hashes every artifact, uploads artifacts create-only, and writes `manifest.json` last.
 
+The full index uses one hidden Codebase Memory identity derived from the public project and immutable bundle ID. That same identity is reused later when the portable graph is hydrated for queries.
+
 The upstream ref is resolved again before selected-pointer promotion. Failed or superseded indexing never replaces the previous selected bundle.
 
 ## Query behavior
 
-Graph/source tools hydrate the selected bundle on demand. Hydration verifies manifest identity, artifact byte counts, and SHA-256 before extracting source or bootstrapping Codebase Memory. Cold hydration may be slower; warm instances share the hydrated bundle across concurrent requests.
+Graph/source tools hydrate the selected bundle on demand. Hydration verifies manifest identity, artifact byte counts, and SHA-256 before extracting source or bootstrapping Codebase Memory. The graph is placed at the upstream `.codebase-memory/graph.db.zst` bootstrap location and opened using the same bundle-scoped CBM project identity that created it.
 
-A query instance can disappear at any time without recovery work because all durable state is outside the instance.
+Cold hydration may be slower; warm instances share the hydrated bundle across concurrent requests. A query instance can disappear at any time without recovery work because all durable state is outside the instance.
 
 ## Parity lifecycle
 
@@ -155,6 +159,21 @@ Runtime unavailable/error state is preserved rather than treated as empty or aut
 No semantic project mapping is created.
 
 GitHub App installation-token onboarding is the intended production replacement for long-lived Git credentials. It is deliberately isolated from this bundle-lifecycle cut and must reuse the same repository/ref authorization seam rather than creating another intelligence path.
+
+## Verification and provider cutover
+
+The repository gate includes a pinned real `codebase-memory-mcp@0.10.8` smoke proving explicit index → portable artifact → clean ephemeral hydration → graph query.
+
+Before production cutover, separately prove the Google Cloud-owned boundaries in the target project:
+
+- Cloud Storage create-only object writes and private access;
+- Firestore exact-SHA transactions under concurrent requests;
+- Cloud Run Job invocation with environment overrides and least-privilege IAM;
+- query-service read access versus index-job create access;
+- Secret Manager/runtime credential injection;
+- scale-to-zero cold hydration within chosen memory/time bounds.
+
+Do not claim those provider behaviors from local mocks or GitHub CI alone.
 
 ## Backup/recovery
 

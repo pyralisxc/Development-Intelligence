@@ -54,6 +54,8 @@ A bundle contains:
 
 Failed indexing never changes the selected last-known-good bundle. Bundle promotion requires a healthy Codebase Memory result **and** an actual non-empty portable graph artifact. Query hydration verifies artifact byte counts and SHA-256 checksums before Codebase Memory is allowed to consume the bundle.
 
+The explicit index and every later hydration use the same hidden bundle-scoped Codebase Memory project identity. This keeps the upstream portable-artifact bootstrap stable without exposing that internal identity publicly.
+
 ## Public MCP surface
 
 Shared:
@@ -140,9 +142,11 @@ The registry credential seam is intentionally isolated so GitHub App installatio
 
 `refresh_codebase` first resolves the requested allowlisted ref.
 
-- If the selected bundle already represents that exact SHA and its manifest is available, it returns without re-indexing.
-- In managed hosting, it queues the configured Cloud Run indexing job and returns accepted/index status.
-- In local/test mode, it runs the same indexing function directly.
+- If the selected bundle already represents that exact SHA, uses the current bundle/CBM/Parity versions, and all referenced artifacts still exist, it returns without re-indexing.
+- Missing artifacts or analysis-version changes rebuild the same source SHA automatically into a fresh immutable bundle generation.
+- `force=true` explicitly rebuilds the same source SHA when derived bytes are suspected to be corrupt even though their objects still exist.
+- In managed hosting, an accepted refresh queues the configured Cloud Run indexing job and returns accepted/index status.
+- In local/test mode, it runs the same exact-SHA indexing function directly.
 
 The indexing execution re-checks the upstream ref before promotion. If the ref moved while a job was running, the completed immutable bundle may remain stored, but it is not selected as current.
 
@@ -152,4 +156,10 @@ The indexing execution re-checks the upstream ref before promotion. If the ref m
 npm run verify
 ```
 
-The durable suite protects immutable-bundle promotion, portable-artifact presence, checksum integrity, universal Parity behavior, secret redaction, project isolation, MCP contracts, and the generic source boundary.
+CI also installs the pinned upstream Codebase Memory release and runs:
+
+```bash
+npm run smoke:cbm
+```
+
+The durable suite protects immutable-bundle promotion, same-revision repair, portable-artifact presence, checksum integrity, exact-SHA concurrency, universal Parity behavior, secret redaction, project isolation, MCP contracts, and the generic source boundary. The real-CBM smoke proves the actual `0.10.8` export → clean hydration → graph-query boundary used by Development Intelligence.
