@@ -30,8 +30,11 @@ async function makeFixture(): Promise<{ root: string; source: string; remote: st
   await runChecked('git', ['init', '--bare', '--initial-branch=main', remote]);
   await runChecked('git', ['init', '--initial-branch=main', source]);
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
-  await fs.writeFile(path.join(source, 'src', 'panel.tsx'), `
+  await fs.writeFile(path.join(source, 'src', 'helper.ts'), `
 export function helper() { return 'ok'; }
+`);
+  await fs.writeFile(path.join(source, 'src', 'panel.tsx'), `
+import { helper } from './helper';
 export function Panel() {
   const handleManage = async () => {
     helper();
@@ -143,12 +146,17 @@ test('code inspection, trace, parity, and runtime evidence all use one intrinsic
     const search = await searchGraph({ project: fixture.project, query: 'helper' }) as any;
     assert.ok(search.nodes.some((node: any) => node.name === 'helper'));
     const trace = await traceGraph({ project: fixture.project, node: 'Panel', direction: 'outbound', depth: 4 }) as any;
-    assert.ok(trace.nodes.some((node: any) => node.name === 'helper'), 'native graph traversal should expose same-file call relationships');
+    assert.ok(trace.nodes.some((node: any) => node.name === 'helper'), 'native graph traversal should cross module imports and expose called symbols');
+    const reverseTrace = await traceGraph({ project: fixture.project, node: 'helper', direction: 'inbound', depth: 4 }) as any;
+    assert.ok(reverseTrace.nodes.some((node: any) => node.name === 'handleManage'), 'cross-file caller discovery should reach the importing caller');
+    assert.ok(graph.nodes.some(node => node.kind === 'import-binding' && node.name === 'helper'));
+    assert.ok(graph.edges.some(edge => edge.kind === 'imports' && edge.status === 'resolved'));
+    assert.ok(graph.edges.some(edge => edge.kind === 'calls' && edge.strategy === 'module-resolution'));
 
     const code = await searchCode({ project: fixture.project, pattern: 'fetch', limit: 10 }) as any;
     assert.ok(code.matches.some((match: any) => match.file === 'src/panel.tsx'));
     const snippet = await getCodeSnippet({ project: fixture.project, node: 'helper', context: 2 }) as any;
-    assert.equal(snippet.file, 'src/panel.tsx');
+    assert.equal(snippet.file, 'src/helper.ts');
     assert.ok(snippet.lines.some((line: any) => line.text.includes('helper')));
   } finally {
     await close(runtime);
