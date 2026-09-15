@@ -1,0 +1,34 @@
+name: seal-pr2-b
+
+on:
+  push:
+    branches: [tmp/seal-pr2-b]
+
+permissions:
+  contents: read
+
+jobs:
+  seal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact PR 2 source candidate
+        uses: actions/checkout@v7
+        with:
+          ref: 57039ade4ae694ee1c1882e20fb6e25f60404d96
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - name: Seal and verify B
+        run: |
+          node dist/src/graphCli.js seal --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
+          npm run graph:check -- --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
+      - name: Upload exact B checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-pr2-b
+          path: .development-intelligence
+          if-no-files-found: error
+          retention-days: 7
