@@ -7,7 +7,7 @@ export interface CbmCallOptions {
 
 export async function cbmCall(tool: string, args: Record<string, unknown> = {}, options: CbmCallOptions = {}): Promise<unknown> {
   const binary = process.env.DEVINT_CBM_BINARY ?? 'codebase-memory-mcp';
-  const cliArgs = ['cli', '--raw', tool];
+  const cliArgs = ['cli', tool];
   if (Object.keys(args).length > 0) cliArgs.push(JSON.stringify(args));
   const env: NodeJS.ProcessEnv = {
     CBM_WORKERS: process.env.CBM_WORKERS ?? '1',

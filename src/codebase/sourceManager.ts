@@ -7,13 +7,13 @@ import { ensureDir, pathExists } from '../util/fs.js';
 import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
 import { sha256File } from '../util/checksum.js';
-import { deleteArtifactPrefix, projectArtifactPrefix, uploadArtifact, writeArtifactJson } from '../storage/artifacts.js';
+import { artifactExists, deleteArtifactPrefix, projectArtifactPrefix, uploadArtifact, writeArtifactJson } from '../storage/artifacts.js';
 import { claimIndexRequest, deleteStoredProjectState, promoteIndexSuccess, readStoredProjectState, transitionIndexState } from '../storage/control.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from '../parity/resolver.js';
 import { scanRepositoryPath } from '../parity/repository.js';
 import { saveScan } from '../parity/store.js';
 import { cbmCall, codebaseSummary, isHealthyIndexResult } from './cbm.js';
-import { BUNDLE_SCHEMA_VERSION, DEFAULT_CBM_VERSION, PARITY_SCHEMA_VERSION, bundleManifestKey, bundlePrefix, loadBundleManifest } from './bundles.js';
+import { BUNDLE_SCHEMA_VERSION, DEFAULT_CBM_VERSION, PARITY_SCHEMA_VERSION, bundleCbmProject, bundleManifestKey, bundlePrefix, loadBundleManifest } from './bundles.js';
 import { dispatchIndexJob } from './dispatch.js';
 import { gitAuth } from './gitAuth.js';
 
@@ -128,6 +128,20 @@ function makeBundleId(project: string, sha: string, cbmVersion: string): string 
   return `${sha.slice(0, 16)}-${fingerprint}-${generation}`;
 }
 
+async function selectedBundleIsReusable(project: string, state: ProjectState): Promise<boolean> {
+  if (!state.selectedSha || !state.selectedBundleId) return false;
+  try {
+    const manifest = await loadBundleManifest(project, state.selectedBundleId);
+    const currentCbmVersion = process.env.DEVINT_CBM_VERSION ?? DEFAULT_CBM_VERSION;
+    if (manifest.sourceSha !== state.selectedSha || manifest.cbmVersion !== currentCbmVersion || manifest.parityVersion !== PARITY_SCHEMA_VERSION) return false;
+    const artifacts = [manifest.artifacts.sourceArchive, manifest.artifacts.graph, manifest.artifacts.repositoryParity];
+    const available = await Promise.all(artifacts.map(artifact => artifactExists(artifact.key)));
+    return available.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
 async function supersedeOwnedRun(project: string, expectedSha: string, message: string): Promise<Record<string, unknown>> {
   const finishedAt = new Date().toISOString();
   await transitionIndexState(project, expectedSha, {
@@ -190,7 +204,7 @@ export async function indexRevisionNow(project: string, ref?: string, expectedSh
     const bundleId = makeBundleId(project, sha, cbmVersion);
     const cbmCache = path.join(root, 'cbm-cache');
     await ensureDir(cbmCache);
-    const internalProject = `devint-index-${safeSegment(project)}-${bundleId}`;
+    const internalProject = bundleCbmProject(project, bundleId);
     const cbmEnv = { CBM_CACHE_DIR: cbmCache, CBM_ALLOWED_ROOT: sourceDir };
     const indexResult = await cbmCall('index_repository', {
       repo_path: sourceDir,
@@ -299,20 +313,15 @@ export async function indexRevisionNow(project: string, ref?: string, expectedSh
   }
 }
 
-export async function refreshCodebase(project: string, ref?: string): Promise<Record<string, unknown>> {
+export async function refreshCodebase(project: string, ref?: string, force = false): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(project);
   const selectedRef = ref ?? config.defaultRef;
   assertAllowedRef(project, config, selectedRef);
   const state = await readProjectState(project);
   const upstream = await upstreamStatus(project, selectedRef);
   if (!upstream.upstreamSha) throw new Error(`Unable to resolve ${project}@${selectedRef}: ${upstream.error ?? 'no revision returned'}`);
-  if (state.selectedSha === upstream.upstreamSha && state.selectedBundleId) {
-    try {
-      await loadBundleManifest(project, state.selectedBundleId);
-      return { project, ref: selectedRef, accepted: true, changed: false, promoted: true, upstreamSha: upstream.upstreamSha, indexedSha: state.selectedSha, bundleId: state.selectedBundleId };
-    } catch {
-      // Missing/corrupt derived state is rebuilt through the normal immutable bundle path.
-    }
+  if (!force && state.selectedSha === upstream.upstreamSha && await selectedBundleIsReusable(project, state)) {
+    return { project, ref: selectedRef, accepted: true, changed: false, promoted: true, upstreamSha: upstream.upstreamSha, indexedSha: state.selectedSha, bundleId: state.selectedBundleId };
   }
 
   const requestedAt = new Date().toISOString();
@@ -336,7 +345,7 @@ export async function refreshCodebase(project: string, ref?: string): Promise<Re
     try {
       const dispatched = await dispatchIndexJob(project, selectedRef, upstream.upstreamSha);
       await transitionIndexState(project, upstream.upstreamSha, { lastIndexOperation: dispatched.operationName });
-      return { project, ref: selectedRef, accepted: true, queued: true, upstreamSha: upstream.upstreamSha, operationName: dispatched.operationName };
+      return { project, ref: selectedRef, accepted: true, queued: true, forced: force, upstreamSha: upstream.upstreamSha, operationName: dispatched.operationName };
     } catch (error) {
       await transitionIndexState(project, upstream.upstreamSha, {
         lastIndexStatus: 'failed',
@@ -348,7 +357,8 @@ export async function refreshCodebase(project: string, ref?: string): Promise<Re
     }
   }
 
-  return await indexRevisionNow(project, selectedRef, upstream.upstreamSha);
+  const result = await indexRevisionNow(project, selectedRef, upstream.upstreamSha);
+  return force ? { ...result, forced: true } : result;
 }
 
 export async function indexStatus(project: string): Promise<Record<string, unknown>> {

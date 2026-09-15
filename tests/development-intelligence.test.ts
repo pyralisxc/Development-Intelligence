@@ -65,8 +65,8 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
 import fs from 'node:fs';
 import path from 'node:path';
 const args = process.argv.slice(2);
-const tool = args[2];
-const payload = args[3] ? JSON.parse(args[3]) : {};
+const tool = args[1];
+const payload = args[2] ? JSON.parse(args[2]) : {};
 const cache = process.env.CBM_CACHE_DIR || path.join(process.cwd(), '.fake-cbm-cache');
 fs.mkdirSync(cache, { recursive: true });
 const rootFile = path.join(cache, 'root.txt');
@@ -206,6 +206,35 @@ test('bundle checksum corruption fails closed before Codebase Memory hydration',
   }
 });
 
+test('force refresh repairs damaged derived state without changing source identity', async () => {
+  const fixture = await makeFixture();
+  try {
+    await configure(fixture);
+    await refreshCodebase(fixture.project);
+    const before = await readProjectState(fixture.project);
+    const beforeManifest = await loadSelectedBundleManifest(fixture.project);
+    assert.ok(before.selectedSha);
+    assert.ok(before.selectedBundleId);
+    assert.ok(beforeManifest);
+
+    await fs.appendFile(path.join(fixture.artifacts, beforeManifest!.artifacts.graph.key), 'tampered');
+    await assert.rejects(callCurrentCodebase(fixture.project, 'search_graph', { query: 'Panel' }), /checksum mismatch/);
+
+    const repaired = await refreshCodebase(fixture.project, undefined, true);
+    assert.equal(repaired.promoted, true);
+    assert.equal(repaired.forced, true);
+    assert.equal(repaired.indexedSha, before.selectedSha);
+    const after = await readProjectState(fixture.project);
+    assert.equal(after.selectedSha, before.selectedSha, 'repair must preserve canonical source revision');
+    assert.notEqual(after.selectedBundleId, before.selectedBundleId, 'repair must create and promote a fresh immutable bundle generation');
+
+    const query = await callCurrentCodebase(fixture.project, 'search_graph', { query: 'Panel' }) as any;
+    assert.equal(query.tool, 'search_graph');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('parity scan reuses indexed repository observations and combines read-only runtime evidence', async () => {
   const fixture = await makeFixture();
   const runtime = http.createServer((_req: any, res: any) => {
@@ -261,6 +290,7 @@ test('public MCP tool surface stays tool-only and respects immutable revision se
   const byName = new Map(listed.map(tool => [tool.name, tool]));
   assert.equal(byName.get('list_projects')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('refresh_codebase')?.annotations?.readOnlyHint, false);
+  assert.equal((byName.get('refresh_codebase')?.inputSchema as any)?.properties?.force?.type, 'boolean');
   assert.equal(byName.get('scan_parity')?.annotations?.readOnlyHint, false);
   assert.equal(byName.get('delete_project')?.annotations?.destructiveHint, true);
 });
