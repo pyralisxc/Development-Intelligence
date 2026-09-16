@@ -1,5 +1,6 @@
-declare const process: any;
+declare type Buffer = any;
 declare const Buffer: any;
+declare const process: any;
 declare namespace NodeJS { interface ProcessEnv { [key: string]: string | undefined } interface ErrnoException extends Error { code?: string } }
 declare module 'node:crypto' { export const createHash: any; export const createHmac: any; export const timingSafeEqual: any; }
 declare module 'node:fs' { export const promises: any; }
