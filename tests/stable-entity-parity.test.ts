@@ -24,6 +24,36 @@ test('symbol identity survives comment and line movement', () => {
   assert.notEqual(leftNode.locator, rightNode.locator, 'source location remains evidence and may move independently');
 });
 
+test('TypeScript overloads coalesce while genuinely distinct same-name symbols remain distinct', () => {
+  const result = analyzeTypeScript({
+    source,
+    locatorBase: 'src/sample.ts',
+    text: `
+      export function parse(value: string): string;
+      export function parse(value: number): number;
+      export function parse(value: string | number) { return value; }
+
+      export function outer() {
+        { const task = () => 1; task(); }
+        { const task = () => 2; task(); }
+      }
+
+      export class Runner {
+        static run() { return 'static'; }
+        run() { return 'instance'; }
+      }
+    `,
+  });
+  const overloads = result.observations.filter(node => node.kind === 'function' && node.name === 'parse');
+  assert.equal(overloads.length, 1, 'overload declarations and implementation describe one structural symbol');
+  const tasks = result.observations.filter(node => node.kind === 'function' && node.name === 'task');
+  assert.equal(tasks.length, 2);
+  assert.notEqual(tasks[0]!.id, tasks[1]!.id, 'distinct block-local declarations must not collide');
+  const methods = result.observations.filter(node => node.kind === 'method' && node.name === 'run');
+  assert.equal(methods.length, 2);
+  assert.notEqual(methods[0]!.id, methods[1]!.id, 'static and instance members are distinct language symbols');
+});
+
 test('project-neutral source-adjacent declarations create stable semantic entities and evidence', () => {
   const result = analyzeTypeScript({
     source,
