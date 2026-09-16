@@ -44,7 +44,7 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
       </div>
     </aside>
     <section class="workspace">
-      <div class="workspace-head"><div><div id="workspace-title" class="workspace-title">Architecture</div><div id="workspace-description" class="workspace-description">Start with the system map, then select a concept to inspect its neighborhood and evidence.</div></div><div class="workspace-actions"><button id="zoom-out" class="icon-button" type="button" title="Zoom out">−</button><button id="fit" class="icon-button" type="button" title="Fit graph">◎</button><button id="zoom-in" class="icon-button" type="button" title="Zoom in">＋</button></div></div>
+      <div class="workspace-head"><div><div id="workspace-title" class="workspace-title">Architecture</div><div id="workspace-description" class="workspace-description">Start with the system map, then select a concept to inspect its neighborhood and evidence. This is the same graph agents query, presented for human navigation.</div></div><div class="workspace-actions"><button id="zoom-out" class="icon-button" type="button" title="Zoom out">−</button><button id="fit" class="icon-button" type="button" title="Fit graph">◎</button><button id="zoom-in" class="icon-button" type="button" title="Zoom in">＋</button></div></div>
       <div class="graph-wrap"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="status" class="status">Loading…</div></div>
     </section>
     <aside class="side"><div class="side-head"><h2>Inspector</h2><button id="history-back" class="history-button" type="button" disabled>← Back</button></div><div id="detail"></div></aside>
