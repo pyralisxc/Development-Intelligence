@@ -103,3 +103,126 @@ jobs:
             benchmark-cardforge.md
           if-no-files-found: error
           retention-days: 14
+
+  preview:
+    if: github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.body, '<!-- devint-preview -->')
+    needs: [verify, cardforge-benchmark]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - name: Prepare isolated preview configuration
+        env:
+          PREVIEW_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git update-ref refs/heads/devint-preview "$PREVIEW_SHA"
+          PREVIEW_ROOT="$RUNNER_TEMP/devint-preview"
+          mkdir -p "$PREVIEW_ROOT"
+          REPOSITORY_URL="$(node -e "const {pathToFileURL}=require('node:url'); console.log(pathToFileURL(process.env.GITHUB_WORKSPACE + '/.git').href)")"
+          cat > "$PREVIEW_ROOT/projects.json" <<EOF
+          {
+            "Development-Intelligence": {
+              "repository": "$REPOSITORY_URL",
+              "defaultRef": "refs/heads/devint-preview",
+              "allowedRefs": ["refs/heads/devint-preview"],
+              "credential": { "type": "none" }
+            }
+          }
+          EOF
+          PREVIEW_PASSWORD="$(openssl rand -hex 18)"
+          PROXY_SECRET="$(openssl rand -hex 32)"
+          {
+            echo "PREVIEW_SHA=$PREVIEW_SHA"
+            echo "PREVIEW_ROOT=$PREVIEW_ROOT"
+            echo "DEVINT_PROJECTS_FILE=$PREVIEW_ROOT/projects.json"
+            echo "DEVINT_SCRATCH_DIR=$PREVIEW_ROOT/scratch"
+            echo "DEVINT_AUTH_MODE=proxy"
+            echo "DEVINT_PROXY_SHARED_SECRET=$PROXY_SECRET"
+            echo "DEVINT_HOST=127.0.0.1"
+            echo "DEVINT_PORT=8787"
+            echo "DEVINT_PREVIEW_PROXY_PORT=8790"
+            echo "DEVINT_PREVIEW_TARGET=http://127.0.0.1:8787"
+            echo "DEVINT_PREVIEW_USER=review"
+            echo "DEVINT_PREVIEW_PASSWORD=$PREVIEW_PASSWORD"
+          } >> "$GITHUB_ENV"
+      - name: Start authenticated preview and public tunnel
+        run: |
+          set -euo pipefail
+          mkdir -p "$DEVINT_SCRATCH_DIR"
+          node dist/src/http.js > "$PREVIEW_ROOT/service.log" 2>&1 &
+          echo $! > "$PREVIEW_ROOT/service.pid"
+          node scripts/preview-proxy.mjs > "$PREVIEW_ROOT/proxy.log" 2>&1 &
+          echo $! > "$PREVIEW_ROOT/proxy.pid"
+          for attempt in $(seq 1 40); do
+            if curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" http://127.0.0.1:8790/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" http://127.0.0.1:8790/health > /dev/null
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$PREVIEW_ROOT/cloudflared"
+          chmod +x "$PREVIEW_ROOT/cloudflared"
+          "$PREVIEW_ROOT/cloudflared" tunnel --no-autoupdate --url http://127.0.0.1:8790 > "$PREVIEW_ROOT/cloudflared.log" 2>&1 &
+          echo $! > "$PREVIEW_ROOT/cloudflared.pid"
+          PREVIEW_URL=""
+          for attempt in $(seq 1 60); do
+            PREVIEW_URL="$(grep -Eo 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$PREVIEW_ROOT/cloudflared.log" | head -n 1 || true)"
+            [ -n "$PREVIEW_URL" ] && break
+            sleep 1
+          done
+          if [ -z "$PREVIEW_URL" ]; then
+            cat "$PREVIEW_ROOT/cloudflared.log"
+            exit 1
+          fi
+          echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 40); do
+            if curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" "$PREVIEW_URL/health" > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" "$PREVIEW_URL/health" > /dev/null
+          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" "$PREVIEW_URL/graph?project=Development-Intelligence" | grep -qi 'Development Intelligence graph'
+          DISCOVER_BODY='{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" \
+            -H 'content-type: application/json' \
+            -H 'mcp-protocol-version: 2026-07-28' \
+            -H 'mcp-method: server/discover' \
+            --data "$DISCOVER_BODY" "$PREVIEW_URL/mcp" | grep -q 'Development Intelligence'
+          LIST_BODY='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" \
+            -H 'content-type: application/json' \
+            -H 'mcp-protocol-version: 2026-07-28' \
+            -H 'mcp-method: tools/list' \
+            --data "$LIST_BODY" "$PREVIEW_URL/mcp" | grep -q 'query_parity'
+          {
+            echo '## Development Intelligence Preview'
+            echo ''
+            echo "- Exact candidate: \`$PREVIEW_SHA\`"
+            echo "- Viewer: $PREVIEW_URL/graph?project=Development-Intelligence"
+            echo "- MCP: $PREVIEW_URL/mcp"
+            echo "- Username: \`$DEVINT_PREVIEW_USER\`"
+            echo "- Password: \`$DEVINT_PREVIEW_PASSWORD\`"
+            echo '- Preview is ephemeral and ends when this job is cancelled or reaches its timeout.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Development Intelligence Preview::URL=$PREVIEW_URL USER=$DEVINT_PREVIEW_USER PASSWORD=$DEVINT_PREVIEW_PASSWORD SHA=$PREVIEW_SHA"
+      - name: Keep preview available for review
+        run: |
+          echo "Preview active at $PREVIEW_URL for candidate $PREVIEW_SHA"
+          while true; do
+            for process in service proxy cloudflared; do
+              pid="$(cat "$PREVIEW_ROOT/$process.pid")"
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "$process exited unexpectedly"
+                cat "$PREVIEW_ROOT/$process.log" || true
+                exit 1
+              fi
+            done
+            sleep 30
+          done
