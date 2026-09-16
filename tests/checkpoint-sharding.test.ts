@@ -109,11 +109,35 @@ test('accepted checkpoint is deterministic sharded semantic topology rather than
     const parsed = await readCheckpoint(root);
     assert.equal(parsed?.nodes.length, 48);
     assert.equal(parsed?.edges.length, 47);
+    assert.equal(parsed?.integrity.topologyValid, true);
     assert.equal(parsed?.nodes.some(node => node.kind === 'function'), false, 'structural code is rebuilt from Git rather than persisted as accepted topology');
 
     await writeCheckpoint(root, graph);
     const second = await snapshot(root);
     assert.deepEqual(second, first, 'same semantic topology must produce byte-identical shard files and manifest');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('checkpoint validation rejects same-count shard tampering', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-shard-integrity-'));
+  try {
+    await writeCheckpoint(root, fixtureGraph());
+    const manifest = JSON.parse(await fs.readFile(path.join(root, '.development-intelligence', 'manifest.json'), 'utf8')) as { shards: string[] };
+    let mutated = false;
+    for (const shard of manifest.shards) {
+      const target = path.join(root, '.development-intelligence', 'graph', shard);
+      const content = await fs.readFile(target, 'utf8');
+      if (!content.includes('semantic-')) continue;
+      const changed = content.replace('semantic-', 'tampered-');
+      if (changed === content) continue;
+      await fs.writeFile(target, changed, 'utf8');
+      mutated = true;
+      break;
+    }
+    assert.equal(mutated, true, 'fixture must mutate one persisted semantic record without changing counts');
+    await assert.rejects(readCheckpoint(root), /topology fingerprint does not match shard contents/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
