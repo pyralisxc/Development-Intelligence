@@ -159,13 +159,13 @@ The Preview lane:
 
 - checks out the exact PR head rather than the synthetic merge ref;
 - serves only that local repository through an isolated project registry;
-- runs DI in trusted-proxy mode behind a generated Basic-auth review proxy;
-- uses a pinned, checksum-verified Cloudflared binary to create an ephemeral HTTPS tunnel;
-- smoke-tests `/health`, the human `/graph` viewer, MCP discovery, and tool listing through the public tunnel before announcing access;
-- publishes the exact candidate SHA and ephemeral review credentials as a short-lived private Actions artifact;
+- runs DI in **native private mode** with an ephemeral owner password, agent bearer token, and session-signing secret;
+- exposes DI directly through a pinned, checksum-verified Cloudflared HTTPS tunnel;
+- proves an unauthenticated Viewer redirects to DI's own sign-in page, owner sign-in opens the Viewer, unauthorized MCP fails with `401`, and the separate agent token reaches modern MCP discovery/tool listing;
+- publishes the exact candidate SHA plus ephemeral owner/agent credentials only in a one-day private Actions artifact;
 - ends when the job is cancelled or reaches its timeout and creates no durable graph authority.
 
-The lane is intentionally a physical pre-merge acceptance surface, not production hosting. Passing it does not substitute for the hosted OAuth acceptance required when the real ChatGPT-facing gateway changes.
+The lane is intentionally a physical pre-merge acceptance surface for the same owner/agent access model recommended for small deployments. Passing it does not substitute for hosted OAuth acceptance when a client such as ChatGPT is configured to require OAuth.
 
 ## Runtime observation safety
 
