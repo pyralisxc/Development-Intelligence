@@ -68,11 +68,11 @@ export async function listTechnicalSources(project: string): Promise<Array<Recor
 export async function queryTechnicalSource(input: {
   project: string;
   sourceId: string;
-  capability?: TechnicalSourceCapability;
+  capability?: TechnicalSourceCapability | undefined;
   query: string;
-  limit?: number;
-  from?: string;
-  to?: string;
+  limit?: number | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
 }): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(input.project);
   const source = (config.technicalSources ?? []).find(item => item.id === input.sourceId);
