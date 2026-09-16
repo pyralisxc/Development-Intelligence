@@ -18,8 +18,10 @@ test('symbol identity survives comment and line movement', () => {
   const left = first.observations.find(node => node.kind === 'function' && node.name === 'alpha');
   const right = second.observations.find(node => node.kind === 'function' && node.name === 'alpha');
   assert.ok(left && right);
-  assert.equal(left.id, right.id, 'line movement must not manufacture a new function identity');
-  assert.notEqual(left.locator, right.locator, 'source location remains evidence and may move independently');
+  const leftNode = left!;
+  const rightNode = right!;
+  assert.equal(leftNode.id, rightNode.id, 'line movement must not manufacture a new function identity');
+  assert.notEqual(leftNode.locator, rightNode.locator, 'source location remains evidence and may move independently');
 });
 
 test('project-neutral source-adjacent declarations create stable semantic entities and evidence', () => {
@@ -43,13 +45,14 @@ test('project-neutral source-adjacent declarations create stable semantic entiti
   });
   const entity = result.observations.find(node => node.id === 'capability:sample.compare');
   assert.ok(entity);
-  assert.equal(entity.layer, 'semantic');
-  assert.equal(entity.checkpoint, true);
-  assert.equal(entity.name, 'Compare variants');
-  assert.ok(entity.evidenceIds?.length);
-  assert.ok(result.resolutions.some(edge => edge.from === entity.id && edge.to === 'feature:sample' && edge.kind === 'owned-by' && edge.layer === 'semantic'));
-  assert.ok(result.resolutions.some(edge => edge.from === entity.id && edge.to === 'surface:workspace' && edge.kind === 'exposed-on' && edge.layer === 'semantic'));
-  assert.ok(result.evidence?.some(item => item.id === entity.evidenceIds?.[0]));
+  const semanticEntity = entity!;
+  assert.equal(semanticEntity.layer, 'semantic');
+  assert.equal(semanticEntity.checkpoint, true);
+  assert.equal(semanticEntity.name, 'Compare variants');
+  assert.ok(semanticEntity.evidenceIds?.length);
+  assert.ok(result.resolutions.some(edge => edge.from === semanticEntity.id && edge.to === 'feature:sample' && edge.kind === 'owned-by' && edge.layer === 'semantic'));
+  assert.ok(result.resolutions.some(edge => edge.from === semanticEntity.id && edge.to === 'surface:workspace' && edge.kind === 'exposed-on' && edge.layer === 'semantic'));
+  assert.ok(result.evidence?.some(item => item.id === semanticEntity.evidenceIds?.[0]));
 });
 
 test('legacy or project-specific metadata names do not silently become DI semantics', () => {
