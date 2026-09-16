@@ -54,15 +54,43 @@ Independent agreeing observations may accumulate evidence for one stable identit
 
 Every eligible source file resolves to an explicit coverage state such as `complete`, `partial`, `unsupported`, `skipped`, or `failed`. Analyzer failure must never count as complete inspection.
 
-### Human navigation over agent truth
+### Human Workbench over agent truth
 
-The human `/graph` Viewer renders the same graph used by MCP tools but is tested as a navigation surface, not merely an HTML container. Durable UI acceptance includes named Architecture/Parity/Code/Change destinations, full-graph search, focused neighborhoods, an Inspector, readable connection navigation, evidence access, and graph fit/zoom controls. Raw graph JSON remains optional technical detail.
+The human Workbench is a client of the same Development Intelligence services agents use. Durable UI acceptance covers:
+
+- project chooser and project switching;
+- Overview quick notes/currentness/coverage/change synthesis;
+- Explore using Summary/List/Table/Graph/Raw representations;
+- persistent Inspector with Summary/Connections/Code/Evidence/Changes;
+- Query routing over DI's own read-only capabilities;
+- Sources inventory including Git/runtime and optional technical sources;
+- Changes as readable accepted → working semantic intelligence;
+- `/graph?project=...` compatibility redirect into Explore/Graph.
+
+The graph remains an important representation, but the human product must not require a person to navigate primarily through dots and lines.
+
+### Workbench / MCP capability parity
+
+Durable intelligence primitives used by the Workbench must also be available to agents. The public MCP surface therefore includes `project_overview`, `inspect_entity`, `list_sources`, and `query_source` in addition to the graph/code primitives.
+
+The site must not grow a second private intelligence backend that agents cannot access.
+
+### Read-only technical sources
+
+Generic technical sources are operational access only, not semantic configuration. Tests protect that:
+
+- source types/capabilities are allowlisted;
+- endpoints are HTTPS;
+- credential values come from environment variables, not source config;
+- queries are GET-only, bounded by timeout/response-size/result-limit rules;
+- redirects are rejected;
+- query results remain observations/evidence and are not automatically sealed into accepted topology.
 
 ### Native private access
 
 Private mode must preserve separate human and machine credentials:
 
-- unauthenticated browser Viewer access redirects to DI's own sign-in page;
+- unauthenticated browser Workbench access redirects to DI's own sign-in page;
 - valid owner password creates a bounded signed `HttpOnly` session cookie;
 - bad owner credentials fail;
 - unauthenticated MCP returns `401` with a Bearer challenge;
@@ -73,7 +101,7 @@ Repository visibility is not an authentication mechanism. Public source must rem
 
 ### MCP protocol
 
-Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, and the frozen public tool listing.
+Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, and the intrinsic public tool listing.
 
 ## CardForge evidence strategy
 
@@ -84,11 +112,13 @@ The permanent CardForge benchmark is read-only against a pinned source SHA and p
 A PR-scoped Preview is a physical acceptance surface after verify + CardForge are green. It runs the exact PR head, then proves through the public HTTPS tunnel that:
 
 - the native private owner sign-in page is reachable;
-- owner sign-in can open the human Viewer;
+- owner sign-in can open the Workbench;
+- Overview returns readable quick notes;
+- Sources exposes the project technical-source inventory;
 - unauthenticated MCP fails closed;
-- the separate agent bearer credential can complete modern MCP discovery/tool listing;
-- the Viewer is navigable by a human before merge.
+- the separate agent bearer credential can complete modern MCP discovery/tool listing and sees the Workbench intelligence primitives;
+- the Workbench is navigable by a human before merge.
 
 Preview proof does not replace production OAuth acceptance when a specific remote MCP client is configured to require OAuth.
 
-Do not preserve tests merely because they protected retired persistent-cache, duplicate parity, or external-engine behavior. Preserve the guarantees that still matter under the intrinsic Git-native architecture.
+Do not preserve tests merely because they protected retired persistent-cache, duplicate parity, graph-only UI, or external-engine behavior. Preserve the guarantees that still matter under the intrinsic Git-native architecture.
