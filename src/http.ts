@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { authorize, validateHost } from './auth.js';
 import { callTool, listTools } from './mcp.js';
-import { scanGraph } from './intelligence/service.js';
+import { currentGraph, scanGraph } from './intelligence/service.js';
 import { viewerProjection } from './intelligence/query.js';
 import { renderGraphViewer } from './viewer.js';
 
@@ -73,7 +73,7 @@ export async function handleRpc(body: any, requestInfo: { modern: boolean }): Pr
     return { status: 200, body: rpcResult(id, complete({
       supportedVersions: SUPPORTED_MODERN,
       capabilities: { tools: {} },
-      instructions: 'Project-neutral technical intelligence. Development Intelligence builds one evidence-backed graph of stable semantic entities, structural code, representations, relationships, and provenance. Code, Architecture, Parity, Change, and human visualization are lenses over that graph; Git/source remains implementation authority.',
+      instructions: 'Project-neutral technical intelligence. Development Intelligence builds one evidence-backed graph of stable semantic entities, structural code, representations, relationships, provenance, uncertainty, and coverage. Code, Architecture, Parity, Change, and human visualization are lenses over that graph; Git/source remains implementation authority.',
       ttlMs: 60_000,
       cacheScope: 'private',
     }, true)) };
@@ -130,10 +130,12 @@ export function createDevelopmentIntelligenceServer() {
       const project = requestUrl.searchParams.get('project');
       if (!project) { res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }); res.end('Missing ?project='); return; }
       const requestedRef = requestUrl.searchParams.get('ref') ?? undefined;
+      const requestedGraphId = requestUrl.searchParams.get('graphId') ?? undefined;
+      if (requestedRef && requestedGraphId) { res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }); res.end('Use either ?ref= or ?graphId=, not both'); return; }
       try {
-        const graph = await scanGraph(project, { ref: requestedRef });
+        const graph = requestedGraphId ? await currentGraph(project, undefined, requestedGraphId) : await scanGraph(project, { ref: requestedRef });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store' });
-        res.end(renderGraphViewer(graph, requestedRef));
+        res.end(renderGraphViewer(graph, requestedRef, requestedGraphId));
       } catch (error) {
         res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(error instanceof Error ? error.message : String(error));
@@ -148,11 +150,14 @@ export function createDevelopmentIntelligenceServer() {
       if (view && !['architecture', 'parity', 'code', 'change'].includes(view)) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Unsupported graph view' })); return; }
       try {
         const ref = requestUrl.searchParams.get('ref') ?? undefined;
+        const graphId = requestUrl.searchParams.get('graphId') ?? undefined;
+        if (ref && graphId) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Use either ref or graphId, not both' })); return; }
         const query = requestUrl.searchParams.get('query') ?? undefined;
         const node = requestUrl.searchParams.get('node') ?? undefined;
         const projection = await viewerProjection({
           project,
           ...(ref ? { ref } : {}),
+          ...(graphId ? { graphId } : {}),
           view: (view ?? 'architecture') as 'architecture' | 'parity' | 'code' | 'change',
           ...(query ? { query } : {}),
           ...(node ? { node } : {}),
