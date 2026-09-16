@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      CARDFORGE_BENCHMARK_SHA: 6d6788cf87dd37d7685d26fa10a15e06fa1208ba
+      CARDFORGE_BENCHMARK_SHA: e80d7c74394bce7596e9f5292dd9a1823cd5be8c
     steps:
       - name: Check out Development Intelligence candidate
         uses: actions/checkout@v7
@@ -83,11 +83,11 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run build
-      - name: Check out pinned CardForge benchmark target
+      - name: Check out pinned CardForge migration target
         uses: actions/checkout@v7
         with:
           repository: pyralisxc/CardForge
-          ref: 6d6788cf87dd37d7685d26fa10a15e06fa1208ba
+          ref: e80d7c74394bce7596e9f5292dd9a1823cd5be8c
           path: benchmark/cardforge
           persist-credentials: false
       - name: Generate disposable W and run structural + parity probes
