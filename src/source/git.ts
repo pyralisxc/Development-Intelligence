@@ -43,29 +43,38 @@ export async function upstreamStatus(project: string, ref?: string): Promise<{ r
   }
 }
 
-export async function withProjectCheckout<T>(
-  project: string,
-  ref: string | undefined,
+export async function withResolvedProjectCheckout<T>(
+  revision: ProjectRevision,
   fn: (input: ProjectRevision & { root: string }) => Promise<T>,
 ): Promise<T> {
-  const config = await getProjectConfig(project);
-  const revision = await resolveProjectRevision(project, ref);
+  const config = await getProjectConfig(revision.project);
+  if (config.repository !== revision.repository) throw new Error(`Repository configuration changed while reading ${revision.project}`);
+  assertAllowedRef(revision.project, config, revision.ref);
   const scratchRoot = path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir());
   await fs.mkdir(scratchRoot, { recursive: true });
-  const root = await fs.mkdtemp(path.join(scratchRoot, `devint-${project.replace(/[^a-zA-Z0-9._-]+/g, '-')}-`));
+  const root = await fs.mkdtemp(path.join(scratchRoot, `devint-${revision.project.replace(/[^a-zA-Z0-9._-]+/g, '-')}-`));
   const auth = await gitAuth(config);
   try {
     await runChecked('git', ['init', '--initial-branch=devint', root], { timeoutMs: 60_000 });
     await runChecked('git', ['-C', root, 'remote', 'add', 'origin', config.repository]);
-    await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', revision.ref], { env: auth.env, timeoutMs: 5 * 60_000 });
+    await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', revision.sha], { env: auth.env, timeoutMs: 5 * 60_000 });
     const fetched = (await runChecked('git', ['-C', root, 'rev-parse', 'FETCH_HEAD'])).stdout.trim();
-    if (fetched !== revision.sha) throw new Error(`Repository ref moved while reading ${project}: expected ${revision.sha}, fetched ${fetched}`);
+    if (fetched !== revision.sha) throw new Error(`Repository revision changed while reading ${revision.project}: expected ${revision.sha}, fetched ${fetched}`);
     await runChecked('git', ['-C', root, 'checkout', '--detach', fetched], { timeoutMs: 2 * 60_000 });
     return await fn({ ...revision, root });
   } finally {
     await auth.cleanup();
     await fs.rm(root, { recursive: true, force: true });
   }
+}
+
+export async function withProjectCheckout<T>(
+  project: string,
+  ref: string | undefined,
+  fn: (input: ProjectRevision & { root: string }) => Promise<T>,
+): Promise<T> {
+  const revision = await resolveProjectRevision(project, ref);
+  return await withResolvedProjectCheckout(revision, fn);
 }
 
 export async function listPublicProjects(): Promise<Array<Record<string, unknown>>> {
