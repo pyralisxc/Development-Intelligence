@@ -6,6 +6,8 @@ Development Intelligence does not require a permanently administered graph serve
 
 Durable accepted intelligence lives with each inspected Git project as `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/`. It follows ordinary Git history, review, branching, backup, and access control.
 
+The **source repository and running service have independent visibility**. The Development Intelligence repository may be public for collaboration, inspection, and reuse while a deployed Viewer/MCP endpoint remains privately gated. Repository privacy must not be treated as the service's authentication boundary.
+
 The hosted service needs only:
 
 - Node.js 22+;
@@ -106,15 +108,27 @@ Evidence/analyzer drift alone does not invalidate accepted semantic topology. Co
 
 ## Authentication
 
-DI core has provider-neutral modes:
+DI keeps authentication provider-neutral while supporting the small private deployment directly.
+
+### Native private mode — recommended for a single owner
+
+`DEVINT_AUTH_MODE=private` separates human and machine access:
+
+- `DEVINT_OWNER_PASSWORD` signs the owner into the browser Viewer;
+- `DEVINT_SESSION_SECRET` signs a bounded `HttpOnly`, `SameSite=Strict` owner session cookie;
+- `DEVINT_AGENT_TOKEN` is a separate Bearer credential for agent/MCP access;
+- `DEVINT_SESSION_TTL_SECONDS` optionally changes the owner-session lifetime (default 12 hours);
+- secure cookies are on by default and should remain on for HTTPS deployments. `DEVINT_COOKIE_SECURE=0` exists only for local HTTP development/testing.
+
+Private mode intentionally does **not** create user accounts, roles, or a credential database. It represents one owner plus explicitly credentialed agents. Deployment secrets remain outside Git, so the repository may stay public without exposing the running service.
 
 ### Bearer
 
-`DEVINT_AUTH_MODE=bearer` + `DEVINT_BEARER_TOKEN`.
+`DEVINT_AUTH_MODE=bearer` + `DEVINT_BEARER_TOKEN` protects every Viewer/MCP request with one bearer credential.
 
 ### Trusted proxy
 
-`DEVINT_AUTH_MODE=proxy` + `DEVINT_PROXY_SHARED_SECRET`; the trusted gateway supplies `X-Devint-Proxy-Secret`.
+`DEVINT_AUTH_MODE=proxy` + `DEVINT_PROXY_SHARED_SECRET`; an authenticated gateway supplies `X-Devint-Proxy-Secret`.
 
 ### Local development only
 
@@ -122,17 +136,20 @@ Unauthenticated mode fails closed unless both `DEVINT_AUTH_MODE=none` and `DEVIN
 
 ### Hosted OAuth
 
-A ChatGPT-facing or other OAuth deployment should terminate OAuth at an appropriate gateway/proxy and forward only authenticated requests into DI's trusted proxy boundary. OAuth-provider semantics must not be embedded in the graph engine.
+OAuth is an interoperability boundary, not the graph engine's identity model. A ChatGPT-facing or other OAuth deployment may terminate OAuth at an appropriate gateway/proxy and forward authenticated requests into DI's trusted proxy boundary. Native private mode remains useful for direct browser and bearer-capable agent access.
 
-A release that changes or replaces the hosted gateway must prove end-to-end:
+When an OAuth client requires the standard MCP authorization flow, the deployment must expose the appropriate OAuth discovery/resource metadata, issue resource-scoped tokens, and preserve refresh-token connectivity where the client requires it. DI must not mislabel a static bearer token as OAuth.
+
+A release that changes or replaces the hosted OAuth gateway must prove end-to-end:
 
 1. OAuth authorization succeeds for the intended client;
 2. the gateway forwards to DI using the trusted boundary;
 3. MCP discovery and tool calls succeed;
 4. unauthorized requests fail closed;
-5. the candidate exact SHA/version is the service actually reached.
+5. refresh/reauthorization behavior is appropriate for the client;
+6. the candidate exact SHA/version is the service actually reached.
 
-A successful local bearer/proxy test does not substitute for this hosted acceptance.
+A successful native-private or proxy test does not substitute for this hosted OAuth acceptance when the real client uses OAuth.
 
 ## Pull-request Preview acceptance
 
@@ -145,7 +162,7 @@ The Preview lane:
 - runs DI in trusted-proxy mode behind a generated Basic-auth review proxy;
 - uses a pinned, checksum-verified Cloudflared binary to create an ephemeral HTTPS tunnel;
 - smoke-tests `/health`, the human `/graph` viewer, MCP discovery, and tool listing through the public tunnel before announcing access;
-- publishes the exact candidate SHA and ephemeral review credentials in the private Actions run summary;
+- publishes the exact candidate SHA and ephemeral review credentials as a short-lived private Actions artifact;
 - ends when the job is cancelled or reaches its timeout and creates no durable graph authority.
 
 The lane is intentionally a physical pre-merge acceptance surface, not production hosting. Passing it does not substitute for the hosted OAuth acceptance required when the real ChatGPT-facing gateway changes.
