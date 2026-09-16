@@ -2,75 +2,90 @@
 
 Development Intelligence is a standalone, project-neutral technical-intelligence service for software development.
 
-Its core is **one intrinsic evidence graph**. Code structure, runtime/API observations, UI/MCP relationships, configuration, documentation, tests, and future analyzer outputs all contribute evidence to the same graph. Search, tracing, architecture, parity, diffing, and visualization are lenses over that shared reality.
+Its core is **one intrinsic evidence graph**. Git/source structure, semantic declarations, representations, runtime observations, configuration, documentation, tests, and future generic analyzers contribute evidence to the same model. Code, Architecture, Parity, Change, and the human Viewer are lenses over that graph rather than separate intelligence owners.
 
-External tools can improve what Development Intelligence observes. They do not own its graph model, lifecycle, query semantics, storage, or hosting.
+External tools may improve what Development Intelligence observes. They do not own DI identity, lifecycle, query semantics, persistence, hosting, or product intent.
 
 ## Core rules
 
 - Git/source remains authoritative implementation evidence.
-- Accepted graph history belongs to the project being inspected, not to a central Development Intelligence database.
-- No project-specific extractors or required semantic project configuration.
-- Generic analyzers may understand languages, frameworks, protocols, and formats.
-- Raw names are preserved; naming differences are evidence rather than normalized away.
-- Deterministic relationships may be resolved; heuristics remain candidates with evidence/confidence.
-- `unresolved` and unavailable observations are legitimate results.
-- Secret-like structured values are redacted before they enter the graph.
-- Runtime observation is allowlisted, bounded, GET-only, and read-only.
-- Temporary checkouts/caches are disposable compute, not durable state.
+- Accepted graph history belongs to the inspected project, not a central DI database.
+- No project-specific production extractors or required semantic project configuration.
+- Project registry/configuration grants access; it does not teach DI what a project means.
+- Semantic, structural, and representation entities have stable identities independent of source line numbers where language semantics permit it.
+- Evidence/provenance explains claims; it is not the identity itself.
+- Independent observations that disagree remain explicit conflicts rather than silently becoming corroboration.
+- Proven relationships are `resolved`; heuristics remain `candidate`; unknowns remain `unresolved`.
+- Coverage distinguishes `complete`, `partial`, `unsupported`, `skipped`, and `failed` inspection so absence is never confused with inability to inspect.
+- Secret-like structured values are redacted before entering the graph.
+- Runtime observation is allowlisted, bounded, GET-only, read-only, and explicitly addressed by snapshot `graphId`.
+- Temporary checkouts, graph caches, and runtime snapshots are disposable compute, not durable authority.
 
 See [Architecture](docs/architecture.md), [Operations](docs/operations.md), and [Testing](docs/testing.md).
 
 ## A / W / B lifecycle
 
-Development Intelligence uses the Git-native reality lifecycle proven by Product Reality-style workflows:
+Development Intelligence uses a Git-native accepted/working/candidate lifecycle:
 
-- **A — accepted:** `/.development-intelligence/manifest.json` plus deterministic text shards under `/.development-intelligence/graph/` committed in the accepted branch.
-- **W — working:** a graph generated from the current working/ref state; disposable and not automatically persisted.
-- **B — sealed candidate:** a deterministic checkpoint generated for a candidate immediately before commit/promotion.
+- **A — accepted:** deterministic semantic topology under `/.development-intelligence/` on the accepted project revision.
+- **W — working:** the complete graph regenerated from one exact Git SHA. Canonical W is source-derived and disposable.
+- **B — sealed candidate:** deterministic semantic topology generated for a candidate and committed with that project.
 - After normal Git merge, B is simply the new A. Previous A remains in Git history.
 
-Expectation overlays (sometimes called E by development methodologies) are optional caller evidence, not an intrinsic code-analysis requirement.
+Expectation/future data is caller reasoning, not accepted current reality inside DI.
 
-The checkpoint source fingerprint excludes `/.development-intelligence/` itself, avoiding a self-referential commit-SHA problem while still detecting source changes. Records are deterministically assigned to hexadecimal NDJSON shards so large accepted graphs do not become one giant binary or text blob in Git.
+The checkpoint source fingerprint excludes `/.development-intelligence/` itself. The manifest records source, topology, evidence, and analyzer fingerprints. Checkpoint validation recomputes semantic topology from persisted shards rather than trusting manifest metadata.
+
+`project_status` reports currentness dimensionally: source/topology acceptance, evidence drift, analyzer drift, supported schema, and checkpoint integrity. Analyzer or evidence changes do not manufacture semantic topology drift.
+
+## Exact revision and snapshot addressing
+
+An allowlisted Git ref is resolved once per operation to an immutable SHA. Checkout, cache identity, graph construction, source search/snippets, and returned metadata use that same revision context.
+
+Canonical source queries use:
+
+- `project` + optional allowlisted `ref`.
+
+A runtime-observation scan returns an ephemeral `graphId`. That ID may be passed to graph/code/viewer tools to inspect the same snapshot. Runtime scans never replace the canonical source W used by later ordinary project/ref queries.
 
 ## Public MCP surface
 
-Shared/status:
+The permanent agent-facing surface is intentionally small:
 
 - `list_projects`
 - `project_status`
 - `scan_graph`
-- `graph_status`
-- `clear_cache` (disposable acceleration only)
-
-Intrinsic graph/code:
-
 - `search_graph`
-- `query_graph`
 - `trace_path`
 - `search_code`
 - `get_code_snippet`
 - `get_graph_schema`
 - `get_architecture`
 - `check_graph_coverage`
+- `get_evidence`
 - `diff_graph`
-
-Parity lens over the same graph:
-
-- `scan_parity`
 - `query_parity`
-- `diff_parity`
 
-There is no separate Parity database and no external code-graph engine dependency.
+There is no separate Parity scan database, public cache-management API, provider-specific graph query language, or development-methodology API.
+
+`diff_graph` owns change intelligence. Without `baseRef` it compares accepted semantic A with canonical W. With `baseRef` it compares two Git revisions under the same current analyzer. Semantic diffs compare stable semantic topology rather than source locators/evidence references; evidence/analyzer drift is reported separately.
+
+## Coverage and negative answers
+
+`check_graph_coverage` is the authoritative detailed coverage surface. It reports source files as `complete`, `partial`, `unsupported`, `skipped`, or `failed`, with reasons where available.
+
+Search, trace, Architecture, Parity, and evidence responses carry compact coverage context. Agents should not turn an empty result into an exhaustive “does not exist” claim when relevant coverage is incomplete.
 
 ## Human graph viewer
 
 Authenticated HTTP deployments expose:
 
-`GET /graph?project=<project>[&ref=<allowlisted-ref>]`
+```text
+GET /graph?project=<project>[&ref=<allowlisted-ref>]
+GET /graph?project=<project>&graphId=<ephemeral-snapshot-id>
+```
 
-The viewer renders a bounded projection of the same graph queried by agents. It is intentionally a presentation layer, not a second graph model.
+The Viewer renders the same graph context queried by agents. Architecture, Parity, Code, and Change are presentation lenses only. Candidate/unresolved relationships remain distinguishable, and relationship evidence is inspectable. Change view applies to canonical source/accepted reality rather than runtime snapshots.
 
 ## Local development
 
@@ -101,9 +116,7 @@ node dist/src/graphCli.js seal --repo-path /path/to/project --project project-id
 node dist/src/graphCli.js check --repo-path /path/to/project --project project-id
 ```
 
-`seal` writes `/.development-intelligence/manifest.json` and deterministic NDJSON shards under `/.development-intelligence/graph/`. The project then commits that directory with its candidate according to its own repository workflow.
-
-Development Intelligence itself does not commit or merge projects on behalf of callers merely to maintain graph state.
+`seal` writes `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards. The inspected project commits that directory according to its own repository workflow. DI does not commit or merge inspected projects merely to maintain graph state.
 
 ## Project access configuration
 
