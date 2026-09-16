@@ -10,15 +10,15 @@
               ┌─────────────────────────┼─────────────────────────┐
               │                         │                         │
        stable entities            relationships             first-class evidence
-      semantic/structural       resolved/candidate/        source + locator +
-       /representation              unresolved              revision + reason
+ semantic / structural /     resolved / candidate /      source + locator +
+     representation               unresolved              revision + reason
               ▲                         ▲                         ▲
               └─────────────────────────┼─────────────────────────┘
                                         │
           ┌─────────────────────────────┼──────────────────────────────┐
           │                             │                              │
      Git/source analyzers       runtime/protocol evidence      future generic tools
-          │                             │                        (evidence providers)
+          │                             │                        evidence providers
           └─────────────────────────────┼──────────────────────────────┘
                                         │
               ┌─────────────────────────┼─────────────────────────┐
@@ -30,59 +30,63 @@
                                    Change / Viewer
 ```
 
-Development Intelligence is the intelligence owner. Code inspection, Architecture, Parity, Change, and visualization are lenses over the same graph; none is a separate database or lifecycle engine.
+Development Intelligence owns one graph model. Code inspection, Architecture, Parity, Change, and human visualization are lenses over that graph; none is a second database or lifecycle engine.
 
-## Authority
+## Authority and independence
 
-Git/source owns implementation truth. Development Intelligence produces rebuildable technical and semantic projections of exact revisions.
+Git/source owns implementation truth. DI produces rebuildable technical and semantic projections of exact Git revisions.
 
-Tools may contribute evidence. They do not own DI identity, graph semantics, lifecycle, storage, query contracts, or product intent.
+External tools may contribute evidence. They do not own DI identity, graph semantics, lifecycle, storage, query contracts, or product intent. No production analyzer may branch on project identity.
 
-No analyzer behavior may branch on project identity. Project-specific names, owners, capabilities, and topology must be discovered from source/evidence rather than encoded inside Development Intelligence.
+Development methodologies and skills may consume DI output, but DI neither requires nor implements Developer OS, Founder-to-Feature, Jarvis, or any other reasoning workflow.
+
+Operational project configuration grants observation access only: repository, refs, credentials, runtime origins, and runtime headers. It must not define project semantics or source-authority hierarchies.
 
 ## Graph model
 
-Schema v2 separates **identity** from **evidence**.
+Schema v2 separates **identity**, **evidence**, **certainty**, and **coverage**.
 
 ### Stable entities
 
-A graph node represents a technical or semantic entity rather than merely a line occurrence. Nodes belong to one of three layers:
+Nodes belong to three layers:
 
 - **semantic** — durable current-reality concepts such as surfaces, capabilities, actions, features/owners, routes/APIs, MCP tools, tools/workbenches, and providers;
-- **structural** — code structure such as files, symbols, imports, exports, and call relationships;
-- **representation** — observable presentations/values such as UI elements, HTTP calls, navigation, configuration fields, and runtime representations.
+- **structural** — files, symbols, imports, exports, calls, and other code structure;
+- **representation** — UI elements, HTTP calls, navigation, configuration fields, runtime representations, and other observable presentations.
 
-Structural symbol identity must not depend on line number. Moving a function through comment/whitespace churn may move its evidence locator without manufacturing a new conceptual symbol.
+Semantic identity uses explicit stable IDs. Structural identity follows language semantics where DI can prove them: line movement does not create a new symbol, overload declarations coalesce into one symbol, and distinct same-name declarations remain distinct. Source locations remain provenance.
 
-### Evidence
+### Evidence and conflicts
 
-Evidence is first-class and answers why DI believes an entity or relationship exists. Evidence can carry:
+Evidence answers why DI believes an entity or relationship exists. It may carry source identity, locator, reason/kind, safe field/value, and observation context.
 
-- source identity;
-- locator;
-- observed reason/kind;
-- field/value where safe;
-- revision/observation context.
+Independent evidence that agrees on one identity accumulates. If two sources assert the same semantic ID with contradictory substantive values, DI records an explicit conflict and marks the entity conflicted rather than silently choosing one claim and treating both sources as corroboration.
 
-Source locators and line numbers are evidence/provenance, not universal semantic identity.
+### Relationship certainty
 
-### Relationships
+Relationships retain kind, strategy, confidence, evidence references, and one of:
 
-Relationships retain:
+- `resolved` — DI has sufficient deterministic evidence for the relation;
+- `candidate` — evidence suggests the relation but does not prove it;
+- `unresolved` — DI observed a relationship question it could not resolve.
 
-- kind;
-- strategy;
-- confidence when applicable;
-- `resolved`, `candidate`, or `unresolved` status;
-- evidence references.
+Certainty survives every lens. For example, a direct provider import may resolve an integration, while a provider hostname appearing in arbitrary source text remains a candidate.
 
-A dependency/import is not silently promoted to runtime invocation. A naming similarity is not silently promoted to semantic equivalence. Unknown or ambiguous relationships remain explicit.
+### Coverage
+
+Coverage is part of the truth model. Eligible sources are described as:
+
+- `complete`;
+- `partial`;
+- `unsupported`;
+- `skipped`;
+- `failed`.
+
+Negative/exhaustive answers must not collapse “nothing found” with “DI could not fully inspect this scope.” `check_graph_coverage` exposes detailed file-level status and reasons; higher-level lenses carry compact coverage context.
 
 ## Generic semantic declarations
 
-Some current product semantics cannot be recovered reliably from syntax alone. Projects may optionally place small **source-adjacent Development Intelligence declarations** beside the implementation they describe.
-
-The generic contract is conceptually:
+Some current semantics cannot be proved reliably from syntax alone. Projects may optionally place source-adjacent declarations beside the implementation they describe:
 
 ```ts
 {
@@ -100,72 +104,98 @@ The generic contract is conceptually:
 
 Rules:
 
-- declarations describe **current observable reality**, never roadmap/desired intent;
+- declarations describe current observable reality, never desired future state;
 - IDs are stable semantic identities;
 - declarations are optional;
-- vocabulary remains project-owned/open rather than a centralized DI ontology;
-- DI parses the contract generically and contains no project-name special cases;
+- vocabulary remains project-owned/open;
+- DI parses them generically without project-name special cases;
 - declared relationships still carry source evidence.
 
-Expectation/future data (sometimes called **E**) is a caller overlay and must not be stored as accepted current reality merely because it is planned.
+Expectation/future data is caller reasoning and is not sealed as accepted current reality merely because it is planned.
 
 ## A / W / B lifecycle
 
-The accepted checkpoint lives in the inspected project under `/.development-intelligence/` and follows ordinary Git history.
+The accepted checkpoint lives in the inspected repository under `/.development-intelligence/` and follows ordinary Git history.
 
-- **A — accepted reality:** the stable semantic topology checkpoint already accepted on the revision/branch being reasoned about.
-- **W — working reality:** the complete graph generated from the exact current ref, including structural, semantic, representation, and optional runtime evidence. W is disposable.
-- **B — sealed candidate:** a deterministic stable semantic topology projection generated for the candidate and committed with it.
-- after normal Git merge, B becomes the new A; previous A remains in Git history.
+- **A — accepted:** stable semantic topology already accepted with the project.
+- **W — working:** the complete graph regenerated from one exact Git SHA. Canonical W is source-derived and disposable.
+- **B — sealed candidate:** deterministic semantic topology generated for a candidate and committed with it.
+- After normal Git merge, B becomes the new A; previous A remains in Git history.
 
-DI does not maintain a central promotion pointer or graph-history database.
+DI does not maintain a central promotion pointer or durable graph-history database.
 
-### Why B is a projection, not the full working graph
+### Why A/B stores semantic topology only
 
-Git already stores the source required to rebuild structural intelligence. Persisting tens of thousands of line-level/source-derived records would duplicate that authority and create unnecessary churn.
+Git already stores the source required to rebuild structural intelligence. Persisting all source-derived structural records would duplicate authority and create needless churn. A/B therefore persists the semantic topology needed for accepted-reality comparison while structural/code intelligence is regenerated from Git.
 
-Therefore v2 checkpoints persist stable semantic/parity-significant topology while structural/code intelligence is regenerated from exact Git revisions when queried.
+Runtime observations are never automatically sealed because they may not be reproducible from repository source.
 
-Ref-to-ref structural change analysis builds both revisions with the **same current analyzer**, preventing an old analyzer model from masquerading as a product change.
+## Checkpoint integrity and currentness
 
-## Checkpoint format and fingerprints
-
-The accepted projection remains deterministic sharded NDJSON:
+The checkpoint is deterministic sharded NDJSON:
 
 1. `manifest.json`;
 2. stable semantic node/relationship records;
 3. deterministic hexadecimal shard assignment.
 
-The v2 manifest distinguishes:
+The manifest records:
 
-- **source fingerprint** — tracked project content excluding `.development-intelligence/` itself;
-- **topology fingerprint** — stable accepted semantic topology;
-- **evidence fingerprint** — supporting evidence/provenance;
-- **analyzer version** — observation model used to construct the graph.
+- **source fingerprint** — tracked project content excluding `.development-intelligence/`;
+- **topology fingerprint** — stable persisted semantic topology;
+- **evidence fingerprint** — evidence/provenance attestation at seal time;
+- **analyzer version** — observation model used to build the candidate.
 
-This lets DI distinguish “the project changed” from “the analyzer learned to observe the project differently.”
+Checkpoint validation recomputes topology from shard contents. The manifest is not trusted as a substitute for content integrity.
 
-Runtime/provider observations are not automatically sealed because they may not be reproducible from repository source.
+Currentness is dimensional:
+
+- source currentness;
+- topology currentness;
+- evidence drift;
+- analyzer drift;
+- schema support;
+- checkpoint integrity.
+
+Accepted semantic A is current only when the checkpoint is valid/supported and its source/topology match canonical W. Evidence or analyzer changes are reported separately so harmless observation improvements do not manufacture semantic product drift.
+
+## Exact revision context
+
+Each project/ref operation resolves an allowlisted Git ref once to one immutable SHA. That revision context is carried through checkout, cache identity, graph construction, source search/snippets, and returned metadata.
+
+DI fetches that exact SHA into disposable compute and verifies `FETCH_HEAD`. A moving branch may cause explicit failure/retry; it must never silently substitute a different revision midway through one operation.
+
+Ref-to-ref change analysis rebuilds both revisions with the same current analyzer.
+
+## Canonical W and runtime snapshots
+
+Canonical project/ref queries always address source-derived W.
+
+If `scan_graph` is supplied runtime URLs, DI overlays bounded runtime evidence onto the same graph model and returns an explicit ephemeral `graphId`. Graph, source, parity, evidence, and Viewer tools may address that `graphId` directly.
+
+Runtime snapshots are disposable and do not become the implicit “latest graph.” A previous agent's runtime scan must never change another agent's ordinary project/ref result.
+
+If an ephemeral snapshot expires, callers recreate it; DI does not create a durable service database merely to preserve runtime observations.
 
 ## Code intelligence
 
 Generic TypeScript/JavaScript analysis currently provides:
 
-- stable symbol identities;
+- stable language-aware symbol identities;
 - file/symbol containment;
-- imports and re-exports;
+- static and dynamic imports;
+- re-exports;
 - import-to-definition resolution;
-- cross-file call relationships where module resolution and syntax can prove them;
+- provable cross-file calls;
 - UI/HTTP/navigation/MCP representation evidence;
 - source search and exact-revision snippets.
 
 Textual symbol queries never silently choose between multiple substantive identities. Ambiguous queries return candidates so callers can retry with an exact node ID.
 
-Other languages may be added through generic analyzers later; unsupported precision must be reported honestly rather than inferred.
+Other languages may be added through generic analyzers later. Unsupported precision must be reported through coverage rather than guessed.
 
 ## Parity intelligence
 
-Parity asks how a stable semantic capability/action is represented across observable technical surfaces, for example:
+Parity describes observed representations around semantic entities, for example:
 
 ```text
 capability/action
@@ -176,65 +206,64 @@ capability/action
    └─ integrates-with → provider
 ```
 
-Parity reports **what is observed**. It does not decide that every capability should have every representation. Optional expectation evidence may challenge current reality, but DI remains independently useful without it.
+Confirmed representation lists use resolved relationships only. Candidate and unresolved relationships remain visible separately.
 
-There is no separate Parity scan database.
+Parity reports what is observed. It does not decide which representations ought to exist. Product-resolution skills may compare desired intent against observed DI output externally.
+
+There is no separate Parity scan lifecycle or database.
 
 ## Architecture intelligence
 
-Architecture combines generic structural evidence with stable semantic owner/feature evidence. Declared feature ownership is kept distinct from inferred repository grouping.
-
-The architecture lens can report:
-
-- feature/owner dependencies;
-- consumers/fan-in and dependencies/fan-out;
-- API/route/MCP/provider relationships;
-- structural repository areas for evidence not represented semantically.
+Architecture combines structural evidence with semantic owner/feature evidence. Proven feature dependencies/consumers and API/route/MCP/provider relationships are separated from candidate/unresolved relationships. Structural repository areas remain available for observations without semantic owners.
 
 Project-specific architecture governance remains the inspected project's responsibility. DI observes architecture; it does not dictate each project's layering rules.
 
 ## Query and diff model
 
-The service may keep a bounded in-process cache keyed by project + exact source SHA. It is disposable acceleration only.
+The permanent agent-facing tools are:
 
-Public intelligence operations include:
+- `list_projects`
+- `project_status`
+- `scan_graph`
+- `search_graph`
+- `trace_path`
+- `search_code`
+- `get_code_snippet`
+- `get_graph_schema`
+- `get_architecture`
+- `check_graph_coverage`
+- `get_evidence`
+- `diff_graph`
+- `query_parity`
 
-- full-graph text/kind/layer/status search;
-- ambiguity-safe relationship traversal;
-- exact-revision source search/snippets;
-- evidence inspection;
-- architecture projection;
-- parity projection;
-- accepted semantic A→W diff;
-- ref-to-ref semantic/structural/representation diff using one analyzer version.
+Graph-consuming tools address either canonical project/ref W or an explicit runtime `graphId` where applicable.
 
-No provider-specific graph database query language is part of the public contract.
+`diff_graph` owns change intelligence:
 
-## Source acquisition
+- no `baseRef` → accepted semantic A vs canonical W;
+- `baseRef` → two Git revisions under the same current analyzer.
 
-For remote projects, DI validates an allowlisted ref, resolves the exact Git SHA, materializes a disposable checkout, verifies the fetched revision, analyzes it, and deletes the checkout.
+Semantic diff equality uses stable semantic topology shape. Locator, source ID, timestamps, and evidence-reference movement are provenance/evidence changes rather than semantic changes. Evidence/analyzer drift is reported separately.
 
-Local filesystem is **compute**, not durable authority.
-
-A hosted runtime may retain disposable warm state for performance. Losing the host/cache must never lose accepted intelligence.
+No provider-specific graph database query language or public cache-management tool is part of the contract.
 
 ## Runtime observation boundary
 
-Runtime URLs must use an operator-allowlisted HTTP(S) origin. Redirects are revalidated. Authenticated redirects remain on the original origin. Requests are GET-only and bounded by timeout/size. Credentials come from server-side environment-backed headers and never enter accepted checkpoints.
+Runtime URLs must use operator-allowlisted HTTP(S) origins. Redirects are revalidated. Authenticated redirects remain on the originally requested origin. Requests are GET-only and bounded by timeout/size. Credentials come from server-side environment-backed headers and never enter accepted checkpoints.
 
 ## Human visualization
 
-`/graph` is a human lens over the same graph agents query. It does not maintain separate identities or lifecycle state.
+`/graph` is a human client of the same graph contracts agents use. It accepts canonical project/ref context or an explicit runtime `graphId`.
 
-The viewer has four product lenses:
+The viewer has four lenses:
 
 - **Architecture** — major owners/areas and dependencies;
-- **Parity** — semantic entities and their human/agent/API/provider representations;
+- **Parity** — semantic entities and observed representations;
 - **Code** — bounded implementation neighborhoods;
-- **Change** — accepted/working or revision change projections.
+- **Change** — accepted/working or revision change projections for canonical source reality.
 
-Search runs against the full graph; selection loads a bounded neighborhood rather than rendering an arbitrary first-N slice. The details panel exposes entity/relationship evidence. Sigma.js/Graphology are replaceable rendering/runtime-index tools only; they do not own canonical graph semantics.
+Search runs against the full selected graph; selection loads a bounded neighborhood. Candidate/unresolved relationships remain visually distinct, and both node and relationship evidence are inspectable. Sigma.js/Graphology are replaceable rendering/runtime-index helpers only.
 
-## External-tool boundary
+## Authentication boundary
 
-External analyzers may be integrated when they contribute valuable evidence, such as language-precise references or compiler semantics. They must adapt into DI entities/relationships/evidence and may not become graph, lifecycle, or storage authorities.
+DI core supports bearer, trusted-proxy, and explicit local unauthenticated modes. Hosted OAuth belongs at a deployment gateway/proxy and terminates into DI's trusted boundary. ChatGPT-specific auth must not become graph-engine semantics.
