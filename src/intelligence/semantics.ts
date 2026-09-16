@@ -58,9 +58,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       label: 'Parity intelligence',
       category: 'technical-intelligence',
       relationships: [
-        { kind: 'automated-by', to: 'mcp:scan_parity' },
         { kind: 'automated-by', to: 'mcp:query_parity' },
-        { kind: 'automated-by', to: 'mcp:diff_parity' },
       ],
     },
   },
@@ -101,9 +99,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     'list_projects',
     'project_status',
     'scan_graph',
-    'graph_status',
     'search_graph',
-    'query_graph',
     'trace_path',
     'search_code',
     'get_code_snippet',
@@ -112,9 +108,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     'check_graph_coverage',
     'get_evidence',
     'diff_graph',
-    'scan_parity',
     'query_parity',
-    'diff_parity',
   ].map(id => ({
     developmentIntelligence: {
       kind: 'mcp',
