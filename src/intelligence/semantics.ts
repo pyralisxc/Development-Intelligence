@@ -6,8 +6,8 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
   {
     developmentIntelligence: {
       kind: 'feature',
-      id: 'viewer',
-      label: 'Graph viewer',
+      id: 'workbench',
+      label: 'Development Intelligence Workbench',
       relationships: [],
     },
   },
@@ -22,17 +22,21 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
         { kind: 'exposes', to: 'capability:parity-intelligence' },
         { kind: 'exposes', to: 'capability:architecture-intelligence' },
         { kind: 'exposes', to: 'capability:change-intelligence' },
+        { kind: 'exposes', to: 'capability:source-intelligence' },
+        { kind: 'exposes', to: 'capability:inspection-intelligence' },
       ],
     },
   },
   {
     developmentIntelligence: {
       kind: 'surface',
-      id: 'viewer',
-      label: 'Human graph viewer',
+      id: 'workbench',
+      label: 'Human intelligence workbench',
       role: 'human',
       relationships: [
         { kind: 'exposes', to: 'capability:visual-intelligence' },
+        { kind: 'exposes', to: 'capability:source-intelligence' },
+        { kind: 'exposes', to: 'capability:inspection-intelligence' },
       ],
     },
   },
@@ -87,17 +91,45 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
   {
     developmentIntelligence: {
       kind: 'capability',
+      id: 'source-intelligence',
+      label: 'Technical source intelligence',
+      category: 'technical-intelligence',
+      relationships: [
+        { kind: 'automated-by', to: 'mcp:list_sources' },
+        { kind: 'automated-by', to: 'mcp:query_source' },
+      ],
+    },
+  },
+  {
+    developmentIntelligence: {
+      kind: 'capability',
+      id: 'inspection-intelligence',
+      label: 'Inspection and synthesis',
+      category: 'technical-intelligence',
+      relationships: [
+        { kind: 'automated-by', to: 'mcp:project_overview' },
+        { kind: 'automated-by', to: 'mcp:inspect_entity' },
+      ],
+    },
+  },
+  {
+    developmentIntelligence: {
+      kind: 'capability',
       id: 'visual-intelligence',
       label: 'Visual intelligence',
       category: 'technical-intelligence',
       relationships: [
-        { kind: 'implemented-by', to: 'feature:viewer' },
+        { kind: 'implemented-by', to: 'feature:workbench' },
       ],
     },
   },
   ...[
     'list_projects',
     'project_status',
+    'project_overview',
+    'inspect_entity',
+    'list_sources',
+    'query_source',
     'scan_graph',
     'search_graph',
     'trace_path',
