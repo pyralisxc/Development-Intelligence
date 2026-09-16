@@ -180,12 +180,16 @@ test('runtime observation snapshots are explicit and never contaminate canonical
   }
 });
 
-test('public tool surface is the frozen intrinsic DI contract, not development methodology or housekeeping', () => {
+test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
   assert.deepEqual(names, [
     'list_projects',
     'project_status',
+    'project_overview',
+    'inspect_entity',
+    'list_sources',
+    'query_source',
     'scan_graph',
     'search_graph',
     'trace_path',
@@ -207,7 +211,8 @@ test('public tool surface is the frozen intrinsic DI contract, not development m
   assert.equal(/Codebase Memory|CBM_CACHE_DIR|graph\.db\.zst/i.test(serialized), false);
   const byName = new Map(listed.map(tool => [tool.name, tool]));
   assert.equal(byName.get('scan_graph')?.annotations?.readOnlyHint, true);
-  assert.equal(byName.get('scan_graph')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('query_source')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_parity')?.annotations?.openWorldHint, true);
 });
 
@@ -225,7 +230,7 @@ test('registry rejects project identities that collide in derived keys', async (
   }
 });
 
-test('modern MCP HTTP contract and native graph viewer remain available', async () => {
+test('modern MCP HTTP contract and human Workbench remain available', async () => {
   const fixture = await makeFixture();
   process.env.DEVINT_AUTH_MODE = 'none';
   process.env.DEVINT_ALLOW_UNAUTHENTICATED = '1';
@@ -233,7 +238,8 @@ test('modern MCP HTTP contract and native graph viewer remain available', async 
   const server = createDevelopmentIntelligenceServer();
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as any;
-  const endpoint = `http://127.0.0.1:${address.port}/mcp`;
+  const origin = `http://127.0.0.1:${address.port}`;
+  const endpoint = `${origin}/mcp`;
   const meta = {
     'io.modelcontextprotocol/protocolVersion': '2026-07-28',
     'io.modelcontextprotocol/clientInfo': { name: 'development-intelligence-test', version: '2.1.0' },
@@ -245,20 +251,35 @@ test('modern MCP HTTP contract and native graph viewer remain available', async 
     const discoverBody = await discover.json() as any;
     assert.equal(discoverBody.result.resultType, 'complete');
     assert.match(discoverBody.result.instructions, /one evidence(?:-backed)? graph/i);
-    assert.match(discoverBody.result.instructions, /uncertainty/i);
+    assert.match(discoverBody.result.instructions, /human Workbench/i);
 
     const list = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } }) });
     assert.equal(list.status, 200);
     const listBody = await list.json() as any;
     assert.equal(listBody.result.cacheScope, 'private');
-    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'scan_graph'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'project_overview'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_entity'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'query_source'));
     assert.equal(listBody.result.tools.some((tool: any) => tool.name === 'clear_cache'), false);
 
-    const viewer = await fetch(`http://127.0.0.1:${address.port}/graph?project=${fixture.project}`);
-    assert.equal(viewer.status, 200);
-    const html = await viewer.text();
-    assert.match(html, /Development Intelligence graph/);
-    assert.match(html, /same graph agents query/i);
+    const chooser = await fetch(`${origin}/`);
+    assert.equal(chooser.status, 200);
+    assert.match(await chooser.text(), /Choose a project workspace/i);
+
+    const workbench = await fetch(`${origin}/workbench?project=${fixture.project}`);
+    assert.equal(workbench.status, 200);
+    const html = await workbench.text();
+    assert.match(html, /Overview/);
+    assert.match(html, /Explore/);
+    assert.match(html, /Query/);
+    assert.match(html, /Sources/);
+    assert.match(html, /Changes/);
+    assert.match(html, /Inspector/);
+    assert.match(html, /graph is one representation/i);
+
+    const oldGraph = await fetch(`${origin}/graph?project=${fixture.project}`, { redirect: 'manual' });
+    assert.equal(oldGraph.status, 303);
+    assert.match(oldGraph.headers.get('location') ?? '', /^\/workbench\?/);
   } finally {
     await close(server);
     delete process.env.DEVINT_AUTH_MODE;
