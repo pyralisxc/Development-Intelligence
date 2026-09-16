@@ -69,8 +69,10 @@ function groupShards(graph: IntelligenceGraph): Map<string, Array<Record<string,
 
 export function checkpointMeta(graph: IntelligenceGraph, shards: string[]): GraphCheckpointMetaV2 {
   if (!graph.sourceFingerprint) throw new Error('Repository graph is missing a source fingerprint');
-  if (!graph.topologyFingerprint || !graph.evidenceFingerprint) throw new Error('Repository graph is missing stable graph fingerprints');
+  if (!graph.evidenceFingerprint) throw new Error('Repository graph is missing an evidence fingerprint');
   const projection = checkpointProjection(graph);
+  const persistedNodes = projection.nodes.map(stableNode);
+  const persistedEdges = projection.edges.map(stableEdge);
   const kinds: Record<string, number> = {};
   for (const node of projection.nodes) kinds[node.kind] = (kinds[node.kind] ?? 0) + 1;
   return {
@@ -79,7 +81,7 @@ export function checkpointMeta(graph: IntelligenceGraph, shards: string[]): Grap
     format: 'sharded-ndjson',
     analyzerVersion: graph.analyzerVersion,
     sourceFingerprint: graph.sourceFingerprint,
-    topologyFingerprint: graph.topologyFingerprint,
+    topologyFingerprint: semanticTopologyFingerprint(persistedNodes, persistedEdges),
     evidenceFingerprint: graph.evidenceFingerprint,
     shards,
     summary: {
