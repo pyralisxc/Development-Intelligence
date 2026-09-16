@@ -1,0 +1,34 @@
+name: apply-semantic-gap-fixes
+
+on:
+  push:
+    branches: [feat/stable-entity-parity-hardening]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/stable-entity-parity-hardening
+      - name: Apply exact semantic-gap codemod
+        run: node scripts/apply-semantic-gap-fixes.mjs
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Verify focused and repository contracts before commit
+        run: npm run verify
+      - name: Commit verified generic semantic fixes and remove bridge
+        run: |
+          rm -f scripts/apply-semantic-gap-fixes.mjs .github/workflows/apply-semantic-gap-fixes.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A src/intelligence/repository.ts scripts/benchmark-cardforge.mjs scripts/apply-semantic-gap-fixes.mjs .github/workflows/apply-semantic-gap-fixes.yml
+          git commit -m "fix: close generic CardForge semantic gaps"
+          git push origin HEAD:feat/stable-entity-parity-hardening
