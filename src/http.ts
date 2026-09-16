@@ -194,8 +194,9 @@ export function createDevelopmentIntelligenceServer() {
 
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 if (invokedPath === import.meta.url) {
-  const host = process.env.DEVINT_HOST ?? '127.0.0.1';
-  const port = Number(process.env.DEVINT_PORT ?? 8787);
+  const platformPort = process.env.PORT;
+  const host = process.env.DEVINT_HOST ?? (platformPort ? '0.0.0.0' : '127.0.0.1');
+  const port = Number(process.env.DEVINT_PORT ?? platformPort ?? 8787);
   const server = createDevelopmentIntelligenceServer();
   const shutdown = () => server.close(() => process.exit(0));
   process.once('SIGTERM', shutdown);
