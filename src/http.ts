@@ -230,7 +230,15 @@ export function createDevelopmentIntelligenceServer() {
     }
     if (requestUrl.pathname === '/graph' && req.method === 'GET') {
       if (!authorize(req, res, { interactive: true })) return;
+      const project = requestUrl.searchParams.get('project');
+      if (!project) {
+        res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        res.end('Missing ?project=');
+        return;
+      }
       const query = new URLSearchParams(requestUrl.searchParams);
+      query.set('surface', 'explore');
+      query.set('display', 'graph');
       res.writeHead(303, { location: `/workbench?${query.toString()}`, 'cache-control': 'no-store' });
       res.end();
       return;
