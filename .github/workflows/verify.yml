@@ -189,18 +189,20 @@ jobs:
           done
           curl -fsS "$PREVIEW_URL/health" > /dev/null
 
-          # Browser path: unauthenticated Viewer redirects to DI's own login page.
-          STATUS="$(curl -sS -o /dev/null -w '%{http_code}' "$PREVIEW_URL/graph?project=Development-Intelligence")"
+          # Browser path: unauthenticated Workbench redirects to DI's native owner login.
+          STATUS="$(curl -sS -o /dev/null -w '%{http_code}' "$PREVIEW_URL/workbench?project=Development-Intelligence")"
           [ "$STATUS" = '303' ]
-          curl -fsS "$PREVIEW_URL/login?returnTo=%2Fgraph%3Fproject%3DDevelopment-Intelligence" | grep -q 'Private workspace'
+          curl -fsS "$PREVIEW_URL/login?returnTo=%2Fworkbench%3Fproject%3DDevelopment-Intelligence" | grep -q 'Private workspace'
           curl -fsS -c "$PREVIEW_ROOT/cookies.txt" -b "$PREVIEW_ROOT/cookies.txt" \
             -H 'content-type: application/x-www-form-urlencoded' \
             --data-urlencode "password=$DEVINT_OWNER_PASSWORD" \
-            --data-urlencode 'returnTo=/graph?project=Development-Intelligence' \
+            --data-urlencode 'returnTo=/workbench?project=Development-Intelligence' \
             -o /dev/null "$PREVIEW_URL/login"
-          curl -fsS -b "$PREVIEW_ROOT/cookies.txt" "$PREVIEW_URL/graph?project=Development-Intelligence" | grep -qi 'How the system is organized'
+          curl -fsS -b "$PREVIEW_ROOT/cookies.txt" "$PREVIEW_URL/workbench?project=Development-Intelligence" | grep -qi 'graph is one representation'
+          curl -fsS -b "$PREVIEW_ROOT/cookies.txt" "$PREVIEW_URL/workbench/data?project=Development-Intelligence&action=overview" | grep -q 'quickNotes'
+          curl -fsS -b "$PREVIEW_ROOT/cookies.txt" "$PREVIEW_URL/workbench/data?project=Development-Intelligence&action=sources" | grep -q 'Git repository'
 
-          # Agent path: separate bearer credential reaches modern MCP; no browser credential is reused.
+          # Agent path: separate bearer credential reaches the same Workbench primitives through MCP.
           DISCOVER_BODY='{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
           curl -fsS -H "authorization: Bearer $DEVINT_AGENT_TOKEN" \
             -H 'content-type: application/json' \
@@ -212,27 +214,32 @@ jobs:
             -H 'content-type: application/json' \
             -H 'mcp-protocol-version: 2026-07-28' \
             -H 'mcp-method: tools/list' \
-            --data "$LIST_BODY" "$PREVIEW_URL/mcp" | grep -q 'query_parity'
+            --data "$LIST_BODY" "$PREVIEW_URL/mcp" | grep -q 'project_overview'
+          curl -fsS -H "authorization: Bearer $DEVINT_AGENT_TOKEN" \
+            -H 'content-type: application/json' \
+            -H 'mcp-protocol-version: 2026-07-28' \
+            -H 'mcp-method: tools/list' \
+            --data "$LIST_BODY" "$PREVIEW_URL/mcp" | grep -q 'inspect_entity'
           UNAUTHORIZED_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H 'content-type: application/json' --data "$DISCOVER_BODY" "$PREVIEW_URL/mcp")"
           [ "$UNAUTHORIZED_STATUS" = '401' ]
 
           {
-            echo '## Development Intelligence Preview'
+            echo '## Development Intelligence Workbench Preview'
             echo ''
             echo "- Exact candidate: \`$PREVIEW_SHA\`"
-            echo "- Viewer: $PREVIEW_URL/graph?project=Development-Intelligence"
+            echo "- Workbench: $PREVIEW_URL/workbench?project=Development-Intelligence"
             echo "- MCP: $PREVIEW_URL/mcp"
             echo '- Owner password and agent token are stored only in the private one-day Preview access artifact.'
             echo '- Preview is ephemeral and ends when this job is cancelled or reaches its timeout.'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice title=Development Intelligence Preview::URL=$PREVIEW_URL SHA=$PREVIEW_SHA"
+          echo "::notice title=Development Intelligence Workbench Preview::URL=$PREVIEW_URL SHA=$PREVIEW_SHA"
       - name: Write private preview access record
         run: |
           set -euo pipefail
           umask 077
           cat > "$PREVIEW_ROOT/access.txt" <<EOF
           candidate=$PREVIEW_SHA
-          viewer=$PREVIEW_URL/graph?project=Development-Intelligence
+          workbench=$PREVIEW_URL/workbench?project=Development-Intelligence
           mcp=$PREVIEW_URL/mcp
           owner_password=$DEVINT_OWNER_PASSWORD
           agent_token=$DEVINT_AGENT_TOKEN
