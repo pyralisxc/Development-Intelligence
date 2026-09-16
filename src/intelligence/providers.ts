@@ -5,6 +5,14 @@ export interface ProviderDefinition {
   hosts: RegExp[];
 }
 
+export interface ProviderDetection {
+  id: string;
+  label: string;
+  reason: string;
+  status: 'resolved' | 'candidate';
+  confidence: number;
+}
+
 export const PROVIDERS: ProviderDefinition[] = [
   { id: 'clerk', label: 'Clerk', imports: [/^@clerk\//u], hosts: [/clerk\.com/iu] },
   { id: 'supabase', label: 'Supabase', imports: [/^@supabase\//u], hosts: [/supabase\.(?:co|com)/iu] },
@@ -17,13 +25,19 @@ export const PROVIDERS: ProviderDefinition[] = [
   { id: 'vercel', label: 'Vercel', imports: [/^@vercel\//u], hosts: [/api\.vercel\.com/iu, /vercel\.app/iu] },
 ];
 
-export function detectProviders(importedSpecifiers: string[], source: string): Array<{ id: string; label: string; reason: string }> {
-  const output = [] as Array<{ id: string; label: string; reason: string }>;
+export function detectProviders(importedSpecifiers: string[], source: string): ProviderDetection[] {
+  const output: ProviderDetection[] = [];
   for (const provider of PROVIDERS) {
     const byImport = provider.imports.some(pattern => importedSpecifiers.some(specifier => pattern.test(specifier)));
     const byHost = provider.hosts.some(pattern => pattern.test(source));
     if (!byImport && !byHost) continue;
-    output.push({ id: provider.id, label: provider.label, reason: byImport ? 'provider import' : 'provider host' });
+    output.push({
+      id: provider.id,
+      label: provider.label,
+      reason: byImport ? 'provider import' : 'provider host string',
+      status: byImport ? 'resolved' : 'candidate',
+      confidence: byImport ? 1 : 0.65,
+    });
   }
   return output;
 }
