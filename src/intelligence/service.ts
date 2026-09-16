@@ -4,6 +4,7 @@ import { stableHash } from '../util/hash.js';
 import { withProjectCheckout, resolveProjectRevision } from '../source/git.js';
 import { analyzeHtml, analyzeJson } from './analyzers/index.js';
 import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
+import { assertGraphIntegrity } from './integrity.js';
 import { buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
@@ -43,8 +44,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         root: checkout.root,
         role: 'W',
       });
+      assertGraphIntegrity(graph);
       const checkpoint = await readCheckpoint(checkout.root);
       const accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
+      if (accepted) assertGraphIntegrity(accepted);
       const sourceCurrent = Boolean(accepted?.sourceFingerprint && accepted.sourceFingerprint === graph.sourceFingerprint);
       const analyzerCurrent = Boolean(checkpoint && checkpointAnalyzerCurrent(checkpoint.meta));
       const topologyCurrent = Boolean(checkpoint?.meta.schemaVersion === 2 && checkpoint.meta.topologyFingerprint === graph.topologyFingerprint);
@@ -163,6 +166,7 @@ export async function scanGraph(project: string, options: { ref?: string | undef
     unmatchedNodeIds: deriveUnmatched(nodes, edges),
     unavailableSourceIds: sources.filter(source => !source.available).map(source => source.id),
   };
+  assertGraphIntegrity(graph);
   latestGraphByProject.set(project, graph);
   return graph;
 }
