@@ -41,9 +41,9 @@ const graph = await buildLocalGraph(cardForgeRoot, project);
 
 const probes = [
   {
-    name: 'Product Reality builder',
-    query: 'buildCheckpointProductReality',
-    expectedTraceLocator: 'scripts/product-reality.mjs',
+    name: 'Library zone action factory',
+    query: 'createLibraryZoneAction',
+    expectedTraceLocator: 'src/features/storage-management/hooks/useAccountLibraryActions.ts',
   },
   {
     name: 'Creator interaction session',
@@ -112,7 +112,11 @@ function parseOracle(content) {
   };
 }
 
-const oracle = parseOracle(await fs.readFile(path.join(cardForgeRoot, 'docs/generated/product-reality.ndjson'), 'utf8'));
+const oraclePath = path.resolve(
+  process.env.CARDFORGE_BENCHMARK_ORACLE_PATH
+    ?? path.join(cardForgeRoot, 'docs/generated/product-reality.ndjson'),
+);
+const oracle = parseOracle(await fs.readFile(oraclePath, 'utf8'));
 const diSemanticNodes = graph.nodes.filter(node => node.layer === 'semantic');
 const diSemanticEdges = graph.edges.filter(edge => edge.layer === 'semantic' && edge.from && edge.to);
 const diNodeIds = new Set(diSemanticNodes.map(node => node.id));
@@ -151,9 +155,16 @@ if (genericMissingEdges.length) {
   throw new Error(`DI generic semantic migration still misses ${genericMissingEdges.length} CardForge relationships: ${genericMissingEdges.slice(0, 12).join(', ')}`);
 }
 
+const requireFullOracleParity = process.env.CARDFORGE_REQUIRE_FULL_ORACLE_PARITY === '1';
+if (requireFullOracleParity && (exactNodeMatches !== oracle.nodes.length || matchedEdges.length !== oracle.edges.length)) {
+  throw new Error(`Full CardForge semantic migration parity failed: ${exactNodeMatches}/${oracle.nodes.length} nodes and ${matchedEdges.length}/${oracle.edges.length} relationships matched.`);
+}
+
 const report = {
   benchmark: 'CardForge Development Intelligence structural + parity differential',
   targetSha: actualSha,
+  oraclePath,
+  requireFullOracleParity,
   elapsedMs: Date.now() - started,
   scan,
   architecture: architecture.summary ?? architecture,
@@ -201,21 +212,20 @@ const summary = [
   '| --- | ---: | ---: | ---: | --- | --- |',
   ...probeResults.map(item => `| ${item.name} | ${item.nodeTotal} | ${item.traceNodes} | ${item.traceEdges} | \`${item.chosenId}\` | ${item.expectedTraceLocator} ✓ |`),
   '',
-  '## Product Reality migration differential',
+  '## Captured semantic migration differential',
   '',
-  `Old CardForge oracle: **${oracle.nodes.length} nodes / ${oracle.edges.length} relationships** at topology \`${oracle.meta?.topologyFingerprint ?? 'unknown'}\`.`,
-  `Current generic DI exact semantic identity match: **${exactNodeMatches}/${oracle.nodes.length} nodes (${(report.semanticDifferential.exactNodeRecall * 100).toFixed(1)}%)** and **${matchedEdges.length}/${oracle.edges.length} relationships (${(report.semanticDifferential.exactEdgeRecall * 100).toFixed(1)}%)**.`,
+  `Accepted CardForge migration oracle: **${oracle.nodes.length} nodes / ${oracle.edges.length} relationships** at topology \`${oracle.meta?.topologyFingerprint ?? 'unknown'}\`.`,
+  `Current DI exact semantic identity match: **${exactNodeMatches}/${oracle.nodes.length} nodes (${(report.semanticDifferential.exactNodeRecall * 100).toFixed(1)}%)** and **${matchedEdges.length}/${oracle.edges.length} relationships (${(report.semanticDifferential.exactEdgeRecall * 100).toFixed(1)}%)**.`,
   `- Generic-kind relationship gaps: **${genericMissingEdges.length}**`,
+  `- Full migration parity required: **${requireFullOracleParity ? 'yes' : 'no'}**`,
   '',
   '| Kind | Oracle | Matched now | Recall | Migration gap |',
   '| --- | ---: | ---: | ---: | ---: |',
   ...Object.entries(parityByKind).map(([kind, value]) => `| ${kind} | ${value.expected} | ${value.matched} | ${(value.recall * 100).toFixed(1)}% | ${value.missing.length} |`),
   '',
-  '> Missing action/surface/capability/tool semantics are expected migration evidence at this stage. They must be closed generically or by source-adjacent DI declarations before CardForge Product Reality is deleted.',
-  '',
   `Raw source search occurrences for \`createCreatorInteractionSession\`: **${sourceSearch.total ?? 0}**`,
   '',
-  '> This benchmark is read-only. It generates disposable W from the pinned CardForge checkout and does not write a Development Intelligence checkpoint into CardForge.',
+  '> This benchmark is read-only. It generates disposable W from the pinned CardForge checkout and never writes a Development Intelligence checkpoint into CardForge.',
 ].join('\n');
 
 const markdownPath = process.env.DEVINT_BENCHMARK_MARKDOWN ?? path.resolve('benchmark-cardforge.md');
