@@ -211,10 +211,28 @@ jobs:
             echo "- Viewer: $PREVIEW_URL/graph?project=Development-Intelligence"
             echo "- MCP: $PREVIEW_URL/mcp"
             echo "- Username: \`$DEVINT_PREVIEW_USER\`"
-            echo "- Password: \`$DEVINT_PREVIEW_PASSWORD\`"
+            echo '- Password is stored in the private one-day Preview access artifact.'
             echo '- Preview is ephemeral and ends when this job is cancelled or reaches its timeout.'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice title=Development Intelligence Preview::URL=$PREVIEW_URL USER=$DEVINT_PREVIEW_USER PASSWORD=$DEVINT_PREVIEW_PASSWORD SHA=$PREVIEW_SHA"
+          echo "::notice title=Development Intelligence Preview::URL=$PREVIEW_URL USER=$DEVINT_PREVIEW_USER SHA=$PREVIEW_SHA"
+      - name: Write private preview access record
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > "$PREVIEW_ROOT/access.txt" <<EOF
+          candidate=$PREVIEW_SHA
+          viewer=$PREVIEW_URL/graph?project=Development-Intelligence
+          mcp=$PREVIEW_URL/mcp
+          username=$DEVINT_PREVIEW_USER
+          password=$DEVINT_PREVIEW_PASSWORD
+          EOF
+      - name: Upload private preview access record
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-preview-access
+          path: ${{ runner.temp }}/devint-preview/access.txt
+          if-no-files-found: error
+          retention-days: 1
       - name: Keep preview available for review
         run: |
           echo "Preview active at $PREVIEW_URL for candidate $PREVIEW_SHA"
