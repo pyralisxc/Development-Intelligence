@@ -147,12 +147,15 @@ export function createDevelopmentIntelligenceServer() {
       const view = requestUrl.searchParams.get('view');
       if (view && !['architecture', 'parity', 'code', 'change'].includes(view)) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Unsupported graph view' })); return; }
       try {
+        const ref = requestUrl.searchParams.get('ref') ?? undefined;
+        const query = requestUrl.searchParams.get('query') ?? undefined;
+        const node = requestUrl.searchParams.get('node') ?? undefined;
         const projection = await viewerProjection({
           project,
-          ref: requestUrl.searchParams.get('ref') ?? undefined,
+          ...(ref ? { ref } : {}),
           view: (view ?? 'architecture') as 'architecture' | 'parity' | 'code' | 'change',
-          query: requestUrl.searchParams.get('query') ?? undefined,
-          node: requestUrl.searchParams.get('node') ?? undefined,
+          ...(query ? { query } : {}),
+          ...(node ? { node } : {}),
           depth: numberParam(requestUrl, 'depth', 2),
           limit: numberParam(requestUrl, 'limit', 700),
         });
