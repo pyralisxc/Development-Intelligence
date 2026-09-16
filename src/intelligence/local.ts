@@ -29,19 +29,31 @@ export async function sealLocalGraph(root: string, project?: string): Promise<{ 
 export async function checkLocalGraph(root: string, project?: string): Promise<Record<string, unknown>> {
   const graph = await buildLocalGraph(root, project, 'W');
   const checkpoint = await readCheckpoint(path.resolve(root));
-  if (!checkpoint) return { current: false, reason: 'missing-checkpoint', sourceFingerprint: graph.sourceFingerprint };
+  if (!checkpoint) return { current: false, acceptedSemanticCurrent: false, reason: 'missing-checkpoint', sourceFingerprint: graph.sourceFingerprint };
   const sourceCurrent = checkpoint.meta.sourceFingerprint === graph.sourceFingerprint;
   const analyzerCurrent = checkpointAnalyzerCurrent(checkpoint.meta);
   const topologyCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.topologyFingerprint === graph.topologyFingerprint;
+  const evidenceCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.evidenceFingerprint === graph.evidenceFingerprint;
+  const schemaSupported = checkpoint.meta.schemaVersion === 2;
+  const integrityCurrent = checkpoint.integrity.countsValid && checkpoint.integrity.topologyValid !== false;
+  const acceptedSemanticCurrent = sourceCurrent && topologyCurrent && schemaSupported && integrityCurrent;
   return {
-    current: sourceCurrent && analyzerCurrent && topologyCurrent,
+    current: acceptedSemanticCurrent,
+    acceptedSemanticCurrent,
     sourceCurrent,
-    analyzerCurrent,
     topologyCurrent,
+    evidenceCurrent,
+    evidenceChanged: !evidenceCurrent,
+    analyzerCurrent,
+    analyzerChanged: !analyzerCurrent,
+    schemaSupported,
+    integrityCurrent,
     expectedSourceFingerprint: graph.sourceFingerprint,
     checkpointSourceFingerprint: checkpoint.meta.sourceFingerprint,
     expectedTopologyFingerprint: graph.topologyFingerprint,
     checkpointTopologyFingerprint: checkpoint.meta.schemaVersion === 2 ? checkpoint.meta.topologyFingerprint : null,
+    expectedEvidenceFingerprint: graph.evidenceFingerprint,
+    checkpointEvidenceFingerprint: checkpoint.meta.schemaVersion === 2 ? checkpoint.meta.evidenceFingerprint : null,
     expectedAnalyzerVersion: graph.analyzerVersion,
     checkpointAnalyzerVersion: checkpoint.meta.schemaVersion === 2 ? checkpoint.meta.analyzerVersion : 'legacy-1',
     checkpointSummary: checkpoint.meta.summary,
