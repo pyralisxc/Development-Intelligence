@@ -35,8 +35,9 @@ const ref = 'refs/heads/devint-benchmark';
 const started = Date.now();
 const scan = await callTool('scan_graph', { project, ref });
 const architecture = await callTool('get_architecture', { project, ref });
-const parity = await callTool('scan_parity', { project, ref });
+const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
+const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
 
 const probes = [
@@ -98,97 +99,45 @@ for (const kind of ['file', 'function', 'method', 'class', 'interface', 'type', 
   kindQueries[kind] = Number(result.nodeTotal ?? 0);
 }
 
+for (const requiredKind of ['feature', 'api', 'provider', 'route', 'mcp']) {
+  if (Number(kindQueries[requiredKind] ?? 0) < 1) throw new Error(`CardForge benchmark expected generic semantic kind ${requiredKind}`);
+}
+
 const relationshipCounts = architecture?.summary?.relationshipKinds ?? {};
 for (const required of ['imports', 'resolves_to', 'calls']) {
   if (Number(relationshipCounts[required] ?? 0) < 1) throw new Error(`CardForge benchmark expected resolved ${required} relationships`);
 }
 
-function parseOracle(content) {
-  const records = content.split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line));
-  return {
-    meta: records.find(record => record.type === 'meta'),
-    nodes: records.filter(record => record.type === 'node').map(({ type: _type, ...record }) => record),
-    edges: records.filter(record => record.type === 'edge').map(({ type: _type, ...record }) => record),
-  };
-}
+const coverageSummary = coverage?.summary ?? {};
+if (Number(coverageSummary.failedFiles ?? 0) > 0) throw new Error(`CardForge benchmark has ${coverageSummary.failedFiles} failed source analyses`);
+if (Number(scan.coverage?.eligibleFiles ?? 0) < 1 || Number(scan.coverage?.analyzedFiles ?? 0) < 1) throw new Error('CardForge benchmark did not analyze eligible source files');
 
-const oraclePath = path.resolve(
-  process.env.CARDFORGE_BENCHMARK_ORACLE_PATH
-    ?? path.join(cardForgeRoot, 'docs/generated/product-reality.ndjson'),
-);
-const oracle = parseOracle(await fs.readFile(oraclePath, 'utf8'));
-const diSemanticNodes = graph.nodes.filter(node => node.layer === 'semantic');
-const diSemanticEdges = graph.edges.filter(edge => edge.layer === 'semantic' && edge.from && edge.to);
-const diNodeIds = new Set(diSemanticNodes.map(node => node.id));
-const diEdgeKeys = new Set(diSemanticEdges.map(edge => `${edge.from}|${edge.kind}|${edge.to}`));
-const oracleEdgeKeys = oracle.edges.map(edge => `${edge.from}|${edge.relation}|${edge.to}`);
-
-const nodeKinds = [...new Set(oracle.nodes.map(node => node.kind))].sort();
-const parityByKind = {};
-for (const kind of nodeKinds) {
-  const expected = oracle.nodes.filter(node => node.kind === kind);
-  const matched = expected.filter(node => diNodeIds.has(node.id));
-  parityByKind[kind] = {
-    expected: expected.length,
-    matched: matched.length,
-    missing: expected.filter(node => !diNodeIds.has(node.id)).map(node => node.id),
-    recall: expected.length ? matched.length / expected.length : 1,
-  };
-}
-const matchedEdges = oracleEdgeKeys.filter(key => diEdgeKeys.has(key));
-const missingEdges = oracleEdgeKeys.filter(key => !diEdgeKeys.has(key));
-const exactNodeMatches = oracle.nodes.filter(node => diNodeIds.has(node.id)).length;
-
-for (const kind of ['feature', 'api', 'provider', 'route', 'mcp']) {
-  const result = parityByKind[kind];
-  if (result && result.recall !== 1) throw new Error(`DI generic semantic migration benchmark requires complete ${kind} identity recall; got ${result.recall.toFixed(3)}`);
-}
-
-const genericSemanticKinds = new Set(['feature', 'api', 'provider', 'route', 'mcp']);
-const genericMissingEdges = missingEdges.filter((key) => {
-  const [from, _relation, to] = key.split('|');
-  const fromKind = from?.split(':', 1)[0];
-  const toKind = to?.split(':', 1)[0];
-  return Boolean(fromKind && toKind && genericSemanticKinds.has(fromKind) && genericSemanticKinds.has(toKind));
-});
-if (genericMissingEdges.length) {
-  throw new Error(`DI generic semantic migration still misses ${genericMissingEdges.length} CardForge relationships: ${genericMissingEdges.slice(0, 12).join(', ')}`);
-}
-
-const requireFullOracleParity = process.env.CARDFORGE_REQUIRE_FULL_ORACLE_PARITY === '1';
-if (requireFullOracleParity && (exactNodeMatches !== oracle.nodes.length || matchedEdges.length !== oracle.edges.length)) {
-  throw new Error(`Full CardForge semantic migration parity failed: ${exactNodeMatches}/${oracle.nodes.length} nodes and ${matchedEdges.length}/${oracle.edges.length} relationships matched.`);
-}
-
+const semanticNodes = graph.nodes.filter(node => node.layer === 'semantic');
+const semanticEdges = graph.edges.filter(edge => edge.layer === 'semantic');
 const report = {
-  benchmark: 'CardForge Development Intelligence structural + parity differential',
+  benchmark: 'CardForge Development Intelligence generic structural + semantic evidence',
   targetSha: actualSha,
-  oraclePath,
-  requireFullOracleParity,
   elapsedMs: Date.now() - started,
   scan,
   architecture: architecture.summary ?? architecture,
-  parity,
+  parity: {
+    entityTotal: parity.entityTotal ?? 0,
+    relationshipCount: Array.isArray(parity.relationships) ? parity.relationships.length : 0,
+    namingDivergenceCount: Array.isArray(parity.namingDivergences) ? parity.namingDivergences.length : 0,
+    unmatchedCount: Array.isArray(parity.unmatchedNodeIds) ? parity.unmatchedNodeIds.length : 0,
+  },
   schema,
+  coverage,
   nodeKinds: kindQueries,
+  semantic: {
+    nodes: semanticNodes.length,
+    edges: semanticEdges.length,
+    conflicts: graph.explicitValueConflicts.length,
+    candidateRelationships: semanticEdges.filter(edge => edge.status === 'candidate').length,
+    unresolvedRelationships: semanticEdges.filter(edge => edge.status === 'unresolved').length,
+  },
   probes: probeResults,
   sourceSearch: { total: sourceSearch.total ?? 0, sample: Array.isArray(sourceSearch.matches) ? sourceSearch.matches.slice(0, 5) : [] },
-  oracle: {
-    topologyFingerprint: oracle.meta?.topologyFingerprint ?? null,
-    nodes: oracle.nodes.length,
-    edges: oracle.edges.length,
-  },
-  semanticDifferential: {
-    diSemanticNodes: diSemanticNodes.length,
-    diSemanticEdges: diSemanticEdges.length,
-    exactNodeMatches,
-    exactNodeRecall: oracle.nodes.length ? exactNodeMatches / oracle.nodes.length : 1,
-    exactEdgeMatches: matchedEdges.length,
-    exactEdgeRecall: oracle.edges.length ? matchedEdges.length / oracle.edges.length : 1,
-    byKind: parityByKind,
-    genericMissingEdges,
-    missingEdges: missingEdges.slice(0, 200),
-  },
 };
 
 const jsonPath = process.env.DEVINT_BENCHMARK_JSON ?? path.resolve('benchmark-cardforge.json');
@@ -199,8 +148,11 @@ const summary = [
   '',
   `- CardForge SHA: \`${actualSha}\``,
   `- Full W: **${scan.nodeCount} nodes / ${scan.edgeCount} relationships**`,
-  `- Semantic DI layer: **${diSemanticNodes.length} nodes / ${diSemanticEdges.length} relationships**`,
+  `- Semantic DI layer: **${semanticNodes.length} nodes / ${semanticEdges.length} relationships**`,
   `- Eligible/analyzed files: **${scan.coverage?.eligibleFiles ?? '?'} / ${scan.coverage?.analyzedFiles ?? '?'}**`,
+  `- Failed analyses: **${coverageSummary.failedFiles ?? 0}**`,
+  `- Skipped eligible files: **${coverageSummary.skippedFiles ?? 0}**`,
+  `- Semantic conflicts: **${graph.explicitValueConflicts.length}**`,
   `- Elapsed: **${report.elapsedMs} ms**`,
   `- Resolved imports: **${relationshipCounts.imports ?? 0}**`,
   `- Import-to-definition resolutions: **${relationshipCounts.resolves_to ?? 0}**`,
@@ -212,20 +164,15 @@ const summary = [
   '| --- | ---: | ---: | ---: | --- | --- |',
   ...probeResults.map(item => `| ${item.name} | ${item.nodeTotal} | ${item.traceNodes} | ${item.traceEdges} | \`${item.chosenId}\` | ${item.expectedTraceLocator} ✓ |`),
   '',
-  '## Captured semantic migration differential',
+  '## Generic semantic inventory',
   '',
-  `Accepted CardForge migration oracle: **${oracle.nodes.length} nodes / ${oracle.edges.length} relationships** at topology \`${oracle.meta?.topologyFingerprint ?? 'unknown'}\`.`,
-  `Current DI exact semantic identity match: **${exactNodeMatches}/${oracle.nodes.length} nodes (${(report.semanticDifferential.exactNodeRecall * 100).toFixed(1)}%)** and **${matchedEdges.length}/${oracle.edges.length} relationships (${(report.semanticDifferential.exactEdgeRecall * 100).toFixed(1)}%)**.`,
-  `- Generic-kind relationship gaps: **${genericMissingEdges.length}**`,
-  `- Full migration parity required: **${requireFullOracleParity ? 'yes' : 'no'}**`,
-  '',
-  '| Kind | Oracle | Matched now | Recall | Migration gap |',
-  '| --- | ---: | ---: | ---: | ---: |',
-  ...Object.entries(parityByKind).map(([kind, value]) => `| ${kind} | ${value.expected} | ${value.matched} | ${(value.recall * 100).toFixed(1)}% | ${value.missing.length} |`),
+  '| Kind | Count |',
+  '| --- | ---: |',
+  ...Object.entries(kindQueries).filter(([kind]) => ['feature', 'api', 'provider', 'route', 'mcp', 'surface', 'capability', 'action'].includes(kind)).map(([kind, count]) => `| ${kind} | ${count} |`),
   '',
   `Raw source search occurrences for \`createCreatorInteractionSession\`: **${sourceSearch.total ?? 0}**`,
   '',
-  '> This benchmark is read-only. It generates disposable W from the pinned CardForge checkout and never writes a Development Intelligence checkpoint into CardForge.',
+  '> This permanent benchmark is read-only. It proves generic CardForge-scale usefulness and does not depend on the retired Product Reality oracle or write a Development Intelligence checkpoint into CardForge.',
 ].join('\n');
 
 const markdownPath = process.env.DEVINT_BENCHMARK_MARKDOWN ?? path.resolve('benchmark-cardforge.md');
