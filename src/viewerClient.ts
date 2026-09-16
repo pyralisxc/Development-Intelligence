@@ -46,11 +46,118 @@ function coordinates(node: ProjectionNode, index: number, total: number): { x: n
   return { x: Math.cos(angle) * (ring + jitter), y: Math.sin(angle) * (ring + jitter) };
 }
 
-function show(value: unknown): void {
-  detail.innerHTML = '';
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function text(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
+}
+
+function badge(value: string): HTMLElement {
+  const span = document.createElement('span');
+  span.className = 'badge';
+  span.textContent = value;
+  return span;
+}
+
+function field(parent: HTMLElement, key: string, value: unknown): void {
+  if (value === undefined || value === null || value === '') return;
+  const row = document.createElement('div');
+  row.className = 'kv';
+  const label = document.createElement('div');
+  label.className = 'key';
+  label.textContent = key;
+  const body = document.createElement('div');
+  body.className = 'value';
+  body.textContent = text(value);
+  row.append(label, body);
+  parent.appendChild(row);
+}
+
+function rawDetails(value: unknown): HTMLElement {
+  const wrapper = document.createElement('details');
+  wrapper.className = 'raw';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Raw graph record';
   const pre = document.createElement('pre');
   pre.textContent = JSON.stringify(value, null, 2);
-  detail.appendChild(pre);
+  wrapper.append(summary, pre);
+  return wrapper;
+}
+
+function showGeneric(value: unknown): void {
+  detail.innerHTML = '';
+  detail.appendChild(rawDetails(value));
+}
+
+function showEdge(edge: ProjectionEdge): void {
+  detail.innerHTML = '';
+  const card = document.createElement('div');
+  card.className = 'detail-card';
+  const title = document.createElement('div');
+  title.className = 'detail-title';
+  title.textContent = edge.kind;
+  const badges = document.createElement('div');
+  badges.className = 'badges';
+  badges.append(badge('relationship'), badge(edge.status));
+  const grid = document.createElement('div');
+  grid.className = 'detail-grid';
+  field(grid, 'From', edge.from);
+  field(grid, 'To', edge.to);
+  field(grid, 'Strategy', edge.strategy);
+  field(grid, 'Confidence', edge.confidence);
+  card.append(title, badges, grid);
+  detail.append(card, rawDetails(edge));
+}
+
+function showSelection(selected: ProjectionNode | undefined, evidence: unknown[], neighborhood: { nodes: number; edges: number }): void {
+  detail.innerHTML = '';
+  if (!selected) {
+    showGeneric({ evidence, neighborhood });
+    return;
+  }
+  const card = document.createElement('div');
+  card.className = 'detail-card';
+  const title = document.createElement('div');
+  title.className = 'detail-title';
+  title.textContent = selected.name ?? selected.id;
+  const badges = document.createElement('div');
+  badges.className = 'badges';
+  badges.append(badge(selected.kind), badge(selected.layer ?? 'structural'));
+  const grid = document.createElement('div');
+  grid.className = 'detail-grid';
+  field(grid, 'ID', selected.id);
+  field(grid, 'Source', selected.locator);
+  field(grid, 'Neighbors', `${neighborhood.nodes} nodes · ${neighborhood.edges} edges`);
+  if (selected.value !== undefined && selected.value !== selected.name && selected.value !== selected.id) field(grid, 'Value', selected.value);
+  card.append(title, badges, grid);
+  detail.appendChild(card);
+
+  if (evidence.length) {
+    const section = document.createElement('section');
+    section.className = 'detail-section';
+    const heading = document.createElement('h3');
+    heading.textContent = `Evidence (${evidence.length})`;
+    section.appendChild(heading);
+    for (const item of evidence) {
+      const row = document.createElement('div');
+      row.className = 'evidence-item';
+      if (isRecord(item)) {
+        const message = item.message ?? item.kind ?? 'evidence';
+        const locator = item.locator ? ` · ${item.locator}` : '';
+        row.textContent = `${text(message)}${locator}`;
+      } else {
+        row.textContent = text(item);
+      }
+      section.appendChild(row);
+    }
+    detail.appendChild(section);
+  }
+  detail.appendChild(rawDetails({ selected, evidence, neighborhood }));
 }
 
 function showCandidates(projection: Projection): void {
@@ -104,11 +211,13 @@ function render(projection: Projection): void {
   renderer.on('clickNode', event => void load(event.node, true));
   renderer.on('clickEdge', event => {
     const attrs = graph.getEdgeAttributes(event.edge);
-    show(attrs.edge ?? attrs);
+    const edgeValue = attrs.edge as ProjectionEdge | undefined;
+    if (edgeValue) showEdge(edgeValue);
+    else showGeneric(attrs);
   });
   if (projection.selected) {
     const selected = projection.nodes.find(node => node.id === projection.selected);
-    show({ selected, evidence: projection.evidence ?? [], neighborhood: { nodes: projection.nodes.length, edges: projection.edges.length } });
+    showSelection(selected, projection.evidence ?? [], { nodes: projection.nodes.length, edges: projection.edges.length });
   } else {
     detail.innerHTML = `<div class="hint">${view[0]!.toUpperCase()}${view.slice(1)} projection. Select a node or search across the full graph to inspect its bounded neighborhood and evidence.</div>`;
   }
@@ -128,15 +237,15 @@ async function load(query?: string, exact = false): Promise<void> {
 form.addEventListener('submit', event => {
   event.preventDefault();
   const value = search.value.trim();
-  void load(value || undefined, false).catch(error => { status.textContent = 'Failed'; show({ error: error instanceof Error ? error.message : String(error) }); });
+  void load(value || undefined, false).catch(error => { status.textContent = 'Failed'; showGeneric({ error: error instanceof Error ? error.message : String(error) }); });
 });
 
 for (const button of viewButtons) {
   button.addEventListener('click', () => {
     view = button.dataset.view as View;
     for (const item of viewButtons) item.classList.toggle('active', item === button);
-    void load(search.value.trim() || undefined, false).catch(error => { status.textContent = 'Failed'; show({ error: error instanceof Error ? error.message : String(error) }); });
+    void load(search.value.trim() || undefined, false).catch(error => { status.textContent = 'Failed'; showGeneric({ error: error instanceof Error ? error.message : String(error) }); });
   });
 }
 
-void load().catch(error => { status.textContent = 'Failed'; show({ error: error instanceof Error ? error.message : String(error) }); });
+void load().catch(error => { status.textContent = 'Failed'; showGeneric({ error: error instanceof Error ? error.message : String(error) }); });
