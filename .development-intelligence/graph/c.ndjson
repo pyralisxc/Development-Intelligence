@@ -1,0 +1,2 @@
+{"type":"edge","id":"62339085eb4753d2ec1bae97","from":"surface:workbench","to":"capability:inspection-intelligence","kind":"exposes","strategy":"source-adjacent-declaration","confidence":1,"status":"resolved","evidence":[],"layer":"semantic","checkpoint":true}
+{"type":"edge","id":"fae91197c8e7ca3641b370f6","from":"capability:source-intelligence","to":"mcp:query_source","kind":"automated-by","strategy":"source-adjacent-declaration","confidence":1,"status":"resolved","evidence":[],"layer":"semantic","checkpoint":true}
