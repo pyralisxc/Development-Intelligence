@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { authorize, validateHost } from './auth.js';
+import { authMode, authorize, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
 import { callTool, listTools } from './mcp.js';
 import { currentGraph, scanGraph } from './intelligence/service.js';
 import { viewerProjection } from './intelligence/query.js';
@@ -14,17 +14,27 @@ const MAX_BODY = 4 * 1024 * 1024;
 const SERVER_INFO = { name: 'Development Intelligence', version: '2.1.0' };
 const VIEWER_BUNDLE = fileURLToPath(new URL('../public/viewer.js', import.meta.url));
 
-async function readJson(req: any): Promise<any> {
+async function readBody(req: any, maxBytes = MAX_BODY): Promise<Buffer> {
   let size = 0;
-  const chunks: any[] = [];
+  const chunks: Buffer[] = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY) throw Object.assign(new Error('Request body too large'), { status: 413 });
-    chunks.push(chunk);
+    if (size > maxBytes) throw Object.assign(new Error('Request body too large'), { status: 413 });
+    chunks.push(Buffer.from(chunk));
   }
-  if (!chunks.length) return {};
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  return Buffer.concat(chunks);
+}
+
+async function readJson(req: any): Promise<any> {
+  const content = await readBody(req);
+  if (!content.length) return {};
+  try { return JSON.parse(content.toString('utf8')); }
   catch { throw Object.assign(new Error('Invalid JSON'), { status: 400, rpcCode: -32700 }); }
+}
+
+async function readForm(req: any): Promise<URLSearchParams> {
+  const content = await readBody(req, 64 * 1024);
+  return new URLSearchParams(content.toString('utf8'));
 }
 
 function rpcResult(id: unknown, result: unknown) { return { jsonrpc: '2.0', id, result }; }
@@ -105,6 +115,16 @@ function numberParam(url: URL, key: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function htmlHeaders(): Record<string, string> {
+  return {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'private, no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    'x-frame-options': 'DENY',
+  };
+}
+
 export function createDevelopmentIntelligenceServer() {
   return http.createServer(async (req: any, res: any) => {
     if (!validateHost(req, res)) return;
@@ -114,10 +134,46 @@ export function createDevelopmentIntelligenceServer() {
       res.end(JSON.stringify({ service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN }));
       return;
     }
+    if (requestUrl.pathname === '/login' && authMode() === 'private') {
+      const returnTo = normalizeReturnTo(requestUrl.searchParams.get('returnTo'));
+      if (req.method === 'GET') {
+        res.writeHead(200, htmlHeaders());
+        res.end(renderOwnerLogin(returnTo));
+        return;
+      }
+      if (req.method === 'POST') {
+        try {
+          const form = await readForm(req);
+          const formReturnTo = normalizeReturnTo(form.get('returnTo'));
+          const password = form.get('password') ?? '';
+          if (!ownerPasswordMatches(password)) {
+            res.writeHead(401, htmlHeaders());
+            res.end(renderOwnerLogin(formReturnTo, 'That password was not accepted.'));
+            return;
+          }
+          setOwnerSession(res);
+          res.writeHead(303, { location: formReturnTo, 'cache-control': 'no-store' });
+          res.end();
+        } catch (error) {
+          res.writeHead((error as any)?.status ?? 400, htmlHeaders());
+          res.end(renderOwnerLogin(returnTo, error instanceof Error ? error.message : String(error)));
+        }
+        return;
+      }
+      res.writeHead(405, { allow: 'GET, POST' });
+      res.end();
+      return;
+    }
+    if (requestUrl.pathname === '/logout' && authMode() === 'private') {
+      clearOwnerSession(res);
+      res.writeHead(303, { location: '/login', 'cache-control': 'no-store' });
+      res.end();
+      return;
+    }
     if (requestUrl.pathname === '/viewer.js' && req.method === 'GET') {
       try {
         const script = await fs.readFile(VIEWER_BUNDLE, 'utf8');
-        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'private, max-age=300' });
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff' });
         res.end(script);
       } catch (error) {
         res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
@@ -126,7 +182,7 @@ export function createDevelopmentIntelligenceServer() {
       return;
     }
     if (requestUrl.pathname === '/graph' && req.method === 'GET') {
-      if (!authorize(req, res)) return;
+      if (!authorize(req, res, { interactive: true })) return;
       const project = requestUrl.searchParams.get('project');
       if (!project) { res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }); res.end('Missing ?project='); return; }
       const requestedRef = requestUrl.searchParams.get('ref') ?? undefined;
@@ -134,7 +190,7 @@ export function createDevelopmentIntelligenceServer() {
       if (requestedRef && requestedGraphId) { res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }); res.end('Use either ?ref= or ?graphId=, not both'); return; }
       try {
         const graph = requestedGraphId ? await currentGraph(project, undefined, requestedGraphId) : await scanGraph(project, { ref: requestedRef });
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store' });
+        res.writeHead(200, htmlHeaders());
         res.end(renderGraphViewer(graph, requestedRef, requestedGraphId));
       } catch (error) {
         res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
@@ -146,8 +202,8 @@ export function createDevelopmentIntelligenceServer() {
       if (!authorize(req, res)) return;
       const project = requestUrl.searchParams.get('project');
       if (!project) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing ?project=' })); return; }
-      const view = requestUrl.searchParams.get('view');
-      if (view && !['architecture', 'parity', 'code', 'change'].includes(view)) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Unsupported graph view' })); return; }
+      const viewName = requestUrl.searchParams.get('view');
+      if (viewName && !['architecture', 'parity', 'code', 'change'].includes(viewName)) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Unsupported graph view' })); return; }
       try {
         const ref = requestUrl.searchParams.get('ref') ?? undefined;
         const graphId = requestUrl.searchParams.get('graphId') ?? undefined;
@@ -158,7 +214,7 @@ export function createDevelopmentIntelligenceServer() {
           project,
           ...(ref ? { ref } : {}),
           ...(graphId ? { graphId } : {}),
-          view: (view ?? 'architecture') as 'architecture' | 'parity' | 'code' | 'change',
+          view: (viewName ?? 'architecture') as 'architecture' | 'parity' | 'code' | 'change',
           ...(query ? { query } : {}),
           ...(node ? { node } : {}),
           depth: numberParam(requestUrl, 'depth', 2),
@@ -189,9 +245,9 @@ export function createDevelopmentIntelligenceServer() {
       res.writeHead(result.status, { 'content-type': 'application/json' });
       res.end(JSON.stringify(result.body));
     } catch (error) {
-      const status = (error as any)?.status ?? 500;
+      const statusCode = (error as any)?.status ?? 500;
       const code = (error as any)?.rpcCode ?? -32603;
-      res.writeHead(status, { 'content-type': 'application/json' });
+      res.writeHead(statusCode, { 'content-type': 'application/json' });
       res.end(JSON.stringify(rpcError(null, code, error instanceof Error ? error.message : String(error))));
     }
   });
