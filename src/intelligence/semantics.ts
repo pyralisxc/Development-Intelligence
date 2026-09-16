@@ -5,6 +5,14 @@
 export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
   {
     developmentIntelligence: {
+      kind: 'feature',
+      id: 'viewer',
+      label: 'Graph viewer',
+      relationships: [],
+    },
+  },
+  {
+    developmentIntelligence: {
       kind: 'surface',
       id: 'agent',
       label: 'Agent tools',
@@ -39,6 +47,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
         { kind: 'automated-by', to: 'mcp:trace_path' },
         { kind: 'automated-by', to: 'mcp:search_code' },
         { kind: 'automated-by', to: 'mcp:get_code_snippet' },
+        { kind: 'automated-by', to: 'mcp:get_evidence' },
       ],
     },
   },
@@ -88,4 +97,30 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       ],
     },
   },
+  ...[
+    'list_projects',
+    'project_status',
+    'scan_graph',
+    'graph_status',
+    'search_graph',
+    'query_graph',
+    'trace_path',
+    'search_code',
+    'get_code_snippet',
+    'get_graph_schema',
+    'get_architecture',
+    'check_graph_coverage',
+    'get_evidence',
+    'diff_graph',
+    'scan_parity',
+    'query_parity',
+    'diff_parity',
+  ].map(id => ({
+    developmentIntelligence: {
+      kind: 'mcp',
+      id,
+      label: id,
+      relationships: [],
+    },
+  })),
 ] as const;
