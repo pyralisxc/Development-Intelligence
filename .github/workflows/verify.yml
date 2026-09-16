@@ -168,7 +168,10 @@ jobs:
             sleep 1
           done
           curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" http://127.0.0.1:8790/health > /dev/null
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$PREVIEW_ROOT/cloudflared"
+          CLOUDFLARED_VERSION='2026.9.1'
+          CLOUDFLARED_SHA256='03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc'
+          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/cloudflared-linux-amd64" -o "$PREVIEW_ROOT/cloudflared"
+          echo "$CLOUDFLARED_SHA256  $PREVIEW_ROOT/cloudflared" | sha256sum -c -
           chmod +x "$PREVIEW_ROOT/cloudflared"
           "$PREVIEW_ROOT/cloudflared" tunnel --no-autoupdate --url http://127.0.0.1:8790 > "$PREVIEW_ROOT/cloudflared.log" 2>&1 &
           echo $! > "$PREVIEW_ROOT/cloudflared.pid"
