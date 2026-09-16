@@ -6,7 +6,7 @@ Development Intelligence does not require a permanently administered graph serve
 
 Durable accepted intelligence lives with each inspected Git project as `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/`. It follows ordinary Git history, review, branching, backup, and access control.
 
-The **source repository and running service have independent visibility**. The Development Intelligence repository may be public for collaboration, inspection, and reuse while a deployed Viewer/MCP endpoint remains privately gated. Repository privacy must not be treated as the service's authentication boundary.
+The **source repository and running service have independent visibility**. The Development Intelligence repository may be public for collaboration, inspection, and reuse while a deployed Workbench/MCP endpoint remains privately gated. Repository privacy must not be treated as the service's authentication boundary.
 
 The hosted service needs only:
 
@@ -16,13 +16,13 @@ The hosted service needs only:
 - the project access registry and referenced credentials;
 - HTTP/MCP authentication.
 
-GitHub may own source/history and a platform such as Vercel may host API/MCP/Viewer plus disposable compute. The hosting provider is not durable graph authority.
+GitHub may own source/history and a platform may host the Workbench/MCP plus disposable compute. The hosting provider is not durable graph authority.
 
 ## Configuration
 
 | Variable | Purpose |
 |---|---|
-| `DEVINT_PROJECTS_FILE` | Operational repository/ref/runtime allowlist registry |
+| `DEVINT_PROJECTS_FILE` | Operational repository/ref/runtime/technical-source allowlist registry |
 | `DEVINT_SCRATCH_DIR` | Optional disposable checkout root (defaults to OS temp) |
 | `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound |
 | `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots |
@@ -44,9 +44,27 @@ The registry may define only operational access:
 - default and allowlisted refs;
 - repository credential source;
 - runtime origins;
-- runtime request headers backed by environment variables.
+- runtime request headers backed by environment variables;
+- optional read-only technical sources.
 
 It must not define project ontology, feature meaning, source authority, desired product behavior, or project-specific analyzer branches.
+
+### Technical sources
+
+A project may declare generic read-only sources for Workbench/MCP access to operational technical data such as databases, logs, metrics, or provider APIs.
+
+Each source declares:
+
+- `id` and optional display `label`;
+- `type`: `database`, `logs`, `metrics`, `provider-api`, or `http-query`;
+- HTTPS `endpoint`;
+- one or more capabilities: `query`, `logs`, `metrics`, `records`;
+- optional environment-backed request headers;
+- optional timeout.
+
+DI issues bounded GET requests using query/capability/limit parameters. Credentials remain server-side. Source results are read-only observations/evidence and do not automatically become accepted semantic topology.
+
+Technical-source configuration is operational access, not semantic project configuration.
 
 ## Repository credentials
 
@@ -70,7 +88,7 @@ Warm process-memory graph reuse is allowed only when keyed by the exact project 
 
 Ordinary project/ref queries always address canonical source-derived W.
 
-When `scan_graph` receives runtime URLs, DI returns an explicit ephemeral `graphId` for that observed snapshot. Callers pass that `graphId` to subsequent graph/code/Viewer operations that need the runtime overlay.
+When `scan_graph` receives runtime URLs, DI returns an explicit ephemeral `graphId` for that observed snapshot. Callers pass that `graphId` to subsequent graph/code/Workbench operations that need the runtime overlay.
 
 Runtime snapshots:
 
@@ -79,6 +97,18 @@ Runtime snapshots:
 - never replace canonical project/ref W;
 - may expire and be recreated;
 - are not sealed into A/B automatically.
+
+## Human Workbench
+
+The HTTP entry points are:
+
+- `/` — project chooser;
+- `/workbench?project=<project>` — project Workbench;
+- `/workbench/data` — read-only Overview/Explore/Inspector/Sources/Changes projections;
+- `/workbench/query` — deterministic read-only query routing;
+- `/graph?project=...` — compatibility redirect into Explore/Graph.
+
+The Workbench is not a second data owner. It consumes the same graph/evidence/query/source services as MCP.
 
 ## Candidate sealing
 
@@ -114,7 +144,7 @@ DI keeps authentication provider-neutral while supporting the small private depl
 
 `DEVINT_AUTH_MODE=private` separates human and machine access:
 
-- `DEVINT_OWNER_PASSWORD` signs the owner into the browser Viewer;
+- `DEVINT_OWNER_PASSWORD` signs the owner into the browser Workbench;
 - `DEVINT_SESSION_SECRET` signs a bounded `HttpOnly`, `SameSite=Strict` owner session cookie;
 - `DEVINT_AGENT_TOKEN` is a separate Bearer credential for agent/MCP access;
 - `DEVINT_SESSION_TTL_SECONDS` optionally changes the owner-session lifetime (default 12 hours);
@@ -124,7 +154,7 @@ Private mode intentionally does **not** create user accounts, roles, or a creden
 
 ### Bearer
 
-`DEVINT_AUTH_MODE=bearer` + `DEVINT_BEARER_TOKEN` protects every Viewer/MCP request with one bearer credential.
+`DEVINT_AUTH_MODE=bearer` + `DEVINT_BEARER_TOKEN` protects every Workbench/MCP request with one bearer credential.
 
 ### Trusted proxy
 
@@ -161,7 +191,10 @@ The Preview lane:
 - serves only that local repository through an isolated project registry;
 - runs DI in **native private mode** with an ephemeral owner password, agent bearer token, and session-signing secret;
 - exposes DI directly through a pinned, checksum-verified Cloudflared HTTPS tunnel;
-- proves an unauthenticated Viewer redirects to DI's own sign-in page, owner sign-in opens the Viewer, unauthorized MCP fails with `401`, and the separate agent token reaches modern MCP discovery/tool listing;
+- proves an unauthenticated Workbench redirects to DI's own sign-in page;
+- proves owner sign-in opens the Workbench and its Overview/Sources projections;
+- proves unauthorized MCP fails with `401`;
+- proves the separate agent token reaches modern MCP discovery/tool listing including Workbench primitives such as `project_overview` and `inspect_entity`;
 - publishes the exact candidate SHA plus ephemeral owner/agent credentials only in a one-day private Actions artifact;
 - ends when the job is cancelled or reaches its timeout and creates no durable graph authority.
 
