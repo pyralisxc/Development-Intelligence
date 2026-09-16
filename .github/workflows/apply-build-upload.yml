@@ -1,0 +1,30 @@
+name: apply-build-upload
+
+on:
+  push:
+    branches: [feat/stable-entity-parity-hardening]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reconstruct staged Development Intelligence candidate
+        run: |
+          test -d .build-upload
+          cat .build-upload/part* | base64 -d > /tmp/di-build-upload.tgz
+          echo "58e422a0dc4ccc803426027253720597ab5dcd9f598ac2cd688d5d77a65bc74f  /tmp/di-build-upload.tgz" | sha256sum -c -
+          tar -xzf /tmp/di-build-upload.tgz -C .
+          rm -rf .build-upload
+      - name: Commit coherent v2 candidate
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A src scripts tests .build-upload
+          git commit -m "feat: harden stable entity parity architecture"
+          git push origin HEAD:feat/stable-entity-parity-hardening
