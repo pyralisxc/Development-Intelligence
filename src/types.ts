@@ -7,6 +7,18 @@ export interface RuntimeHeaderConfig {
   valueEnv: string;
 }
 
+export type TechnicalSourceCapability = 'query' | 'logs' | 'metrics';
+
+export interface TechnicalSourceConfig {
+  id: string;
+  label?: string;
+  type: 'read-only-http';
+  endpoint: string;
+  capabilities: TechnicalSourceCapability[];
+  headers?: RuntimeHeaderConfig[];
+  timeoutMs?: number;
+}
+
 export interface ProjectConfig {
   repository: string;
   defaultRef: string;
@@ -14,6 +26,7 @@ export interface ProjectConfig {
   credential?: ProjectCredential;
   runtimeOrigins?: string[];
   runtimeHeaders?: RuntimeHeaderConfig[];
+  technicalSources?: TechnicalSourceConfig[];
 }
 
 export interface ProjectRegistry {
