@@ -139,41 +139,38 @@ jobs:
             }
           }
           EOF
-          PREVIEW_PASSWORD="$(openssl rand -hex 18)"
-          PROXY_SECRET="$(openssl rand -hex 32)"
+          OWNER_PASSWORD="$(openssl rand -hex 18)"
+          AGENT_TOKEN="$(openssl rand -hex 32)"
+          SESSION_SECRET="$(openssl rand -hex 32)"
           {
             echo "PREVIEW_SHA=$PREVIEW_SHA"
             echo "PREVIEW_ROOT=$PREVIEW_ROOT"
             echo "DEVINT_PROJECTS_FILE=$PREVIEW_ROOT/projects.json"
             echo "DEVINT_SCRATCH_DIR=$PREVIEW_ROOT/scratch"
-            echo "DEVINT_AUTH_MODE=proxy"
-            echo "DEVINT_PROXY_SHARED_SECRET=$PROXY_SECRET"
+            echo "DEVINT_AUTH_MODE=private"
+            echo "DEVINT_OWNER_PASSWORD=$OWNER_PASSWORD"
+            echo "DEVINT_AGENT_TOKEN=$AGENT_TOKEN"
+            echo "DEVINT_SESSION_SECRET=$SESSION_SECRET"
             echo "DEVINT_HOST=127.0.0.1"
             echo "DEVINT_PORT=8787"
-            echo "DEVINT_PREVIEW_PROXY_PORT=8790"
-            echo "DEVINT_PREVIEW_TARGET=http://127.0.0.1:8787"
-            echo "DEVINT_PREVIEW_USER=review"
-            echo "DEVINT_PREVIEW_PASSWORD=$PREVIEW_PASSWORD"
           } >> "$GITHUB_ENV"
-      - name: Start authenticated preview and public tunnel
+      - name: Start native private preview and public tunnel
         run: |
           set -euo pipefail
           mkdir -p "$DEVINT_SCRATCH_DIR"
           node dist/src/http.js > "$PREVIEW_ROOT/service.log" 2>&1 &
           echo $! > "$PREVIEW_ROOT/service.pid"
-          node scripts/preview-proxy.mjs > "$PREVIEW_ROOT/proxy.log" 2>&1 &
-          echo $! > "$PREVIEW_ROOT/proxy.pid"
           for attempt in $(seq 1 40); do
-            if curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" http://127.0.0.1:8790/health > /dev/null; then break; fi
+            if curl -fsS http://127.0.0.1:8787/health > /dev/null; then break; fi
             sleep 1
           done
-          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" http://127.0.0.1:8790/health > /dev/null
+          curl -fsS http://127.0.0.1:8787/health > /dev/null
           CLOUDFLARED_VERSION='2026.9.1'
           CLOUDFLARED_SHA256='03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc'
           curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/cloudflared-linux-amd64" -o "$PREVIEW_ROOT/cloudflared"
           echo "$CLOUDFLARED_SHA256  $PREVIEW_ROOT/cloudflared" | sha256sum -c -
           chmod +x "$PREVIEW_ROOT/cloudflared"
-          "$PREVIEW_ROOT/cloudflared" tunnel --no-autoupdate --url http://127.0.0.1:8790 > "$PREVIEW_ROOT/cloudflared.log" 2>&1 &
+          "$PREVIEW_ROOT/cloudflared" tunnel --no-autoupdate --url http://127.0.0.1:8787 > "$PREVIEW_ROOT/cloudflared.log" 2>&1 &
           echo $! > "$PREVIEW_ROOT/cloudflared.pid"
           PREVIEW_URL=""
           for attempt in $(seq 1 60); do
@@ -187,34 +184,48 @@ jobs:
           fi
           echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_ENV"
           for attempt in $(seq 1 40); do
-            if curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" "$PREVIEW_URL/health" > /dev/null; then break; fi
+            if curl -fsS "$PREVIEW_URL/health" > /dev/null; then break; fi
             sleep 1
           done
-          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" "$PREVIEW_URL/health" > /dev/null
-          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" "$PREVIEW_URL/graph?project=Development-Intelligence" | grep -qi 'Development Intelligence graph'
+          curl -fsS "$PREVIEW_URL/health" > /dev/null
+
+          # Browser path: unauthenticated Viewer redirects to DI's own login page.
+          STATUS="$(curl -sS -o /dev/null -w '%{http_code}' "$PREVIEW_URL/graph?project=Development-Intelligence")"
+          [ "$STATUS" = '303' ]
+          curl -fsS "$PREVIEW_URL/login?returnTo=%2Fgraph%3Fproject%3DDevelopment-Intelligence" | grep -q 'Private workspace'
+          curl -fsS -c "$PREVIEW_ROOT/cookies.txt" -b "$PREVIEW_ROOT/cookies.txt" \
+            -H 'content-type: application/x-www-form-urlencoded' \
+            --data-urlencode "password=$DEVINT_OWNER_PASSWORD" \
+            --data-urlencode 'returnTo=/graph?project=Development-Intelligence' \
+            -o /dev/null "$PREVIEW_URL/login"
+          curl -fsS -b "$PREVIEW_ROOT/cookies.txt" "$PREVIEW_URL/graph?project=Development-Intelligence" | grep -qi 'How the system is organized'
+
+          # Agent path: separate bearer credential reaches modern MCP; no browser credential is reused.
           DISCOVER_BODY='{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
-          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" \
+          curl -fsS -H "authorization: Bearer $DEVINT_AGENT_TOKEN" \
             -H 'content-type: application/json' \
             -H 'mcp-protocol-version: 2026-07-28' \
             -H 'mcp-method: server/discover' \
             --data "$DISCOVER_BODY" "$PREVIEW_URL/mcp" | grep -q 'Development Intelligence'
           LIST_BODY='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
-          curl -fsS -u "$DEVINT_PREVIEW_USER:$DEVINT_PREVIEW_PASSWORD" \
+          curl -fsS -H "authorization: Bearer $DEVINT_AGENT_TOKEN" \
             -H 'content-type: application/json' \
             -H 'mcp-protocol-version: 2026-07-28' \
             -H 'mcp-method: tools/list' \
             --data "$LIST_BODY" "$PREVIEW_URL/mcp" | grep -q 'query_parity'
+          UNAUTHORIZED_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H 'content-type: application/json' --data "$DISCOVER_BODY" "$PREVIEW_URL/mcp")"
+          [ "$UNAUTHORIZED_STATUS" = '401' ]
+
           {
             echo '## Development Intelligence Preview'
             echo ''
             echo "- Exact candidate: \`$PREVIEW_SHA\`"
             echo "- Viewer: $PREVIEW_URL/graph?project=Development-Intelligence"
             echo "- MCP: $PREVIEW_URL/mcp"
-            echo "- Username: \`$DEVINT_PREVIEW_USER\`"
-            echo '- Password is stored in the private one-day Preview access artifact.'
+            echo '- Owner password and agent token are stored only in the private one-day Preview access artifact.'
             echo '- Preview is ephemeral and ends when this job is cancelled or reaches its timeout.'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice title=Development Intelligence Preview::URL=$PREVIEW_URL USER=$DEVINT_PREVIEW_USER SHA=$PREVIEW_SHA"
+          echo "::notice title=Development Intelligence Preview::URL=$PREVIEW_URL SHA=$PREVIEW_SHA"
       - name: Write private preview access record
         run: |
           set -euo pipefail
@@ -223,8 +234,8 @@ jobs:
           candidate=$PREVIEW_SHA
           viewer=$PREVIEW_URL/graph?project=Development-Intelligence
           mcp=$PREVIEW_URL/mcp
-          username=$DEVINT_PREVIEW_USER
-          password=$DEVINT_PREVIEW_PASSWORD
+          owner_password=$DEVINT_OWNER_PASSWORD
+          agent_token=$DEVINT_AGENT_TOKEN
           EOF
       - name: Upload private preview access record
         uses: actions/upload-artifact@v4
@@ -237,7 +248,7 @@ jobs:
         run: |
           echo "Preview active at $PREVIEW_URL for candidate $PREVIEW_SHA"
           while true; do
-            for process in service proxy cloudflared; do
+            for process in service cloudflared; do
               pid="$(cat "$PREVIEW_ROOT/$process.pid")"
               if ! kill -0 "$pid" 2>/dev/null; then
                 echo "$process exited unexpectedly"
