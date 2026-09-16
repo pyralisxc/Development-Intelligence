@@ -4,7 +4,7 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 }
 
-export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: string): string {
+export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: string, requestedGraphId?: string): string {
   const project = escapeHtml(graph.project);
   const revision = escapeHtml(graph.repositoryRevision ?? 'unknown revision');
   return `<!doctype html>
@@ -20,21 +20,21 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
 <body>
 <div class="app" data-project="${project}" data-revision="${revision}">
   <header class="top">
-    <div class="identity"><div class="title">${project}</div><div class="meta">${revision}</div></div>
+    <div class="identity"><div class="title">${project}</div><div class="meta">${revision}${requestedGraphId ? ' · observed snapshot' : ''}</div></div>
     <nav class="views" aria-label="Graph views">
       <button type="button" data-view="architecture" class="active">Architecture</button>
       <button type="button" data-view="parity">Parity</button>
       <button type="button" data-view="code">Code</button>
-      <button type="button" data-view="change">Change</button>
+      <button type="button" data-view="change"${requestedGraphId ? ' disabled title="Change compares accepted A with canonical source W"' : ''}>Change</button>
     </nav>
     <form class="search" id="search-form"><input id="search" autocomplete="off" placeholder="Search the whole graph…" aria-label="Search Development Intelligence" /></form>
   </header>
   <main class="shell">
     <section class="graph-wrap"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="status" class="status">Loading…</div></section>
-    <aside class="side"><h2>Inspector</h2><div id="detail" class="hint">Search or select a node. Development Intelligence will load a bounded neighborhood from the same graph agents query and show the evidence behind it.</div><div class="legend"><span><i class="dot" style="background:#7dd3fc"></i>semantic</span><span><i class="dot" style="background:#a78bfa"></i>structural</span><span><i class="dot" style="background:#fbbf24"></i>representation</span></div></aside>
+    <aside class="side"><h2>Inspector</h2><div id="detail" class="hint">Search or select a node. Development Intelligence will load a bounded neighborhood from the same graph agents query and show the evidence behind nodes and relationships.</div><div class="legend"><span><i class="dot" style="background:#7dd3fc"></i>semantic</span><span><i class="dot" style="background:#a78bfa"></i>structural</span><span><i class="dot" style="background:#fbbf24"></i>representation</span></div></aside>
   </main>
 </div>
-<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedRef ?? '')}};</script>
+<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedRef ?? '')},graphId:${JSON.stringify(requestedGraphId ?? '')}};</script>
 <script src="/viewer.js" defer></script>
 </body></html>`;
 }
