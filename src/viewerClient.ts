@@ -1,4 +1,4 @@
-import Graph from 'graphology';
+import { Graph } from 'graphology';
 import Sigma from 'sigma';
 
 declare global {
@@ -14,13 +14,14 @@ type Projection = { project: string; revision?: string; view: View; selected?: s
 
 const config = window.__DEVINT_VIEWER__;
 if (!config?.project) throw new Error('Development Intelligence viewer is missing project context');
+const viewerConfig: { project: string; ref?: string } = config;
 
 const container = document.getElementById('graph') as HTMLElement;
 const status = document.getElementById('status') as HTMLElement;
 const detail = document.getElementById('detail') as HTMLElement;
 const search = document.getElementById('search') as HTMLInputElement;
 const form = document.getElementById('search-form') as HTMLFormElement;
-const viewButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-view]')];
+const viewButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-view]'));
 let view: View = 'architecture';
 let renderer: Sigma | null = null;
 
@@ -116,8 +117,8 @@ function render(projection: Projection): void {
 
 async function load(query?: string, exact = false): Promise<void> {
   status.textContent = 'Loading…';
-  const params = new URLSearchParams({ project: config.project, view, limit: '900', depth: '2' });
-  if (config.ref) params.set('ref', config.ref);
+  const params = new URLSearchParams({ project: viewerConfig.project, view, limit: '900', depth: '2' });
+  if (viewerConfig.ref) params.set('ref', viewerConfig.ref);
   if (query) params.set(exact ? 'node' : 'query', query);
   const response = await fetch(`/graph/data?${params.toString()}`, { headers: { accept: 'application/json' } });
   if (!response.ok) throw new Error(await response.text());
