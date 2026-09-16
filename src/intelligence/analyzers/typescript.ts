@@ -63,6 +63,16 @@ function safeIdentityPart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.@/\-[\]]+/g, '_');
 }
 
+function hasBody(node: ts.Node): boolean {
+  return (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) ? Boolean(node.body) : false;
+}
+
+function sameOverloadFamily(left: ts.Node, right: ts.Node): boolean {
+  const functions = ts.isFunctionDeclaration(left) && ts.isFunctionDeclaration(right);
+  const methods = ts.isMethodDeclaration(left) && ts.isMethodDeclaration(right);
+  return (functions || methods) && (!hasBody(left) || !hasBody(right));
+}
+
 export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const sourceFile = ts.createSourceFile(
     context.locatorBase,
@@ -75,6 +85,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const resolutions = [] as ReturnType<typeof resolution>[];
   const evidence: EvidenceRecord[] = [];
   const symbols = new Map<string, Observation[]>();
+  const symbolsByIdentity = new Map<string, { observation: Observation; declaration: ts.Node }>();
+  const identityCollisions = new Map<string, number>();
   const pendingHandlers: Array<{ ui: Observation; handler: string; line: number }> = [];
   const pendingReferences: Array<{ from: Observation; targetName: string; kind: string; line: number }> = [];
   const functionStack: Observation[] = [];
@@ -83,9 +95,15 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const lineOf = (node: ts.Node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
   const locator = (node: ts.Node, suffix = '') => `${context.locatorBase}:${lineOf(node)}${suffix}`;
 
-  const addSymbol = (name: string, kind: string, node: ts.Node) => {
-    const qualified = [...scopeStack, name].join('.');
-    const id = `symbol:${context.locatorBase}#${safeIdentityPart(kind)}:${safeIdentityPart(qualified)}`;
+  const addSymbol = (name: string, kind: string, node: ts.Node, identityScope?: string) => {
+    const qualified = [...scopeStack, ...(identityScope ? [identityScope] : []), name].join('.');
+    const baseId = `symbol:${context.locatorBase}#${safeIdentityPart(kind)}:${safeIdentityPart(qualified)}`;
+    const existing = symbolsByIdentity.get(baseId);
+    if (existing && sameOverloadFamily(existing.declaration, node)) return existing.observation;
+
+    const collision = existing ? (identityCollisions.get(baseId) ?? 1) + 1 : 1;
+    identityCollisions.set(baseId, collision);
+    const id = existing ? `${baseId}~${collision}` : baseId;
     const obs = observation({
       id,
       sourceId: context.source.id,
@@ -98,6 +116,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       checkpoint: false,
     });
     observations.push(obs);
+    symbolsByIdentity.set(id, { observation: obs, declaration: node });
+    if (!existing) symbolsByIdentity.set(baseId, { observation: obs, declaration: node });
     const bucket = symbols.get(name) ?? [];
     bucket.push(obs);
     symbols.set(name, bucket);
@@ -214,9 +234,10 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       pushedFunction = true;
       pushedScope = true;
     } else if (ts.isMethodDeclaration(node) && node.name && ts.isIdentifier(node.name)) {
-      const symbol = addSymbol(node.name.text, 'method', node);
+      const memberScope = node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance';
+      const symbol = addSymbol(node.name.text, 'method', node, memberScope);
       functionStack.push(symbol);
-      scopeStack.push(node.name.text);
+      scopeStack.push(`${memberScope}:${node.name.text}`);
       pushedFunction = true;
       pushedScope = true;
     } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
