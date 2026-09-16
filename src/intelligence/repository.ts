@@ -468,7 +468,8 @@ function addFrameworkSemantics(input: {
     }
   }
 
-  for (const edge of input.edges.filter(edge => edge.kind === 'imports' && edge.status === 'resolved' && edge.from && edge.to)) {
+  for (const edge of input.edges) {
+    if (edge.kind !== 'imports' || edge.status !== 'resolved' || !edge.from || !edge.to) continue;
     const fromFile = edge.from.startsWith('file:') ? edge.from.slice(5) : null;
     const toFile = edge.to.startsWith('file:') ? edge.to.slice(5) : null;
     if (!fromFile || !toFile) continue;
@@ -504,12 +505,14 @@ function addFrameworkSemantics(input: {
     }
   }
 
-  for (const node of input.nodes.filter(node => node.kind === 'mcp-tool' && node.name)) {
+  for (const node of input.nodes) {
+    if (node.kind !== 'mcp-tool' || !node.name) continue;
+    const toolName = node.name;
     const relative = node.sourceId.startsWith('repo:') ? node.sourceId.slice(5) : node.locator.split(':')[0]!;
-    const proof = evidenceForFile(relative, `Observed MCP tool registration ${node.name}`);
+    const proof = evidenceForFile(relative, `Observed MCP tool registration ${toolName}`);
     input.evidence.push(proof);
-    const mcpId = `mcp:${node.name}`;
-    input.nodes.push(semanticEntity({ id: mcpId, sourceId: proof.sourceId, kind: 'mcp', locator: node.locator, name: node.name, value: { tool: node.name }, evidenceIds: [proof.id], tags: ['protocol-observed'] }));
+    const mcpId = `mcp:${toolName}`;
+    input.nodes.push(semanticEntity({ id: mcpId, sourceId: proof.sourceId, kind: 'mcp', locator: node.locator, name: toolName, value: { tool: toolName }, evidenceIds: [proof.id], tags: ['protocol-observed'] }));
     const feature = featureByFile.get(relative);
     if (feature) input.edges.push(semanticRelationship({ from: mcpId, to: `feature:${feature}`, kind: 'implemented-by', evidence: [node.locator], evidenceIds: [proof.id], strategy: 'protocol-registration' }));
   }
@@ -532,7 +535,7 @@ function ensureSemanticTargets(nodes: GraphNode[], edges: GraphEdge[]): GraphNod
       name: edge.to.slice(separator + 1),
       value: { id: edge.to, referenced: true },
       tags: ['referenced'],
-      evidenceIds: edge.evidenceIds,
+      ...(edge.evidenceIds?.length ? { evidenceIds: edge.evidenceIds } : {}),
     }));
     ids.add(edge.to);
   }
