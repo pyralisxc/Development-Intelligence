@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import http from 'node:http';
+import http, { type Server } from 'node:http';
 import test from 'node:test';
 
-async function close(server: http.Server): Promise<void> {
+async function close(server: Server): Promise<void> {
   await new Promise<void>(resolve => server.close(() => resolve()));
 }
 
-async function startServer(): Promise<{ server: http.Server; origin: string }> {
+async function startServer(): Promise<{ server: Server; origin: string }> {
   const { createDevelopmentIntelligenceServer } = await import('../src/http.js');
   const server = createDevelopmentIntelligenceServer();
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
