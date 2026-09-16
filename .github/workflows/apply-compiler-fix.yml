@@ -25,6 +25,9 @@ jobs:
           sed -i 's/^          //' /tmp/expected
           sort -o /tmp/expected /tmp/expected
           diff -u /tmp/expected /tmp/paths
+          # The generated unified diff ends with a context-only blank line. Preserve
+          # that line explicitly because the connector normalizes trailing whitespace.
+          printf ' \n' >> .build/compiler-fix.patch
           git apply --check .build/compiler-fix.patch
           git apply .build/compiler-fix.patch
       - uses: actions/setup-node@v7
