@@ -36,7 +36,13 @@ An unknown project with no project-specific semantic mapping can still produce u
 
 ### Cross-file structural intelligence
 
-For TypeScript/JavaScript projects, generic module resolution must represent file imports, import bindings, re-exports, import-to-definition resolution, and provable cross-file calls. Representative CardForge benchmarking must demonstrate that traces reach known consumers rather than only returning large node counts.
+For TypeScript/JavaScript projects, generic module resolution must represent file imports, dynamic `import()` dependencies, import bindings, re-exports, import-to-definition resolution, and provable cross-file calls. Representative CardForge benchmarking must demonstrate that traces reach known consumers rather than only returning large node counts.
+
+### Generic semantic migration gate
+
+The pinned CardForge Product Reality checkpoint is temporary migration evidence for semantic coverage, not authority over Development Intelligence's future schema. For semantic kinds DI can derive generically from source/framework/protocol structure (`feature`, `api`, `provider`, `route`, and `mcp`), the benchmark requires 100% identity recall against the pinned oracle and zero missing oracle relationships whose endpoints are both generically discoverable kinds.
+
+A route that directly registers an MCP tool must expose that MCP entity, and dynamic module imports must contribute the same feature dependency semantics as static imports. Missing `action`, `surface`, `capability`, or `tool` identities remain legitimate migration gaps until the inspected project supplies project-neutral source-adjacent semantic declarations or DI gains a genuinely generic way to prove them.
 
 ### Evidence discipline
 
