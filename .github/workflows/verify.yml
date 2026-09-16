@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      CARDFORGE_BENCHMARK_SHA: b210fb2f6a01bd1b18cde4260a49682ebdd49c07
+      CARDFORGE_BENCHMARK_SHA: dad315ada5f538ba72a84d650811bb4b5fe95657
       CARDFORGE_BENCHMARK_ORACLE_PATH: benchmark/cardforge-oracle/docs/generated/product-reality.ndjson
       CARDFORGE_REQUIRE_FULL_ORACLE_PARITY: '1'
     steps:
@@ -85,11 +85,11 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run build
-      - name: Check out cleaned CardForge migration target
+      - name: Check out final CardForge migration target
         uses: actions/checkout@v7
         with:
           repository: pyralisxc/CardForge
-          ref: b210fb2f6a01bd1b18cde4260a49682ebdd49c07
+          ref: dad315ada5f538ba72a84d650811bb4b5fe95657
           path: benchmark/cardforge
           persist-credentials: false
       - name: Check out accepted Product Reality migration oracle
