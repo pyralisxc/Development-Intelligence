@@ -1,8 +1,11 @@
 {
   "type": "meta",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "format": "sharded-ndjson",
-  "sourceFingerprint": "e46705521068d91eebef6cbcbd3694069bd9a3134b2389bf9b6f437f06962863",
+  "analyzerVersion": "2.1.0-stable-entity",
+  "sourceFingerprint": "13eb22ffd74e7890fff1e8189a38fbf2638fd4bed04209e42a63b5befc12c1f4",
+  "topologyFingerprint": "d6c19047745a14b75d11db43dabef8b6e754f74eb73ba347e83f0cc7208cae61",
+  "evidenceFingerprint": "b01a316a7bdc4f9e3b38025d299eb701da918db3bb92f71b783ef54b33aac62e",
   "shards": [
     "0.ndjson",
     "1.ndjson",
@@ -16,27 +19,20 @@
     "9.ndjson",
     "a.ndjson",
     "b.ndjson",
-    "c.ndjson",
     "d.ndjson",
     "e.ndjson",
     "f.ndjson"
   ],
   "summary": {
-    "nodes": 677,
-    "edges": 1531,
+    "nodes": 18,
+    "edges": 16,
     "unresolved": 0,
-    "candidate": 368,
+    "candidate": 0,
     "kinds": {
-      "declaration": 26,
-      "declared-field": 105,
-      "document-heading": 48,
-      "document-statement": 65,
-      "file": 41,
-      "function": 132,
-      "import-binding": 186,
-      "interface": 25,
-      "structured-value": 40,
-      "type": 9
+      "capability": 5,
+      "feature": 1,
+      "mcp": 10,
+      "surface": 2
     }
   }
 }
