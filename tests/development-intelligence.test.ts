@@ -106,7 +106,7 @@ test('Git-owned A/W/B graph lifecycle is deterministic and needs no durable serv
     const stale = await graphStatus(fixture.project) as any;
     assert.equal(stale.accepted.current, false, 'accepted A must remain the prior committed graph until candidate B is sealed');
     const delta = await diffAcceptedToWorking(fixture.project) as any;
-    assert.ok(delta.nodes.added.length + delta.nodes.removed.length + delta.nodes.changed.length > 0);
+    assert.ok(delta.semantic.nodes.added.length + delta.semantic.nodes.removed.length + delta.semantic.nodes.changed.length > 0);
 
     await sealLocalGraph(fixture.source, fixture.project);
     await commit(fixture.source, 'seal candidate graph B');
@@ -145,9 +145,11 @@ test('code inspection, trace, parity, and runtime evidence all use one intrinsic
 
     const search = await searchGraph({ project: fixture.project, query: 'helper' }) as any;
     assert.ok(search.nodes.some((node: any) => node.name === 'helper'));
+    const helperFunction = graph.nodes.find(node => node.kind === 'function' && node.name === 'helper');
+    assert.ok(helperFunction, 'fixture helper function should have one exact structural identity');
     const trace = await traceGraph({ project: fixture.project, node: 'Panel', direction: 'outbound', depth: 4 }) as any;
     assert.ok(trace.nodes.some((node: any) => node.name === 'helper'), 'native graph traversal should cross module imports and expose called symbols');
-    const reverseTrace = await traceGraph({ project: fixture.project, node: 'helper', direction: 'inbound', depth: 4 }) as any;
+    const reverseTrace = await traceGraph({ project: fixture.project, node: helperFunction!.id, direction: 'inbound', depth: 4 }) as any;
     assert.ok(reverseTrace.nodes.some((node: any) => node.name === 'handleManage'), 'cross-file caller discovery should reach the importing caller');
     assert.ok(graph.nodes.some(node => node.kind === 'import-binding' && node.name === 'helper'));
     assert.ok(graph.edges.some(edge => edge.kind === 'imports' && edge.status === 'resolved'));
@@ -155,7 +157,7 @@ test('code inspection, trace, parity, and runtime evidence all use one intrinsic
 
     const code = await searchCode({ project: fixture.project, pattern: 'fetch', limit: 10 }) as any;
     assert.ok(code.matches.some((match: any) => match.file === 'src/panel.tsx'));
-    const snippet = await getCodeSnippet({ project: fixture.project, node: 'helper', context: 2 }) as any;
+    const snippet = await getCodeSnippet({ project: fixture.project, node: helperFunction!.id, context: 2 }) as any;
     assert.equal(snippet.file, 'src/helper.ts');
     assert.ok(snippet.lines.some((line: any) => line.text.includes('helper')));
   } finally {
@@ -209,7 +211,7 @@ test('modern MCP HTTP contract and native graph viewer remain available', async 
     assert.equal(discover.status, 200);
     const discoverBody = await discover.json() as any;
     assert.equal(discoverBody.result.resultType, 'complete');
-    assert.match(discoverBody.result.instructions, /one evidence graph/i);
+    assert.match(discoverBody.result.instructions, /one evidence(?:-backed)? graph/i);
 
     const list = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } }) });
     assert.equal(list.status, 200);
