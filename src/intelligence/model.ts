@@ -1,4 +1,4 @@
-import type { GraphNode, Observation, Resolution, SourceDescriptor } from '../types.js';
+import type { EvidenceRecord, GraphNode, Observation, Resolution, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
 
 export interface AnalyzeContext {
@@ -10,6 +10,7 @@ export interface AnalyzeContext {
 export interface AnalyzeResult {
   observations: Observation[];
   resolutions: Resolution[];
+  evidence?: EvidenceRecord[];
 }
 
 type ObservationInput = Omit<Observation, 'id' | 'raw'> & {
@@ -30,6 +31,14 @@ export function observation(input: ObservationInput): Observation {
   return { ...rest, raw, id: id ?? stableHash(identity ?? defaultIdentity) };
 }
 
+export function evidenceRecord(input: Omit<EvidenceRecord, 'id'> & { id?: string }): EvidenceRecord {
+  const { id, ...rest } = input;
+  return {
+    ...rest,
+    id: id ?? stableHash([rest.sourceId, rest.kind, rest.locator, rest.field ?? null, rest.message ?? null, rest.value ?? null]),
+  };
+}
+
 export function semanticEntity(input: {
   id: string;
   sourceId: string;
@@ -38,6 +47,7 @@ export function semanticEntity(input: {
   name?: string;
   value?: unknown;
   tags?: string[];
+  evidenceIds?: string[];
 }): GraphNode {
   return observation({
     id: input.id,
@@ -49,6 +59,7 @@ export function semanticEntity(input: {
     tags: [...new Set(['semantic', ...(input.tags ?? [])])],
     layer: 'semantic',
     checkpoint: true,
+    ...(input.evidenceIds?.length ? { evidenceIds: [...new Set(input.evidenceIds)].sort() } : {}),
   });
 }
 
@@ -62,6 +73,7 @@ export function semanticRelationship(input: {
   to: string;
   kind: string;
   evidence: string[];
+  evidenceIds?: string[];
   strategy?: string;
   confidence?: number;
   status?: 'resolved' | 'candidate' | 'unresolved';
@@ -76,6 +88,7 @@ export function semanticRelationship(input: {
     evidence: input.evidence,
     layer: 'semantic',
     checkpoint: true,
+    ...(input.evidenceIds?.length ? { evidenceIds: [...new Set(input.evidenceIds)].sort() } : {}),
   });
 }
 
