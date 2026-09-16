@@ -84,7 +84,7 @@ export async function workbenchProjects(): Promise<Record<string, unknown>> {
   };
 }
 
-export async function projectOverview(project: string, ref?: string, graphId?: string): Promise<Record<string, unknown>> {
+export async function projectOverview(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
   const [status, diff, sources] = await Promise.all([
     projectStatus(project, false),
@@ -147,7 +147,7 @@ function changeForNode(diff: any, id: string): Record<string, unknown> | null {
   return { state: 'unchanged' };
 }
 
-export async function inspectEntity(input: { project: string; node: string; ref?: string; graphId?: string }): Promise<Record<string, unknown>> {
+export async function inspectEntity(input: { project: string; node: string; ref?: string | undefined; graphId?: string | undefined }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const candidates = findGraphNodeCandidates(graph, input.node, 20);
   if (!candidates.length) throw new Error(`Graph entity not found: ${input.node}`);
@@ -211,7 +211,7 @@ export async function inspectEntity(input: { project: string; node: string; ref?
   };
 }
 
-export async function exploreWorkbench(input: { project: string; query?: string; ref?: string; graphId?: string; limit?: number }): Promise<Record<string, unknown>> {
+export async function exploreWorkbench(input: { project: string; query?: string | undefined; ref?: string | undefined; graphId?: string | undefined; limit?: number | undefined }): Promise<Record<string, unknown>> {
   const result = await searchGraph({ project: input.project, ref: input.ref, graphId: input.graphId, query: input.query, limit: input.limit ?? 250 }) as any;
   const kindCounts: Record<string, number> = {};
   for (const node of result.nodes ?? []) kindCounts[node.kind] = (kindCounts[node.kind] ?? 0) + 1;
@@ -234,10 +234,10 @@ function querySubject(text: string, markers: RegExp[]): string {
 export async function queryWorkbench(input: {
   project: string;
   text: string;
-  ref?: string;
-  graphId?: string;
-  sourceId?: string;
-  capability?: TechnicalSourceCapability;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  sourceId?: string | undefined;
+  capability?: TechnicalSourceCapability | undefined;
 }): Promise<Record<string, unknown>> {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
@@ -289,7 +289,7 @@ export async function queryWorkbench(input: {
   return { intent: 'search', answer: `${result.nodeTotal ?? result.nodes?.length ?? 0} entities match “${subject || text}”.`, result };
 }
 
-export async function workbenchSources(project: string, ref?: string, graphId?: string): Promise<Record<string, unknown>> {
+export async function workbenchSources(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {
   const [configured, graph] = await Promise.all([listTechnicalSources(project), currentGraph(project, ref, graphId)]);
   return {
     project,
