@@ -1,50 +1,97 @@
 import path from 'node:path';
-import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
+import { getProjectConfig } from '../config/registry.js';
+import type { GraphEdge, GraphNode, GraphNodeLayer, IntelligenceGraph } from '../types.js';
+import { checkpointProjection } from './repository.js';
 import { currentGraph, repositoryGraphs } from './service.js';
 
 function nodeText(node: GraphNode): string {
-  return [node.id, node.kind, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ').toLowerCase();
+  return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ').toLowerCase();
 }
 
 function edgeText(edge: GraphEdge): string {
-  return [edge.id, edge.kind, edge.strategy, edge.status, ...edge.evidence].join(' ').toLowerCase();
+  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...edge.evidence].join(' ').toLowerCase();
 }
 
-export function diffGraphs(base: IntelligenceGraph, head: IntelligenceGraph): Record<string, unknown> {
-  const diffById = <T extends { id: string }>(left: T[], right: T[]) => {
-    const a = new Map(left.map(item => [item.id, item]));
-    const b = new Map(right.map(item => [item.id, item]));
-    const added: T[] = [];
-    const removed: T[] = [];
-    const changed: Array<{ before: T; after: T }> = [];
-    for (const [id, item] of b) {
-      const previous = a.get(id);
-      if (!previous) added.push(item);
-      else if (JSON.stringify(previous) !== JSON.stringify(item)) changed.push({ before: previous, after: item });
-    }
-    for (const [id, item] of a) if (!b.has(id)) removed.push(item);
-    return { added, removed, changed };
-  };
+function layersMatch(layer: GraphNodeLayer | undefined, layers: Set<GraphNodeLayer>): boolean {
+  return !layers.size || layers.has(layer ?? 'structural');
+}
+
+export function findGraphNodeCandidates(graph: IntelligenceGraph, query: string, limit = 20): GraphNode[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const exactId = graph.nodes.find(node => node.id === query);
+  if (exactId) return [exactId];
+  const exactName = graph.nodes.filter(node => node.name?.toLowerCase() === needle);
+  if (exactName.length) return exactName.slice(0, limit);
+  return graph.nodes.filter(node => nodeText(node).includes(needle)).slice(0, limit);
+}
+
+function diffById<T extends { id: string }>(left: T[], right: T[]) {
+  const a = new Map(left.map(item => [item.id, item]));
+  const b = new Map(right.map(item => [item.id, item]));
+  const added: T[] = [];
+  const removed: T[] = [];
+  const changed: Array<{ before: T; after: T }> = [];
+  for (const [id, item] of b) {
+    const previous = a.get(id);
+    if (!previous) added.push(item);
+    else if (JSON.stringify(previous) !== JSON.stringify(item)) changed.push({ before: previous, after: item });
+  }
+  for (const [id, item] of a) if (!b.has(id)) removed.push(item);
+  return { added, removed, changed };
+}
+
+function filteredGraph(graph: IntelligenceGraph, layers?: GraphNodeLayer[]): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const allowed = new Set(layers ?? []);
+  const nodes = graph.nodes.filter(node => layersMatch(node.layer, allowed));
+  const ids = new Set(nodes.map(node => node.id));
+  const edges = graph.edges.filter(edge => layersMatch(edge.layer, allowed) && (!edge.from || ids.has(edge.from)) && (!edge.to || ids.has(edge.to)));
+  return { nodes, edges };
+}
+
+export function diffGraphs(base: IntelligenceGraph, head: IntelligenceGraph, layers?: GraphNodeLayer[]): Record<string, unknown> {
+  const left = filteredGraph(base, layers);
+  const right = filteredGraph(head, layers);
   return {
     project: head.project,
-    base: { graphId: base.graphId, role: base.role, revision: base.repositoryRevision, sourceFingerprint: base.sourceFingerprint },
-    head: { graphId: head.graphId, role: head.role, revision: head.repositoryRevision, sourceFingerprint: head.sourceFingerprint },
-    nodes: diffById(base.nodes, head.nodes),
-    edges: diffById(base.edges, head.edges),
+    layers: layers?.length ? layers : ['semantic', 'structural', 'representation'],
+    base: { graphId: base.graphId, role: base.role, revision: base.repositoryRevision, sourceFingerprint: base.sourceFingerprint, topologyFingerprint: base.topologyFingerprint, analyzerVersion: base.analyzerVersion },
+    head: { graphId: head.graphId, role: head.role, revision: head.repositoryRevision, sourceFingerprint: head.sourceFingerprint, topologyFingerprint: head.topologyFingerprint, analyzerVersion: head.analyzerVersion },
+    nodes: diffById(left.nodes, right.nodes),
+    edges: diffById(left.edges, right.edges),
   };
 }
 
 export async function diffAcceptedToWorking(project: string, ref?: string): Promise<Record<string, unknown>> {
   const { accepted, working, acceptedCurrent } = await repositoryGraphs(project, ref);
+  const projection = checkpointProjection(working);
+  const workingSemantic: IntelligenceGraph = { ...working, nodes: projection.nodes, edges: projection.edges };
   if (!accepted) return {
     project,
     base: null,
-    head: { graphId: working.graphId, role: working.role, revision: working.repositoryRevision },
+    head: { graphId: working.graphId, role: working.role, revision: working.repositoryRevision, topologyFingerprint: working.topologyFingerprint },
     acceptedCurrent: false,
-    nodes: { added: working.nodes, removed: [], changed: [] },
-    edges: { added: working.edges, removed: [], changed: [] },
+    semantic: {
+      nodes: { added: projection.nodes, removed: [], changed: [] },
+      edges: { added: projection.edges, removed: [], changed: [] },
+    },
+    note: 'Accepted checkpoints persist stable semantic topology only. Use a ref-to-ref diff for structural/code change analysis.',
   };
-  return { ...diffGraphs(accepted, working), acceptedCurrent };
+  const semantic = diffGraphs(accepted, workingSemantic, ['semantic']);
+  return { project, acceptedCurrent, semantic, note: 'Accepted A/B checkpoints are semantic topology projections; structural diffs require two Git revisions analyzed with the same current analyzer.' };
+}
+
+export async function diffRevisions(input: {
+  project: string;
+  ref?: string;
+  baseRef?: string;
+  layers?: GraphNodeLayer[];
+}): Promise<Record<string, unknown>> {
+  const config = await getProjectConfig(input.project);
+  const headRef = input.ref ?? config.defaultRef;
+  const baseRef = input.baseRef ?? config.defaultRef;
+  const [base, head] = await Promise.all([currentGraph(input.project, baseRef), currentGraph(input.project, headRef)]);
+  return diffGraphs(base, head, input.layers);
 }
 
 export async function searchGraph(input: {
@@ -54,6 +101,7 @@ export async function searchGraph(input: {
   kinds?: string[] | undefined;
   sourceIds?: string[] | undefined;
   statuses?: Array<'resolved' | 'candidate' | 'unresolved'> | undefined;
+  layers?: GraphNodeLayer[] | undefined;
   limit?: number | undefined;
   offset?: number | undefined;
 }): Promise<Record<string, unknown>> {
@@ -62,14 +110,19 @@ export async function searchGraph(input: {
   const kinds = new Set(input.kinds ?? []);
   const sourceIds = new Set(input.sourceIds ?? []);
   const statuses = new Set(input.statuses ?? []);
+  const layers = new Set(input.layers ?? []);
   const nodes = graph.nodes.filter(node => {
     if (kinds.size && !kinds.has(node.kind)) return false;
     if (sourceIds.size && !sourceIds.has(node.sourceId)) return false;
+    if (!layersMatch(node.layer, layers)) return false;
     return !query || nodeText(node).includes(query);
   });
+  const nodeIds = new Set(nodes.map(node => node.id));
   const edges = graph.edges.filter(edge => {
     if (statuses.size && !statuses.has(edge.status)) return false;
-    return !query || edgeText(edge).includes(query);
+    if (!layersMatch(edge.layer, layers)) return false;
+    if (query && !edgeText(edge).includes(query) && !(edge.from && nodeIds.has(edge.from)) && !(edge.to && nodeIds.has(edge.to))) return false;
+    return true;
   });
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
   const offset = Math.max(input.offset ?? 0, 0);
@@ -92,18 +145,31 @@ export async function traceGraph(input: {
   direction?: 'inbound' | 'outbound' | 'both' | undefined;
   depth?: number | undefined;
   relationshipKinds?: string[] | undefined;
+  layers?: GraphNodeLayer[] | undefined;
   limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref);
-  const needle = input.node?.trim().toLowerCase();
-  if (!needle) throw new Error('node must be a non-empty graph node id/name/query');
-  const start = graph.nodes.find(node => node.id === input.node)
-    ?? graph.nodes.find(node => node.name?.toLowerCase() === needle)
-    ?? graph.nodes.find(node => nodeText(node).includes(needle));
-  if (!start) throw new Error(`Graph node not found: ${input.node}`);
-
+  const query = input.node?.trim();
+  if (!query) throw new Error('node must be a non-empty graph node id/name/query');
+  const candidates = findGraphNodeCandidates(graph, query, 20);
+  if (!candidates.length) throw new Error(`Graph node not found: ${input.node}`);
+  if (candidates.length > 1 && !candidates.some(node => node.id === query)) {
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: true,
+      query,
+      candidates: candidates.map(node => ({ id: node.id, kind: node.kind, layer: node.layer ?? 'structural', name: node.name ?? null, locator: node.locator })),
+      instruction: 'Retry trace_path with an exact node id.',
+      nodes: [],
+      edges: [],
+    };
+  }
+  const start = candidates.find(node => node.id === query) ?? candidates[0]!;
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
   const allowedKinds = new Set(input.relationshipKinds ?? []);
+  const allowedLayers = new Set(input.layers ?? []);
   const maxDepth = Math.min(Math.max(input.depth ?? 3, 0), 10);
   const limit = Math.min(Math.max(input.limit ?? 250, 1), 2000);
   const direction = input.direction ?? 'both';
@@ -116,6 +182,7 @@ export async function traceGraph(input: {
       for (const edge of graph.edges) {
         if (edge.status !== 'resolved' || !edge.from || !edge.to) continue;
         if (allowedKinds.size && !allowedKinds.has(edge.kind)) continue;
+        if (!layersMatch(edge.layer, allowedLayers)) continue;
         let neighbor: string | null = null;
         if ((direction === 'outbound' || direction === 'both') && edge.from === current) neighbor = edge.to;
         else if ((direction === 'inbound' || direction === 'both') && edge.to === current) neighbor = edge.from;
@@ -130,36 +197,81 @@ export async function traceGraph(input: {
     project: input.project,
     graphId: graph.graphId,
     revision: graph.repositoryRevision,
+    ambiguous: false,
     start,
     nodes: [...visited].map(id => byId.get(id)).filter(Boolean),
     edges: selectedEdges,
   };
 }
 
+function architectureArea(node: GraphNode): string {
+  const file = locatorFileAndLine(node.locator).file;
+  const parts = file.split('/');
+  if (parts[0] === 'src' && parts[1] === 'features' && parts[2]) return `feature:${parts[2]}`;
+  if (parts[0] === 'src' && parts[1] === 'app') return 'app';
+  if (parts[0] === 'src' && parts[1]) return `src/${parts[1]}`;
+  return parts[0] || '(root)';
+}
+
 export async function graphArchitecture(project: string, ref?: string): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref);
   const kinds: Record<string, number> = {};
-  const areas: Record<string, { nodes: number; kinds: Record<string, number> }> = {};
+  const relationshipKinds: Record<string, number> = {};
+  const layers: Record<string, number> = {};
   for (const node of graph.nodes) {
     kinds[node.kind] = (kinds[node.kind] ?? 0) + 1;
-    const file = node.locator.split(':')[0] ?? node.locator;
-    const area = file.includes('/') ? file.split('/')[0]! : '(root)';
-    const bucket = areas[area] ?? { nodes: 0, kinds: {} };
+    const layer = node.layer ?? 'structural';
+    layers[layer] = (layers[layer] ?? 0) + 1;
+  }
+  for (const edge of graph.edges) relationshipKinds[edge.kind] = (relationshipKinds[edge.kind] ?? 0) + 1;
+
+  const semanticFeatures = graph.nodes.filter(node => node.layer === 'semantic' && node.kind === 'feature');
+  const featureIds = new Set(semanticFeatures.map(node => node.id));
+  const features = semanticFeatures.map(feature => {
+    const outgoing = graph.edges.filter(edge => edge.from === feature.id && edge.status === 'resolved');
+    const incoming = graph.edges.filter(edge => edge.to === feature.id && edge.status === 'resolved');
+    return {
+      id: feature.id,
+      name: feature.name ?? feature.id.slice('feature:'.length),
+      dependsOn: outgoing.filter(edge => edge.kind === 'depends-on' && edge.to && featureIds.has(edge.to)).map(edge => edge.to),
+      usedBy: incoming.filter(edge => edge.kind === 'depends-on' && edge.from && featureIds.has(edge.from)).map(edge => edge.from),
+      apiCount: incoming.filter(edge => edge.kind === 'uses-feature' && edge.from?.startsWith('api:')).length,
+      routeCount: incoming.filter(edge => edge.kind === 'composes' && edge.from?.startsWith('route:')).length,
+      mcpCount: incoming.filter(edge => edge.kind === 'implemented-by' && edge.from?.startsWith('mcp:')).length,
+      providerCount: outgoing.filter(edge => edge.kind === 'integrates-with' && edge.to?.startsWith('provider:')).length,
+    };
+  }).sort((a, b) => (b.dependsOn.length + b.usedBy.length + b.apiCount + b.routeCount + b.mcpCount) - (a.dependsOn.length + a.usedBy.length + a.apiCount + a.routeCount + a.mcpCount));
+
+  const areas = new Map<string, { nodes: number; kinds: Record<string, number> }>();
+  for (const node of graph.nodes.filter(node => node.layer !== 'semantic')) {
+    const area = architectureArea(node);
+    const bucket = areas.get(area) ?? { nodes: 0, kinds: {} };
     bucket.nodes += 1;
     bucket.kinds[node.kind] = (bucket.kinds[node.kind] ?? 0) + 1;
-    areas[area] = bucket;
+    areas.set(area, bucket);
   }
-  const resolvedEdges = graph.edges.filter(edge => edge.status === 'resolved');
-  const relationshipKinds: Record<string, number> = {};
-  for (const edge of graph.edges) relationshipKinds[edge.kind] = (relationshipKinds[edge.kind] ?? 0) + 1;
+
   return {
     project,
     graphId: graph.graphId,
     revision: graph.repositoryRevision,
     sourceFingerprint: graph.sourceFingerprint,
+    topologyFingerprint: graph.topologyFingerprint,
+    analyzerVersion: graph.analyzerVersion,
     coverage: graph.coverage,
-    summary: { nodes: graph.nodes.length, edges: graph.edges.length, resolvedEdges: resolvedEdges.length, nodeKinds: kinds, relationshipKinds },
-    areas: Object.entries(areas).sort((a, b) => b[1].nodes - a[1].nodes).map(([name, value]) => ({ name, ...value })),
+    summary: {
+      nodes: graph.nodes.length,
+      edges: graph.edges.length,
+      semanticNodes: graph.nodes.filter(node => node.layer === 'semantic').length,
+      structuralNodes: graph.nodes.filter(node => (node.layer ?? 'structural') === 'structural').length,
+      representationNodes: graph.nodes.filter(node => node.layer === 'representation').length,
+      resolvedEdges: graph.edges.filter(edge => edge.status === 'resolved').length,
+      nodeKinds: kinds,
+      relationshipKinds,
+      layers,
+    },
+    features,
+    areas: [...areas.entries()].sort((a, b) => b[1].nodes - a[1].nodes).map(([name, value]) => ({ name, ...value })),
   };
 }
 
@@ -167,17 +279,30 @@ export async function graphSchema(project: string, ref?: string): Promise<Record
   const graph = await currentGraph(project, ref);
   return {
     schemaVersion: graph.schemaVersion,
+    analyzerVersion: graph.analyzerVersion,
     nodeKinds: [...new Set(graph.nodes.map(node => node.kind))].sort(),
     relationshipKinds: [...new Set(graph.edges.map(edge => edge.kind))].sort(),
     relationshipStatuses: ['resolved', 'candidate', 'unresolved'],
-    nodeFields: ['id', 'sourceId', 'kind', 'locator', 'field?', 'name?', 'value', 'raw', 'tags?'],
-    edgeFields: ['id', 'from', 'to', 'kind', 'strategy', 'confidence', 'status', 'evidence'],
+    layers: ['semantic', 'structural', 'representation'],
+    nodeFields: ['id', 'sourceId', 'kind', 'locator', 'field?', 'name?', 'value', 'raw', 'tags?', 'layer?', 'checkpoint?', 'evidenceIds?'],
+    edgeFields: ['id', 'from', 'to', 'kind', 'strategy', 'confidence', 'status', 'evidence', 'layer?', 'checkpoint?', 'evidenceIds?'],
+    evidenceFields: ['id', 'sourceId', 'kind', 'locator', 'message?', 'field?', 'value?'],
   };
 }
 
 export async function graphCoverage(project: string, ref?: string): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref);
   return { project, graphId: graph.graphId, revision: graph.repositoryRevision, coverage: graph.coverage ?? null, unavailableSourceIds: graph.unavailableSourceIds };
+}
+
+function semanticNeighborhood(graph: IntelligenceGraph, entityIds: Set<string>): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const edges = graph.edges.filter(edge => edge.layer === 'semantic' && ((edge.from && entityIds.has(edge.from)) || (edge.to && entityIds.has(edge.to))));
+  const ids = new Set(entityIds);
+  for (const edge of edges) {
+    if (edge.from) ids.add(edge.from);
+    if (edge.to) ids.add(edge.to);
+  }
+  return { nodes: graph.nodes.filter(node => ids.has(node.id)), edges };
 }
 
 export async function parityLens(input: {
@@ -190,18 +315,118 @@ export async function parityLens(input: {
   limit?: number | undefined;
   offset?: number | undefined;
 }): Promise<Record<string, unknown>> {
-  const result = await searchGraph({ ...input, statuses: input.status });
   const graph = await currentGraph(input.project, input.ref);
   const query = input.query?.trim().toLowerCase();
+  const kinds = new Set(input.kinds ?? []);
   const offset = Math.max(input.offset ?? 0, 0);
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
+  let semantic = graph.nodes.filter(node => node.layer === 'semantic' && (!kinds.size || kinds.has(node.kind)) && (!query || nodeText(node).includes(query)));
+  if (input.sourceIds?.length) {
+    const sourceIds = new Set(input.sourceIds);
+    semantic = semantic.filter(node => sourceIds.has(node.sourceId));
+  }
+  const selected = semantic.slice(offset, offset + limit);
+  const neighborhood = semanticNeighborhood(graph, new Set(selected.map(node => node.id)));
+  const status = new Set(input.status ?? []);
+  const relationships = neighborhood.edges.filter(edge => !status.size || status.has(edge.status));
+  const representations = selected.map(entity => {
+    const related = graph.edges.filter(edge => edge.from === entity.id || edge.to === entity.id);
+    const connected = (prefix: string) => [...new Set(related.flatMap(edge => [edge.from, edge.to]).filter((id): id is string => Boolean(id && id.startsWith(prefix))))];
+    return {
+      entityId: entity.id,
+      kind: entity.kind,
+      name: entity.name ?? entity.id,
+      surfaces: connected('surface:'),
+      actions: connected('action:'),
+      routes: connected('route:'),
+      apis: connected('api:'),
+      mcp: connected('mcp:'),
+      providers: connected('provider:'),
+      tools: connected('tool:'),
+      unresolvedRelations: related.filter(edge => edge.status === 'unresolved').length,
+      candidateRelations: related.filter(edge => edge.status === 'candidate').length,
+    };
+  });
   return {
-    ...result,
+    project: input.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    topologyFingerprint: graph.topologyFingerprint,
+    entityTotal: semantic.length,
+    entities: selected,
+    relationships,
+    representations,
     namingDivergences: graph.namingDivergences.filter(item => !query || `${item.fromName} ${item.toName}`.toLowerCase().includes(query)).slice(offset, offset + limit),
     unmatchedNodeIds: graph.unmatchedNodeIds.slice(offset, offset + limit),
     unavailableSourceIds: graph.unavailableSourceIds,
   };
 }
+
+function boundedNeighborhood(graph: IntelligenceGraph, seedIds: string[], depth: number, limit: number): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const visited = new Set(seedIds);
+  const selectedEdges = new Map<string, GraphEdge>();
+  let frontier = [...seedIds];
+  for (let d = 0; d < depth && frontier.length && visited.size < limit; d += 1) {
+    const next: string[] = [];
+    for (const current of frontier) {
+      for (const edge of graph.edges) {
+        if (edge.status !== 'resolved' || !edge.from || !edge.to) continue;
+        if (edge.from !== current && edge.to !== current) continue;
+        selectedEdges.set(edge.id, edge);
+        const neighbor = edge.from === current ? edge.to : edge.from;
+        if (!visited.has(neighbor) && visited.size < limit) { visited.add(neighbor); next.push(neighbor); }
+      }
+    }
+    frontier = next;
+  }
+  return { nodes: graph.nodes.filter(node => visited.has(node.id)), edges: [...selectedEdges.values()].filter(edge => edge.from && edge.to && visited.has(edge.from) && visited.has(edge.to)) };
+}
+
+export async function viewerProjection(input: {
+  project: string;
+  ref?: string;
+  view?: 'architecture' | 'parity' | 'code' | 'change';
+  query?: string;
+  node?: string;
+  depth?: number;
+  limit?: number;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref);
+  const view = input.view ?? 'architecture';
+  const limit = Math.min(Math.max(input.limit ?? 700, 50), 2000);
+  const depth = Math.min(Math.max(input.depth ?? 2, 1), 5);
+  const requested = input.node ?? input.query;
+  if (requested) {
+    const candidates = findGraphNodeCandidates(graph, requested, 25);
+    if (!candidates.length) return { project: input.project, revision: graph.repositoryRevision, view, query: requested, nodes: [], edges: [], candidates: [] };
+    if (candidates.length > 1 && !candidates.some(node => node.id === requested)) {
+      return { project: input.project, revision: graph.repositoryRevision, view, query: requested, ambiguous: true, candidates: candidates.map(node => ({ id: node.id, kind: node.kind, layer: node.layer ?? 'structural', name: node.name ?? null, locator: node.locator })), nodes: [], edges: [] };
+    }
+    const selected = candidates.find(node => node.id === requested) ?? candidates[0]!;
+    const neighborhood = boundedNeighborhood(graph, [selected.id], depth, limit);
+    return { project: input.project, revision: graph.repositoryRevision, view, selected: selected.id, nodes: neighborhood.nodes, edges: neighborhood.edges, evidence: graph.evidence.filter(item => new Set(neighborhood.nodes.flatMap(node => node.evidenceIds ?? [])).has(item.id)) };
+  }
+
+  let seedNodes: GraphNode[];
+  if (view === 'architecture') seedNodes = graph.nodes.filter(node => node.layer === 'semantic' && ['feature', 'api', 'route', 'provider', 'mcp'].includes(node.kind));
+  else if (view === 'parity') seedNodes = graph.nodes.filter(node => node.layer === 'semantic' && ['surface', 'capability', 'action', 'feature', 'api', 'route', 'provider', 'mcp', 'tool'].includes(node.kind));
+  else if (view === 'code') seedNodes = graph.nodes.filter(node => node.kind === 'file' || SYMBOL_KINDS_FOR_VIEW.has(node.kind));
+  else {
+    const delta = await diffAcceptedToWorking(input.project, input.ref) as any;
+    const changedIds = new Set<string>([
+      ...(delta.semantic?.nodes?.added ?? []).map((node: GraphNode) => node.id),
+      ...(delta.semantic?.nodes?.removed ?? []).map((node: GraphNode) => node.id),
+      ...(delta.semantic?.nodes?.changed ?? []).flatMap((entry: { before: GraphNode; after: GraphNode }) => [entry.before.id, entry.after.id]),
+    ]);
+    seedNodes = graph.nodes.filter(node => changedIds.has(node.id));
+  }
+  seedNodes = seedNodes.slice(0, limit);
+  const ids = new Set(seedNodes.map(node => node.id));
+  const edges = graph.edges.filter(edge => edge.from && edge.to && ids.has(edge.from) && ids.has(edge.to) && edge.status === 'resolved').slice(0, limit * 4);
+  return { project: input.project, revision: graph.repositoryRevision, view, nodes: seedNodes, edges, truncated: seedNodes.length >= limit };
+}
+
+const SYMBOL_KINDS_FOR_VIEW = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);
 
 export function locatorFileAndLine(locator: string): { file: string; line: number | null } {
   const match = /^(.*?):(\d+)(?::.*)?$/u.exec(locator);
@@ -211,4 +436,38 @@ export function locatorFileAndLine(locator: string): { file: string; line: numbe
 export function nodeArea(node: GraphNode): string {
   const { file } = locatorFileAndLine(node.locator);
   return path.dirname(file);
+}
+
+export async function graphEvidence(input: {
+  project: string;
+  ref?: string;
+  node?: string;
+  edge?: string;
+  evidenceIds?: string[];
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref);
+  const ids = new Set(input.evidenceIds ?? []);
+  let node: GraphNode | undefined;
+  let edge: GraphEdge | undefined;
+  if (input.node) {
+    const candidates = findGraphNodeCandidates(graph, input.node, 20);
+    if (candidates.length > 1 && !candidates.some(item => item.id === input.node)) {
+      return {
+        project: input.project,
+        revision: graph.repositoryRevision,
+        ambiguous: true,
+        query: input.node,
+        candidates: candidates.map(item => ({ id: item.id, kind: item.kind, layer: item.layer ?? 'structural', name: item.name ?? null, locator: item.locator })),
+        evidence: [],
+      };
+    }
+    node = candidates.find(item => item.id === input.node) ?? candidates[0];
+    for (const id of node?.evidenceIds ?? []) ids.add(id);
+  }
+  if (input.edge) {
+    edge = graph.edges.find(item => item.id === input.edge);
+    for (const id of edge?.evidenceIds ?? []) ids.add(id);
+  }
+  const evidence = graph.evidence.filter(item => ids.has(item.id));
+  return { project: input.project, revision: graph.repositoryRevision, ambiguous: false, node: node ?? null, edge: edge ?? null, evidence };
 }

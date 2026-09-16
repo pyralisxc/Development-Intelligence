@@ -4,34 +4,37 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 }
 
-export function renderGraphViewer(graph: IntelligenceGraph): string {
-  const maxNodes = Math.max(50, Number(process.env.DEVINT_VIEWER_MAX_NODES ?? 450));
-  const nodes = graph.nodes.slice(0, maxNodes);
-  const nodeIds = new Set(nodes.map(node => node.id));
-  const edges = graph.edges.filter(edge => edge.from && edge.to && nodeIds.has(edge.from) && nodeIds.has(edge.to)).slice(0, maxNodes * 3);
-  const data = JSON.stringify({ nodes, edges }).replace(/</g, '\\u003c');
-  const shownSuffix = graph.nodes.length > nodes.length ? ` of ${graph.nodes.length}` : '';
+export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: string): string {
+  const project = escapeHtml(graph.project);
+  const revision = escapeHtml(graph.repositoryRevision ?? 'unknown revision');
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>${escapeHtml(graph.project)} — Development Intelligence</title>
+<title>${project} — Development Intelligence</title>
 <style>
-:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#090b10;color:#f3f4f6}*{box-sizing:border-box}body{margin:0;display:grid;grid-template-rows:auto 1fr;height:100vh}.top{display:flex;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid #242938;background:#0d1118}.title{font-weight:700}.meta{font-size:12px;color:#9ca3af}.top input{margin-left:auto;width:min(420px,45vw);border:1px solid #303749;background:#111827;color:#fff;border-radius:8px;padding:9px 11px}.shell{display:grid;grid-template-columns:1fr 300px;min-height:0}.canvas{position:relative;overflow:hidden}.side{border-left:1px solid #242938;padding:14px;overflow:auto;background:#0d1118}.side h2{font-size:13px;margin:0 0 10px;color:#cbd5e1}.side pre{white-space:pre-wrap;word-break:break-word;font-size:11px;color:#cbd5e1}svg{width:100%;height:100%;display:block}.edge{stroke:#374151;stroke-width:1;opacity:.5}.node{cursor:pointer}.node circle{fill:#172033;stroke:#64748b;stroke-width:1.2}.node text{font-size:10px;fill:#e5e7eb;pointer-events:none}.node.dim{opacity:.12}.node.selected circle{stroke:#fff;stroke-width:2.5}.legend{font-size:11px;color:#94a3b8;margin-top:8px}@media(max-width:800px){.shell{grid-template-columns:1fr}.side{display:none}.top input{width:42vw}}
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#070a10;color:#eef2ff}*{box-sizing:border-box}body{margin:0;height:100vh;overflow:hidden;background:#070a10}.app{display:grid;grid-template-rows:auto 1fr;height:100vh}.top{display:flex;gap:12px;align-items:center;padding:12px 14px;border-bottom:1px solid #202738;background:#0b1019;min-width:0}.identity{min-width:180px}.title{font-weight:750;font-size:14px}.meta{font-size:11px;color:#8f9bad;margin-top:2px}.views{display:flex;gap:6px}.views button,.candidate{border:1px solid #2b3448;background:#111827;color:#cbd5e1;border-radius:8px;padding:7px 10px;cursor:pointer}.views button.active{background:#24314a;color:#fff;border-color:#5b6f99}.search{margin-left:auto;display:flex;gap:8px;min-width:min(460px,45vw)}.search input{width:100%;border:1px solid #303a50;background:#0e1522;color:#fff;border-radius:8px;padding:9px 11px}.shell{display:grid;grid-template-columns:minmax(0,1fr) 340px;min-height:0}.graph-wrap{position:relative;min-width:0;min-height:0}.graph{position:absolute;inset:0}.status{position:absolute;left:12px;bottom:12px;background:#0b1019dd;border:1px solid #293247;border-radius:8px;padding:7px 10px;font-size:11px;color:#a9b5c7;pointer-events:none}.side{border-left:1px solid #202738;background:#0b1019;padding:14px;overflow:auto}.side h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#8f9bad;margin:0 0 10px}.side pre{white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.45;color:#d7deea}.hint{font-size:12px;color:#93a1b5;line-height:1.5}.candidate{display:block;width:100%;text-align:left;margin:6px 0}.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:#8f9bad;margin-top:12px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}@media(max-width:820px){body{overflow:auto}.app{height:auto;min-height:100vh}.top{flex-wrap:wrap}.views{order:3;width:100%;overflow-x:auto}.search{margin-left:0;flex:1;min-width:180px}.shell{display:block}.graph-wrap{height:58vh}.side{border-left:0;border-top:1px solid #202738;min-height:35vh}}
 </style>
 </head>
 <body>
-<div class="top"><div><div class="title">${escapeHtml(graph.project)}</div><div class="meta">${escapeHtml(graph.role)} · ${escapeHtml(graph.repositoryRevision ?? 'unknown revision')} · ${graph.nodes.length} nodes · ${graph.edges.length} edges</div></div><input id="search" placeholder="Search nodes…" aria-label="Search graph nodes" /></div>
-<div class="shell"><div class="canvas"><svg id="graph" role="img" aria-label="Development Intelligence graph"></svg></div><aside class="side"><h2>Selected node</h2><pre id="detail">Select a node to inspect its evidence.</pre><div class="legend">Showing ${nodes.length}${shownSuffix} nodes. The viewer is a projection of the same graph agents query.</div></aside></div>
-<script>
-const data=${data}; const svg=document.getElementById('graph'); const detail=document.getElementById('detail'); const search=document.getElementById('search');
-const NS='http://www.w3.org/2000/svg'; const width=1200,height=850,cx=width/2,cy=height/2; svg.setAttribute('viewBox','0 0 '+width+' '+height);
-const byId=new Map(data.nodes.map((n,i)=>[n.id,{...n,i}])); const positions=new Map();
-const rings=Math.max(1,Math.ceil(Math.sqrt(data.nodes.length/18))); data.nodes.forEach((n,i)=>{const ring=1+(i%rings); const slot=Math.floor(i/rings); const slots=Math.ceil(data.nodes.length/rings); const angle=(slot/slots)*Math.PI*2+(ring%2)*.18; const radius=70+ring*(Math.min(width,height)*.42/rings); positions.set(n.id,{x:cx+Math.cos(angle)*radius,y:cy+Math.sin(angle)*radius});});
-const edgeLayer=document.createElementNS(NS,'g'); svg.appendChild(edgeLayer); data.edges.forEach(e=>{const a=positions.get(e.from),b=positions.get(e.to); if(!a||!b)return; const line=document.createElementNS(NS,'line'); line.setAttribute('x1',a.x);line.setAttribute('y1',a.y);line.setAttribute('x2',b.x);line.setAttribute('y2',b.y);line.setAttribute('class','edge');line.dataset.kind=e.kind;edgeLayer.appendChild(line);});
-const nodeLayer=document.createElementNS(NS,'g'); svg.appendChild(nodeLayer); const nodeEls=[]; data.nodes.forEach(n=>{const p=positions.get(n.id); const g=document.createElementNS(NS,'g');g.setAttribute('class','node');g.setAttribute('transform','translate('+p.x+' '+p.y+')');g.tabIndex=0;g.dataset.text=[n.id,n.kind,n.name,n.locator,n.raw].filter(Boolean).join(' ').toLowerCase(); const c=document.createElementNS(NS,'circle');c.setAttribute('r','7');g.appendChild(c);const t=document.createElementNS(NS,'text');t.setAttribute('x','10');t.setAttribute('y','4');t.textContent=(n.name||n.kind).slice(0,32);g.appendChild(t); const select=()=>{nodeEls.forEach(x=>x.classList.remove('selected'));g.classList.add('selected');detail.textContent=JSON.stringify(n,null,2)};g.addEventListener('click',select);g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select()}});nodeLayer.appendChild(g);nodeEls.push(g);});
-search.addEventListener('input',()=>{const q=search.value.trim().toLowerCase();nodeEls.forEach(el=>el.classList.toggle('dim',!!q&&!el.dataset.text.includes(q)));});
-</script>
+<div class="app" data-project="${project}" data-revision="${revision}">
+  <header class="top">
+    <div class="identity"><div class="title">${project}</div><div class="meta">${revision}</div></div>
+    <nav class="views" aria-label="Graph views">
+      <button type="button" data-view="architecture" class="active">Architecture</button>
+      <button type="button" data-view="parity">Parity</button>
+      <button type="button" data-view="code">Code</button>
+      <button type="button" data-view="change">Change</button>
+    </nav>
+    <form class="search" id="search-form"><input id="search" autocomplete="off" placeholder="Search the whole graph…" aria-label="Search Development Intelligence" /></form>
+  </header>
+  <main class="shell">
+    <section class="graph-wrap"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="status" class="status">Loading…</div></section>
+    <aside class="side"><h2>Evidence & details</h2><div id="detail" class="hint">Search or select a node. Development Intelligence will load a bounded neighborhood from the same graph agents query and explain why the relationship exists.</div><div class="legend"><span><i class="dot" style="background:#7dd3fc"></i>semantic</span><span><i class="dot" style="background:#a78bfa"></i>structural</span><span><i class="dot" style="background:#fbbf24"></i>representation</span></div></aside>
+  </main>
+</div>
+<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedRef ?? '')}};</script>
+<script src="/viewer.js" defer></script>
 </body></html>`;
 }

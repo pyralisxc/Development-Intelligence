@@ -1,15 +1,18 @@
 import http from 'node:http';
-import { pathToFileURL } from 'node:url';
+import { promises as fs } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { authorize, validateHost } from './auth.js';
 import { callTool, listTools } from './mcp.js';
 import { scanGraph } from './intelligence/service.js';
+import { viewerProjection } from './intelligence/query.js';
 import { renderGraphViewer } from './viewer.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
 const SUPPORTED_MODERN = [MODERN_VERSION];
 const MAX_BODY = 4 * 1024 * 1024;
-const SERVER_INFO = { name: 'Development Intelligence', version: '2.0.0' };
+const SERVER_INFO = { name: 'Development Intelligence', version: '2.1.0' };
+const VIEWER_BUNDLE = fileURLToPath(new URL('../public/viewer.js', import.meta.url));
 
 async function readJson(req: any): Promise<any> {
   let size = 0;
@@ -70,7 +73,7 @@ export async function handleRpc(body: any, requestInfo: { modern: boolean }): Pr
     return { status: 200, body: rpcResult(id, complete({
       supportedVersions: SUPPORTED_MODERN,
       capabilities: { tools: {} },
-      instructions: 'Project-neutral technical intelligence. Development Intelligence owns one evidence graph; Git/source analyzers, runtime observations, parity lenses, and future tools contribute evidence without owning graph truth or product intent.',
+      instructions: 'Project-neutral technical intelligence. Development Intelligence builds one evidence-backed graph of stable semantic entities, structural code, representations, relationships, and provenance. Code, Architecture, Parity, Change, and human visualization are lenses over that graph; Git/source remains implementation authority.',
       ttlMs: 60_000,
       cacheScope: 'private',
     }, true)) };
@@ -97,6 +100,11 @@ export async function handleRpc(body: any, requestInfo: { modern: boolean }): Pr
   return { status: 200, body: rpcError(id ?? null, -32601, `Method not found: ${body.method}`) };
 }
 
+function numberParam(url: URL, key: string, fallback: number): number {
+  const value = Number(url.searchParams.get(key));
+  return Number.isFinite(value) ? value : fallback;
+}
+
 export function createDevelopmentIntelligenceServer() {
   return http.createServer(async (req: any, res: any) => {
     if (!validateHost(req, res)) return;
@@ -106,17 +114,53 @@ export function createDevelopmentIntelligenceServer() {
       res.end(JSON.stringify({ service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN }));
       return;
     }
+    if (requestUrl.pathname === '/viewer.js' && req.method === 'GET') {
+      try {
+        const script = await fs.readFile(VIEWER_BUNDLE, 'utf8');
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'private, max-age=300' });
+        res.end(script);
+      } catch (error) {
+        res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     if (requestUrl.pathname === '/graph' && req.method === 'GET') {
       if (!authorize(req, res)) return;
       const project = requestUrl.searchParams.get('project');
       if (!project) { res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }); res.end('Missing ?project='); return; }
+      const requestedRef = requestUrl.searchParams.get('ref') ?? undefined;
       try {
-        const graph = await scanGraph(project, { ref: requestUrl.searchParams.get('ref') ?? undefined });
+        const graph = await scanGraph(project, { ref: requestedRef });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store' });
-        res.end(renderGraphViewer(graph));
+        res.end(renderGraphViewer(graph, requestedRef));
       } catch (error) {
         res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+    if (requestUrl.pathname === '/graph/data' && req.method === 'GET') {
+      if (!authorize(req, res)) return;
+      const project = requestUrl.searchParams.get('project');
+      if (!project) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing ?project=' })); return; }
+      const view = requestUrl.searchParams.get('view');
+      if (view && !['architecture', 'parity', 'code', 'change'].includes(view)) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Unsupported graph view' })); return; }
+      try {
+        const projection = await viewerProjection({
+          project,
+          ref: requestUrl.searchParams.get('ref') ?? undefined,
+          view: (view ?? 'architecture') as 'architecture' | 'parity' | 'code' | 'change',
+          query: requestUrl.searchParams.get('query') ?? undefined,
+          node: requestUrl.searchParams.get('node') ?? undefined,
+          depth: numberParam(requestUrl, 'depth', 2),
+          limit: numberParam(requestUrl, 'limit', 700),
+        });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-store' });
+        res.end(JSON.stringify(projection));
+      } catch (error) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
       }
       return;
     }

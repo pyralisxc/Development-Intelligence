@@ -1,9 +1,9 @@
 import { getProjectConfig } from '../config/registry.js';
-import type { GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
+import type { EvidenceRecord, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { withProjectCheckout, resolveProjectRevision } from '../source/git.js';
 import { analyzeHtml, analyzeJson } from './analyzers/index.js';
-import { checkpointToGraph, readCheckpoint } from './checkpoint.js';
+import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
 import { buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
@@ -45,10 +45,13 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
       });
       const checkpoint = await readCheckpoint(checkout.root);
       const accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
+      const sourceCurrent = Boolean(accepted?.sourceFingerprint && accepted.sourceFingerprint === graph.sourceFingerprint);
+      const analyzerCurrent = Boolean(checkpoint && checkpointAnalyzerCurrent(checkpoint.meta));
+      const topologyCurrent = Boolean(checkpoint?.meta.schemaVersion === 2 && checkpoint.meta.topologyFingerprint === graph.topologyFingerprint);
       return {
         graph,
         accepted,
-        acceptedCurrent: Boolean(accepted?.sourceFingerprint && accepted.sourceFingerprint === graph.sourceFingerprint),
+        acceptedCurrent: sourceCurrent && analyzerCurrent && topologyCurrent,
         touchedAt: Date.now(),
       };
     });
@@ -71,7 +74,7 @@ function runtimeHeaders(projectHeaders: Array<{ name: string; valueEnv: string }
   return headers;
 }
 
-async function scanRuntimeUrl(project: string, urlText: string): Promise<{ source: SourceDescriptor; nodes: GraphNode[]; edges: GraphEdge[] }> {
+async function scanRuntimeUrl(project: string, urlText: string): Promise<{ source: SourceDescriptor; nodes: GraphNode[]; edges: GraphEdge[]; evidence: EvidenceRecord[] }> {
   const config = await getProjectConfig(project);
   const requested = new URL(urlText);
   const allowed = new Set((config.runtimeOrigins ?? []).map(value => new URL(value).origin));
@@ -102,20 +105,30 @@ async function scanRuntimeUrl(project: string, urlText: string): Promise<{ sourc
     const revision = response.headers.get('etag') ?? response.headers.get('last-modified');
     const source: SourceDescriptor = { id: `runtime:${requested.href}`, kind: 'runtime-http', locator: requested.href, revision, observedAt, available: true };
     const statusNode: GraphNode = {
-      id: stableHash([source.id, 'http-status']), sourceId: source.id, kind: 'http-status', locator: `${requested.href}:status`, field: 'status', name: String(response.status), value: response.status, raw: String(response.status),
+      id: stableHash([source.id, 'http-status']),
+      sourceId: source.id,
+      kind: 'http-status',
+      locator: `${requested.href}:status`,
+      field: 'status',
+      name: String(response.status),
+      value: response.status,
+      raw: String(response.status),
+      layer: 'representation',
+      checkpoint: false,
     };
     const contentType = response.headers.get('content-type') ?? '';
     const result = /text\/html/i.test(contentType)
       ? analyzeHtml({ source, text, locatorBase: requested.href })
       : /application\/(?:[^;]+\+)?json/i.test(contentType)
         ? analyzeJson({ source, text, locatorBase: requested.href })
-        : { observations: [], resolutions: [] };
-    return { source, nodes: [statusNode, ...result.observations], edges: result.resolutions };
+        : { observations: [], resolutions: [], evidence: [] };
+    return { source, nodes: [statusNode, ...result.observations.map(node => ({ ...node, layer: node.layer ?? 'representation', checkpoint: false }))], edges: result.resolutions.map(edge => ({ ...edge, layer: edge.layer ?? 'representation', checkpoint: false })), evidence: result.evidence ?? [] };
   } catch (error) {
     return {
       source: { id: `runtime:${requested.href}`, kind: 'runtime-http', locator: requested.href, revision: null, observedAt, available: false, error: error instanceof Error ? error.message : String(error) },
       nodes: [],
       edges: [],
+      evidence: [],
     };
   } finally {
     clearTimeout(timeout);
@@ -127,12 +140,14 @@ export async function scanGraph(project: string, options: { ref?: string | undef
   const createdAt = new Date().toISOString();
   const sources = [...repository.graph.sources];
   const nodes = [...repository.graph.nodes];
+  const evidence = [...repository.graph.evidence];
   let edges = [...repository.graph.edges];
   for (const url of options.urls ?? []) {
     const runtime = await scanRuntimeUrl(project, url);
     sources.push(runtime.source);
     nodes.push(...runtime.nodes);
     edges.push(...runtime.edges);
+    evidence.push(...runtime.evidence);
   }
   edges = resolveCrossSource(nodes, edges);
   const graph: IntelligenceGraph = {
@@ -141,6 +156,7 @@ export async function scanGraph(project: string, options: { ref?: string | undef
     role: 'W',
     createdAt,
     sources,
+    evidence,
     nodes,
     edges,
     namingDivergences: deriveNamingDivergences(nodes, edges),
@@ -158,9 +174,10 @@ export async function repositoryGraphs(project: string, ref?: string): Promise<{
 }
 
 export async function currentGraph(project: string, ref?: string): Promise<IntelligenceGraph> {
+  const revision = await resolveProjectRevision(project, ref);
   const cached = latestGraphByProject.get(project);
-  if (cached && (!ref || cached.repositoryRevision === (await resolveProjectRevision(project, ref)).sha)) return cached;
-  return (await repositoryGraphs(project, ref)).working;
+  if (cached?.repositoryRevision === revision.sha) return cached;
+  return (await repositoryGraphs(project, revision.ref)).working;
 }
 
 export function clearGraphCache(project?: string): void {
@@ -176,14 +193,19 @@ export function clearGraphCache(project?: string): void {
 export async function graphStatus(project: string, ref?: string): Promise<Record<string, unknown>> {
   const revision = await resolveProjectRevision(project, ref);
   const graphs = await repositoryGraphs(project, revision.ref);
+  const semanticNodes = graphs.working.nodes.filter(node => node.layer === 'semantic').length;
+  const semanticEdges = graphs.working.edges.filter(edge => edge.layer === 'semantic').length;
   return {
     project,
     repository: revision.repository,
     ref: revision.ref,
     revision: revision.sha,
+    analyzerVersion: graphs.working.analyzerVersion,
     accepted: graphs.accepted ? {
       graphId: graphs.accepted.graphId,
       sourceFingerprint: graphs.accepted.sourceFingerprint,
+      topologyFingerprint: graphs.accepted.topologyFingerprint,
+      analyzerVersion: graphs.accepted.analyzerVersion,
       current: graphs.acceptedCurrent,
       nodes: graphs.accepted.nodes.length,
       edges: graphs.accepted.edges.length,
@@ -191,8 +213,13 @@ export async function graphStatus(project: string, ref?: string): Promise<Record
     working: {
       graphId: graphs.working.graphId,
       sourceFingerprint: graphs.working.sourceFingerprint,
+      topologyFingerprint: graphs.working.topologyFingerprint,
+      evidenceFingerprint: graphs.working.evidenceFingerprint,
       nodes: graphs.working.nodes.length,
       edges: graphs.working.edges.length,
+      semanticNodes,
+      semanticEdges,
+      evidenceRecords: graphs.working.evidence.length,
       coverage: graphs.working.coverage,
     },
   };
