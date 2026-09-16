@@ -82,11 +82,12 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
 
 async function close(server: any) { await new Promise<void>(resolve => server.close(() => resolve())); }
 
-test('Git-owned A/W/B graph lifecycle is deterministic and needs no durable service database', async () => {
+test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic topology drift', async () => {
   const fixture = await makeFixture();
   try {
     const initial = await graphStatus(fixture.project) as any;
     assert.equal(initial.accepted.current, true);
+    assert.equal(initial.currentness.acceptedSemanticCurrent, true);
     assert.equal(initial.accepted.sourceFingerprint, initial.working.sourceFingerprint);
     assert.ok(initial.working.nodes > 0);
     assert.ok(initial.working.edges > 0);
@@ -99,14 +100,18 @@ test('Git-owned A/W/B graph lifecycle is deterministic and needs no durable serv
 
     const text = await fs.readFile(path.join(fixture.source, 'src', 'panel.tsx'), 'utf8');
     await fs.writeFile(path.join(fixture.source, 'src', 'panel.tsx'), text.replace('Manage item</button>', 'Administer item</button>'));
-    await commit(fixture.source, 'working change');
+    await commit(fixture.source, 'working representation change');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
     clearGraphCache(fixture.project);
 
     const stale = await graphStatus(fixture.project) as any;
-    assert.equal(stale.accepted.current, false, 'accepted A must remain the prior committed graph until candidate B is sealed');
+    assert.equal(stale.accepted.current, false, 'A is not accepted-current for a different source fingerprint until B is sealed');
+    assert.equal(stale.currentness.sourceCurrent, false);
+    assert.equal(stale.currentness.topologyCurrent, true, 'representation-only churn must not manufacture semantic topology drift');
     const delta = await diffAcceptedToWorking(fixture.project) as any;
-    assert.ok(delta.semantic.nodes.added.length + delta.semantic.nodes.removed.length + delta.semantic.nodes.changed.length > 0);
+    const semanticChanges = delta.semantic.nodes.added.length + delta.semantic.nodes.removed.length + delta.semantic.nodes.changed.length
+      + delta.semantic.edges.added.length + delta.semantic.edges.removed.length + delta.semantic.edges.changed.length;
+    assert.equal(semanticChanges, 0, 'semantic A→W diff must ignore representation-only source churn');
 
     await sealLocalGraph(fixture.source, fixture.project);
     await commit(fixture.source, 'seal candidate graph B');
@@ -122,7 +127,7 @@ test('Git-owned A/W/B graph lifecycle is deterministic and needs no durable serv
   }
 });
 
-test('code inspection, trace, parity, and runtime evidence all use one intrinsic graph', async () => {
+test('runtime observation snapshots are explicit and never contaminate canonical source W', async () => {
   const fixture = await makeFixture();
   const runtime = http.createServer((_req: any, res: any) => {
     res.writeHead(200, { 'content-type': 'text/html', etag: 'runtime-v1' });
@@ -136,28 +141,37 @@ test('code inspection, trace, parity, and runtime evidence all use one intrinsic
     registry[fixture.project].runtimeOrigins = [origin];
     await fs.writeFile(fixture.config, JSON.stringify(registry, null, 2));
     clearGraphCache(fixture.project);
-    const graph = await scanGraph(fixture.project, { urls: [`${origin}/`] });
-    assert.ok(graph.nodes.some(node => node.kind === 'runtime-http' || node.sourceId.startsWith('runtime:')) || graph.sources.some(source => source.kind === 'runtime-http'));
-    assert.ok(graph.nodes.some(node => node.kind === 'ui-element' && node.name === 'Manage item'));
-    assert.ok(graph.nodes.some(node => node.kind === 'http-call' && JSON.stringify(node.value).includes('/api/manage')));
-    assert.ok(graph.nodes.some(node => node.kind === 'mcp-tool' && node.name === 'manage_item'));
-    assert.ok(graph.edges.some(edge => edge.kind === 'handled_by' && edge.status === 'resolved'));
+    const snapshot = await scanGraph(fixture.project, { urls: [`${origin}/`] });
+    assert.match(snapshot.graphId, /^snapshot-/);
+    assert.ok(snapshot.sources.some(source => source.kind === 'runtime-http'));
+    assert.ok(snapshot.nodes.some(node => node.kind === 'ui-element' && node.name === 'Manage item'));
+
+    const snapshotSearch = await searchGraph({ project: fixture.project, graphId: snapshot.graphId, kinds: ['http-status'] }) as any;
+    assert.equal(snapshotSearch.nodes.length, 1, 'explicit graphId must address runtime evidence');
+    const canonicalSearch = await searchGraph({ project: fixture.project, kinds: ['http-status'] }) as any;
+    assert.equal(canonicalSearch.nodes.length, 0, 'ordinary project/ref queries must remain canonical source W');
+
+    assert.ok(snapshot.nodes.some(node => node.kind === 'http-call' && JSON.stringify(node.value).includes('/api/manage')));
+    assert.ok(snapshot.nodes.some(node => node.kind === 'mcp-tool' && node.name === 'manage_item'));
+    assert.ok(snapshot.edges.some(edge => edge.kind === 'handled_by' && edge.status === 'resolved'));
 
     const search = await searchGraph({ project: fixture.project, query: 'helper' }) as any;
     assert.ok(search.nodes.some((node: any) => node.name === 'helper'));
-    const helperFunction = graph.nodes.find(node => node.kind === 'function' && node.name === 'helper');
+    const helperFunction = snapshot.nodes.find(node => node.kind === 'function' && node.name === 'helper');
     assert.ok(helperFunction, 'fixture helper function should have one exact structural identity');
     const trace = await traceGraph({ project: fixture.project, node: 'Panel', direction: 'outbound', depth: 4 }) as any;
     assert.ok(trace.nodes.some((node: any) => node.name === 'helper'), 'native graph traversal should cross module imports and expose called symbols');
     const reverseTrace = await traceGraph({ project: fixture.project, node: helperFunction!.id, direction: 'inbound', depth: 4 }) as any;
     assert.ok(reverseTrace.nodes.some((node: any) => node.name === 'handleManage'), 'cross-file caller discovery should reach the importing caller');
-    assert.ok(graph.nodes.some(node => node.kind === 'import-binding' && node.name === 'helper'));
-    assert.ok(graph.edges.some(edge => edge.kind === 'imports' && edge.status === 'resolved'));
-    assert.ok(graph.edges.some(edge => edge.kind === 'calls' && edge.strategy === 'module-resolution'));
+    assert.ok(snapshot.nodes.some(node => node.kind === 'import-binding' && node.name === 'helper'));
+    assert.ok(snapshot.edges.some(edge => edge.kind === 'imports' && edge.status === 'resolved'));
+    assert.ok(snapshot.edges.some(edge => edge.kind === 'calls' && edge.strategy === 'module-resolution'));
 
-    const code = await searchCode({ project: fixture.project, pattern: 'fetch', limit: 10 }) as any;
+    const code = await searchCode({ project: fixture.project, graphId: snapshot.graphId, pattern: 'fetch', limit: 10 }) as any;
+    assert.equal(code.revision, snapshot.repositoryRevision);
     assert.ok(code.matches.some((match: any) => match.file === 'src/panel.tsx'));
-    const snippet = await getCodeSnippet({ project: fixture.project, node: helperFunction!.id, context: 2 }) as any;
+    const snippet = await getCodeSnippet({ project: fixture.project, graphId: snapshot.graphId, node: helperFunction!.id, context: 2 }) as any;
+    assert.equal(snippet.revision, snapshot.repositoryRevision);
     assert.equal(snippet.file, 'src/helper.ts');
     assert.ok(snippet.lines.some((line: any) => line.text.includes('helper')));
   } finally {
@@ -166,16 +180,35 @@ test('code inspection, trace, parity, and runtime evidence all use one intrinsic
   }
 });
 
-test('public tool surface is intrinsic DI, not controlled by Codebase Memory or development methodology', () => {
+test('public tool surface is the frozen intrinsic DI contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
-  for (const expected of ['scan_graph', 'graph_status', 'search_graph', 'trace_path', 'diff_graph', 'scan_parity', 'query_parity']) assert.ok(names.includes(expected), expected);
-  for (const retired of ['refresh_codebase', 'index_status', 'ingest_traces', 'delete_project', 'manage_adr', 'authorize_build', 'create_pull_request', 'developer_os']) assert.equal(names.includes(retired), false, retired);
+  assert.deepEqual(names, [
+    'list_projects',
+    'project_status',
+    'scan_graph',
+    'search_graph',
+    'trace_path',
+    'search_code',
+    'get_code_snippet',
+    'get_graph_schema',
+    'get_architecture',
+    'check_graph_coverage',
+    'get_evidence',
+    'diff_graph',
+    'query_parity',
+  ]);
+  for (const retired of [
+    'graph_status', 'query_graph', 'scan_parity', 'diff_parity', 'clear_cache',
+    'refresh_codebase', 'index_status', 'ingest_traces', 'delete_project', 'manage_adr',
+    'authorize_build', 'create_pull_request', 'developer_os',
+  ]) assert.equal(names.includes(retired), false, retired);
   const serialized = JSON.stringify(listed);
   assert.equal(/Codebase Memory|CBM_CACHE_DIR|graph\.db\.zst/i.test(serialized), false);
   const byName = new Map(listed.map(tool => [tool.name, tool]));
   assert.equal(byName.get('scan_graph')?.annotations?.readOnlyHint, true);
-  assert.equal(byName.get('scan_parity')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('scan_graph')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('query_parity')?.annotations?.openWorldHint, true);
 });
 
 test('registry rejects project identities that collide in derived keys', async () => {
@@ -203,7 +236,7 @@ test('modern MCP HTTP contract and native graph viewer remain available', async 
   const endpoint = `http://127.0.0.1:${address.port}/mcp`;
   const meta = {
     'io.modelcontextprotocol/protocolVersion': '2026-07-28',
-    'io.modelcontextprotocol/clientInfo': { name: 'development-intelligence-test', version: '2.0.0' },
+    'io.modelcontextprotocol/clientInfo': { name: 'development-intelligence-test', version: '2.1.0' },
     'io.modelcontextprotocol/clientCapabilities': {},
   };
   try {
@@ -212,12 +245,14 @@ test('modern MCP HTTP contract and native graph viewer remain available', async 
     const discoverBody = await discover.json() as any;
     assert.equal(discoverBody.result.resultType, 'complete');
     assert.match(discoverBody.result.instructions, /one evidence(?:-backed)? graph/i);
+    assert.match(discoverBody.result.instructions, /uncertainty/i);
 
     const list = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } }) });
     assert.equal(list.status, 200);
     const listBody = await list.json() as any;
     assert.equal(listBody.result.cacheScope, 'private');
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'scan_graph'));
+    assert.equal(listBody.result.tools.some((tool: any) => tool.name === 'clear_cache'), false);
 
     const viewer = await fetch(`http://127.0.0.1:${address.port}/graph?project=${fixture.project}`);
     assert.equal(viewer.status, 200);
