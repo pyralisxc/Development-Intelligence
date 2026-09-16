@@ -83,19 +83,35 @@ export interface NamingDivergence {
 }
 
 export interface ExplicitValueConflict {
-  leftObservationId: string;
-  rightObservationId: string;
+  entityId: string;
+  leftSourceId: string;
+  rightSourceId: string;
   key: string;
   leftValue: unknown;
   rightValue: unknown;
+}
+
+export type GraphCoverageStatus = 'complete' | 'partial' | 'unsupported' | 'skipped' | 'failed';
+
+export interface GraphCoverageFile {
+  path: string;
+  status: GraphCoverageStatus;
+  reason?: string;
 }
 
 export interface GraphCoverage {
   trackedFiles: number;
   eligibleFiles: number;
   analyzedFiles: number;
+  completeFiles: number;
+  partialFiles: number;
+  unsupportedFiles: number;
+  skippedFiles: number;
+  failedFiles: number;
   skippedOversizedFiles: number;
   skippedNonRegularFiles: number;
+  skippedFileLimitFiles: number;
+  files: GraphCoverageFile[];
 }
 
 export type GraphRole = 'A' | 'W' | 'B';
