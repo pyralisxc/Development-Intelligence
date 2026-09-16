@@ -12,103 +12,83 @@ Permanent evidence protects durable Development Intelligence contracts, not hist
 
 ### One intrinsic graph
 
-Code, Architecture, Parity, Change, evidence inspection, and the human Viewer operate on one graph model. Public tooling must not depend on a second external graph owner or separate Parity database.
+Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.
 
 ### Git-owned A/W/B lifecycle
 
-A/B persists deterministic semantic topology with the inspected project. W is regenerated from one exact Git revision. Source/topology currentness determines accepted semantic A; evidence/analyzer drift is reported separately rather than manufacturing semantic product changes.
-
-### Exact revision acquisition
-
-An allowlisted ref is resolved once per operation. Checkout, cache identity, graph generation, code search, and snippets remain bound to that exact SHA. Tests should detect regressions that accidentally re-resolve a mutable ref mid-operation.
+A committed checkpoint is accepted semantic topology for its source state. Currentness is dimensional: source/topology integrity controls accepted semantic currency while evidence/analyzer drift is reported separately rather than automatically manufacturing product drift.
 
 ### No durable service database
 
-Remote analysis uses disposable exact-revision checkouts. Runtime graph snapshots and warm caches are disposable. Losing service-local files/caches must not lose accepted intelligence.
-
-### Runtime snapshot isolation
-
-Runtime observation produces an explicit ephemeral `graphId`. A runtime snapshot must be queryable when that ID is supplied and must never alter later ordinary project/ref queries.
+Remote analysis uses disposable exact-revision checkouts. Scratch state is removed after use. Losing service-local files/caches must not lose accepted intelligence.
 
 ### Deterministic and tamper-evident checkpoint
 
-`/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards excludes its own directory from source fingerprinting. The same accepted topology produces byte-identical checkpoint files. Validation recomputes topology from shard contents, so same-count shard corruption is rejected rather than trusted because the manifest still looks valid.
-
-### Stable identities and conflicts
-
-Semantic IDs remain explicit and stable. Structural identities survive line/comment movement; TypeScript overload declarations coalesce into one language symbol while genuinely distinct same-name symbols remain distinct.
-
-Multiple sources that agree on one semantic identity accumulate evidence. Contradictory claims remain an explicit conflict and the entity is visibly conflicted.
+`/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/` excludes its own directory from source fingerprinting. Checkpoint reads recompute semantic topology from shard contents rather than trusting manifest counts/fingerprints alone. The same semantic topology must produce byte-identical checkpoint content.
 
 ### Source provenance and safety
 
-Tracked symlinks are never followed as source content. Repository/runtime credentials never enter graph output. Secret-like structured values are redacted.
+A mutable ref is resolved once to an exact SHA and that revision context is carried through checkout, caching, graph generation, and source reads. Tracked symlinks are never followed outside the repository. Credentials never enter graph output. Secret-like structured values are redacted.
 
-### Coverage honesty
+### Runtime snapshot isolation
 
-Eligible files have explicit `complete`, `partial`, `unsupported`, `skipped`, or `failed` states. Analyzer failure must not count as successfully analyzed coverage. Negative/exhaustive tools expose compact coverage context, and `check_graph_coverage` exposes the detailed file-level reason.
+Runtime observation creates an explicit ephemeral `graphId`. Later canonical project/ref queries must not inherit another request's runtime evidence.
 
 ### Universal analysis
 
 An unknown project with no project-specific semantic mapping can still produce useful file/symbol/UI/API/MCP/config/document observations and relationships. The generic source guard prevents known project/workflow nouns from entering production analyzers.
 
+### Stable structural identities
+
+For TypeScript/JavaScript, comment/line movement must not manufacture new symbols. Overload declarations coalesce where they represent one language symbol, while distinct lexical/static/instance identities remain distinct.
+
 ### Cross-file structural intelligence
 
-For TypeScript/JavaScript, generic module resolution represents file imports, dynamic `import()` dependencies, import bindings, re-exports, import-to-definition resolution, and provable cross-file calls. Representative CardForge benchmarking must demonstrate known cross-file consumers rather than relying only on large node counts.
+Generic module resolution must represent file imports, dynamic `import()` dependencies, import bindings, re-exports, import-to-definition resolution, and provable cross-file calls. Representative CardForge benchmarking demonstrates traces reach known consumers rather than only returning large node counts.
 
-### Evidence discipline and uncertainty
+### Evidence and conflict discipline
 
-Syntax/protocol relationships may be resolved when deterministic evidence proves them. Heuristics remain candidates. For example, a direct provider import is resolved evidence while an arbitrary provider hostname string remains candidate evidence. Candidate/unresolved status must survive Parity, Architecture, graph search/tracing, evidence inspection, and the Viewer.
+Independent agreeing observations may accumulate evidence for one stable identity. Contradictory semantic assertions remain explicit conflicts. Syntax-proven relationships may be resolved; heuristic cross-source matches remain candidates; unresolved relationships remain explicit.
 
-### Semantic diff discipline
+### Coverage honesty
 
-Semantic A→W and semantic ref-to-ref diff compare stable topology shape. Line/locator/source-ID/evidence-reference churn alone must not appear as semantic change. Evidence and analyzer drift are reported separately.
+Every eligible source file resolves to an explicit coverage state such as `complete`, `partial`, `unsupported`, `skipped`, or `failed`. Analyzer failure must never count as complete inspection.
 
-### Agent/human graph parity
+### Human navigation over agent truth
 
-The human `/graph` viewer addresses the same canonical W or explicit runtime `graphId` as agents. Relationship evidence and certainty remain inspectable rather than being lost in presentation.
+The human `/graph` Viewer renders the same graph used by MCP tools but is tested as a navigation surface, not merely an HTML container. Durable UI acceptance includes named Architecture/Parity/Code/Change destinations, full-graph search, focused neighborhoods, an Inspector, readable connection navigation, evidence access, and graph fit/zoom controls. Raw graph JSON remains optional technical detail.
 
-### Public MCP contract
+### Native private access
 
-The permanent surface is intentionally small:
+Private mode must preserve separate human and machine credentials:
 
-- `list_projects`
-- `project_status`
-- `scan_graph`
-- `search_graph`
-- `trace_path`
-- `search_code`
-- `get_code_snippet`
-- `get_graph_schema`
-- `get_architecture`
-- `check_graph_coverage`
-- `get_evidence`
-- `diff_graph`
-- `query_parity`
+- unauthenticated browser Viewer access redirects to DI's own sign-in page;
+- valid owner password creates a bounded signed `HttpOnly` session cookie;
+- bad owner credentials fail;
+- unauthenticated MCP returns `401` with a Bearer challenge;
+- the independent agent token can reach MCP without reusing the browser credential;
+- logout invalidates the owner session cookie.
 
-Retired duplicate aliases, separate Parity lifecycle tools, development-methodology tools, and public cache housekeeping should remain absent.
+Repository visibility is not an authentication mechanism. Public source must remain compatible with a privately gated running service.
 
 ### MCP protocol
 
-Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, public tool listing, and correct open-world/read-only annotations.
+Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, and the frozen public tool listing.
 
-## CardForge benchmark
+## CardForge evidence strategy
 
-CardForge remains a representative large real repository because it exercises cross-file calls, feature topology, routes/APIs, providers, MCP, UI, and source search at useful scale.
+The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It does not depend on the retired Product Reality oracle and never writes a DI checkpoint into CardForge.
 
-The permanent benchmark is read-only against a pinned CardForge SHA and proves generic behavior:
+## Preview acceptance
 
-- graph construction and coverage;
-- generic semantic kinds;
-- imports, resolution, and calls;
-- representative exact-symbol traces reaching known cross-file consumers;
-- source search;
-- canonical Parity and Architecture lenses.
+A PR-scoped Preview is a physical acceptance surface after verify + CardForge are green. It runs the exact PR head, then proves through the public HTTPS tunnel that:
 
-The retired Product Reality checkpoint was migration/cutover evidence. Exact oracle comparison is intentionally not a permanent CI dependency after semantic migration is accepted.
+- the native private owner sign-in page is reachable;
+- owner sign-in can open the human Viewer;
+- unauthenticated MCP fails closed;
+- the separate agent bearer credential can complete modern MCP discovery/tool listing;
+- the Viewer is navigable by a human before merge.
 
-## Evidence strategy
+Preview proof does not replace production OAuth acceptance when a specific remote MCP client is configured to require OAuth.
 
-Use focused deterministic proof while changing graph/analyzer boundaries, then one full `npm run verify` candidate gate. Keep only tests that protect durable guarantees. Delete migration probes, obsolete aliases, and implementation-shape assertions once stronger stable contracts supersede them.
-
-Hosted OAuth/proxy behavior is an operational boundary and requires end-to-end acceptance on the deployed candidate when that hosting configuration is rolled out; local unit tests are not a substitute for that provider-owned proof.
+Do not preserve tests merely because they protected retired persistent-cache, duplicate parity, or external-engine behavior. Preserve the guarantees that still matter under the intrinsic Git-native architecture.
