@@ -9,22 +9,49 @@ permissions:
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]' && hashFiles('.build-upload/READY') != ''
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Reconstruct staged Development Intelligence candidate
         run: |
-          test -d .build-upload
-          cat .build-upload/part* | base64 -d > /tmp/di-build-upload.tgz
+          if [ ! -f .build-upload/READY ]; then
+            echo "No staged build payload; nothing to apply."
+            exit 0
+          fi
+          cat .build-upload/part00a .build-upload/part00b .build-upload/part01 .build-upload/part02 .build-upload/part03 .build-upload/part04 .build-upload/part05 .build-upload/part06 | base64 -d > /tmp/di-build-upload.tgz
           echo "58e422a0dc4ccc803426027253720597ab5dcd9f598ac2cd688d5d77a65bc74f  /tmp/di-build-upload.tgz" | sha256sum -c -
+          tar -tzf /tmp/di-build-upload.tgz | sort > /tmp/actual-paths
+          cat > /tmp/expected-paths <<'EOF'
+          scripts/benchmark-cardforge.mjs
+          src/http.ts
+          src/intelligence/query.ts
+          src/intelligence/repository.ts
+          src/intelligence/service.ts
+          src/mcp.ts
+          src/viewer.ts
+          src/viewerClient.ts
+          tests/checkpoint-sharding.test.ts
+          tests/stable-entity-parity.test.ts
+          EOF
+          sed -i 's/^          //' /tmp/expected-paths
+          sort -o /tmp/expected-paths /tmp/expected-paths
+          diff -u /tmp/expected-paths /tmp/actual-paths
           tar -xzf /tmp/di-build-upload.tgz -C .
           rm -rf .build-upload
       - name: Commit coherent v2 candidate
         run: |
+          if [ -d .build-upload ]; then
+            echo "Payload was not applied."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A src scripts tests .build-upload
+          if git diff --cached --quiet; then
+            echo "No candidate changes to commit."
+            exit 0
+          fi
           git commit -m "feat: harden stable entity parity architecture"
           git push origin HEAD:feat/stable-entity-parity-hardening
