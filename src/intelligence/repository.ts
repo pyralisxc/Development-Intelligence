@@ -306,6 +306,28 @@ async function crossFileTypeScriptGraph(
         }
       }
     }
+
+    const visitDynamicImports = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments.length === 1 && ts.isStringLiteralLike(node.arguments[0]!)) {
+        const module = node.arguments[0]!.text;
+        importedSpecifiers.push(module);
+        const targetFile = resolveTargetFile(relative, module);
+        const targetFileNode = targetFile ? fileNodes.get(targetFile) : null;
+        if (fromFile && targetFileNode) addedEdges.push(resolution({
+          from: fromFile.id,
+          to: targetFileNode.id,
+          kind: 'imports',
+          strategy: 'dynamic-module-resolution',
+          confidence: 1,
+          status: 'resolved',
+          evidence: [relative + ':' + lineOf(node)],
+          layer: 'structural',
+          checkpoint: false,
+        }));
+      }
+      ts.forEachChild(node, visitDynamicImports);
+    };
+    visitDynamicImports(sourceFile);
     moduleInfos.set(relative, { sourceFile, imports, reexports, exportAll, importedSpecifiers });
   }
 
@@ -515,6 +537,8 @@ function addFrameworkSemantics(input: {
     input.nodes.push(semanticEntity({ id: mcpId, sourceId: proof.sourceId, kind: 'mcp', locator: node.locator, name: toolName, value: { tool: toolName }, evidenceIds: [proof.id], tags: ['protocol-observed'] }));
     const feature = featureByFile.get(relative);
     if (feature) input.edges.push(semanticRelationship({ from: mcpId, to: `feature:${feature}`, kind: 'implemented-by', evidence: [node.locator], evidenceIds: [proof.id], strategy: 'protocol-registration' }));
+    const route = routeByFile.get(relative);
+    if (route) input.edges.push(semanticRelationship({ from: route.id, to: mcpId, kind: 'exposes', evidence: [node.locator], evidenceIds: [proof.id], strategy: 'protocol-registration' }));
   }
 }
 

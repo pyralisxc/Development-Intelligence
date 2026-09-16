@@ -135,9 +135,20 @@ const matchedEdges = oracleEdgeKeys.filter(key => diEdgeKeys.has(key));
 const missingEdges = oracleEdgeKeys.filter(key => !diEdgeKeys.has(key));
 const exactNodeMatches = oracle.nodes.filter(node => diNodeIds.has(node.id)).length;
 
-for (const [kind, minimum] of Object.entries({ feature: 0.8, api: 0.8, provider: 0.7 })) {
+for (const kind of ['feature', 'api', 'provider', 'route', 'mcp']) {
   const result = parityByKind[kind];
-  if (result && result.recall < minimum) throw new Error(`DI semantic migration benchmark ${kind} recall ${result.recall.toFixed(3)} is below ${minimum}`);
+  if (result && result.recall !== 1) throw new Error(`DI generic semantic migration benchmark requires complete ${kind} identity recall; got ${result.recall.toFixed(3)}`);
+}
+
+const genericSemanticKinds = new Set(['feature', 'api', 'provider', 'route', 'mcp']);
+const genericMissingEdges = missingEdges.filter((key) => {
+  const [from, _relation, to] = key.split('|');
+  const fromKind = from?.split(':', 1)[0];
+  const toKind = to?.split(':', 1)[0];
+  return Boolean(fromKind && toKind && genericSemanticKinds.has(fromKind) && genericSemanticKinds.has(toKind));
+});
+if (genericMissingEdges.length) {
+  throw new Error(`DI generic semantic migration still misses ${genericMissingEdges.length} CardForge relationships: ${genericMissingEdges.slice(0, 12).join(', ')}`);
 }
 
 const report = {
@@ -164,6 +175,7 @@ const report = {
     exactEdgeMatches: matchedEdges.length,
     exactEdgeRecall: oracle.edges.length ? matchedEdges.length / oracle.edges.length : 1,
     byKind: parityByKind,
+    genericMissingEdges,
     missingEdges: missingEdges.slice(0, 200),
   },
 };
@@ -193,6 +205,7 @@ const summary = [
   '',
   `Old CardForge oracle: **${oracle.nodes.length} nodes / ${oracle.edges.length} relationships** at topology \`${oracle.meta?.topologyFingerprint ?? 'unknown'}\`.`,
   `Current generic DI exact semantic identity match: **${exactNodeMatches}/${oracle.nodes.length} nodes (${(report.semanticDifferential.exactNodeRecall * 100).toFixed(1)}%)** and **${matchedEdges.length}/${oracle.edges.length} relationships (${(report.semanticDifferential.exactEdgeRecall * 100).toFixed(1)}%)**.`,
+  `- Generic-kind relationship gaps: **${genericMissingEdges.length}**`,
   '',
   '| Kind | Oracle | Matched now | Recall | Migration gap |',
   '| --- | ---: | ---: | ---: | ---: |',
