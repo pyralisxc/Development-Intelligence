@@ -3,6 +3,7 @@ import { runChecked } from '../util/process.js';
 import type { IntelligenceGraph } from '../types.js';
 import { buildRepositoryGraph } from './repository.js';
 import { checkpointAnalyzerCurrent, readCheckpoint, writeCheckpoint } from './checkpoint.js';
+import { assertGraphIntegrity } from './integrity.js';
 
 async function gitValue(root: string, args: string[]): Promise<string> {
   return (await runChecked('git', ['-C', root, ...args])).stdout.trim();
@@ -14,7 +15,9 @@ export async function buildLocalGraph(rootInput: string, project?: string, role:
   let repository = '';
   try { repository = await gitValue(root, ['remote', 'get-url', 'origin']); } catch { repository = root; }
   const name = project?.trim() || path.basename(root);
-  return await buildRepositoryGraph({ project: name, repository, revision, root, role });
+  const graph = await buildRepositoryGraph({ project: name, repository, revision, root, role });
+  assertGraphIntegrity(graph);
+  return graph;
 }
 
 export async function sealLocalGraph(root: string, project?: string): Promise<{ graph: IntelligenceGraph; path: string }> {
