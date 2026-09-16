@@ -1,4 +1,4 @@
-import { Graph } from 'graphology';
+import { MultiGraph } from 'graphology';
 import Sigma from 'sigma';
 
 declare global {
@@ -73,7 +73,7 @@ function render(projection: Projection): void {
     status.textContent = `${projection.candidates?.length ?? 0} candidates`;
     return;
   }
-  const graph = new Graph({ multi: true, allowSelfLoops: false });
+  const graph = new MultiGraph({ allowSelfLoops: false });
   projection.nodes.forEach((node, index) => {
     const point = coordinates(node, index, projection.nodes.length);
     graph.addNode(node.id, {
