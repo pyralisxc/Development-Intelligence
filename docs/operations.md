@@ -134,6 +134,22 @@ A release that changes or replaces the hosted gateway must prove end-to-end:
 
 A successful local bearer/proxy test does not substitute for this hosted acceptance.
 
+## Pull-request Preview acceptance
+
+The repository's `verify` workflow can expose a temporary human-review Preview for an exact PR head after the normal verify and CardForge benchmark jobs succeed.
+
+The Preview lane:
+
+- checks out the exact PR head rather than the synthetic merge ref;
+- serves only that local repository through an isolated project registry;
+- runs DI in trusted-proxy mode behind a generated Basic-auth review proxy;
+- uses a pinned, checksum-verified Cloudflared binary to create an ephemeral HTTPS tunnel;
+- smoke-tests `/health`, the human `/graph` viewer, MCP discovery, and tool listing through the public tunnel before announcing access;
+- publishes the exact candidate SHA and ephemeral review credentials in the private Actions run summary;
+- ends when the job is cancelled or reaches its timeout and creates no durable graph authority.
+
+The lane is intentionally a physical pre-merge acceptance surface, not production hosting. Passing it does not substitute for the hosted OAuth acceptance required when the real ChatGPT-facing gateway changes.
+
 ## Runtime observation safety
 
 Runtime origins are operator-allowlisted. Requests are GET-only and bounded by timeout/body size. Redirect origins are revalidated; configured authenticated headers cannot be forwarded to a different origin. Credential values remain server-side and never enter accepted checkpoints.
