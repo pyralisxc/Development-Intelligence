@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
-import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
+import type { EvidenceRecord, ExplicitValueConflict, GraphCoverage, GraphCoverageFile, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
 import { analyzeByTechnology } from './analyzers/index.js';
@@ -11,7 +11,7 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.1.0-stable-entity';
+export const ANALYZER_VERSION = '2.1.0-semantic-freeze';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -151,26 +151,73 @@ function loadCompilerOptions(root: string): ts.CompilerOptions {
 }
 
 function dedupeEdges(edges: GraphEdge[]): GraphEdge[] {
-  return [...new Map(edges.map(edge => [edge.id, edge])).values()];
+  const byId = new Map<string, GraphEdge>();
+  for (const edge of edges) {
+    const current = byId.get(edge.id);
+    if (!current) {
+      byId.set(edge.id, edge);
+      continue;
+    }
+    byId.set(edge.id, {
+      ...current,
+      evidence: [...new Set([...(current.evidence ?? []), ...(edge.evidence ?? [])])].sort(),
+      evidenceIds: [...new Set([...(current.evidenceIds ?? []), ...(edge.evidenceIds ?? [])])].sort(),
+      checkpoint: Boolean(current.checkpoint || edge.checkpoint),
+    });
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function mergeNodes(nodes: GraphNode[]): GraphNode[] {
+function equivalentValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function semanticConflicts(left: GraphNode, right: GraphNode): ExplicitValueConflict[] {
+  if (left.layer !== 'semantic' || right.layer !== 'semantic') return [];
+  const fields: Array<[string, unknown, unknown]> = [
+    ['kind', left.kind, right.kind],
+    ['name', left.name ?? null, right.name ?? null],
+    ['value', left.value, right.value],
+  ];
+  return fields
+    .filter(([, a, b]) => !equivalentValue(a, b))
+    .map(([key, leftValue, rightValue]) => ({
+      entityId: left.id,
+      leftSourceId: left.sourceId,
+      rightSourceId: right.sourceId,
+      key,
+      leftValue,
+      rightValue,
+    }));
+}
+
+function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts: ExplicitValueConflict[] } {
   const byId = new Map<string, GraphNode>();
+  const conflicts: ExplicitValueConflict[] = [];
   for (const node of nodes) {
     const current = byId.get(node.id);
     if (!current) {
       byId.set(node.id, node);
       continue;
     }
-    const preferred = current.layer === 'semantic' ? current : node.layer === 'semantic' ? node : current;
+    const discovered = semanticConflicts(current, node);
+    conflicts.push(...discovered);
+    let preferred: GraphNode;
+    if (current.layer === 'semantic' && node.layer === 'semantic') {
+      preferred = [current, node].sort((a, b) => `${a.sourceId}\0${a.locator}`.localeCompare(`${b.sourceId}\0${b.locator}`))[0]!;
+    } else {
+      preferred = current.layer === 'semantic' ? current : node.layer === 'semantic' ? node : current;
+    }
+    const conflicted = discovered.length > 0 || current.tags?.includes('conflicted') || node.tags?.includes('conflicted');
     byId.set(node.id, {
       ...preferred,
-      tags: [...new Set([...(current.tags ?? []), ...(node.tags ?? [])])].sort(),
+      tags: [...new Set([...(current.tags ?? []), ...(node.tags ?? []), ...(conflicted ? ['conflicted'] : [])])].sort(),
       evidenceIds: [...new Set([...(current.evidenceIds ?? []), ...(node.evidenceIds ?? [])])].sort(),
       checkpoint: Boolean(current.checkpoint || node.checkpoint),
     });
   }
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const uniqueConflicts = [...new Map(conflicts.map(item => [JSON.stringify(item), item])).values()];
+  return { nodes: [...byId.values()].sort((a, b) => a.id.localeCompare(b.id)), conflicts: uniqueConflicts };
 }
 
 function mergeEvidence(values: EvidenceRecord[]): EvidenceRecord[] {
@@ -417,7 +464,7 @@ async function crossFileTypeScriptGraph(
   return { nodes: addedNodes, edges: dedupeEdges(addedEdges), moduleInfos };
 }
 
-function stableNodeShape(node: GraphNode): Record<string, unknown> {
+export function stableNodeShape(node: GraphNode): Record<string, unknown> {
   return {
     id: node.id,
     kind: node.kind,
@@ -427,7 +474,7 @@ function stableNodeShape(node: GraphNode): Record<string, unknown> {
   };
 }
 
-function stableEdgeShape(edge: GraphEdge): Record<string, unknown> {
+export function stableEdgeShape(edge: GraphEdge): Record<string, unknown> {
   return {
     id: edge.id,
     from: edge.from,
@@ -446,18 +493,25 @@ export function checkpointProjection(graph: IntelligenceGraph): { nodes: GraphNo
   return { nodes, edges };
 }
 
-function graphFingerprints(nodes: GraphNode[], edges: GraphEdge[], evidence: EvidenceRecord[]): { topologyFingerprint: string; evidenceFingerprint: string } {
+export function semanticTopologyFingerprint(nodes: GraphNode[], edges: GraphEdge[]): string {
   const semanticNodes = nodes.filter(node => node.layer === 'semantic' && node.checkpoint !== false).sort((a, b) => a.id.localeCompare(b.id));
   const semanticIds = new Set(semanticNodes.map(node => node.id));
   const semanticEdges = edges.filter(edge => edge.layer === 'semantic' && edge.checkpoint !== false && (!edge.from || semanticIds.has(edge.from)) && (!edge.to || semanticIds.has(edge.to))).sort((a, b) => a.id.localeCompare(b.id));
   const topology = JSON.stringify({ nodes: semanticNodes.map(stableNodeShape), edges: semanticEdges.map(stableEdgeShape) });
+  return createHash('sha256').update(topology).digest('hex');
+}
+
+function graphFingerprints(nodes: GraphNode[], edges: GraphEdge[], evidence: EvidenceRecord[]): { topologyFingerprint: string; evidenceFingerprint: string } {
+  const semanticNodes = nodes.filter(node => node.layer === 'semantic' && node.checkpoint !== false).sort((a, b) => a.id.localeCompare(b.id));
+  const semanticIds = new Set(semanticNodes.map(node => node.id));
+  const semanticEdges = edges.filter(edge => edge.layer === 'semantic' && edge.checkpoint !== false && (!edge.from || semanticIds.has(edge.from)) && (!edge.to || semanticIds.has(edge.to))).sort((a, b) => a.id.localeCompare(b.id));
   const evidenceById = new Map(evidence.map(item => [item.id, item]));
   const evidenceIds = new Set<string>();
   for (const node of semanticNodes) for (const id of node.evidenceIds ?? []) evidenceIds.add(id);
   for (const edge of semanticEdges) for (const id of edge.evidenceIds ?? []) evidenceIds.add(id);
   const evidencePayload = [...evidenceIds].sort().map(id => evidenceById.get(id) ?? { id, unavailable: true });
   return {
-    topologyFingerprint: createHash('sha256').update(topology).digest('hex'),
+    topologyFingerprint: semanticTopologyFingerprint(nodes, edges),
     evidenceFingerprint: createHash('sha256').update(JSON.stringify(evidencePayload)).digest('hex'),
   };
 }
@@ -522,8 +576,17 @@ function addFrameworkSemantics(input: {
     for (const provider of providers) {
       const proof = evidenceForFile(relative, `${provider.reason}: ${provider.label}`);
       input.evidence.push(proof);
-      input.nodes.push(semanticEntity({ id: `provider:${provider.id}`, sourceId: proof.sourceId, kind: 'provider', locator: relative, name: provider.label, value: { provider: provider.id }, evidenceIds: [proof.id], tags: ['provider-observed'] }));
-      for (const owner of owners) input.edges.push(semanticRelationship({ from: owner, to: `provider:${provider.id}`, kind: 'integrates-with', evidence: [relative], evidenceIds: [proof.id], strategy: provider.reason }));
+      input.nodes.push(semanticEntity({ id: `provider:${provider.id}`, sourceId: proof.sourceId, kind: 'provider', locator: relative, name: provider.label, value: { provider: provider.id }, evidenceIds: [proof.id], tags: ['provider-observed', ...(provider.status === 'candidate' ? ['candidate-evidence'] : [])] }));
+      for (const owner of owners) input.edges.push(semanticRelationship({
+        from: owner,
+        to: `provider:${provider.id}`,
+        kind: 'integrates-with',
+        evidence: [relative],
+        evidenceIds: [proof.id],
+        strategy: provider.reason,
+        status: provider.status,
+        confidence: provider.confidence,
+      }));
     }
   }
 
@@ -577,12 +640,19 @@ export async function buildRepositoryGraph(input: {
   const tracked = await trackedFiles(input.root);
   const eligible = tracked.filter(file => TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()));
   const selected = eligible.slice(0, MAX_FILES);
+  const selectedPaths = new Set(selected.map(file => file.path));
   const warnings: string[] = [];
-  if (selected.length < eligible.length) warnings.push(`Graph file limit reached: analyzed ${selected.length} of ${eligible.length} eligible tracked files.`);
+  const coverageFiles: GraphCoverageFile[] = tracked
+    .filter(file => !TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()))
+    .map(file => ({ path: file.path, status: 'unsupported', reason: `unsupported extension ${path.extname(file.path).toLowerCase() || '(none)'}` }));
+  for (const file of eligible) if (!selectedPaths.has(file.path)) coverageFiles.push({ path: file.path, status: 'skipped', reason: `file limit ${MAX_FILES}` });
+  if (selected.length < eligible.length) warnings.push(`Graph file limit reached: analyzed at most ${selected.length} of ${eligible.length} eligible tracked files.`);
 
   let skippedOversizedFiles = 0;
   let skippedNonRegularFiles = 0;
-  let analyzedFiles = 0;
+  let completeFiles = 0;
+  let partialFiles = 0;
+  let failedFiles = 0;
   let nodes: GraphNode[] = [];
   let edges: GraphEdge[] = [];
   let evidence: EvidenceRecord[] = [];
@@ -595,16 +665,26 @@ export async function buildRepositoryGraph(input: {
     if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
       warnings.push(`Skipped tracked path outside repository root: ${trackedFile.path}`);
       skippedNonRegularFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: 'path escapes repository root' });
       continue;
     }
-    const stat = await fs.lstat(absolute);
+    let stat;
+    try {
+      stat = await fs.lstat(absolute);
+    } catch (error) {
+      failedFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
     if (!stat.isFile() || stat.isSymbolicLink()) {
       warnings.push(`Skipped non-regular tracked file: ${trackedFile.path}`);
       skippedNonRegularFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: 'non-regular file or symlink' });
       continue;
     }
     if (stat.size > MAX_FILE_BYTES) {
       skippedOversizedFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: `file exceeds ${MAX_FILE_BYTES} bytes` });
       continue;
     }
     const fileSource: SourceDescriptor = {
@@ -617,16 +697,31 @@ export async function buildRepositoryGraph(input: {
     };
     const file = fileNode(fileSource, trackedFile.path);
     fileNodes.set(trackedFile.path, file);
-    const text = await fs.readFile(absolute, 'utf8');
+    let text: string;
+    try {
+      text = await fs.readFile(absolute, 'utf8');
+    } catch (error) {
+      failedFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
     if (CODE_EXTENSIONS.has(path.extname(trackedFile.path).toLowerCase())) sourceTexts.set(trackedFile.path, text);
     const result = analyzeByTechnology({ source: fileSource, text, locatorBase: trackedFile.path });
     nodes.push(file, ...result.observations);
     edges.push(...result.resolutions, ...result.observations.filter(node => node.layer !== 'semantic').map(node => containsEdge(file, node, trackedFile.path)));
     evidence.push(...(result.evidence ?? []));
-    analyzedFiles += 1;
+    const analyzerFailure = result.resolutions.find(edge => edge.kind === 'analysis' && edge.status === 'unresolved' && !edge.from && !edge.to);
+    if (analyzerFailure) {
+      failedFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure' });
+    } else {
+      completeFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'complete' });
+    }
   }
 
   if (skippedOversizedFiles > 0) warnings.push(`Skipped ${skippedOversizedFiles} tracked files larger than ${MAX_FILE_BYTES} bytes.`);
+  if (failedFiles > 0) warnings.push(`${failedFiles} eligible tracked files failed analysis; negative/exhaustive claims must be qualified.`);
   const repositorySource: SourceDescriptor = {
     id: 'repository',
     kind: 'repository',
@@ -642,18 +737,28 @@ export async function buildRepositoryGraph(input: {
   edges.push(...crossFile.edges);
   addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
   nodes.push(...ensureSemanticTargets(nodes, edges));
-  nodes = mergeNodes(nodes);
+  const merged = mergeNodes(nodes);
+  nodes = merged.nodes;
   evidence = mergeEvidence(evidence);
   edges = dedupeEdges(resolveCrossSource(nodes, edges));
 
   const fingerprint = await sourceFingerprint(input.root);
   const fingerprints = graphFingerprints(nodes, edges, evidence);
+  const skippedFileLimitFiles = Math.max(0, eligible.length - selected.length);
+  const skippedFiles = skippedOversizedFiles + skippedNonRegularFiles + skippedFileLimitFiles;
   const coverage: GraphCoverage = {
     trackedFiles: tracked.length,
     eligibleFiles: eligible.length,
-    analyzedFiles,
+    analyzedFiles: completeFiles + partialFiles,
+    completeFiles,
+    partialFiles,
+    unsupportedFiles: tracked.length - eligible.length,
+    skippedFiles,
+    failedFiles,
     skippedOversizedFiles,
     skippedNonRegularFiles,
+    skippedFileLimitFiles,
+    files: coverageFiles.sort((a, b) => a.path.localeCompare(b.path)),
   };
   return {
     schemaVersion: 2,
@@ -671,7 +776,7 @@ export async function buildRepositoryGraph(input: {
     nodes,
     edges,
     namingDivergences: deriveNamingDivergences(nodes, edges),
-    explicitValueConflicts: [],
+    explicitValueConflicts: merged.conflicts,
     unmatchedNodeIds: deriveUnmatched(nodes, edges),
     unavailableSourceIds: [],
     coverage,
