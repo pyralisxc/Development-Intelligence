@@ -90,7 +90,7 @@ jobs:
           ref: bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084
           path: benchmark/cardforge
           persist-credentials: false
-      - name: Generate disposable W and run structural + parity probes
+      - name: Generate disposable W and run generic structural + semantic probes
         run: |
           node scripts/benchmark-cardforge.mjs benchmark/cardforge
           cat benchmark-cardforge.md >> "$GITHUB_STEP_SUMMARY"
