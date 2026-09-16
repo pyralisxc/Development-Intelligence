@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { GraphCheckpointMeta, GraphCheckpointMetaV2, GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
-import { ANALYZER_VERSION, GRAPH_DIRECTORY, checkpointProjection } from './repository.js';
+import { ANALYZER_VERSION, GRAPH_DIRECTORY, checkpointProjection, semanticTopologyFingerprint } from './repository.js';
 import { stringifyValue } from './model.js';
 
 const GRAPH_MANIFEST_PATH = `${GRAPH_DIRECTORY}/manifest.json`;
@@ -12,6 +12,10 @@ export interface ParsedCheckpoint {
   meta: GraphCheckpointMeta;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  integrity: {
+    countsValid: boolean;
+    topologyValid: boolean | null;
+  };
 }
 
 function stableNode(node: GraphNode): GraphNode {
@@ -124,8 +128,11 @@ export async function readCheckpoint(root: string): Promise<ParsedCheckpoint | n
     for (const shard of meta.shards) parseShard(await fs.readFile(path.join(root, GRAPH_SHARD_DIRECTORY, shard), 'utf8'), nodes, edges);
     nodes.sort((a, b) => a.id.localeCompare(b.id));
     edges.sort((a, b) => a.id.localeCompare(b.id));
-    if (nodes.length !== meta.summary.nodes || edges.length !== meta.summary.edges) throw new Error('Development Intelligence graph checkpoint counts do not match its manifest');
-    return { meta, nodes, edges };
+    const countsValid = nodes.length === meta.summary.nodes && edges.length === meta.summary.edges;
+    if (!countsValid) throw new Error('Development Intelligence graph checkpoint counts do not match its manifest');
+    const topologyValid = meta.schemaVersion === 2 ? semanticTopologyFingerprint(nodes, edges) === meta.topologyFingerprint : null;
+    if (topologyValid === false) throw new Error('Development Intelligence graph checkpoint topology fingerprint does not match shard contents');
+    return { meta, nodes, edges, integrity: { countsValid, topologyValid } };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
