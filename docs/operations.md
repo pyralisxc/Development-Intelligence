@@ -28,6 +28,9 @@ This fits a GitHub + Vercel shape: GitHub owns source/history; Vercel can host t
 | `DEVINT_GRAPH_MAX_RUNTIME_BYTES` | Runtime response body cap |
 | `DEVINT_RUNTIME_TIMEOUT_MS` | Runtime GET timeout |
 | `DEVINT_VIEWER_MAX_NODES` | Human viewer first-frame node bound |
+| `DEVINT_HOST` | Optional bind host; defaults to loopback locally and `0.0.0.0` when a platform `PORT` is supplied |
+| `DEVINT_PORT` | Optional explicit local/service port override |
+| `PORT` | Hosting-platform port, used when `DEVINT_PORT` is not set |
 
 There is no required durable `DEVINT_DATA_DIR`, graph database, or provider-specific storage configuration.
 
