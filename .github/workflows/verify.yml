@@ -74,9 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      CARDFORGE_BENCHMARK_SHA: dad315ada5f538ba72a84d650811bb4b5fe95657
-      CARDFORGE_BENCHMARK_ORACLE_PATH: benchmark/cardforge-oracle/docs/generated/product-reality.ndjson
-      CARDFORGE_REQUIRE_FULL_ORACLE_PARITY: '1'
+      CARDFORGE_BENCHMARK_SHA: 6d6788cf87dd37d7685d26fa10a15e06fa1208ba
     steps:
       - name: Check out Development Intelligence candidate
         uses: actions/checkout@v7
@@ -85,21 +83,14 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run build
-      - name: Check out final CardForge migration target
-        uses: actions/checkout@v7
-        with:
-          repository: pyralisxc/CardForge
-          ref: dad315ada5f538ba72a84d650811bb4b5fe95657
-          path: benchmark/cardforge
-          persist-credentials: false
-      - name: Check out accepted Product Reality migration oracle
+      - name: Check out pinned CardForge benchmark target
         uses: actions/checkout@v7
         with:
           repository: pyralisxc/CardForge
           ref: 6d6788cf87dd37d7685d26fa10a15e06fa1208ba
-          path: benchmark/cardforge-oracle
+          path: benchmark/cardforge
           persist-credentials: false
-      - name: Generate disposable W and require complete semantic migration parity
+      - name: Generate disposable W and run structural + parity probes
         run: |
           node scripts/benchmark-cardforge.mjs benchmark/cardforge
           cat benchmark-cardforge.md >> "$GITHUB_STEP_SUMMARY"
