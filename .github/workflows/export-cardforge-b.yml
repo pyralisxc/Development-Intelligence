@@ -1,0 +1,43 @@
+name: export-cardforge-development-intelligence-b
+
+on:
+  push:
+    branches: [feat/stable-entity-parity-hardening]
+
+permissions:
+  contents: read
+
+jobs:
+  export-cardforge-b:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out Development Intelligence candidate
+        uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - name: Check out exact CardForge candidate
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: b097d04a33ff6b85544d6167c71cf314341624de
+          path: benchmark/cardforge-candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Seal and verify CardForge B
+        run: |
+          node dist/src/graphCli.js seal --repo-path benchmark/cardforge-candidate --project CardForge
+          node dist/src/graphCli.js check --repo-path benchmark/cardforge-candidate --project CardForge
+          cat benchmark/cardforge-candidate/.development-intelligence/manifest.json
+      - name: Upload CardForge candidate B
+        uses: actions/upload-artifact@v4
+        with:
+          name: cardforge-development-intelligence-b
+          path: benchmark/cardforge-candidate/.development-intelligence
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
