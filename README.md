@@ -42,9 +42,7 @@ The checkpoint source fingerprint excludes `/.development-intelligence/` itself.
 
 An allowlisted Git ref is resolved once per operation to an immutable SHA. Checkout, cache identity, graph construction, source search/snippets, and returned metadata use that same revision context.
 
-Canonical source queries use:
-
-- `project` + optional allowlisted `ref`.
+Canonical source queries use `project` + optional allowlisted `ref`.
 
 A runtime-observation scan returns an ephemeral `graphId`. That ID may be passed to graph/code/viewer tools to inspect the same snapshot. Runtime scans never replace the canonical source W used by later ordinary project/ref queries.
 
