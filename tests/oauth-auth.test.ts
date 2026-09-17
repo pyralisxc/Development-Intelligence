@@ -18,7 +18,7 @@ async function startServer(): Promise<{ server: Server; origin: string }> {
 
 function cookieFrom(response: Response): string {
   const value = response.headers.get('set-cookie');
-  assert.ok(value?.includes('devint_session='));
+  if (!value || !value.includes('devint_session=')) throw new Error('Expected Development Intelligence session cookie');
   return value.split(';')[0]!;
 }
 
