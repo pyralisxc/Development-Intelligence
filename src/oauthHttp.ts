@@ -116,7 +116,7 @@ export async function handleOAuthHttpRequest(req: IncomingMessage, res: ServerRe
       }
       try {
         const request = parseOAuthAuthorizationRequest(await readForm(req));
-        const code = issueAuthorizationCode(request);
+        const code = await issueAuthorizationCode(request);
         res.writeHead(303, { location: authorizationRedirect(request, code), 'cache-control': 'no-store' });
         res.end();
       } catch (error) {
@@ -135,7 +135,7 @@ export async function handleOAuthHttpRequest(req: IncomingMessage, res: ServerRe
       res.end();
       return true;
     }
-    try { json(res, 200, exchangeOAuthToken(await readForm(req))); }
+    try { json(res, 200, await exchangeOAuthToken(await readForm(req))); }
     catch (error) { oauthError(res, error); }
     return true;
   }
