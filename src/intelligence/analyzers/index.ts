@@ -5,6 +5,7 @@ import { analyzeJson } from './json.js';
 import { analyzeMarkdown } from './markdown.js';
 import { analyzeHtml } from './html.js';
 import { analyzePolyglot } from './polyglot.js';
+import { analyzeUnityMeta, analyzeUnitySerialized } from './unity.js';
 
 const EMPTY: AnalyzeResult = { observations: [], resolutions: [] };
 
@@ -34,16 +35,28 @@ export const SOURCE_ANALYSIS_SUPPORT = [
     extensions: ['.json', '.md', '.mdx', '.html', '.htm'],
     precision: 'format-specific structure and representation evidence',
   },
+  {
+    technology: 'Unity serialized assets',
+    extensions: ['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer'],
+    precision: 'asset GUID identity, serialized objects, local object relationships, and uniquely provable cross-asset references',
+  },
+  {
+    technology: 'Unity structured configuration',
+    extensions: ['.asmdef', '.asmref', '.inputactions'],
+    precision: 'JSON structure and representation evidence',
+  },
 ] as const;
 
 export function analyzeByTechnology(context: AnalyzeContext): AnalyzeResult {
   const ext = path.extname(context.locatorBase).toLowerCase();
   try {
     if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(ext)) return analyzeTypeScript(context);
-    if (ext === '.json') return analyzeJson(context);
+    if (['.json', '.asmdef', '.asmref', '.inputactions'].includes(ext)) return analyzeJson(context);
     if (['.md', '.mdx'].includes(ext)) return analyzeMarkdown(context);
     if (['.html', '.htm'].includes(ext)) return analyzeHtml(context);
     if (['.cs', '.java', '.py'].includes(ext)) return analyzePolyglot(context, ext);
+    if (ext === '.meta') return analyzeUnityMeta(context);
+    if (['.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer'].includes(ext)) return analyzeUnitySerialized(context);
     return EMPTY;
   } catch (error) {
     return {

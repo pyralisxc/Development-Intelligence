@@ -48,6 +48,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       label: 'Code intelligence',
       category: 'technical-intelligence',
       languages: ['TypeScript', 'JavaScript', 'C#', 'Java', 'Python'],
+      sourceModels: ['Unity serialized assets'],
       relationships: [
         { kind: 'automated-by', to: 'mcp:search_graph' },
         { kind: 'automated-by', to: 'mcp:trace_path' },

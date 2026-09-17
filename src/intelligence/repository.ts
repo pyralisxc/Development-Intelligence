@@ -11,13 +11,15 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.2.0-polyglot-ast';
+export const ANALYZER_VERSION = '2.3.0-unity-serialized';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py']);
-const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm']);
+const UNITY_SERIALIZED_EXTENSIONS = new Set(['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer']);
+const UNITY_JSON_EXTENSIONS = new Set(['.asmdef', '.asmref', '.inputactions']);
+const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, ...UNITY_SERIALIZED_EXTENSIONS, ...UNITY_JSON_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm']);
 const SYMBOL_KINDS = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);
 const SEMANTIC_PREFIXES = new Set(['surface', 'capability', 'action', 'feature', 'route', 'api', 'mcp', 'provider', 'tool', 'workflow']);
 
@@ -233,6 +235,104 @@ function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts: Explic
 
 function mergeEvidence(values: EvidenceRecord[]): EvidenceRecord[] {
   return [...new Map(values.map(item => [item.id, item])).values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+interface UnityAssetGuidValue {
+  guid: string;
+  assetPath: string;
+}
+
+interface UnityGuidReferenceValue {
+  from: string;
+  relationship: string;
+  guid: string;
+  fileId: string;
+  type?: string;
+}
+
+function unityAssetGuid(value: unknown): value is UnityAssetGuidValue {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.guid === 'string' && /^[0-9a-f]{32}$/u.test(candidate.guid) && typeof candidate.assetPath === 'string';
+}
+
+function unityGuidReference(value: unknown): value is UnityGuidReferenceValue {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.from === 'string'
+    && typeof candidate.relationship === 'string'
+    && typeof candidate.guid === 'string'
+    && /^[0-9a-f]{32}$/u.test(candidate.guid)
+    && typeof candidate.fileId === 'string';
+}
+
+function resolveUnityGraph(input: {
+  revision: string;
+  createdAt: string;
+  trackedPaths: Set<string>;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  evidence: EvidenceRecord[];
+  fileNodes: Map<string, GraphNode>;
+}): void {
+  const guidRecords = input.evidence.filter(record => record.kind === 'unity-asset-guid' && unityAssetGuid(record.value));
+  const guidTargets = new Map<string, Array<{ record: EvidenceRecord; assetPath: string; node: GraphNode | null }>>();
+
+  for (const record of guidRecords) {
+    const value = record.value as UnityAssetGuidValue;
+    let asset = input.fileNodes.get(value.assetPath) ?? null;
+    if (!asset && input.trackedPaths.has(value.assetPath)) {
+      asset = fileNode({
+        id: `repo:${value.assetPath}`,
+        kind: 'repository-file',
+        locator: value.assetPath,
+        revision: input.revision,
+        observedAt: input.createdAt,
+        available: true,
+      }, value.assetPath);
+      input.fileNodes.set(value.assetPath, asset);
+      input.nodes.push(asset);
+    }
+    const targets = guidTargets.get(value.guid) ?? [];
+    targets.push({ record, assetPath: value.assetPath, node: asset });
+    guidTargets.set(value.guid, targets);
+
+    const meta = input.fileNodes.get(`${value.assetPath}.meta`);
+    if (meta && asset) input.edges.push(resolution({
+      from: meta.id,
+      to: asset.id,
+      kind: 'describes',
+      strategy: 'unity-meta-companion',
+      confidence: 1,
+      status: 'resolved',
+      evidence: [record.locator],
+      evidenceIds: [record.id],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  }
+
+  for (const record of input.evidence) {
+    if (record.kind !== 'unity-guid-reference' || !unityGuidReference(record.value)) continue;
+    const reference = record.value;
+    const targets = (guidTargets.get(reference.guid) ?? []).filter(target => target.node);
+    const target = targets.length === 1 ? targets[0]! : null;
+    input.edges.push(resolution({
+      from: reference.from,
+      to: target?.node?.id ?? null,
+      kind: reference.relationship,
+      strategy: 'unity-guid',
+      confidence: target ? 1 : null,
+      status: target ? 'resolved' : 'unresolved',
+      evidence: [
+        `${record.locator}:${record.field ?? 'reference'}:guid=${reference.guid}:fileID=${reference.fileId}`,
+        ...(targets.length > 1 ? [`ambiguous GUID has ${targets.length} tracked targets`] : targets.length === 0 ? ['GUID target unavailable in tracked source'] : []),
+      ],
+      evidenceIds: [record.id, ...(target ? [target.record.id] : [])],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  }
 }
 
 function featureForFile(relative: string): string | null {
@@ -650,7 +750,13 @@ export async function buildRepositoryGraph(input: {
   const createdAt = new Date().toISOString();
   const tracked = await trackedFiles(input.root);
   const eligible = tracked.filter(file => TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()));
-  const selected = eligible.slice(0, MAX_FILES);
+  const selected = [...eligible]
+    .sort((left, right) => {
+      const leftMeta = path.extname(left.path).toLowerCase() === '.meta' ? 1 : 0;
+      const rightMeta = path.extname(right.path).toLowerCase() === '.meta' ? 1 : 0;
+      return leftMeta - rightMeta || left.path.localeCompare(right.path);
+    })
+    .slice(0, MAX_FILES);
   const selectedPaths = new Set(selected.map(file => file.path));
   const warnings: string[] = [];
   const coverageFiles: GraphCoverageFile[] = tracked
@@ -669,6 +775,7 @@ export async function buildRepositoryGraph(input: {
   let evidence: EvidenceRecord[] = [];
   const fileNodes = new Map<string, GraphNode>();
   const sourceTexts = new Map<string, string>();
+  const trackedPaths = new Set(tracked.map(file => file.path));
 
   for (const trackedFile of selected) {
     const root = path.resolve(input.root);
@@ -745,6 +852,16 @@ export async function buildRepositoryGraph(input: {
     available: true,
     ...(warnings.length ? { warnings } : {}),
   };
+
+  resolveUnityGraph({
+    revision: input.revision,
+    createdAt,
+    trackedPaths,
+    nodes,
+    edges,
+    evidence,
+    fileNodes,
+  });
 
   const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
   nodes.push(...crossFile.nodes);
