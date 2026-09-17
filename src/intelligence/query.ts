@@ -133,20 +133,22 @@ export async function diffRevisions(input: {
   };
 }
 
-export async function searchGraph(input: {
+interface SearchGraphInput {
   project: string;
   ref?: string | undefined;
   graphId?: string | undefined;
   query?: string | undefined;
+  queries?: string[] | undefined;
   kinds?: string[] | undefined;
   sourceIds?: string[] | undefined;
   statuses?: RelationshipStatus[] | undefined;
   layers?: GraphNodeLayer[] | undefined;
   limit?: number | undefined;
   offset?: number | undefined;
-}): Promise<Record<string, unknown>> {
-  const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const query = input.query?.trim().toLowerCase();
+}
+
+function searchGraphResult(graph: IntelligenceGraph, input: SearchGraphInput, requestedQuery?: string): Record<string, unknown> {
+  const query = requestedQuery?.trim().toLowerCase();
   const kinds = new Set(input.kinds ?? []);
   const sourceIds = new Set(input.sourceIds ?? []);
   const statuses = new Set(input.statuses ?? []);
@@ -167,17 +169,31 @@ export async function searchGraph(input: {
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
   const offset = Math.max(input.offset ?? 0, 0);
   return {
+    ...(requestedQuery === undefined ? {} : { query: requestedQuery }),
+    nodeTotal: nodes.length,
+    edgeTotal: edges.length,
+    nodes: nodes.slice(offset, offset + limit),
+    edges: edges.slice(offset, offset + limit),
+  };
+}
+
+export async function searchGraph(input: SearchGraphInput): Promise<Record<string, unknown>> {
+  if (input.query && input.queries?.length) throw new Error('Use either query or queries, not both');
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const common = {
     project: input.project,
     graphId: graph.graphId,
     revision: graph.repositoryRevision,
     role: graph.role,
     coverage: coverageSummary(graph),
     explicitValueConflicts: graph.explicitValueConflicts,
-    nodeTotal: nodes.length,
-    edgeTotal: edges.length,
-    nodes: nodes.slice(offset, offset + limit),
-    edges: edges.slice(offset, offset + limit),
   };
+  if (input.queries) {
+    const queries = input.queries.map(query => query.trim()).filter(Boolean);
+    if (!queries.length) throw new Error('queries must contain at least one non-empty string');
+    return { ...common, results: queries.map(query => searchGraphResult(graph, input, query)) };
+  }
+  return { ...common, ...searchGraphResult(graph, input, input.query) };
 }
 
 export async function traceGraph(input: {
@@ -373,19 +389,21 @@ function semanticNeighborhood(graph: IntelligenceGraph, entityIds: Set<string>):
   return { nodes: graph.nodes.filter(node => ids.has(node.id)), edges };
 }
 
-export async function parityLens(input: {
+interface ParityLensInput {
   project: string;
   ref?: string | undefined;
   graphId?: string | undefined;
   query?: string | undefined;
+  queries?: string[] | undefined;
   kinds?: string[] | undefined;
   sourceIds?: string[] | undefined;
   status?: RelationshipStatus[] | undefined;
   limit?: number | undefined;
   offset?: number | undefined;
-}): Promise<Record<string, unknown>> {
-  const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const query = input.query?.trim().toLowerCase();
+}
+
+function parityLensResult(graph: IntelligenceGraph, input: ParityLensInput, requestedQuery?: string): Record<string, unknown> {
+  const query = requestedQuery?.trim().toLowerCase();
   const kinds = new Set(input.kinds ?? []);
   const offset = Math.max(input.offset ?? 0, 0);
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
@@ -418,12 +436,7 @@ export async function parityLens(input: {
     };
   });
   return {
-    project: input.project,
-    graphId: graph.graphId,
-    revision: graph.repositoryRevision,
-    topologyFingerprint: graph.topologyFingerprint,
-    coverage: coverageSummary(graph),
-    explicitValueConflicts: graph.explicitValueConflicts,
+    ...(requestedQuery === undefined ? {} : { query: requestedQuery }),
     entityTotal: semantic.length,
     entities: selected,
     relationships,
@@ -432,6 +445,25 @@ export async function parityLens(input: {
     unmatchedNodeIds: graph.unmatchedNodeIds.slice(offset, offset + limit),
     unavailableSourceIds: graph.unavailableSourceIds,
   };
+}
+
+export async function parityLens(input: ParityLensInput): Promise<Record<string, unknown>> {
+  if (input.query && input.queries?.length) throw new Error('Use either query or queries, not both');
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const common = {
+    project: input.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    topologyFingerprint: graph.topologyFingerprint,
+    coverage: coverageSummary(graph),
+    explicitValueConflicts: graph.explicitValueConflicts,
+  };
+  if (input.queries) {
+    const queries = input.queries.map(query => query.trim()).filter(Boolean);
+    if (!queries.length) throw new Error('queries must contain at least one non-empty string');
+    return { ...common, results: queries.map(query => parityLensResult(graph, input, query)) };
+  }
+  return { ...common, ...parityLensResult(graph, input, input.query) };
 }
 
 function boundedNeighborhood(graph: IntelligenceGraph, seedIds: string[], depth: number, limit: number): { nodes: GraphNode[]; edges: GraphEdge[] } {

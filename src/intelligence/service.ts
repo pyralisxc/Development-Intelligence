@@ -255,9 +255,24 @@ export async function graphContext(project: string, options: { ref?: string; gra
   if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
   if (options.graphId) {
     const snapshot = snapshotCache.get(options.graphId);
-    if (!snapshot || snapshot.graph.project !== project) throw new Error(`Graph snapshot is unavailable or expired: ${options.graphId}`);
-    snapshot.touchedAt = Date.now();
-    return { graph: snapshot.graph, revision: snapshot.revision };
+    if (snapshot?.graph.project === project) {
+      snapshot.touchedAt = Date.now();
+      return { graph: snapshot.graph, revision: snapshot.revision };
+    }
+    const canonical = /^repo-([0-9a-f]{40}|[0-9a-f]{64})-([0-9a-f]{10})$/u.exec(options.graphId);
+    if (canonical) {
+      const sha = canonical[1]!;
+      let repository: CachedRepositoryGraph;
+      try {
+        repository = await buildCachedRepositoryGraph(project, `commit:${sha}`);
+      } catch (error) {
+        repository = await buildCachedRepositoryGraph(project);
+        if (repository.revision.sha !== sha) throw error;
+      }
+      if (repository.graph.graphId !== options.graphId) throw new Error(`Canonical graph identifier does not match the current analyzer result: ${options.graphId}`);
+      return { graph: repository.graph, revision: repository.revision };
+    }
+    throw new Error(`Runtime graph snapshot is unavailable or expired: ${options.graphId}`);
   }
   const repository = await buildCachedRepositoryGraph(project, options.ref);
   return { graph: repository.graph, revision: repository.revision };

@@ -8,11 +8,12 @@ import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { sealLocalGraph } from '../src/intelligence/local.js';
 import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
-import { diffAcceptedToWorking, searchGraph, traceGraph } from '../src/intelligence/query.js';
+import { diffAcceptedToWorking, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools } from '../src/mcp.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
+import { sourceFingerprint } from '../src/intelligence/repository.js';
 
 async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, 'add', '.']);
@@ -56,6 +57,12 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
 `);
   await fs.writeFile(path.join(source, 'README.md'), '# Sample Project\n\nManage item from the application.\n');
   await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', access_token: 'must-not-be-persisted' }, null, 2));
+  await fs.writeFile(path.join(source, 'src', 'panel.css'), `
+:root { --action-gap: 0.5rem; --api-token: css-secret-value; }
+.action-rail, .manage-button { display: flex; overflow-x: auto; gap: var(--action-gap); }
+.manage-button::before { content: "{"; }
+@media (max-width: 720px) { .action-rail { position: sticky; bottom: 0; } }
+`);
   await fs.writeFile(path.join(root, 'outside-secret.json'), JSON.stringify({ secret: 'outside-managed-source' }));
   const outsideLink = path.join(source, 'src', 'outside-link.json');
   let nativeSymlink = true;
@@ -97,6 +104,22 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
 
 async function close(server: any) { await new Promise<void>(resolve => server.close(() => resolve())); }
 
+test('source fingerprints use Git content filters instead of platform-specific working bytes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-portable-fingerprint-'));
+  try {
+    await runChecked('git', ['init', '--initial-branch=main', root]);
+    await fs.writeFile(path.join(root, '.gitattributes'), '* text=auto eol=lf\n');
+    await fs.writeFile(path.join(root, 'sample.txt'), 'one\r\ntwo\r\n');
+    await commit(root, 'portable source');
+    const windowsBytes = await sourceFingerprint(root);
+    await fs.writeFile(path.join(root, 'sample.txt'), 'one\ntwo\n');
+    const linuxBytes = await sourceFingerprint(root);
+    assert.equal(windowsBytes, linuxBytes, 'line-ending checkout policy must not change canonical source identity');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic topology drift', async () => {
   const fixture = await makeFixture();
   try {
@@ -110,7 +133,12 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     const beforeGraph = await scanGraph(fixture.project);
     assert.ok(beforeGraph.nodes.some(node => node.kind === 'function' && node.name === 'Panel'));
     assert.ok(beforeGraph.nodes.some(node => node.kind === 'file' && node.name === 'src/panel.tsx'));
+    assert.ok(beforeGraph.nodes.some(node => node.kind === 'css-selector' && node.name === '.action-rail'));
+    assert.ok(beforeGraph.nodes.some(node => node.kind === 'css-at-rule' && String(node.name).includes('max-width: 720px')));
+    assert.ok(beforeGraph.nodes.some(node => node.kind === 'css-custom-property' && node.name === '--action-gap'));
+    assert.equal(beforeGraph.coverage?.files.find(file => file.path === 'src/panel.css')?.status, 'complete');
     assert.equal(beforeGraph.nodes.some(node => node.raw.includes('must-not-be-persisted')), false, 'secret-like values must remain redacted');
+    assert.equal(beforeGraph.nodes.some(node => node.raw.includes('css-secret-value')), false, 'secret-like CSS custom properties must remain redacted');
     assert.equal(beforeGraph.nodes.some(node => node.raw.includes('outside-managed-source')), false, 'tracked symlinks must not escape repository root');
     const compactScan = await callTool('scan_graph', { project: fixture.project }) as any;
     assert.equal(compactScan.coverage.files, undefined, 'ordinary scan responses stay compact; detailed coverage has a dedicated tool');
@@ -216,6 +244,23 @@ test('runtime observation snapshots are explicit and never contaminate canonical
     assert.equal(snippet.revision, snapshot.repositoryRevision);
     assert.equal(snippet.file, 'src/helper.ts');
     assert.ok(snippet.lines.some((line: any) => line.text.includes('helper')));
+
+    const canonical = await scanGraph(fixture.project);
+    assert.match(canonical.graphId, new RegExp(`^repo-${canonical.repositoryRevision}-[0-9a-f]{10}$`));
+    const groupedSearch = await searchGraph({ project: fixture.project, graphId: canonical.graphId, queries: ['action-rail', 'overflow-x', 'helper'], limit: 20 }) as any;
+    assert.deepEqual(groupedSearch.results.map((result: any) => result.query), ['action-rail', 'overflow-x', 'helper']);
+    assert.ok(groupedSearch.results.every((result: any) => result.nodeTotal > 0), 'grouped search should evaluate independent terms against one canonical graph');
+    const groupedParity = await parityLens({ project: fixture.project, graphId: canonical.graphId, queries: ['storage', 'manage'], limit: 20 }) as any;
+    assert.deepEqual(groupedParity.results.map((result: any) => result.query), ['storage', 'manage']);
+
+    clearGraphCache(fixture.project);
+    const reconstructed = await searchGraph({ project: fixture.project, graphId: canonical.graphId, query: 'helper' }) as any;
+    assert.equal(reconstructed.graphId, canonical.graphId, 'canonical graph identifiers must reconstruct exact Git truth after process-local cache loss');
+    await assert.rejects(
+      () => searchGraph({ project: fixture.project, graphId: snapshot.graphId, query: 'Manage item' }),
+      /Runtime graph snapshot is unavailable or expired/,
+      'runtime overlays remain intentionally ephemeral',
+    );
   } finally {
     await close(runtime);
     await fs.rm(fixture.root, { recursive: true, force: true });

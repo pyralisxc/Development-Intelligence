@@ -11,7 +11,7 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.4.0-polyglot-modules';
+export const ANALYZER_VERSION = '2.5.0-web-structure';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -19,7 +19,7 @@ const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py']);
 const UNITY_SERIALIZED_EXTENSIONS = new Set(['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer']);
 const UNITY_JSON_EXTENSIONS = new Set(['.asmdef', '.asmref', '.inputactions']);
-const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, ...UNITY_SERIALIZED_EXTENSIONS, ...UNITY_JSON_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm']);
+const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, ...UNITY_SERIALIZED_EXTENSIONS, ...UNITY_JSON_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm', '.css']);
 const SYMBOL_KINDS = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);
 const SEMANTIC_PREFIXES = new Set(['surface', 'capability', 'action', 'feature', 'route', 'api', 'mcp', 'provider', 'tool', 'workflow']);
 
@@ -81,7 +81,7 @@ export async function sourceFingerprint(root: string): Promise<string> {
   if (tracked.some(file => file.path.includes('\n'))) throw new Error('Tracked filenames containing newlines are not supported by graph sealing');
   const regular = tracked.filter(file => file.mode !== '120000' && file.mode !== '160000');
   const regularHashes = regular.length
-    ? (await runChecked('git', ['-C', root, 'hash-object', '--no-filters', '--stdin-paths'], { input: `${regular.map(file => file.path).join('\n')}\n` })).stdout.trim().split(/\r?\n/u)
+    ? (await runChecked('git', ['-C', root, 'hash-object', '--stdin-paths'], { input: `${regular.map(file => file.path).join('\n')}\n` })).stdout.trim().split(/\r?\n/u)
     : [];
   if (regularHashes.length !== regular.length) throw new Error('Unable to fingerprint every tracked regular source file');
   const regularByPath = new Map(regular.map((file, index) => [file.path, regularHashes[index]!]));
@@ -1149,7 +1149,7 @@ export async function buildRepositoryGraph(input: {
   return {
     schemaVersion: 2,
     analyzerVersion: ANALYZER_VERSION,
-    graphId: `repo-${input.revision.slice(0, 12)}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
+    graphId: `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
     project: input.project,
     role: input.role ?? 'W',
     createdAt,

@@ -32,13 +32,15 @@ The `action-smoke` GitHub Actions job invokes the repository's root composite ac
 
 ### Source provenance and safety
 
-A mutable ref is resolved once to an exact SHA and that revision context is carried through checkout, caching, graph generation, and source reads. Tracked symlinks are never followed outside the repository. Credentials never enter graph output. Secret-like structured values are redacted.
+A mutable ref is resolved once to an exact SHA and that revision context is carried through checkout, caching, graph generation, and source reads. Source fingerprints use Git's content-filtered identity so line-ending checkout policy cannot manufacture platform drift. Tracked symlinks are never followed outside the repository. Credentials never enter graph output. Secret-like structured values, including CSS custom properties, are redacted.
 
 Historical revision tests additionally protect typed commit/branch/tag and GitHub PR head/base/result identities, rejection of ambiguous raw refs under repository-history access, failure of `pr:<number>/result` for an unmerged PR, and current-analyzer replay between distant immutable revisions.
 
 ### Runtime snapshot isolation
 
 Runtime observation creates an explicit ephemeral `graphId`. Later canonical project/ref queries must not inherit another request's runtime evidence.
+
+Canonical `repo-…` graph IDs must reconstruct the exact Git revision after process-local cache loss. Runtime `snapshot-…` IDs must remain ephemeral and fail clearly after that cache is lost.
 
 ### Universal analysis
 
@@ -50,9 +52,13 @@ For TypeScript/JavaScript, comment/line movement must not manufacture new symbol
 
 For C#, Java, and Python, declaration IDs must likewise survive comment/line movement. C#/Java overloads remain distinct through signature-derived identity, nested declarations retain lexical containment, and a recovered parser error produces `partial` rather than `complete` coverage.
 
+CSS fixtures protect selector, declaration, at-rule, and custom-property visibility. Tests do not imply source-to-selector usage resolution, which remains an explicit boundary.
+
 ### Cross-file structural intelligence
 
 Generic module resolution must represent file imports, dynamic `import()` dependencies, import bindings, re-exports, import-to-definition resolution, and provable cross-file calls. Representative CardForge benchmarking demonstrates traces reach known consumers rather than only returning large node counts.
+
+Grouped search/parity tests protect the one-graph/many-independent-queries contract so exploratory agent work does not require one network round trip per term.
 
 ### Evidence and conflict discipline
 
@@ -115,7 +121,7 @@ Acceptance covers modern `2026-07-28` discovery, routing headers, complete resul
 
 ## CardForge evidence strategy
 
-The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It does not depend on the retired Product Reality oracle and never writes a DI checkpoint into CardForge.
+The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It also protects three agent-workflow concerns observed in real CardForge tasks: one-call grouped exploration, stateless reconstruction of canonical graph IDs, and searchable CSS structure for camera/responsive/layout evidence. It does not depend on the retired Product Reality oracle, interpret Product Reality metadata as DI semantics, or write a DI checkpoint into CardForge.
 
 ## Preview acceptance
 

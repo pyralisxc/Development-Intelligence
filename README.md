@@ -109,9 +109,9 @@ DI must not turn “analysis failed or was skipped” into “nothing exists.”
 
 ## Language intelligence
 
-Development Intelligence provides language-aware structural analysis for TypeScript/JavaScript, C#, Java, and Python. C#, Java, and Python use pinned ast-grep/tree-sitter parsers rather than repository-specific text matching. They contribute stable declaration identities and lexical containment for types, callables, and supported members; overload signatures remain distinct without using line numbers as identity.
+Development Intelligence provides language-aware structural analysis for TypeScript/JavaScript, C#, Java, and Python, plus format-aware CSS structure. C#, Java, and Python use pinned ast-grep/tree-sitter parsers rather than repository-specific text matching. They contribute stable declaration identities and lexical containment for types, callables, and supported members; overload signatures remain distinct without using line numbers as identity.
 
-Parser recovery is reported as `partial` file coverage with a reason. It is never silently promoted to complete inspection. TypeScript/JavaScript currently has the deeper cross-file layer (imports, re-exports, import-to-definition resolution, and provable calls). Cross-file binding for C#/Java/Python, Unity scenes/assets, and compiled Java bytecode are not inferred by this tranche and remain visible boundaries through graph shape and coverage.
+Parser recovery is reported as `partial` file coverage with a reason. It is never silently promoted to complete inspection. TypeScript/JavaScript currently has the deepest cross-file layer (imports, re-exports, import-to-definition resolution, and provable calls). C#/Java/Python resolve supported local imports and exact local symbols, but do not claim general cross-file call binding. CSS contributes selectors, declarations, at-rules, custom properties, and nesting context; source-to-selector usage is not inferred. Unity scenes/assets and compiled Java bytecode remain visible boundaries through graph shape and coverage.
 
 `get_graph_schema` discloses the current source-analysis support matrix so agents do not have to guess what a deployed analyzer can prove.
 
@@ -219,7 +219,9 @@ These secrets stay out of Git. OAuth is an access boundary only: it does not ent
 
 ## Runtime observation snapshots
 
-Ordinary project/ref queries always address deterministic source-derived W. A runtime scan returns an explicit ephemeral `graphId`; callers must pass that identifier when they want the runtime-overlay snapshot. A previous runtime scan never silently changes subsequent canonical project/ref queries.
+Ordinary project/ref queries always address deterministic source-derived W. Canonical `repo-…` graph IDs encode the complete immutable Git SHA and can be reconstructed after process or serverless cache loss. A runtime scan returns an explicit ephemeral `snapshot-…` graph ID; callers must pass that identifier when they want the runtime-overlay snapshot. A previous runtime scan never silently changes subsequent canonical project/ref queries.
+
+`search_graph` and `query_parity` accept either one `query` or up to 20 independent `queries`. Grouped queries load the selected graph once and return one result per term; they are the preferred path for exploratory audits that would otherwise repeat the same graph context many times.
 
 ## Local development
 
