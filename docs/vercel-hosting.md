@@ -69,7 +69,7 @@ DEVINT_REQUIRE_SHARED_OAUTH_STATE=1
 ```
 
 Vercel automatically sets `VERCEL`, so DI will also reject OAuth configuration there when the shared Redis state is missing.
-When `VERCEL=1`, DI adds Vercel's exact injected `VERCEL_URL`, `VERCEL_BRANCH_URL`, and `VERCEL_PROJECT_PRODUCTION_URL` hostnames to the explicit host allowlist. This keeps immutable and branch preview URLs testable without trusting a `*.vercel.app` wildcard.
+When `VERCEL=1`, DI adds Vercel's exact injected `VERCEL_URL`, `VERCEL_BRANCH_URL`, and `VERCEL_PROJECT_PRODUCTION_URL` hostnames to the explicit host allowlist. In Vercel's `preview` environment, OAuth discovery uses the exact branch URL (or deployment URL when no branch URL exists); production continues to use `DEVINT_PUBLIC_BASE_URL`. This keeps preview URLs independently testable without trusting a `*.vercel.app` wildcard or changing production OAuth identity.
 
 Keep secure cookies enabled. Do not set `DEVINT_COOKIE_SECURE=0` in Vercel.
 

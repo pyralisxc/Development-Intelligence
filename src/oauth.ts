@@ -97,8 +97,11 @@ function normalizedOrigin(value: string): string {
   return parsed.origin;
 }
 
-export function oauthPublicBaseUrl(): string {
-  const value = process.env.DEVINT_PUBLIC_BASE_URL?.trim();
+export function oauthPublicBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const previewHostname = env.VERCEL === '1' && env.VERCEL_ENV === 'preview'
+    ? env.VERCEL_BRANCH_URL?.trim() || env.VERCEL_URL?.trim()
+    : '';
+  const value = previewHostname ? `https://${previewHostname}` : env.DEVINT_PUBLIC_BASE_URL?.trim();
   if (!value) throw Object.assign(new Error('DEVINT_PUBLIC_BASE_URL is required for OAuth mode'), { status: 503 });
   try { return normalizedOrigin(value); }
   catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { status: 503 }); }

@@ -39,7 +39,7 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_HOST` | Optional bind host; defaults to loopback locally and `0.0.0.0` when a platform `PORT` is supplied |
 | `DEVINT_PORT` | Optional explicit local/service port override |
 | `PORT` | Hosting-platform port, used when `DEVINT_PORT` is not set |
-| `DEVINT_PUBLIC_BASE_URL` | Stable external origin used as OAuth issuer/resource origin in `oauth` mode |
+| `DEVINT_PUBLIC_BASE_URL` | Stable external origin used as OAuth issuer/resource origin in `oauth` mode. Vercel previews publish their exact system-injected branch/deployment origin instead; production keeps this stable value. |
 | `DEVINT_ALLOWED_HOSTS` | Comma-separated exact request hostnames. On Vercel only, exact system-injected deployment, branch, and production hostnames are added automatically; no wildcard is used. |
 | `DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS` | Comma-separated trusted OAuth callback origins; defaults to `https://chatgpt.com` |
 | `DEVINT_OAUTH_ALLOW_LOOPBACK` | Set to `1` to permit native OAuth clients to return only to HTTP loopback hosts with dynamic ports |
