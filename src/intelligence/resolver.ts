@@ -2,6 +2,7 @@ import type { NamingDivergence, Observation, Resolution } from '../types.js';
 import { normalizeName, resolution } from './model.js';
 
 const GENERIC_VALUES = new Set(['true', 'false', 'null', 'undefined', 'open', 'close', 'save', 'delete', 'edit', 'cancel', 'ok', 'yes', 'no']);
+const DEDICATED_IDENTITY_KINDS = new Set(['import-binding', 'module', 'unity-asset-guid']);
 
 export function resolveCrossSource(observations: Observation[], existing: Resolution[]): Resolution[] {
   const output = [...existing];
@@ -18,7 +19,7 @@ export function resolveCrossSource(observations: Observation[], existing: Resolu
         exactValues.set(value, list);
       }
     }
-    if (obs.name) {
+    if (obs.name && !DEDICATED_IDENTITY_KINDS.has(obs.kind)) {
       const normalized = normalizeName(obs.name);
       if (normalized.length >= 4 && !GENERIC_VALUES.has(normalized)) {
         const list = names.get(normalized) ?? [];

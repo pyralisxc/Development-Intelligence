@@ -2,8 +2,8 @@
   "type": "meta",
   "schemaVersion": 2,
   "format": "sharded-ndjson",
-  "analyzerVersion": "2.3.0-unity-serialized",
-  "sourceFingerprint": "af55b71876ef6a56122f06722f50c825149f9debff2d25ff62dad4e6d4e8f993",
+  "analyzerVersion": "2.4.0-polyglot-modules",
+  "sourceFingerprint": "6eeabe2fbf6b531e612f34c67d5cf1b81b6f6280039279e6266930248e755621",
   "topologyFingerprint": "e7d255a32ee27076b460b82334ff39d1bbbb823123ccb9240f3621ae0abaa283",
   "evidenceFingerprint": "86949f75aac9d83b7daeb7d3b2a22e6317f5cefb9b38d883f54665eca65ac4c7",
   "shards": [
