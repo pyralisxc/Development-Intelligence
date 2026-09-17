@@ -207,6 +207,21 @@ node dist/src/graphCli.js check --repo-path /path/to/project --project project-i
 
 Development Intelligence itself does not commit or merge inspected projects on behalf of callers merely to maintain graph state.
 
+### GitHub Actions checkpoint gate
+
+The repository also publishes a composite action that lets any GitHub repository check or seal its own accepted checkpoint without copying Development Intelligence into that repository. Pin the action to a reviewed full commit SHA:
+
+```yaml
+steps:
+  - uses: actions/checkout@v7
+  - uses: pyralisxc/Development-Intelligence@FULL_COMMIT_SHA
+    with:
+      project: owner/repository
+      mode: check
+```
+
+`check` fails when source, semantic topology, evidence, analyzer compatibility, schema support, or checkpoint integrity is stale. `mode: seal` writes the deterministic checkpoint into the caller checkout, but deliberately does not commit or push it; the caller's own reviewed repository workflow remains authoritative for acceptance.
+
 ## Project access configuration
 
 Operational configuration may declare only where DI is allowed to observe:

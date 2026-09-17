@@ -26,6 +26,8 @@ Remote analysis uses disposable exact-revision checkouts. Scratch state is remov
 
 `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/` excludes its own directory from source fingerprinting. Checkpoint reads recompute semantic topology from shard contents rather than trusting manifest counts/fingerprints alone. The same semantic topology must produce byte-identical checkpoint content.
 
+The `action-smoke` GitHub Actions job invokes the repository's root composite action against Development Intelligence itself. This proves the published packaging path can install, build, and enforce the accepted checkpoint independently of the ordinary repository verification command.
+
 ### Source provenance and safety
 
 A mutable ref is resolved once to an exact SHA and that revision context is carried through checkout, caching, graph generation, and source reads. Tracked symlinks are never followed outside the repository. Credentials never enter graph output. Secret-like structured values are redacted.

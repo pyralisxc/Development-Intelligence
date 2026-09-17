@@ -6,6 +6,8 @@ Development Intelligence does not require a permanently administered graph serve
 
 Durable accepted intelligence lives with each inspected Git project as `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/`. It follows ordinary Git history, review, branching, backup, and access control.
 
+Repositories can enforce that authority with the root composite GitHub Action. Consumers should pin `pyralisxc/Development-Intelligence` to a reviewed full commit SHA, check out their own repository first, and invoke the action with a stable project identifier. The default `check` mode is read-only and fails closed on stale or invalid checkpoints. Optional `seal` mode writes a deterministic candidate but never commits or pushes; the consuming repository owns review and acceptance.
+
 The **source repository and running service have independent visibility**. The Development Intelligence repository may be public for collaboration, inspection, and reuse while a deployed Workbench/MCP endpoint remains privately gated. Repository privacy must not be treated as the service's authentication boundary.
 
 The hosted service needs only:

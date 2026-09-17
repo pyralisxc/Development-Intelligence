@@ -14,7 +14,7 @@ const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
 const SUPPORTED_MODERN = [MODERN_VERSION];
 const MAX_BODY = 4 * 1024 * 1024;
-const SERVER_INFO = { name: 'Development Intelligence', version: '2.2.0' };
+const SERVER_INFO = { name: 'Development Intelligence', version: '2.3.0' };
 const VIEWER_BUNDLE = fileURLToPath(new URL('../public/viewer.js', import.meta.url));
 
 async function readBody(req: any, maxBytes = MAX_BODY): Promise<Buffer> {
