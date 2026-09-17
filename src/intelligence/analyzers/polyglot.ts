@@ -16,6 +16,14 @@ interface Declaration {
   callable: boolean;
 }
 
+interface ImportBinding {
+  module: string;
+  imported: string;
+  local: string;
+  mode: 'module' | 'namespace' | 'symbol' | 'static';
+  relative?: boolean;
+}
+
 const LANGUAGE_BY_EXTENSION: Record<string, Language> = {
   '.cs': 'csharp',
   '.java': 'java',
@@ -136,6 +144,56 @@ function sourceOwner(node: SgNode): boolean {
   return ['file_scoped_namespace_declaration', 'package_declaration'].includes(String(node.kind()));
 }
 
+function importBindingsFor(language: Language, node: SgNode): ImportBinding[] {
+  const syntaxKind = String(node.kind());
+  const text = node.text().trim();
+  if (language === 'csharp' && syntaxKind === 'using_directive') {
+    const match = /^(?:global\s+)?using\s+(?:(static)\s+)?(?:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?([A-Za-z_][A-Za-z0-9_.]*)\s*;$/u.exec(text);
+    if (!match) return [];
+    const target = match[3]!;
+    const alias = match[2];
+    return [{
+      module: target,
+      imported: alias ? target.split('.').at(-1)! : '*',
+      local: alias ?? '*',
+      mode: alias ? 'symbol' : match[1] ? 'static' : 'namespace',
+    }];
+  }
+
+  if (language === 'java' && syntaxKind === 'import_declaration') {
+    const match = /^import\s+(?:(static)\s+)?([A-Za-z_][A-Za-z0-9_.]*?)(\.\*)?\s*;$/u.exec(text);
+    if (!match) return [];
+    const target = match[2]!;
+    const wildcard = Boolean(match[3]);
+    const parts = target.split('.');
+    if (wildcard) return [{ module: target, imported: '*', local: '*', mode: match[1] ? 'static' : 'namespace' }];
+    const imported = parts.at(-1)!;
+    return [{ module: parts.slice(0, -1).join('.'), imported, local: imported, mode: match[1] ? 'static' : 'symbol' }];
+  }
+
+  if (language === 'python' && syntaxKind === 'import_statement') {
+    return node.namedChildren().flatMap(child => {
+      const name = child.field('name')?.text().trim() || child.text().split(/\s+as\s+/u)[0]?.trim();
+      if (!name) return [];
+      const alias = child.field('alias')?.text().trim();
+      return [{ module: name, imported: '*', local: alias || name.split('.')[0]!, mode: 'module' as const }];
+    });
+  }
+
+  if (language === 'python' && syntaxKind === 'import_from_statement') {
+    const match = /^from\s+([.A-Za-z_][A-Za-z0-9_.]*)\s+import\s+([\s\S]+)$/u.exec(text);
+    if (!match) return [];
+    const module = match[1]!;
+    const imported = match[2]!.replace(/[()]/gu, ' ').split(',').map(value => value.trim()).filter(Boolean);
+    return imported.map(value => {
+      const [name, alias] = value.split(/\s+as\s+/u).map(part => part.trim());
+      return { module, imported: name!, local: alias || name!, mode: name === '*' ? 'namespace' : 'symbol', relative: module.startsWith('.') };
+    });
+  }
+
+  return [];
+}
+
 export function analyzePolyglot(context: AnalyzeContext, extension: string): AnalyzeResult {
   const language = LANGUAGE_BY_EXTENSION[extension];
   if (!language) return { observations: [], resolutions: [] };
@@ -144,6 +202,7 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
   const observations: Observation[] = [];
   const resolutions: Resolution[] = [];
   const identities = new Map<string, number>();
+  const importIdentities = new Map<string, number>();
   let parseErrors = 0;
 
   const lineOf = (node: SgNode) => node.range().start.line + 1;
@@ -196,6 +255,23 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
 
   const visit = (node: SgNode, scope: string[], owner: Observation | null): void => {
     if (node.kind() === 'ERROR') parseErrors += 1;
+    for (const binding of importBindingsFor(language, node)) {
+      const baseId = `import:${context.locatorBase}#${language}:${safeIdentityPart(binding.module)}:${safeIdentityPart(binding.local)}`;
+      const ordinal = (importIdentities.get(baseId) ?? 0) + 1;
+      importIdentities.set(baseId, ordinal);
+      observations.push(observation({
+        id: ordinal === 1 ? baseId : `${baseId}~${ordinal}`,
+        sourceId: context.source.id,
+        kind: 'import-binding',
+        locator: `${context.locatorBase}:${lineOf(node)}`,
+        name: binding.local === '*' ? binding.module : binding.local,
+        field: 'import',
+        value: { language, ...binding },
+        tags: [language, 'tree-sitter', 'import'],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+    }
     const declaration = declarationFor(language, node);
     const symbol = declaration ? addDeclaration(node, declaration, scope, owner) : null;
     const nextScope = declaration?.opensScope ? [...scope, declaration.name] : scope;

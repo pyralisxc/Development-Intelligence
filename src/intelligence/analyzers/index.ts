@@ -18,17 +18,17 @@ export const SOURCE_ANALYSIS_SUPPORT = [
   {
     technology: 'C#',
     extensions: ['.cs'],
-    precision: 'tree-sitter declarations, overload-aware identities, and lexical containment',
+    precision: 'tree-sitter declarations, overload-aware identities, lexical containment, namespaces, and import bindings',
   },
   {
     technology: 'Java',
     extensions: ['.java'],
-    precision: 'tree-sitter declarations, overload-aware identities, and lexical containment',
+    precision: 'tree-sitter declarations, overload-aware identities, lexical containment, packages, and import bindings',
   },
   {
     technology: 'Python',
     extensions: ['.py'],
-    precision: 'tree-sitter class/function/method identities and lexical containment',
+    precision: 'tree-sitter class/function/method identities, lexical containment, modules, and import bindings',
   },
   {
     technology: 'structured text',

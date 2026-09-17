@@ -11,7 +11,7 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.3.0-unity-serialized';
+export const ANALYZER_VERSION = '2.4.0-polyglot-modules';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -329,6 +329,260 @@ function resolveUnityGraph(input: {
         ...(targets.length > 1 ? [`ambiguous GUID has ${targets.length} tracked targets`] : targets.length === 0 ? ['GUID target unavailable in tracked source'] : []),
       ],
       evidenceIds: [record.id, ...(target ? [target.record.id] : [])],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  }
+}
+
+interface PolyglotSymbolValue {
+  language: 'csharp' | 'java' | 'python';
+  qualifiedName?: string;
+}
+
+interface PolyglotImportValue {
+  language: 'csharp' | 'java' | 'python';
+  module: string;
+  imported: string;
+  local: string;
+  mode: 'module' | 'namespace' | 'symbol' | 'static';
+  relative?: boolean;
+}
+
+function polyglotSymbolValue(value: unknown): value is PolyglotSymbolValue {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return ['csharp', 'java', 'python'].includes(String(candidate.language))
+    && (candidate.qualifiedName === undefined || typeof candidate.qualifiedName === 'string');
+}
+
+function polyglotImportValue(value: unknown): value is PolyglotImportValue {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return ['csharp', 'java', 'python'].includes(String(candidate.language))
+    && typeof candidate.module === 'string'
+    && typeof candidate.imported === 'string'
+    && typeof candidate.local === 'string'
+    && ['module', 'namespace', 'symbol', 'static'].includes(String(candidate.mode));
+}
+
+function pythonModuleAliases(file: string): string[] {
+  const withoutExtension = file.replace(/\.py$/u, '');
+  const parts = withoutExtension.split('/');
+  if (parts.at(-1) === '__init__') parts.pop();
+  const aliases: string[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const alias = parts.slice(index).join('.');
+    if (alias) aliases.push(alias);
+  }
+  return aliases;
+}
+
+function relativePythonModule(fromFile: string, module: string): string | null {
+  const dots = /^\.+/u.exec(module)?.[0].length ?? 0;
+  if (!dots) return module;
+  const suffix = module.slice(dots);
+  const base = fromFile.replace(/\.py$/u, '').split('/');
+  if (base.at(-1) === '__init__') base.pop();
+  else base.pop();
+  const keep = base.length - Math.max(0, dots - 1);
+  if (keep < 0) return null;
+  return [...base.slice(0, keep), ...suffix.split('.').filter(Boolean)].join('.');
+}
+
+function resolvePolyglotModules(input: {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  fileNodes: Map<string, GraphNode>;
+}): void {
+  const moduleFiles = new Map<string, Set<string>>();
+  const symbolsByQualifiedName = new Map<string, GraphNode[]>();
+  const symbolsByFile = new Map<string, Map<string, GraphNode[]>>();
+  const moduleNodes = new Map<string, GraphNode>();
+  const declarationNodes: GraphNode[] = [];
+
+  const addModuleFile = (language: string, module: string, file: string): void => {
+    const key = `${language}:${module}`;
+    const files = moduleFiles.get(key) ?? new Set<string>();
+    files.add(file);
+    moduleFiles.set(key, files);
+  };
+
+  for (const node of input.nodes) {
+    if (!node.sourceId.startsWith('repo:') || !polyglotSymbolValue(node.value)) continue;
+    const file = node.sourceId.slice('repo:'.length);
+    const value = node.value;
+    if ((node.kind === 'namespace' || node.kind === 'package') && value.qualifiedName) {
+      addModuleFile(value.language, value.qualifiedName, file);
+      declarationNodes.push(node);
+    }
+    if (node.name && value.qualifiedName && !['namespace', 'package', 'import-binding'].includes(node.kind)) {
+      const qualifiedKey = `${value.language}:${value.qualifiedName}`;
+      const qualified = symbolsByQualifiedName.get(qualifiedKey) ?? [];
+      qualified.push(node);
+      symbolsByQualifiedName.set(qualifiedKey, qualified);
+      const byName = symbolsByFile.get(file) ?? new Map<string, GraphNode[]>();
+      const named = byName.get(node.name) ?? [];
+      named.push(node);
+      byName.set(node.name, named);
+      symbolsByFile.set(file, byName);
+    }
+  }
+
+  for (const file of input.fileNodes.keys()) {
+    if (!file.endsWith('.py')) continue;
+    for (const alias of pythonModuleAliases(file)) addModuleFile('python', alias, file);
+  }
+
+  const moduleNode = (language: string, module: string): GraphNode => {
+    const key = `${language}:${module}`;
+    const existing = moduleNodes.get(key);
+    if (existing) return existing;
+    const localFiles = [...(moduleFiles.get(key) ?? [])].sort();
+    const created = observation({
+      id: `module:${key}`,
+      sourceId: 'repository',
+      kind: 'module',
+      locator: `${language}:${module}`,
+      name: module,
+      field: 'module',
+      value: { language, module, localSource: localFiles.length > 0 },
+      tags: [language, 'module', ...(localFiles.length ? ['local-source'] : ['source-unavailable'])],
+      layer: 'structural',
+      checkpoint: false,
+    });
+    moduleNodes.set(key, created);
+    input.nodes.push(created);
+    for (const file of localFiles) {
+      const target = input.fileNodes.get(file);
+      if (!target) continue;
+      input.edges.push(resolution({
+        from: created.id,
+        to: target.id,
+        kind: 'implemented-by',
+        strategy: 'module-declaration',
+        confidence: 1,
+        status: 'resolved',
+        evidence: [file],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+    }
+    return created;
+  };
+
+  for (const declaration of declarationNodes) {
+    const value = declaration.value as PolyglotSymbolValue;
+    if (!value.qualifiedName) continue;
+    const module = moduleNode(value.language, value.qualifiedName);
+    const file = input.fileNodes.get(declaration.sourceId.slice('repo:'.length));
+    if (!file) continue;
+    input.edges.push(resolution({
+      from: file.id,
+      to: module.id,
+      kind: 'declares-module',
+      strategy: 'syntax',
+      confidence: 1,
+      status: 'resolved',
+      evidence: [declaration.locator],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  }
+
+  for (const binding of input.nodes.filter(node => node.kind === 'import-binding' && polyglotImportValue(node.value))) {
+    const value = binding.value as PolyglotImportValue;
+    const fromFile = binding.sourceId.startsWith('repo:') ? binding.sourceId.slice('repo:'.length) : null;
+    const from = fromFile ? input.fileNodes.get(fromFile) : null;
+    if (!from || !fromFile) continue;
+
+    let moduleName = value.module;
+    let targetFiles: string[] = [];
+    let exactCandidates: GraphNode[] = [];
+
+    if (value.language === 'python') {
+      const resolvedModule = value.relative ? relativePythonModule(fromFile, value.module) : value.module;
+      if (resolvedModule) {
+        moduleName = resolvedModule;
+        targetFiles = [...(moduleFiles.get(`python:${resolvedModule}`) ?? [])].sort();
+      }
+      if (value.imported !== '*') {
+        exactCandidates = targetFiles.flatMap(file => symbolsByFile.get(file)?.get(value.imported) ?? []);
+      }
+    } else if (value.language === 'java') {
+      if (value.mode === 'static') {
+        const member = symbolsByQualifiedName.get(`java:${value.module}.${value.imported}`) ?? [];
+        const type = symbolsByQualifiedName.get(`java:${value.module}`) ?? [];
+        exactCandidates = member.length ? member : type;
+        moduleName = value.module.split('.').slice(0, -1).join('.') || value.module;
+      } else if (value.imported !== '*') {
+        exactCandidates = symbolsByQualifiedName.get(`java:${value.module}.${value.imported}`) ?? [];
+      }
+      targetFiles = [...(moduleFiles.get(`java:${moduleName}`) ?? [])].sort();
+    } else {
+      if (value.mode === 'symbol' || value.mode === 'static') {
+        exactCandidates = symbolsByQualifiedName.get(`csharp:${value.module}`) ?? [];
+        if (exactCandidates.length === 1) {
+          const qualified = (exactCandidates[0]!.value as PolyglotSymbolValue).qualifiedName!;
+          moduleName = qualified.split('.').slice(0, -1).join('.') || value.module;
+        }
+      }
+      targetFiles = [...(moduleFiles.get(`csharp:${moduleName}`) ?? [])].sort();
+    }
+
+    const module = moduleNode(value.language, moduleName);
+    for (const [source, kind] of [[from.id, 'imports'], [binding.id, 'targets-module']] as const) input.edges.push(resolution({
+      from: source,
+      to: module.id,
+      kind,
+      strategy: 'syntax',
+      confidence: 1,
+      status: 'resolved',
+      evidence: [binding.locator],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+
+    const directTargetFiles = exactCandidates.length === 1 && exactCandidates[0]!.sourceId.startsWith('repo:')
+      ? [exactCandidates[0]!.sourceId.slice('repo:'.length)]
+      : value.imported === '*' && targetFiles.length === 1
+        ? targetFiles
+        : [];
+    for (const file of directTargetFiles) {
+      const target = input.fileNodes.get(file);
+      if (!target || target.id === from.id) continue;
+      input.edges.push(resolution({
+        from: from.id,
+        to: target.id,
+        kind: 'imports-file',
+        strategy: 'module-resolution',
+        confidence: 1,
+        status: 'resolved',
+        evidence: [binding.locator],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+    }
+
+    if (exactCandidates.length === 1) input.edges.push(resolution({
+      from: binding.id,
+      to: exactCandidates[0]!.id,
+      kind: 'resolves_to',
+      strategy: 'module-resolution',
+      confidence: 1,
+      status: 'resolved',
+      evidence: [binding.locator],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+    else if (exactCandidates.length > 1 || (targetFiles.length > 0 && value.imported !== '*')) input.edges.push(resolution({
+      from: binding.id,
+      to: null,
+      kind: 'resolves_to',
+      strategy: 'module-resolution',
+      confidence: null,
+      status: 'unresolved',
+      evidence: [binding.locator, exactCandidates.length > 1 ? `ambiguous import has ${exactCandidates.length} declarations` : 'imported symbol is unavailable in resolved local module'],
       layer: 'structural',
       checkpoint: false,
     }));
@@ -862,6 +1116,7 @@ export async function buildRepositoryGraph(input: {
     evidence,
     fileNodes,
   });
+  resolvePolyglotModules({ nodes, edges, fileNodes });
 
   const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
   nodes.push(...crossFile.nodes);
