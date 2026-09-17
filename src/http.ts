@@ -14,7 +14,7 @@ const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
 const SUPPORTED_MODERN = [MODERN_VERSION];
 const MAX_BODY = 4 * 1024 * 1024;
-const SERVER_INFO = { name: 'Development Intelligence', version: '2.1.0' };
+const SERVER_INFO = { name: 'Development Intelligence', version: '2.2.0' };
 const VIEWER_BUNDLE = fileURLToPath(new URL('../public/viewer.js', import.meta.url));
 
 async function readBody(req: any, maxBytes = MAX_BODY): Promise<Buffer> {
@@ -133,9 +133,12 @@ function json(res: any, status: number, value: unknown): void {
   res.end(JSON.stringify(value));
 }
 
-async function projectLinks(): Promise<WorkbenchProjectLink[]> {
+async function projectLinks(): Promise<{ projects: WorkbenchProjectLink[]; githubOwners: string[] }> {
   const data = await workbenchProjects() as any;
-  return (data.projects ?? []).map((item: any) => ({ project: String(item.project), defaultRef: typeof item.defaultRef === 'string' ? item.defaultRef : undefined }));
+  return {
+    projects: (data.projects ?? []).map((item: any) => ({ project: String(item.project), defaultRef: typeof item.defaultRef === 'string' ? item.defaultRef : undefined })),
+    githubOwners: Array.isArray(data.githubOwners) ? data.githubOwners.filter((owner: unknown): owner is string => typeof owner === 'string') : [],
+  };
 }
 
 function contextFromUrl(requestUrl: URL): { ref?: string; graphId?: string } {
@@ -213,17 +216,17 @@ export function createDevelopmentIntelligenceServer() {
     if ((requestUrl.pathname === '/' || requestUrl.pathname === '/workbench') && req.method === 'GET') {
       if (!authorize(req, res, { interactive: true })) return;
       try {
-        const projects = await projectLinks();
+        const links = await projectLinks();
         const project = requestUrl.searchParams.get('project');
         if (!project) {
           res.writeHead(200, htmlHeaders());
-          res.end(renderProjectChooser(projects));
+          res.end(renderProjectChooser(links.projects, links.githubOwners));
           return;
         }
         const context = contextFromUrl(requestUrl);
         const graph = await currentGraph(project, context.ref, context.graphId);
         res.writeHead(200, htmlHeaders());
-        res.end(renderGraphViewer(graph, context.ref, context.graphId, projects));
+        res.end(renderGraphViewer(graph, context.ref, context.graphId, links.projects));
       } catch (error) {
         res.writeHead((error as any)?.status ?? 500, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(error instanceof Error ? error.message : String(error));

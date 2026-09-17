@@ -218,4 +218,6 @@ Operational configuration may declare only where DI is allowed to observe:
 - environment-backed runtime request headers;
 - optional read-only technical sources.
 
+For owner-scoped GitHub use, `DEVINT_GITHUB_ALLOWED_OWNERS` authorizes canonical `owner/repository` project identifiers without creating one registry entry per repository. The shared read-only GitHub credential still determines whether a public or private repository can actually be fetched, and dynamic projects inspect only the repository's default `HEAD`. Fixed registry entries remain available when a repository needs explicit refs, runtime origins, headers, or technical sources.
+
 It must not define project-specific semantic ontologies, product intent, source-authority maps, or analyzer branches keyed by project identity.

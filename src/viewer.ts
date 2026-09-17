@@ -9,9 +9,10 @@ export interface WorkbenchProjectLink {
   defaultRef?: string;
 }
 
-export function renderProjectChooser(projects: WorkbenchProjectLink[]): string {
+export function renderProjectChooser(projects: WorkbenchProjectLink[], githubOwners: string[] = []): string {
   const cards = projects.map(item => `<a class="project-card" href="/workbench?project=${encodeURIComponent(item.project)}"><strong>${escapeHtml(item.project)}</strong><span>${escapeHtml(item.defaultRef ?? 'default ref')}</span><em>Open workspace →</em></a>`).join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Development Intelligence</title><style>${sharedCss()}</style></head><body class="chooser-body"><main class="chooser"><div class="brand-mark">DI</div><p class="eyebrow">Development Intelligence</p><h1>Choose a project workspace</h1><p class="lead">Inspect current architecture, code, evidence, changes, runtime sources and technical data without treating the graph as the interface.</p><div class="project-grid">${cards || '<div class="empty-card">No projects are configured for this deployment.</div>'}</div></main></body></html>`;
+  const dynamic = githubOwners.length ? `<form class="card" method="get" action="/workbench" style="margin:18px 0"><h3>Open a GitHub repository</h3><p>Enter an authorized repository as owner/repository. Available owner namespaces: ${githubOwners.map(escapeHtml).join(', ')}.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><input name="project" aria-label="GitHub repository" placeholder="${escapeHtml(githubOwners[0]!)}/repository" pattern="[A-Za-z0-9-]+/[A-Za-z0-9._-]+" required style="flex:1;min-width:220px;border:1px solid #344761;background:#0d1725;color:#fff;border-radius:10px;padding:11px 12px"><button type="submit" style="border:1px solid #3d6488;background:#173451;color:#ecf8ff;border-radius:10px;padding:11px 14px;font-weight:700;cursor:pointer">Open workspace</button></div><p class="muted">Access is read-only. The configured GitHub credential must also be able to read the repository.</p></form>` : '';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Development Intelligence</title><style>${sharedCss()}</style></head><body class="chooser-body"><main class="chooser"><div class="brand-mark">DI</div><p class="eyebrow">Development Intelligence</p><h1>Choose a project workspace</h1><p class="lead">Inspect current architecture, code, evidence, changes, runtime sources and technical data without treating the graph as the interface.</p>${dynamic}<div class="project-grid">${cards || '<div class="empty-card">No fixed projects are configured for this deployment.</div>'}</div></main></body></html>`;
 }
 
 function sharedCss(): string {
@@ -21,7 +22,8 @@ function sharedCss(): string {
 export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: string, requestedGraphId?: string, projects: WorkbenchProjectLink[] = []): string {
   const project = escapeHtml(graph.project);
   const revision = escapeHtml(graph.repositoryRevision ?? 'unknown revision');
-  const projectOptions = (projects.length ? projects : [{ project: graph.project }]).map(item => `<option value="${escapeHtml(item.project)}"${item.project === graph.project ? ' selected' : ''}>${escapeHtml(item.project)}</option>`).join('');
+  const visibleProjects = projects.some(item => item.project === graph.project) ? projects : [{ project: graph.project, defaultRef: requestedRef ?? 'HEAD' }, ...projects];
+  const projectOptions = visibleProjects.map(item => `<option value="${escapeHtml(item.project)}"${item.project === graph.project ? ' selected' : ''}>${escapeHtml(item.project)}</option>`).join('');
   return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${project} — Development Intelligence</title><style>${sharedCss()}</style></head>

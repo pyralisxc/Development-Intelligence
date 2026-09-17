@@ -101,9 +101,13 @@ Also add:
 
 ```text
 DEVINT_GITHUB_TOKEN=<read-only GitHub credential>
+DEVINT_GITHUB_ALLOWED_OWNERS=pyralisxc
+DEVINT_GITHUB_TOKEN_ENV=DEVINT_GITHUB_TOKEN
 ```
 
-For a private repository, this credential must be able to read the repositories DI inspects. Prefer a fine-grained read-only credential limited to the required repositories. Development Intelligence does not require GitHub write access.
+The fixed registry keeps explicit configuration for Development Intelligence itself. The owner policy additionally lets callers inspect any repository under `pyralisxc` by using the project identifier `pyralisxc/<repository>`; those dynamic projects use the repository's default `HEAD` and do not receive project-specific semantics, runtime origins, or technical-source configuration.
+
+For a private repository, the credential must be able to read the repositories DI inspects. Prefer a fine-grained read-only credential limited to the repositories the service should reach. Development Intelligence does not require GitHub write access. Owner policy and token reach are independent: both must permit access.
 
 ## 4. Stable hostname bootstrap
 

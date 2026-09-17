@@ -1,4 +1,5 @@
 import { listPublicProjects } from './source/git.js';
+import { listAuthorizedGithubOwners } from './config/registry.js';
 import { projectStatus } from './projectStatus.js';
 import { scanGraph } from './intelligence/service.js';
 import { diffAcceptedToWorking, diffRevisions, graphArchitecture, graphCoverage, graphEvidence, graphSchema, parityLens, searchGraph, traceGraph } from './intelligence/query.js';
@@ -78,7 +79,10 @@ const queryProperties = {
 };
 
 export const tools: ToolDefinition[] = [
-  { name: 'list_projects', description: 'List project identities Development Intelligence is authorized to inspect. Access configuration grants technical reach; it does not define project meaning.', inputSchema: objectSchema({}), handler: async () => await listPublicProjects() },
+  { name: 'list_projects', description: 'List configured project identities and dynamic GitHub owner namespaces Development Intelligence is authorized to inspect. Repositories under an authorized owner are addressed as owner/repository. Access configuration grants technical reach; it does not define project meaning.', inputSchema: objectSchema({}), handler: async () => ({
+    projects: await listPublicProjects(),
+    githubOwnerNamespaces: listAuthorizedGithubOwners().map(owner => ({ owner, projectPattern: `${owner}/<repository>`, defaultRef: 'HEAD', access: 'read-only' })),
+  }) },
   { name: 'project_status', description: 'Report repository revision plus accepted semantic checkpoint and working-graph currentness dimensions without assigning product intent.', inputSchema: objectSchema({ project: string, checkUpstream: boolean }, ['project']), handler: async args => await projectStatus(s(args, 'project'), args.checkUpstream !== false) },
   { name: 'project_overview', description: 'Return a human-readable project overview synthesized from the same graph, coverage, change, and source evidence used by the Workbench.', inputSchema: objectSchema({ project: string, ref: string, graphId: string }, ['project']), handler: async args => await projectOverview(s(args, 'project'), optString(args, 'ref'), optString(args, 'graphId')) },
   { name: 'inspect_entity', description: 'Inspect one exact or unambiguous entity with quick notes, connections, evidence, source context, and accepted-to-working change state.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, node: string }, ['project', 'node']), handler: async args => await inspectEntity({ project: s(args, 'project'), node: s(args, 'node'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId') }) },
