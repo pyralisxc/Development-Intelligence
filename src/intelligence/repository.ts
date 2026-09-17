@@ -81,7 +81,7 @@ export async function sourceFingerprint(root: string): Promise<string> {
   if (tracked.some(file => file.path.includes('\n'))) throw new Error('Tracked filenames containing newlines are not supported by graph sealing');
   const regular = tracked.filter(file => file.mode !== '120000' && file.mode !== '160000');
   const regularHashes = regular.length
-    ? (await runChecked('git', ['-C', root, 'hash-object', '--no-filters', '--stdin-paths'], { input: `${regular.map(file => file.path).join('\n')}\n` })).stdout.trim().split(/\r?\n/u)
+    ? (await runChecked('git', ['-C', root, 'hash-object', '--stdin-paths'], { input: `${regular.map(file => file.path).join('\n')}\n` })).stdout.trim().split(/\r?\n/u)
     : [];
   if (regularHashes.length !== regular.length) throw new Error('Unable to fingerprint every tracked regular source file');
   const regularByPath = new Map(regular.map((file, index) => [file.path, regularHashes[index]!]));

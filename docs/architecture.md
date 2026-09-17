@@ -160,7 +160,7 @@ Accepted semantic A is current only when the checkpoint is valid/supported and i
 
 ## Exact revision context
 
-Each project/ref operation resolves an allowlisted Git ref once to one immutable SHA. That revision context is carried through checkout, cache identity, graph construction, source search/snippets, and returned metadata.
+Each project/ref operation resolves an allowlisted Git ref once to one immutable SHA. That revision context is carried through checkout, cache identity, graph construction, source search/snippets, and returned metadata. Source fingerprinting passes working bytes through Git's configured content filters so the same tracked content has one portable identity across Windows, Linux, local worktrees, and CI.
 
 DI fetches that exact SHA into disposable compute and verifies `FETCH_HEAD`. A moving branch may cause explicit failure/retry; it must never silently substitute a different revision midway through one operation.
 

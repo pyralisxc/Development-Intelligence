@@ -13,6 +13,7 @@ import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools } from '../src/mcp.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
+import { sourceFingerprint } from '../src/intelligence/repository.js';
 
 async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, 'add', '.']);
@@ -102,6 +103,22 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
 }
 
 async function close(server: any) { await new Promise<void>(resolve => server.close(() => resolve())); }
+
+test('source fingerprints use Git content filters instead of platform-specific working bytes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-portable-fingerprint-'));
+  try {
+    await runChecked('git', ['init', '--initial-branch=main', root]);
+    await fs.writeFile(path.join(root, '.gitattributes'), '* text=auto eol=lf\n');
+    await fs.writeFile(path.join(root, 'sample.txt'), 'one\r\ntwo\r\n');
+    await commit(root, 'portable source');
+    const windowsBytes = await sourceFingerprint(root);
+    await fs.writeFile(path.join(root, 'sample.txt'), 'one\ntwo\n');
+    const linuxBytes = await sourceFingerprint(root);
+    assert.equal(windowsBytes, linuxBytes, 'line-ending checkout policy must not change canonical source identity');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic topology drift', async () => {
   const fixture = await makeFixture();

@@ -32,7 +32,7 @@ The `action-smoke` GitHub Actions job invokes the repository's root composite ac
 
 ### Source provenance and safety
 
-A mutable ref is resolved once to an exact SHA and that revision context is carried through checkout, caching, graph generation, and source reads. Tracked symlinks are never followed outside the repository. Credentials never enter graph output. Secret-like structured values are redacted.
+A mutable ref is resolved once to an exact SHA and that revision context is carried through checkout, caching, graph generation, and source reads. Source fingerprints use Git's content-filtered identity so line-ending checkout policy cannot manufacture platform drift. Tracked symlinks are never followed outside the repository. Credentials never enter graph output. Secret-like structured values, including CSS custom properties, are redacted.
 
 Historical revision tests additionally protect typed commit/branch/tag and GitHub PR head/base/result identities, rejection of ambiguous raw refs under repository-history access, failure of `pr:<number>/result` for an unmerged PR, and current-analyzer replay between distant immutable revisions.
 
