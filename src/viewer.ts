@@ -23,6 +23,7 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
   const project = escapeHtml(graph.project);
   const revision = escapeHtml(graph.repositoryRevision ?? 'unknown revision');
   const visibleProjects = projects.some(item => item.project === graph.project) ? projects : [{ project: graph.project, defaultRef: requestedRef ?? 'HEAD' }, ...projects];
+  const selectedRef = requestedRef ?? visibleProjects.find(item => item.project === graph.project)?.defaultRef ?? 'HEAD';
   const projectOptions = visibleProjects.map(item => `<option value="${escapeHtml(item.project)}"${item.project === graph.project ? ' selected' : ''}>${escapeHtml(item.project)}</option>`).join('');
   return `<!doctype html>
 <html lang="en">
@@ -32,6 +33,7 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
 <header class="top">
   <div class="brand"><div class="mark">DI</div><select id="project-select" class="project-select" aria-label="Project">${projectOptions}</select></div>
   <div class="revision">${revision}${requestedGraphId ? ' · observed snapshot' : ' · canonical source'}</div>
+  <form id="revision-form" style="display:flex;gap:5px"><input id="revision-input" aria-label="Revision selector" value="${escapeHtml(selectedRef)}" placeholder="HEAD, branch:main, pr:75/head" style="width:190px;border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:9px;padding:7px 9px;font-size:10px"><button type="submit" class="primary">Open</button></form>
   <form class="askbar" id="global-query"><input id="global-query-input" autocomplete="off" placeholder="Ask about this project…"><button type="submit">Ask</button></form>
   <a class="logout" href="/logout">Sign out</a>
 </header>
@@ -50,7 +52,7 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
   <aside class="inspector"><div class="inspector-head"><h2>Inspector</h2><span id="inspector-context" class="muted"></span></div><div id="inspector-tabs" class="inspector-tabs"></div><div id="inspector-body" class="inspector-body"><div class="empty"><div><strong>Nothing selected</strong>Choose an entity from Overview or Explore to get quick notes, connections, code, evidence and change context.</div></div></div></aside>
 </main>
 </div>
-<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedRef ?? '')},graphId:${JSON.stringify(requestedGraphId ?? '')},section:'overview'};</script>
+<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedGraphId ? '' : selectedRef)},graphId:${JSON.stringify(requestedGraphId ?? '')},section:'overview'};</script>
 <script src="/viewer.js" defer></script>
 </body></html>`;
 }

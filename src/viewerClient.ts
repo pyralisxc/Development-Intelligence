@@ -24,6 +24,8 @@ const inspectorContext = document.getElementById('inspector-context') as HTMLEle
 const inspectorTabs = document.getElementById('inspector-tabs') as HTMLElement;
 const inspectorBody = document.getElementById('inspector-body') as HTMLElement;
 const projectSelect = document.getElementById('project-select') as HTMLSelectElement;
+const revisionForm = document.getElementById('revision-form') as HTMLFormElement;
+const revisionInput = document.getElementById('revision-input') as HTMLInputElement;
 const globalForm = document.getElementById('global-query') as HTMLFormElement;
 const globalInput = document.getElementById('global-query-input') as HTMLInputElement;
 const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-section]'));
@@ -57,7 +59,7 @@ const sectionCopy: Record<Section, { title: string; description: string }> = {
   parity: { title: 'Parity Contracts', description: 'Compare caller-owned expected entities and relationships with observed project reality. Expectations remain ephemeral and never become accepted truth.' },
   query: { title: 'Query', description: 'Ask Development Intelligence about the project or run a bounded read-only query against a configured technical source.' },
   sources: { title: 'Sources', description: 'See what DI can actually inspect: Git, runtime origins, databases/log adapters, freshness, coverage and query capabilities.' },
-  changes: { title: 'Changes', description: 'Review accepted-to-working semantic change without confusing locator or evidence movement for product change.' },
+  changes: { title: 'Changes', description: 'Compare accepted-to-working semantics or any two immutable historical revision selectors under the same current analyzer.' },
 };
 
 function esc(value: unknown): string {
@@ -317,15 +319,31 @@ async function renderSources(): Promise<void> {
 
 async function renderChanges(): Promise<void> {
   setHead();
-  content.innerHTML = empty('Loading change intelligence', 'Comparing accepted semantic topology with current working reality…');
-  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes' }));
-  const counts = data.counts ?? {};
-  content.innerHTML = `<div class="hero-grid"><div class="card"><h3>Semantic change</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2><p>Changes here intentionally ignore line movement, locator churn and evidence-reference movement as semantic product change.</p></div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${renderChangeBucket(data.detail)}</div>`;
-  wireNodeButtons();
+  const defaultHead = viewerConfig.ref || 'HEAD';
+  content.innerHTML = `<div class="card"><h3>Historical comparison</h3><h2>Compare any two repository states</h2><p>Leave the base empty for accepted → working semantic change. Historical comparisons replay both exact revisions through the same current analyzer.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
+  const run = async () => {
+    const baseRef = (document.getElementById('change-base') as HTMLInputElement).value.trim();
+    const headRef = (document.getElementById('change-head') as HTMLInputElement).value.trim();
+    const target = document.getElementById('change-result') as HTMLElement;
+    target.innerHTML = empty('Loading change intelligence', baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing accepted semantic topology with current working reality…');
+    try {
+      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}) }));
+      const counts = data.counts ?? {};
+      const baseIdentity = data.detail?.base?.identity;
+      const headIdentity = data.detail?.head?.identity;
+      const identity = baseIdentity && headIdentity ? `<p class="muted">${esc(baseIdentity.selector)} → ${esc(headIdentity.selector)}<br>${esc(baseIdentity.sha)} → ${esc(headIdentity.sha)}</p>` : '';
+      target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Historical replay' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? 'Both revisions use the same current analyzer so project change is not confused with analyzer evolution.' : 'Accepted semantic comparison ignores line movement and provenance-only churn.'}</p></div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${renderChangeBucket(data.detail)}</div>`;
+      wireNodeButtons(target);
+    } catch (error) {
+      target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
+    }
+  };
+  (document.getElementById('compare-revisions') as HTMLButtonElement).addEventListener('click', () => void run());
+  await run();
 }
 
 function renderChangeBucket(detail: any): string {
-  const semantic = detail?.semantic;
+  const semantic = detail?.semantic ?? (detail?.nodes && detail?.edges ? detail : null);
   if (!semantic) return `<pre class="raw">${esc(JSON.stringify(detail, null, 2))}</pre>`;
   const nodes = [
     ...(semantic.nodes?.added ?? []).map((item: any) => ({ ...item, _change: 'added' })),
@@ -355,6 +373,7 @@ async function activateSection(next: Section): Promise<void> {
 
 for (const button of navButtons) button.addEventListener('click', () => void activateSection(button.dataset.section as Section));
 projectSelect.addEventListener('change', () => { window.location.assign(`/workbench?project=${encodeURIComponent(projectSelect.value)}`); });
+revisionForm.addEventListener('submit', event => { event.preventDefault(); const ref = revisionInput.value.trim(); if (!ref) return; window.location.assign(`/workbench?project=${encodeURIComponent(viewerConfig.project)}&ref=${encodeURIComponent(ref)}`); });
 globalForm.addEventListener('submit', event => { event.preventDefault(); const value = globalInput.value.trim(); if (!value) return; section = 'query'; for (const button of navButtons) button.classList.toggle('active', button.dataset.section === 'query'); void renderQuery(value); });
 document.addEventListener('keydown', event => { if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') { event.preventDefault(); globalInput.focus(); } });
 

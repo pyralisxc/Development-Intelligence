@@ -46,6 +46,8 @@ function validateProject(name: string, config: ProjectConfig): ProjectConfig {
     throw new Error(`${name}: token-env repository credentials require an HTTPS repository URL; use host SSH credentials with credential.type=none for SSH repositories`);
   }
   if (!config.defaultRef?.trim()) throw new Error(`${name}: defaultRef is required`);
+  const revisionPolicy = config.revisionPolicy ?? 'allowlisted';
+  if (!['allowlisted', 'repository-history'].includes(revisionPolicy)) throw new Error(`${name}: unsupported revisionPolicy: ${String(config.revisionPolicy)}`);
   const allowedRefs = config.allowedRefs?.length ? config.allowedRefs : [config.defaultRef];
   if (!allowedRefs.includes(config.defaultRef)) throw new Error(`${name}: defaultRef must be allowlisted`);
   validateHeaders(name, config.runtimeHeaders, 'runtime');
@@ -74,7 +76,7 @@ function validateProject(name: string, config: ProjectConfig): ProjectConfig {
       }
     }
   }
-  return { ...config, allowedRefs };
+  return { ...config, allowedRefs, revisionPolicy };
 }
 
 function githubProjectConfig(project: string): ProjectConfig | null {
@@ -90,6 +92,7 @@ function githubProjectConfig(project: string): ProjectConfig | null {
     repository: `https://github.com/${owner}/${repository}.git`,
     defaultRef: 'HEAD',
     allowedRefs: ['HEAD'],
+    revisionPolicy: 'repository-history',
     credential: { type: 'token-env', tokenEnv, username: 'x-access-token' },
   });
 }

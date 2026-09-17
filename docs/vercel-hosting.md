@@ -19,23 +19,24 @@ Redis is an operational auth backing service, not graph authority or project int
 
 Local development and long-running single-instance hosts continue to use the in-memory code store unless shared state is explicitly required.
 
-## Current Vercel account state
+## Current deployment shape
 
-The intended Vercel team is `Pyralis' projects` (`pyralis-projects`). Before this runbook was added, no Development Intelligence Vercel project existed there yet. The one manual bootstrap step is importing the GitHub repository into Vercel; after the project exists, ChatGPT's connected Vercel tools can inspect deployments/logs and help operate it.
+The production service is deployed from `pyralisxc/Development-Intelligence` through the Vercel project owned by `Pyralis' projects` (`pyralis-projects`). Production follows `main`; feature branches are validated through preview deployments rather than being added to the production project registry.
 
-## 1. Create the Vercel project
+For a clean replacement deployment, keep the currently reachable production environment intact until the replacement is deployed, reachable, and independently verified.
 
-This step requires your Vercel/GitHub account authorization in the Vercel UI.
+## 1. Create or reconnect the Vercel project
 
-1. Open the Vercel dashboard.
-2. Choose **Add New -> Project**.
-3. Import `pyralisxc/Development-Intelligence` from GitHub.
-4. Project name: `development-intelligence` is recommended.
-5. For PR #4 acceptance, set the production/selected Git branch to `feat/chatgpt-oauth-publishing` or deploy that branch as the candidate. Do not merge PR #4 just to make hosting easier.
-6. Vercel should detect `Dockerfile.vercel` and deploy it as a container-backed Function. Do not select an unrelated frontend framework preset.
-7. Keep Fluid Compute enabled. New projects generally have it enabled by default.
+If the existing project must be recreated:
 
-The Hobby plan currently provides a five-minute maximum request duration. That is sufficient for initial ChatGPT acceptance and many repository-inspection operations. If large-project scans later exceed it, treat that as an observed scaling constraint rather than changing the architecture preemptively.
+1. Import `pyralisxc/Development-Intelligence` from GitHub.
+2. Use the `development-intelligence` project identity unless intentionally replacing it.
+3. Keep the production branch on `main`.
+4. Deploy feature branches as preview candidates.
+5. Use `Dockerfile.vercel`; do not select an unrelated frontend framework preset.
+6. Preserve the stable production/custom hostname during replacement and cut over only after hosted verification.
+
+Repository scans are synchronous today. Treat observed request-duration or memory failures as scaling evidence for the planned asynchronous/content-addressed compute plane; do not hide them with partial results.
 
 ## 2. Add Upstash for Redis
 
@@ -75,17 +76,13 @@ Keep secure cookies enabled. Do not set `DEVINT_COOKIE_SECURE=0` in Vercel.
 
 Use `DEVINT_PROJECTS_JSON` so Vercel does not need a mounted `/config/projects.json` file.
 
-For PR #4 acceptance:
-
 ```json
 {
   "Development-Intelligence": {
     "repository": "https://github.com/pyralisxc/Development-Intelligence.git",
     "defaultRef": "refs/heads/main",
-    "allowedRefs": [
-      "refs/heads/main",
-      "refs/heads/feat/chatgpt-oauth-publishing"
-    ],
+    "allowedRefs": ["refs/heads/main"],
+    "revisionPolicy": "repository-history",
     "credential": {
       "type": "token-env",
       "tokenEnv": "DEVINT_GITHUB_TOKEN",
@@ -105,7 +102,7 @@ DEVINT_GITHUB_ALLOWED_OWNERS=pyralisxc
 DEVINT_GITHUB_TOKEN_ENV=DEVINT_GITHUB_TOKEN
 ```
 
-The fixed registry keeps explicit configuration for Development Intelligence itself. The owner policy additionally lets callers inspect any repository under `pyralisxc` by using the project identifier `pyralisxc/<repository>`; those dynamic projects use the repository's default `HEAD` and do not receive project-specific semantics, runtime origins, or technical-source configuration.
+The fixed registry keeps explicit configuration for Development Intelligence itself. The owner policy additionally lets callers inspect any repository under `pyralisxc` by using the project identifier `pyralisxc/<repository>`. Dynamic projects default to `HEAD` and support typed historical commit/branch/tag/PR selectors while remaining free of project-specific semantics, runtime origins, or technical-source configuration.
 
 For a private repository, the credential must be able to read the repositories DI inspects. Prefer a fine-grained read-only credential limited to the repositories the service should reach. Development Intelligence does not require GitHub write access. Owner policy and token reach are independent: both must permit access.
 
@@ -150,15 +147,15 @@ Then follow `docs/chatgpt-publishing.md`:
 9. Prove DI + GitHub in one mixed prompt.
 10. Repeat from a fresh Work session when Work is in release scope.
 
-Do not mark PR #4 Ready or merge it until these hosted acceptance checks pass.
+Do not promote a candidate until these hosted acceptance checks pass.
 
-## 7. After PR #4 merge
+## 7. Release and production acceptance
 
-After hosted ChatGPT acceptance:
+After preview and ChatGPT acceptance:
 
-1. merge PR #4 through normal review;
-2. point Vercel production at `main`;
-3. optionally remove the feature branch from `DEVINT_PROJECTS_JSON.allowedRefs`;
-4. redeploy;
-5. re-run OAuth discovery and a mixed DI + GitHub prompt against the production deployment;
-6. then create the intended Git tag/GitHub Release.
+1. merge through normal review;
+2. wait for the `main` production deployment;
+3. verify health, OAuth discovery, owner Workbench access, and authenticated MCP tool discovery;
+4. run one exact historical selector resolution and one distant revision comparison;
+5. verify a mixed Development Intelligence + GitHub prompt against production;
+6. create the intended Git tag/GitHub Release only after the deployed revision matches `main`.

@@ -1,7 +1,7 @@
 import { getProjectConfig } from '../config/registry.js';
-import type { EvidenceRecord, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
+import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
-import { withResolvedProjectCheckout, resolveProjectRevision, type ProjectRevision } from '../source/git.js';
+import { revisionIdentity, withResolvedProjectCheckout, resolveProjectRevision, type ProjectRevision } from '../source/git.js';
 import { analyzeHtml, analyzeJson } from './analyzers/index.js';
 import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
 import { assertGraphIntegrity } from './integrity.js';
@@ -69,6 +69,12 @@ function emptyCurrentness(checkpointError: string | null = null): GraphCurrentne
   };
 }
 
+function compactCoverage(coverage: GraphCoverage | undefined): Omit<GraphCoverage, 'files'> | null {
+  if (!coverage) return null;
+  const { files: _files, ...summary } = coverage;
+  return summary;
+}
+
 async function buildCachedRepositoryGraph(project: string, ref?: string): Promise<CachedRepositoryGraph> {
   const revision = await resolveProjectRevision(project, ref);
   const key = cacheKey(project, revision.sha);
@@ -126,7 +132,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
   const value = await promise;
   value.touchedAt = Date.now();
   await pruneRepositoryCache();
-  return value;
+  // Graph computation is shared by immutable SHA, but caller-visible revision
+  // identity belongs to this request. Do not let the first selector that warmed
+  // the cache relabel later branch/tag/PR selectors resolving to the same SHA.
+  return { ...value, revision };
 }
 
 function runtimeHeaders(projectHeaders: Array<{ name: string; valueEnv: string }> | undefined): HeadersInit {
@@ -278,6 +287,7 @@ export async function graphStatus(project: string, ref?: string): Promise<Record
     repository: repository.revision.repository,
     ref: repository.revision.ref,
     revision: repository.revision.sha,
+    revisionIdentity: revisionIdentity(repository.revision),
     analyzerVersion: graphs.working.analyzerVersion,
     currentness: repository.currentness,
     accepted: graphs.accepted ? {
@@ -301,7 +311,7 @@ export async function graphStatus(project: string, ref?: string): Promise<Record
       semanticEdges,
       evidenceRecords: graphs.working.evidence.length,
       explicitValueConflicts: graphs.working.explicitValueConflicts.length,
-      coverage: graphs.working.coverage,
+      coverage: compactCoverage(graphs.working.coverage),
     },
   };
 }

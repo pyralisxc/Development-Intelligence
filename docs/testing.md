@@ -34,6 +34,8 @@ The `action-smoke` GitHub Actions job invokes the repository's root composite ac
 
 A mutable ref is resolved once to an exact SHA and that revision context is carried through checkout, caching, graph generation, and source reads. Tracked symlinks are never followed outside the repository. Credentials never enter graph output. Secret-like structured values are redacted.
 
+Historical revision tests additionally protect typed commit/branch/tag and GitHub PR head/base/result identities, rejection of ambiguous raw refs under repository-history access, failure of `pr:<number>/result` for an unmerged PR, and current-analyzer replay between distant immutable revisions.
+
 ### Runtime snapshot isolation
 
 Runtime observation creates an explicit ephemeral `graphId`. Later canonical project/ref queries must not inherit another request's runtime evidence.
@@ -68,7 +70,7 @@ The human Workbench is a client of the same Development Intelligence services ag
 - persistent Inspector with Summary/Connections/Code/Evidence/Changes;
 - Query routing over DI's own read-only capabilities;
 - Sources inventory including Git/runtime and optional technical sources;
-- Changes as readable accepted → working semantic intelligence;
+- Changes as readable accepted → working semantic intelligence and arbitrary revision-to-revision replay;
 - `/graph?project=...` compatibility redirect into Explore/Graph.
 
 The graph remains an important representation, but the human product must not require a person to navigate primarily through dots and lines.
