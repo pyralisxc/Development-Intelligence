@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { allowedRequestHosts } from '../src/auth.js';
 import { assertGraphIntegrity } from '../src/intelligence/integrity.js';
 import { diffGraphs } from '../src/intelligence/query.js';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
@@ -102,4 +103,29 @@ test('graph integrity rejects missing endpoints and evidence references', () => 
 
   const missingEndpoint = graph('missing-endpoint', [validNode], [edge({ id: 'edge:bad', from: validNode.id, to: 'feature:missing', kind: 'depends-on', layer: 'semantic' })], [proof]);
   assert.throws(() => assertGraphIntegrity(missingEndpoint), /missing to-node/);
+});
+
+test('Vercel runtime hostnames extend the exact allowlist without a wildcard', () => {
+  assert.deepEqual(allowedRequestHosts({
+    DEVINT_ALLOWED_HOSTS: 'mcp.cardforges.com',
+    VERCEL: '1',
+    VERCEL_URL: 'development-intelligence-a1b2.vercel.app',
+    VERCEL_BRANCH_URL: 'development-intelligence-git-feature-owner.vercel.app',
+    VERCEL_PROJECT_PRODUCTION_URL: 'development-intelligence.vercel.app',
+  }), [
+    'mcp.cardforges.com',
+    'development-intelligence-a1b2.vercel.app',
+    'development-intelligence-git-feature-owner.vercel.app',
+    'development-intelligence.vercel.app',
+  ]);
+
+  assert.deepEqual(allowedRequestHosts({
+    DEVINT_ALLOWED_HOSTS: 'mcp.cardforges.com',
+    VERCEL_URL: 'untrusted-preview.vercel.app',
+  }), ['mcp.cardforges.com']);
+
+  assert.deepEqual(allowedRequestHosts({
+    VERCEL: '1',
+    VERCEL_URL: 'https://not-a-host.example/path',
+  }), []);
 });

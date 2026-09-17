@@ -172,8 +172,26 @@ export function authorize(req: IncomingMessage, res: ServerResponse, options: { 
   return false;
 }
 
+function normalizedHostname(value: string | undefined): string | null {
+  const hostname = value?.trim().toLowerCase() ?? '';
+  if (!hostname || hostname.startsWith('.') || hostname.endsWith('.') || hostname.includes('..') || !/^[a-z0-9.-]+$/.test(hostname)) return null;
+  return hostname;
+}
+
+export function allowedRequestHosts(env: NodeJS.ProcessEnv = process.env): string[] {
+  const explicit = (env.DEVINT_ALLOWED_HOSTS ?? '').split(',').map(value => normalizedHostname(value)).filter((value): value is string => Boolean(value));
+  if (env.VERCEL !== '1') return [...new Set(explicit)];
+  // Vercel injects these exact runtime hostnames without a scheme. Trusting
+  // their values keeps per-deployment previews testable without admitting a
+  // broad *.vercel.app Host-header wildcard.
+  const deployment = [env.VERCEL_URL, env.VERCEL_BRANCH_URL, env.VERCEL_PROJECT_PRODUCTION_URL]
+    .map(value => normalizedHostname(value))
+    .filter((value): value is string => Boolean(value));
+  return [...new Set([...explicit, ...deployment])];
+}
+
 export function validateHost(req: IncomingMessage, res: ServerResponse): boolean {
-  const configured = (process.env.DEVINT_ALLOWED_HOSTS ?? '').split(',').map((value: string) => value.trim().toLowerCase()).filter(Boolean);
+  const configured = allowedRequestHosts();
   if (!configured.length) return true;
   const host = String(req.headers.host ?? '').split(':')[0]!.toLowerCase();
   if (!configured.includes(host)) {

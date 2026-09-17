@@ -69,6 +69,7 @@ DEVINT_REQUIRE_SHARED_OAUTH_STATE=1
 ```
 
 Vercel automatically sets `VERCEL`, so DI will also reject OAuth configuration there when the shared Redis state is missing.
+When `VERCEL=1`, DI adds Vercel's exact injected `VERCEL_URL`, `VERCEL_BRANCH_URL`, and `VERCEL_PROJECT_PRODUCTION_URL` hostnames to the explicit host allowlist. This keeps immutable and branch preview URLs testable without trusting a `*.vercel.app` wildcard.
 
 Keep secure cookies enabled. Do not set `DEVINT_COOKIE_SECURE=0` in Vercel.
 
@@ -115,6 +116,8 @@ The first deployment will normally receive a Vercel hostname before `DEVINT_PUBL
 3. Set `DEVINT_PUBLIC_BASE_URL` to `https://<that-hostname>`.
 4. Set `DEVINT_ALLOWED_HOSTS` to the hostname only.
 5. Redeploy.
+
+Keep the stable hostname explicit even though Vercel's injected exact deployment hostnames are accepted automatically. Non-Vercel environments never trust those variables.
 
 Changing the public hostname later changes OAuth issuer/resource identity and requires reconnecting the ChatGPT app.
 
