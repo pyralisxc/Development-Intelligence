@@ -1,0 +1,39 @@
+name: Development Intelligence checkpoint
+description: Build Development Intelligence and check or seal the caller repository's accepted semantic checkpoint.
+
+inputs:
+  project:
+    description: Stable project identifier recorded in graph operations.
+    required: true
+  mode:
+    description: Check the accepted checkpoint or seal a new candidate. The action never commits or pushes.
+    required: false
+    default: check
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: 22
+    - name: Install Development Intelligence
+      run: npm install --no-audit --no-fund --prefix "$GITHUB_ACTION_PATH"
+      shell: bash
+    - name: Build Development Intelligence
+      run: npm run build --prefix "$GITHUB_ACTION_PATH"
+      shell: bash
+    - name: Run checkpoint operation
+      run: |
+        set -euo pipefail
+        case "$DEVINT_CHECKPOINT_MODE" in
+          check|seal) ;;
+          *) echo "mode must be check or seal" >&2; exit 2 ;;
+        esac
+        node "$GITHUB_ACTION_PATH/dist/src/graphCli.js" "$DEVINT_CHECKPOINT_MODE" \
+          --repo-path "$GITHUB_WORKSPACE" \
+          --project "$DEVINT_PROJECT"
+      shell: bash
+      env:
+        DEVINT_CHECKPOINT_MODE: ${{ inputs.mode }}
+        DEVINT_PROJECT: ${{ inputs.project }}
