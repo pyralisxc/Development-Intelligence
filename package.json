@@ -1,10 +1,12 @@
 {
   "name": "development-intelligence",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "private": true,
   "type": "module",
   "description": "Project-neutral intrinsic development intelligence over Git, source, runtime evidence, and technical representations.",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build:server": "tsc -p tsconfig.json",
     "build:viewer": "esbuild src/viewerClient.ts --bundle --platform=browser --format=iife --target=es2022 --outfile=dist/public/viewer.js",
@@ -17,6 +19,10 @@
     "stdio": "node dist/src/stdio.js"
   },
   "dependencies": {
+    "@ast-grep/lang-csharp": "0.0.6",
+    "@ast-grep/lang-java": "0.0.7",
+    "@ast-grep/lang-python": "0.0.6",
+    "@ast-grep/napi": "0.45.3",
     "@upstash/redis": "1.38.4",
     "graphology": "0.26.0",
     "sigma": "3.0.3",

@@ -107,6 +107,14 @@ Coverage is part of the answer, not an internal counter. Eligible source files a
 
 DI must not turn “analysis failed or was skipped” into “nothing exists.”
 
+## Language intelligence
+
+Development Intelligence provides language-aware structural analysis for TypeScript/JavaScript, C#, Java, and Python. C#, Java, and Python use pinned ast-grep/tree-sitter parsers rather than repository-specific text matching. They contribute stable declaration identities and lexical containment for types, callables, and supported members; overload signatures remain distinct without using line numbers as identity.
+
+Parser recovery is reported as `partial` file coverage with a reason. It is never silently promoted to complete inspection. TypeScript/JavaScript currently has the deeper cross-file layer (imports, re-exports, import-to-definition resolution, and provable calls). Cross-file binding for C#/Java/Python, Unity scenes/assets, and compiled Java bytecode are not inferred by this tranche and remain visible boundaries through graph shape and coverage.
+
+`get_graph_schema` discloses the current source-analysis support matrix so agents do not have to guess what a deployed analyzer can prove.
+
 ## Human Workbench
 
 Authenticated HTTP deployments expose:

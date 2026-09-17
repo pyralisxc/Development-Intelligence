@@ -25,7 +25,6 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
         { kind: 'exposes', to: 'capability:historical-intelligence' },
         { kind: 'exposes', to: 'capability:source-intelligence' },
         { kind: 'exposes', to: 'capability:inspection-intelligence' },
-        { kind: 'exposes', to: 'capability:historical-intelligence' },
       ],
     },
   },
@@ -48,6 +47,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       id: 'code-intelligence',
       label: 'Code intelligence',
       category: 'technical-intelligence',
+      languages: ['TypeScript', 'JavaScript', 'C#', 'Java', 'Python'],
       relationships: [
         { kind: 'automated-by', to: 'mcp:search_graph' },
         { kind: 'automated-by', to: 'mcp:trace_path' },

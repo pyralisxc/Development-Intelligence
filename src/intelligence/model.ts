@@ -11,6 +11,10 @@ export interface AnalyzeResult {
   observations: Observation[];
   resolutions: Resolution[];
   evidence?: EvidenceRecord[];
+  coverage?: {
+    status: 'complete' | 'partial';
+    reason?: string;
+  };
 }
 
 type ObservationInput = Omit<Observation, 'id' | 'raw'> & {

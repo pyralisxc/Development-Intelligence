@@ -191,7 +191,15 @@ Generic TypeScript/JavaScript analysis currently provides:
 
 Textual symbol queries never silently choose between multiple substantive identities. Ambiguous queries return candidates so callers can retry with an exact node ID.
 
-Other languages may be added through generic analyzers later. Unsupported precision must be reported through coverage rather than guessed.
+C#, Java, and Python use pinned ast-grep/tree-sitter parser packages behind one declarative analyzer boundary. They currently provide:
+
+- stable file-relative declaration identities that do not depend on line number;
+- namespace/package, type, callable, property, and field structure where the language exposes it;
+- overload-aware callable identity;
+- lexical containment between declarations;
+- explicit `partial` coverage when a parser recovers through syntax-error nodes.
+
+This syntax-derived structure remains structural, not semantic. The analyzer does not infer product meaning from language syntax, does not claim cross-file call/import binding for these languages yet, and does not reinterpret compiled Java bytecode or Unity scenes/assets as source. Unsupported precision is reported through coverage rather than guessed. `get_graph_schema` returns the deployed source-analysis support matrix.
 
 ## Parity intelligence
 

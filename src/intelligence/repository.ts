@@ -11,12 +11,13 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.1.0-semantic-freeze';
+export const ANALYZER_VERSION = '2.2.0-polyglot-ast';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
-const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm']);
+const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py']);
+const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm']);
 const SYMBOL_KINDS = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);
 const SEMANTIC_PREFIXES = new Set(['surface', 'capability', 'action', 'feature', 'route', 'api', 'mcp', 'provider', 'tool', 'workflow']);
 
@@ -724,6 +725,9 @@ export async function buildRepositoryGraph(input: {
     if (analyzerFailure) {
       failedFiles += 1;
       coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure' });
+    } else if (result.coverage?.status === 'partial') {
+      partialFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'partial', reason: result.coverage.reason ?? 'analyzer reported partial coverage' });
     } else {
       completeFiles += 1;
       coverageFiles.push({ path: trackedFile.path, status: 'complete' });

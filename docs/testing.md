@@ -48,6 +48,8 @@ An unknown project with no project-specific semantic mapping can still produce u
 
 For TypeScript/JavaScript, comment/line movement must not manufacture new symbols. Overload declarations coalesce where they represent one language symbol, while distinct lexical/static/instance identities remain distinct.
 
+For C#, Java, and Python, declaration IDs must likewise survive comment/line movement. C#/Java overloads remain distinct through signature-derived identity, nested declarations retain lexical containment, and a recovered parser error produces `partial` rather than `complete` coverage.
+
 ### Cross-file structural intelligence
 
 Generic module resolution must represent file imports, dynamic `import()` dependencies, import bindings, re-exports, import-to-definition resolution, and provable cross-file calls. Representative CardForge benchmarking demonstrates traces reach known consumers rather than only returning large node counts.
@@ -59,6 +61,8 @@ Independent agreeing observations may accumulate evidence for one stable identit
 ### Coverage honesty
 
 Every eligible source file resolves to an explicit coverage state such as `complete`, `partial`, `unsupported`, `skipped`, or `failed`. Analyzer failure must never count as complete inspection.
+
+Portfolio acceptance also checks exact GitHub revisions of representative C#/Unity and Java repositories. This is release evidence rather than a mandatory network test: the hermetic suite protects the parser and coverage contracts, while the portfolio replay proves those contracts still produce useful graph depth at real scale.
 
 ### Human Workbench over agent truth
 

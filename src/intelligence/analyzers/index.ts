@@ -4,8 +4,37 @@ import { analyzeTypeScript } from './typescript.js';
 import { analyzeJson } from './json.js';
 import { analyzeMarkdown } from './markdown.js';
 import { analyzeHtml } from './html.js';
+import { analyzePolyglot } from './polyglot.js';
 
 const EMPTY: AnalyzeResult = { observations: [], resolutions: [] };
+
+export const SOURCE_ANALYSIS_SUPPORT = [
+  {
+    technology: 'TypeScript/JavaScript',
+    extensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+    precision: 'declarations, containment, modules, imports, re-exports, provable calls, and selected representation evidence',
+  },
+  {
+    technology: 'C#',
+    extensions: ['.cs'],
+    precision: 'tree-sitter declarations, overload-aware identities, and lexical containment',
+  },
+  {
+    technology: 'Java',
+    extensions: ['.java'],
+    precision: 'tree-sitter declarations, overload-aware identities, and lexical containment',
+  },
+  {
+    technology: 'Python',
+    extensions: ['.py'],
+    precision: 'tree-sitter class/function/method identities and lexical containment',
+  },
+  {
+    technology: 'structured text',
+    extensions: ['.json', '.md', '.mdx', '.html', '.htm'],
+    precision: 'format-specific structure and representation evidence',
+  },
+] as const;
 
 export function analyzeByTechnology(context: AnalyzeContext): AnalyzeResult {
   const ext = path.extname(context.locatorBase).toLowerCase();
@@ -14,6 +43,7 @@ export function analyzeByTechnology(context: AnalyzeContext): AnalyzeResult {
     if (ext === '.json') return analyzeJson(context);
     if (['.md', '.mdx'].includes(ext)) return analyzeMarkdown(context);
     if (['.html', '.htm'].includes(ext)) return analyzeHtml(context);
+    if (['.cs', '.java', '.py'].includes(ext)) return analyzePolyglot(context, ext);
     return EMPTY;
   } catch (error) {
     return {

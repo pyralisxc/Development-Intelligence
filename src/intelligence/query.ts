@@ -4,6 +4,7 @@ import { revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus } from '../types.js';
 import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
 import { currentGraph, graphContext, repositoryGraphs } from './service.js';
+import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 
 function nodeText(node: GraphNode): string {
   return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ').toLowerCase();
@@ -340,6 +341,7 @@ export async function graphSchema(project: string, ref?: string, graphId?: strin
     relationshipStatuses: ['resolved', 'candidate', 'unresolved'],
     layers: ['semantic', 'structural', 'representation'],
     coverageStatuses: ['complete', 'partial', 'unsupported', 'skipped', 'failed'],
+    sourceAnalysisSupport: SOURCE_ANALYSIS_SUPPORT,
     nodeFields: ['id', 'sourceId', 'kind', 'locator', 'field?', 'name?', 'value', 'raw', 'tags?', 'layer?', 'checkpoint?', 'evidenceIds?'],
     edgeFields: ['id', 'from', 'to', 'kind', 'strategy', 'confidence', 'status', 'evidence', 'layer?', 'checkpoint?', 'evidenceIds?'],
     evidenceFields: ['id', 'sourceId', 'kind', 'locator', 'message?', 'field?', 'value?'],
