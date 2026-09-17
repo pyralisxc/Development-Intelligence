@@ -63,6 +63,16 @@ async function trackedFiles(root: string): Promise<TrackedFile[]> {
   return output.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+async function trackedSymlinkTarget(root: string, relative: string): Promise<string> {
+  const absolute = path.join(root, relative);
+  const stat = await fs.lstat(absolute);
+  if (stat.isSymbolicLink()) return await fs.readlink(absolute);
+  // Git for Windows may materialize mode-120000 entries as ordinary files when
+  // native symlink creation is unavailable. The file payload is the link target;
+  // reading it does not follow or expose the referenced path.
+  return await fs.readFile(absolute, 'utf8');
+}
+
 export async function sourceFingerprint(root: string): Promise<string> {
   const tracked = await trackedFiles(root);
   if (tracked.some(file => file.path.includes('\n'))) throw new Error('Tracked filenames containing newlines are not supported by graph sealing');
@@ -76,7 +86,7 @@ export async function sourceFingerprint(root: string): Promise<string> {
   for (const file of tracked) {
     let contentHash: string;
     if (file.mode === '120000') {
-      const target = await fs.readlink(path.join(root, file.path));
+      const target = await trackedSymlinkTarget(root, file.path);
       contentHash = createHash('sha256').update(target).digest('hex');
     } else if (file.mode === '160000') {
       contentHash = file.blob;

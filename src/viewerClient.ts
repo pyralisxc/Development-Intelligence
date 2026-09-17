@@ -24,11 +24,14 @@ const inspectorContext = document.getElementById('inspector-context') as HTMLEle
 const inspectorTabs = document.getElementById('inspector-tabs') as HTMLElement;
 const inspectorBody = document.getElementById('inspector-body') as HTMLElement;
 const projectSelect = document.getElementById('project-select') as HTMLSelectElement;
+const revisionForm = document.getElementById('revision-form') as HTMLFormElement;
+const revisionInput = document.getElementById('revision-input') as HTMLInputElement;
 const globalForm = document.getElementById('global-query') as HTMLFormElement;
 const globalInput = document.getElementById('global-query-input') as HTMLInputElement;
 const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-section]'));
 
 let section: Section = (['overview', 'explore', 'parity', 'query', 'sources', 'changes'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
+let sectionEpoch = 0;
 let exploreMode: ExploreMode = 'summary';
 let graphLens: GraphLens = 'architecture';
 let exploreQuery = '';
@@ -57,7 +60,7 @@ const sectionCopy: Record<Section, { title: string; description: string }> = {
   parity: { title: 'Parity Contracts', description: 'Compare caller-owned expected entities and relationships with observed project reality. Expectations remain ephemeral and never become accepted truth.' },
   query: { title: 'Query', description: 'Ask Development Intelligence about the project or run a bounded read-only query against a configured technical source.' },
   sources: { title: 'Sources', description: 'See what DI can actually inspect: Git, runtime origins, databases/log adapters, freshness, coverage and query capabilities.' },
-  changes: { title: 'Changes', description: 'Review accepted-to-working semantic change without confusing locator or evidence movement for product change.' },
+  changes: { title: 'Changes', description: 'Compare accepted-to-working semantics or any two immutable historical revision selectors under the same current analyzer.' },
 };
 
 function esc(value: unknown): string {
@@ -161,10 +164,15 @@ async function openInspector(node: string): Promise<void> {
   renderInspector();
 }
 
-async function renderOverview(): Promise<void> {
+function sectionIsCurrent(epoch: number, expected: Section): boolean {
+  return sectionEpoch === epoch && section === expected;
+}
+
+async function renderOverview(epoch: number): Promise<void> {
   setHead();
   content.innerHTML = empty('Building overview', 'Synthesizing current project state from graph, coverage, checkpoint and sources…');
   const data = await getJson('/workbench/data', new URLSearchParams({ action: 'overview' }));
+  if (!sectionIsCurrent(epoch, 'overview')) return;
   const counts = data.counts ?? {};
   const currentness = data.currentness ?? {};
   content.innerHTML = `<div class="hero-grid"><div class="card"><h3>Quick documentation</h3><h2>${esc(viewerConfig.project)}</h2><p>${esc(data.summary)}</p>${(data.quickNotes ?? []).map((note: string) => `<div class="note"><span class="note-dot"></span><span>${esc(note)}</span></div>`).join('')}</div><div class="card"><h3>Current state</h3><div class="metric-grid">${metric('semantic concepts', counts.semantic ?? 0)}${metric('code entities', counts.structural ?? 0)}${metric('representations', counts.representation ?? 0)}${metric('evidence records', counts.evidence ?? 0)}${metric('candidate relations', counts.relationships?.candidate ?? 0)}${metric('conflicts', counts.conflicts ?? 0)}</div><p class="muted">Accepted semantic current: ${currentness.acceptedSemanticCurrent === true ? 'yes' : currentness.acceptedSemanticCurrent === false ? 'no' : 'unknown'}</p></div></div><div class="hero-grid" style="margin-top:14px"><div class="card"><h3>Important concepts</h3><div class="list">${(data.highlights ?? []).slice(0, 12).map((item: any) => nodeRow(item)).join('') || '<p>No explicit semantic concepts were discovered. Structural intelligence is still available in Explore.</p>'}</div></div><div class="card"><h3>Repository areas</h3><div class="list">${(data.areas ?? []).map((area: any) => `<div class="row"><span class="row-main"><strong>${esc(area.name)}</strong><small>${esc(area.count)} mapped entities</small></span></div>`).join('')}</div></div></div><div class="card" style="margin-top:14px"><h3>Sources at a glance</h3><div class="grid">${(data.sources ?? []).map((source: any) => `<div class="source-card card"><span class="badge">${esc(source.type)}</span><h2 style="font-size:15px;margin-top:9px">${esc(source.label)}</h2><p>${esc((source.capabilities ?? []).join(' · '))}</p><div class="source-status status-good">${source.configured ? 'configured' : 'not configured'} · ${esc(source.access ?? 'read-only')}</div></div>`).join('')}</div></div>`;
@@ -175,22 +183,25 @@ function exploreActions(): string {
   return `<div class="segmented" id="explore-modes">${(['summary', 'list', 'table', 'graph', 'raw'] as ExploreMode[]).map(mode => `<button data-mode="${mode}" class="${exploreMode === mode ? 'active' : ''}">${mode[0]!.toUpperCase()}${mode.slice(1)}</button>`).join('')}</div>`;
 }
 
-async function loadExplore(query = exploreQuery): Promise<void> {
+async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   exploreQuery = query;
   setHead(exploreActions());
-  for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; void renderExploreResult(); });
+  for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; void renderExploreResult(epoch); });
   content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
-  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); void fetchExplore(); });
-  await fetchExplore();
+  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); void fetchExplore(epoch); });
+  await fetchExplore(epoch);
 }
 
-async function fetchExplore(): Promise<void> {
-  lastExplore = await getJson('/workbench/data', new URLSearchParams({ action: 'explore', ...(exploreQuery ? { query: exploreQuery } : {}) }));
-  await renderExploreResult();
+async function fetchExplore(epoch: number): Promise<void> {
+  const result = await getJson('/workbench/data', new URLSearchParams({ action: 'explore', ...(exploreQuery ? { query: exploreQuery } : {}) }));
+  if (!sectionIsCurrent(epoch, 'explore')) return;
+  lastExplore = result;
+  await renderExploreResult(epoch);
 }
 
-async function renderExploreResult(): Promise<void> {
+async function renderExploreResult(epoch: number): Promise<void> {
+  if (!sectionIsCurrent(epoch, 'explore')) return;
   const root = document.getElementById('explore-result') as HTMLElement;
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.classList.toggle('active', button.dataset.mode === exploreMode);
   if (!lastExplore) return;
@@ -204,7 +215,7 @@ async function renderExploreResult(): Promise<void> {
     root.innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Kind</th><th>Layer</th><th>Source</th></tr></thead><tbody>${nodes.map((node: any) => `<tr class="row-button" data-node="${esc(node.id)}"><td>${esc(node.name ?? node.id)}</td><td>${esc(node.kind)}</td><td>${esc(node.layer ?? 'structural')}</td><td>${esc(node.locator ?? '')}</td></tr>`).join('')}</tbody></table></div>`; wireNodeButtons(root); return;
   }
   if (exploreMode === 'raw') { root.innerHTML = `<pre class="raw">${esc(JSON.stringify(lastExplore, null, 2))}</pre>`; return; }
-  await renderGraph(root);
+  await renderGraph(root, epoch);
 }
 
 function hash(value: string): number { let output = 2166136261; for (let i = 0; i < value.length; i += 1) output = Math.imul(output ^ value.charCodeAt(i), 16777619); return output >>> 0; }
@@ -221,11 +232,12 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
   return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
 }
 
-async function renderGraph(root: HTMLElement): Promise<void> {
+async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   renderer?.kill(); renderer = null;
   root.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div>`;
-  for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root); });
+  for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(exploreQuery ? { query: exploreQuery } : {}), limit: '700', depth: '2' })) as Projection;
+  if (!sectionIsCurrent(epoch, 'explore')) return;
   const container = document.getElementById('graph') as HTMLElement;
   const graphStatus = document.getElementById('graph-status') as HTMLElement;
   if (projection.ambiguous) { container.innerHTML = empty('Ambiguous search', 'Choose a result from Summary/List instead of forcing a combined graph.'); graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates`; return; }
@@ -240,10 +252,11 @@ async function renderGraph(root: HTMLElement): Promise<void> {
   graphStatus.textContent = `${projection.nodes.length} nodes · ${projection.edges.length} relationships${projection.truncated ? ' · bounded' : ''}`;
 }
 
-async function renderQuery(prefill = ''): Promise<void> {
+async function renderQuery(epoch: number, prefill = ''): Promise<void> {
   setHead();
   content.innerHTML = empty('Loading sources', 'Preparing Development Intelligence and configured read-only technical sources…');
   const sourceData = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
+  if (!sectionIsCurrent(epoch, 'query')) return;
   const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
   content.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: What changed? What depends on query_parity? Show code for ownerPasswordMatches. Or choose a technical source and enter a database/log query.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><p class="muted">DI queries are deterministic projections over graph/code/change evidence. External technical sources are bounded read-only adapter requests and do not automatically become accepted topology.</p></div><div id="query-result" class="query-result"></div>`;
   const run = async () => {
@@ -255,6 +268,7 @@ async function renderQuery(prefill = ''): Promise<void> {
     target.innerHTML = empty('Running query', 'Gathering bounded evidence…');
     try {
       const result = await postJson('/workbench/query', { text, ...(sourceId ? { sourceId } : {}) });
+      if (!sectionIsCurrent(epoch, 'query')) return;
       target.innerHTML = `<div class="card"><h3>${esc(result.intent ?? 'query')}</h3><div class="answer">${esc(result.answer ?? '')}</div>${renderQueryResult(result.result)}</div>`;
       wireNodeButtons(target);
       if (result.intent === 'inspect' && result.result?.entity) { selectedInspection = result.result; inspectorTab = 'summary'; renderInspector(); }
@@ -280,7 +294,7 @@ function renderParityEvaluation(data: any): string {
   return `<div class="hero-grid"><div class="card"><h3>Contract result</h3><h2 class="${data.passed ? 'status-good' : 'status-warn'}">${data.passed ? 'Expectation satisfied' : 'Attention required'}</h2><p>${esc(data.note ?? '')}</p><p class="muted">Revision ${esc(data.revision ?? 'unknown')}</p></div><div class="card"><h3>Obligations</h3><div class="metric-grid">${metric('satisfied', counts.satisfied ?? 0)}${metric('missing', counts.missing ?? 0)}${metric('forbidden present', counts.forbiddenPresent ?? 0)}${metric('unproven', counts.unproven ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Evaluation detail</h3><div class="list">${results.map((result: any) => `<div class="row"><span class="badge ${parityStatusClass(result.status)}">${esc(result.status)}</span><span class="row-main"><strong>${esc(parityExpectationLabel(result))}</strong><small>${esc(result.explanation ?? '')}${result.expectation?.rationale ? ` · ${esc(result.expectation.rationale)}` : ''}</small></span></div>`).join('')}</div></div><details style="margin-top:12px"><summary class="muted">Raw evaluation</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`;
 }
 
-async function renderParity(): Promise<void> {
+async function renderParity(epoch: number): Promise<void> {
   setHead();
   content.innerHTML = `<div class="card"><h3>Expectation overlay E</h3><h2>Define what must be true</h2><p>Use stable graph IDs to describe required or forbidden entities and relationships. Development Intelligence evaluates this contract against the selected working graph without storing it or promoting it into A.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) auto;margin-top:13px"><textarea id="parity-contract" aria-label="Parity contract JSON" style="min-height:260px">${esc(parityContractText)}</textarea><button class="primary" id="evaluate-parity" type="button" style="align-self:start">Evaluate</button></div><p class="muted">Supported requirements: required and forbidden. Missing negative evidence becomes unproven when graph coverage is incomplete.</p></div><div id="parity-result" class="query-result"></div>`;
   const run = async () => {
@@ -291,6 +305,7 @@ async function renderParity(): Promise<void> {
     try {
       const contract = JSON.parse(parityContractText);
       const result = await postJson('/workbench/parity', { contract });
+      if (!sectionIsCurrent(epoch, 'parity')) return;
       target.innerHTML = renderParityEvaluation(result);
     } catch (error) {
       target.innerHTML = `<div class="card"><h3>Parity evaluation failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
@@ -307,25 +322,43 @@ function renderQueryResult(result: any): string {
   return `<pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre>`;
 }
 
-async function renderSources(): Promise<void> {
+async function renderSources(epoch: number): Promise<void> {
   setHead();
   content.innerHTML = empty('Loading sources', 'Checking configured source capabilities and observed graph sources…');
   const data = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
+  if (!sectionIsCurrent(epoch, 'sources')) return;
   content.innerHTML = `<div class="card"><h3>Source contract</h3><h2>What Development Intelligence can actually see</h2><p>${esc(data.note)}</p></div><div class="grid" style="margin-top:13px">${(data.sources ?? []).map((source: any) => `<div class="source-card card"><span class="badge">${esc(source.type)}</span><h2 style="font-size:16px;margin-top:9px">${esc(source.label)}</h2><p>${esc(source.endpoint ?? '')}</p><p><strong>Capabilities:</strong> ${esc((source.capabilities ?? []).join(' · '))}</p><div class="source-status status-good">${source.configured ? 'configured' : 'unconfigured'} · ${esc(source.access ?? 'read-only')}</div>${source.type === 'read-only-http' ? `<button class="primary" data-query-source="${esc(source.id)}" style="margin-top:10px">Query source</button>` : ''}</div>`).join('')}</div><div class="card" style="margin-top:13px"><h3>Observed graph sources</h3><div class="list">${(data.observedGraphSources ?? []).map((source: any) => `<div class="row"><span class="badge ${source.available ? 'status-good' : 'status-bad'}">${source.available ? 'available' : 'unavailable'}</span><span class="row-main"><strong>${esc(source.kind)}</strong><small>${esc(source.locator)}${source.error ? ` · ${esc(source.error)}` : ''}</small></span></div>`).join('')}</div></div>`;
   for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-query-source]'))) button.addEventListener('click', () => { preferredQuerySource = button.dataset.querySource!; void activateSection('query'); });
 }
 
-async function renderChanges(): Promise<void> {
+async function renderChanges(epoch: number): Promise<void> {
   setHead();
-  content.innerHTML = empty('Loading change intelligence', 'Comparing accepted semantic topology with current working reality…');
-  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes' }));
-  const counts = data.counts ?? {};
-  content.innerHTML = `<div class="hero-grid"><div class="card"><h3>Semantic change</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2><p>Changes here intentionally ignore line movement, locator churn and evidence-reference movement as semantic product change.</p></div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${renderChangeBucket(data.detail)}</div>`;
-  wireNodeButtons();
+  const defaultHead = viewerConfig.ref || 'HEAD';
+  content.innerHTML = `<div class="card"><h3>Historical comparison</h3><h2>Compare any two repository states</h2><p>Leave the base empty for accepted → working semantic change. Historical comparisons replay both exact revisions through the same current analyzer.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
+  const run = async () => {
+    const baseRef = (document.getElementById('change-base') as HTMLInputElement).value.trim();
+    const headRef = (document.getElementById('change-head') as HTMLInputElement).value.trim();
+    const target = document.getElementById('change-result') as HTMLElement;
+    target.innerHTML = empty('Loading change intelligence', baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing accepted semantic topology with current working reality…');
+    try {
+      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}) }));
+      if (!sectionIsCurrent(epoch, 'changes')) return;
+      const counts = data.counts ?? {};
+      const baseIdentity = data.detail?.base?.identity;
+      const headIdentity = data.detail?.head?.identity;
+      const identity = baseIdentity && headIdentity ? `<p class="muted">${esc(baseIdentity.selector)} → ${esc(headIdentity.selector)}<br>${esc(baseIdentity.sha)} → ${esc(headIdentity.sha)}</p>` : '';
+      target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Historical replay' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? 'Both revisions use the same current analyzer so project change is not confused with analyzer evolution.' : 'Accepted semantic comparison ignores line movement and provenance-only churn.'}</p></div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${renderChangeBucket(data.detail)}</div>`;
+      wireNodeButtons(target);
+    } catch (error) {
+      target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
+    }
+  };
+  (document.getElementById('compare-revisions') as HTMLButtonElement).addEventListener('click', () => void run());
+  await run();
 }
 
 function renderChangeBucket(detail: any): string {
-  const semantic = detail?.semantic;
+  const semantic = detail?.semantic ?? (detail?.nodes && detail?.edges ? detail : null);
   if (!semantic) return `<pre class="raw">${esc(JSON.stringify(detail, null, 2))}</pre>`;
   const nodes = [
     ...(semantic.nodes?.added ?? []).map((item: any) => ({ ...item, _change: 'added' })),
@@ -336,18 +369,20 @@ function renderChangeBucket(detail: any): string {
   return `<div class="list">${nodes.map((node: any) => `<button class="row row-button" data-node="${esc(node.id)}"><span class="badge ${node._change === 'added' ? 'status-good' : node._change === 'removed' ? 'status-bad' : 'status-warn'}">${esc(node._change)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.kind ?? '')}</small></span></button>`).join('')}</div>`;
 }
 
-async function activateSection(next: Section): Promise<void> {
+async function activateSection(next: Section, queryPrefill = ''): Promise<void> {
+  const epoch = ++sectionEpoch;
   section = next;
   for (const button of navButtons) button.classList.toggle('active', button.dataset.section === section);
   renderer?.kill(); renderer = null;
   try {
-    if (section === 'overview') await renderOverview();
-    else if (section === 'explore') await loadExplore();
-    else if (section === 'parity') await renderParity();
-    else if (section === 'query') await renderQuery();
-    else if (section === 'sources') await renderSources();
-    else await renderChanges();
+    if (section === 'overview') await renderOverview(epoch);
+    else if (section === 'explore') await loadExplore(epoch);
+    else if (section === 'parity') await renderParity(epoch);
+    else if (section === 'query') await renderQuery(epoch, queryPrefill);
+    else if (section === 'sources') await renderSources(epoch);
+    else await renderChanges(epoch);
   } catch (error) {
+    if (!sectionIsCurrent(epoch, next)) return;
     setHead();
     content.innerHTML = `<div class="card"><h3>Workbench error</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
   }
@@ -355,7 +390,8 @@ async function activateSection(next: Section): Promise<void> {
 
 for (const button of navButtons) button.addEventListener('click', () => void activateSection(button.dataset.section as Section));
 projectSelect.addEventListener('change', () => { window.location.assign(`/workbench?project=${encodeURIComponent(projectSelect.value)}`); });
-globalForm.addEventListener('submit', event => { event.preventDefault(); const value = globalInput.value.trim(); if (!value) return; section = 'query'; for (const button of navButtons) button.classList.toggle('active', button.dataset.section === 'query'); void renderQuery(value); });
+revisionForm.addEventListener('submit', event => { event.preventDefault(); const ref = revisionInput.value.trim(); if (!ref) return; window.location.assign(`/workbench?project=${encodeURIComponent(viewerConfig.project)}&ref=${encodeURIComponent(ref)}`); });
+globalForm.addEventListener('submit', event => { event.preventDefault(); const value = globalInput.value.trim(); if (!value) return; void activateSection('query', value); });
 document.addEventListener('keydown', event => { if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') { event.preventDefault(); globalInput.focus(); } });
 
 void activateSection(section);

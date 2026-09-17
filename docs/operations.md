@@ -39,7 +39,8 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_HOST` | Optional bind host; defaults to loopback locally and `0.0.0.0` when a platform `PORT` is supplied |
 | `DEVINT_PORT` | Optional explicit local/service port override |
 | `PORT` | Hosting-platform port, used when `DEVINT_PORT` is not set |
-| `DEVINT_PUBLIC_BASE_URL` | Stable external origin used as OAuth issuer/resource origin in `oauth` mode |
+| `DEVINT_PUBLIC_BASE_URL` | Stable external origin used as OAuth issuer/resource origin in `oauth` mode. Vercel previews publish their exact system-injected branch/deployment origin instead; production keeps this stable value. |
+| `DEVINT_ALLOWED_HOSTS` | Comma-separated exact request hostnames. On Vercel only, exact system-injected deployment, branch, and production hostnames are added automatically; no wildcard is used. |
 | `DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS` | Comma-separated trusted OAuth callback origins; defaults to `https://chatgpt.com` |
 | `DEVINT_OAUTH_ALLOW_LOOPBACK` | Set to `1` to permit native OAuth clients to return only to HTTP loopback hosts with dynamic ports |
 | `DEVINT_OAUTH_SCOPES` | Resource scopes; defaults to `development-intelligence.read` |
@@ -55,6 +56,7 @@ The registry may define only operational access:
 
 - repository URL;
 - default and allowlisted refs;
+- revision policy (`allowlisted` by default, or explicit `repository-history`);
 - repository credential source;
 - runtime origins;
 - runtime request headers backed by environment variables;
@@ -62,7 +64,9 @@ The registry may define only operational access:
 
 It must not define project ontology, feature meaning, source authority, desired product behavior, or project-specific analyzer branches.
 
-`DEVINT_GITHUB_ALLOWED_OWNERS` adds a project-neutral GitHub access policy rather than project configuration. A caller points DI at `owner/repository`; DI constructs the canonical GitHub HTTPS URL, authenticates with the configured read-only token, and resolves `HEAD`. Owners not in the policy fail closed. The credential's GitHub permissions remain an independent second boundary, so an allowlisted name that the token cannot read is still unavailable.
+`DEVINT_GITHUB_ALLOWED_OWNERS` adds a project-neutral GitHub access policy rather than project configuration. A caller points DI at `owner/repository`; DI constructs the canonical GitHub HTTPS URL, authenticates with the configured read-only token, and may resolve `HEAD` or a typed historical selector: `commit:<full-sha>`, `branch:<name>`, `tag:<name>`, `pr:<number>/head`, `pr:<number>/base`, or `pr:<number>/result`. Owners not in the policy fail closed. The credential's GitHub permissions remain an independent second boundary, so an allowlisted name that the token cannot read is still unavailable.
+
+Configured projects remain allowlisted-only unless `revisionPolicy` is explicitly set to `repository-history`. This keeps existing narrow deployments closed while dynamic owner-scoped repositories expose their authorized history.
 
 ### Technical sources
 
@@ -71,9 +75,9 @@ A project may declare generic read-only sources for Workbench/MCP access to oper
 Each source declares:
 
 - `id` and optional display `label`;
-- `type`: `database`, `logs`, `metrics`, `provider-api`, or `http-query`;
+- `type`: `read-only-http`;
 - HTTPS `endpoint`;
-- one or more capabilities: `query`, `logs`, `metrics`, `records`;
+- one or more capabilities: `query`, `logs`, or `metrics`;
 - optional environment-backed request headers;
 - optional timeout.
 
@@ -87,8 +91,8 @@ Repository URLs must not contain credentials. Token credentials are read from co
 
 ## Exact remote read
 
-1. Validate project/ref against the registry.
-2. Resolve the remote ref **once** to an exact SHA.
+1. Validate the project and revision selector against the configured access policy.
+2. Resolve the branch, tag, PR identity, or default ref **once** to an exact SHA. A full commit selector is already immutable.
 3. Carry that immutable revision context through the operation.
 4. Create a disposable checkout.
 5. Fetch that exact SHA and verify `FETCH_HEAD`.
@@ -119,6 +123,7 @@ The HTTP entry points are:
 
 - `/` — project chooser;
 - `/workbench?project=<project>` — project Workbench;
+- `/workbench?project=<project>&ref=<revision-selector>` — an exact historical workspace;
 - `/workbench/data` — read-only Overview/Explore/Inspector/Sources/Changes projections;
 - `/workbench/query` — deterministic read-only query routing;
 - `/graph?project=...` — compatibility redirect into Explore/Graph.

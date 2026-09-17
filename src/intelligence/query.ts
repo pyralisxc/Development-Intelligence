@@ -1,8 +1,9 @@
 import path from 'node:path';
 import { getProjectConfig } from '../config/registry.js';
+import { revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus } from '../types.js';
 import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
-import { currentGraph, repositoryGraphs } from './service.js';
+import { currentGraph, graphContext, repositoryGraphs } from './service.js';
 
 function nodeText(node: GraphNode): string {
   return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ').toLowerCase();
@@ -118,8 +119,17 @@ export async function diffRevisions(input: {
   const config = await getProjectConfig(input.project);
   const headRef = input.ref ?? config.defaultRef;
   const baseRef = input.baseRef ?? config.defaultRef;
-  const [base, head] = await Promise.all([currentGraph(input.project, baseRef), currentGraph(input.project, headRef)]);
-  return diffGraphs(base, head, input.layers);
+  const [base, head] = await Promise.all([
+    graphContext(input.project, { ref: baseRef }),
+    graphContext(input.project, { ref: headRef }),
+  ]);
+  const result = diffGraphs(base.graph, head.graph, input.layers) as any;
+  return {
+    ...result,
+    comparisonMode: 'current-analyzer-replay',
+    base: { ...result.base, identity: revisionIdentity(base.revision) },
+    head: { ...result.head, identity: revisionIdentity(head.revision) },
+  };
 }
 
 export async function searchGraph(input: {

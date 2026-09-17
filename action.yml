@@ -18,7 +18,7 @@ runs:
       with:
         node-version: 22
     - name: Install Development Intelligence
-      run: npm install --no-audit --no-fund --prefix "$GITHUB_ACTION_PATH"
+      run: npm ci --no-audit --no-fund --prefix "$GITHUB_ACTION_PATH"
       shell: bash
     - name: Build Development Intelligence
       run: npm run build --prefix "$GITHUB_ACTION_PATH"

@@ -41,6 +41,7 @@ The checkpoint source fingerprint excludes `/.development-intelligence/` itself,
 Workbench/intelligence primitives:
 
 - `list_projects`
+- `resolve_revision`
 - `project_status`
 - `project_overview`
 - `inspect_entity`
@@ -87,7 +88,18 @@ There is no separate Parity database, public cache-management API, provider-spec
 
 Use stable IDs returned by `search_graph`, `inspect_entity`, or `query_parity`. Required relationships pass only on resolved evidence. Candidate or unresolved observations remain `unproven`; incomplete graph coverage also prevents DI from claiming that an absent entity or relationship is definitively missing or safely forbidden.
 
-`diff_graph` owns change intelligence. Without `baseRef` it compares accepted semantic A with canonical W. With `baseRef` it compares two Git revisions under the same current analyzer. Semantic diffs compare stable semantic topology rather than source locators/evidence references; evidence/analyzer drift is reported separately.
+`resolve_revision` converts an authorized historical selector into one immutable Git object ID without building a graph. Dynamic repositories under an authorized GitHub owner support:
+
+- `commit:<full-sha>`
+- `branch:<name>`
+- `tag:<name>`
+- `pr:<number>/head`
+- `pr:<number>/base`
+- `pr:<number>/result` for merged pull requests
+
+PR head means the proposal, base means the exact target observed by GitHub, and result means the accepted merge result. DI never silently substitutes one for another.
+
+`diff_graph` owns change intelligence. Without `baseRef` it compares accepted semantic A with canonical W. With `baseRef` it compares any two authorized historical selectors under the same current analyzer and reports both resolved identities. Revision distance is irrelevant after resolution; a comparison may span unrelated PRs or hundreds of commits. Semantic diffs compare stable semantic topology rather than source locators/evidence references; evidence/analyzer drift is reported separately.
 
 ## Coverage and negative answers
 
@@ -100,7 +112,7 @@ DI must not turn “analysis failed or was skipped” into “nothing exists.”
 Authenticated HTTP deployments expose:
 
 - `GET /` — project chooser
-- `GET /workbench?project=<project>[&ref=<allowlisted-ref>]` — project workspace
+- `GET /workbench?project=<project>[&ref=<authorized-revision-selector>]` — project workspace
 - `GET /workbench/data?...` — human Workbench projections
 - `POST /workbench/query` — deterministic read-only Workbench query surface
 - `POST /workbench/parity` — ephemeral Parity Contract evaluation
@@ -164,16 +176,16 @@ Technical-source results are observations/evidence. They are **not automatically
 
 ### Changes
 
-Readable accepted → working semantic change, with structural/ref-to-ref analysis still available through `diff_graph`.
+Readable accepted → working semantic change plus current-analyzer replay between any two authorized historical selectors. The Workbench exposes the resolved immutable SHAs so proposal, base, and accepted PR result are never conflated.
 
 ## Technical-source adapters
 
-Projects may optionally configure generic read-only technical sources. A source declares only operational access:
+Projects may optionally configure generic read-only technical sources. The current adapter is a bounded `read-only-http` source that declares only operational access:
 
 - stable source ID / display label;
-- type such as `database`, `logs`, `metrics`, `provider-api`, or `http-query`;
+- type `read-only-http`;
 - HTTPS endpoint;
-- supported capabilities (`query`, `logs`, `metrics`, `records`);
+- supported capabilities (`query`, `logs`, `metrics`);
 - environment-backed request headers;
 - optional timeout.
 
@@ -211,7 +223,7 @@ Requirements:
 ```bash
 cp config/projects.example.json config/projects.json
 cp .env.example .env
-npm install
+npm ci
 npm run verify
 npm start
 ```

@@ -227,6 +227,7 @@ Project-specific architecture governance remains the inspected project's respons
 The permanent agent-facing tools are:
 
 - `list_projects`
+- `resolve_revision`
 - `project_status`
 - `scan_graph`
 - `search_graph`
@@ -246,7 +247,9 @@ Graph-consuming tools address either canonical project/ref W or an explicit runt
 `diff_graph` owns change intelligence:
 
 - no `baseRef` → accepted semantic A vs canonical W;
-- `baseRef` → two Git revisions under the same current analyzer.
+- `baseRef` → two immutable revision selectors under the same current analyzer.
+
+Authorized repository-history selectors are full commits, branches, tags, and explicit pull-request head/base/result identities. Resolution happens once before graph construction. PR result fails when the PR was not merged; Development Intelligence never silently replaces accepted history with an abandoned proposal.
 
 Semantic diff equality uses stable semantic topology shape. Locator, source ID, timestamps, and evidence-reference movement are provenance/evidence changes rather than semantic changes. Evidence/analyzer drift is reported separately.
 
@@ -271,4 +274,4 @@ Search runs against the full selected graph; selection loads a bounded neighborh
 
 ## Authentication boundary
 
-DI core supports bearer, trusted-proxy, and explicit local unauthenticated modes. Hosted OAuth belongs at a deployment gateway/proxy and terminates into DI's trusted boundary. ChatGPT-specific auth must not become graph-engine semantics.
+DI supports bearer, trusted-proxy, private owner-session, native single-owner OAuth, and explicit local unauthenticated modes. Authentication remains an HTTP/deployment boundary over the graph engine; ChatGPT-specific behavior must not become graph semantics.

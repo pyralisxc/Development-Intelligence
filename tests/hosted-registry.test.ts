@@ -39,9 +39,17 @@ test('authorized GitHub owners provide read-only dynamic repository projects wit
     assert.equal(config.repository, 'https://github.com/pyralisxc/CardForge.git');
     assert.equal(config.defaultRef, 'HEAD');
     assert.deepEqual(config.allowedRefs, ['HEAD']);
+    assert.equal(config.revisionPolicy, 'repository-history');
     assert.deepEqual(config.credential, { type: 'token-env', tokenEnv: 'DEVINT_GITHUB_TOKEN', username: 'x-access-token' });
     const listed = await callTool('list_projects') as any;
-    assert.deepEqual(listed.githubOwnerNamespaces, [{ owner: 'pyralisxc', projectPattern: 'pyralisxc/<repository>', defaultRef: 'HEAD', access: 'read-only' }]);
+    assert.deepEqual(listed.githubOwnerNamespaces, [{
+      owner: 'pyralisxc',
+      projectPattern: 'pyralisxc/<repository>',
+      defaultRef: 'HEAD',
+      revisionPolicy: 'repository-history',
+      selectors: ['commit:<full-sha>', 'branch:<name>', 'tag:<name>', 'pr:<number>/head', 'pr:<number>/base', 'pr:<number>/result'],
+      access: 'read-only',
+    }]);
     const chooser = renderProjectChooser([], listAuthorizedGithubOwners());
     assert.match(chooser, /Open a GitHub repository/u);
     assert.match(chooser, /pyralisxc\/repository/u);

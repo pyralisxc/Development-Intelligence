@@ -22,8 +22,10 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
         { kind: 'exposes', to: 'capability:parity-intelligence' },
         { kind: 'exposes', to: 'capability:architecture-intelligence' },
         { kind: 'exposes', to: 'capability:change-intelligence' },
+        { kind: 'exposes', to: 'capability:historical-intelligence' },
         { kind: 'exposes', to: 'capability:source-intelligence' },
         { kind: 'exposes', to: 'capability:inspection-intelligence' },
+        { kind: 'exposes', to: 'capability:historical-intelligence' },
       ],
     },
   },
@@ -92,6 +94,18 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
   {
     developmentIntelligence: {
       kind: 'capability',
+      id: 'historical-intelligence',
+      label: 'Historical revision intelligence',
+      category: 'technical-intelligence',
+      relationships: [
+        { kind: 'automated-by', to: 'mcp:resolve_revision' },
+        { kind: 'automated-by', to: 'mcp:diff_graph' },
+      ],
+    },
+  },
+  {
+    developmentIntelligence: {
+      kind: 'capability',
       id: 'source-intelligence',
       label: 'Technical source intelligence',
       category: 'technical-intelligence',
@@ -126,6 +140,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
   },
   ...[
     'list_projects',
+    'resolve_revision',
     'project_status',
     'project_overview',
     'inspect_entity',

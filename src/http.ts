@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { authMode, authorize, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
 import { callTool, listTools } from './mcp.js';
 import { currentGraph } from './intelligence/service.js';
-import { diffAcceptedToWorking, viewerProjection } from './intelligence/query.js';
+import { diffAcceptedToWorking, diffRevisions, viewerProjection } from './intelligence/query.js';
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbench, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
@@ -15,7 +15,7 @@ const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
 const SUPPORTED_MODERN = [MODERN_VERSION];
 const MAX_BODY = 4 * 1024 * 1024;
-const SERVER_INFO = { name: 'Development Intelligence', version: '2.4.0' };
+const SERVER_INFO = { name: 'Development Intelligence', version: '2.5.0' };
 const VIEWER_BUNDLE = fileURLToPath(new URL('../public/viewer.js', import.meta.url));
 
 async function readBody(req: any, maxBytes = MAX_BODY): Promise<Buffer> {
@@ -150,7 +150,7 @@ function contextFromUrl(requestUrl: URL): { ref?: string; graphId?: string } {
 }
 
 function changeCounts(diff: any): { added: number; removed: number; changed: number } {
-  const semantic = diff?.semantic;
+  const semantic = diff?.semantic ?? diff;
   return {
     added: (semantic?.nodes?.added?.length ?? 0) + (semantic?.edges?.added?.length ?? 0),
     removed: (semantic?.nodes?.removed?.length ?? 0) + (semantic?.edges?.removed?.length ?? 0),
@@ -267,9 +267,22 @@ export function createDevelopmentIntelligenceServer() {
         } else if (action === 'sources') result = await workbenchSources(project, context.ref, context.graphId);
         else if (action === 'changes') {
           if (context.graphId) throw Object.assign(new Error('Accepted-to-working change is only available for canonical source graphs'), { status: 400 });
-          const detail = await diffAcceptedToWorking(project, context.ref);
+          const baseRef = requestUrl.searchParams.get('baseRef') ?? undefined;
+          const headRef = requestUrl.searchParams.get('headRef') ?? context.ref;
+          const detail = baseRef
+            ? await diffRevisions({ project, baseRef, ...(headRef ? { ref: headRef } : {}) })
+            : await diffAcceptedToWorking(project, headRef);
           const counts = changeCounts(detail);
-          result = { project, counts, summary: counts.added || counts.removed || counts.changed ? `${counts.added} added, ${counts.removed} removed, ${counts.changed} changed semantic records.` : 'Accepted and working semantic topology agree.', detail };
+          const historical = Boolean(baseRef);
+          result = {
+            project,
+            mode: historical ? 'revision-to-revision' : 'accepted-to-working',
+            counts,
+            summary: counts.added || counts.removed || counts.changed
+              ? `${counts.added} added, ${counts.removed} removed, ${counts.changed} changed ${historical ? 'graph' : 'semantic'} records.`
+              : historical ? 'The selected revisions have no graph changes.' : 'Accepted and working semantic topology agree.',
+            detail,
+          };
         } else if (action === 'projects') result = await workbenchProjects();
         else throw Object.assign(new Error(`Unsupported workbench action: ${action}`), { status: 400 });
         json(res, 200, result);

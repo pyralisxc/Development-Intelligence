@@ -23,6 +23,7 @@ export interface ProjectConfig {
   repository: string;
   defaultRef: string;
   allowedRefs?: string[];
+  revisionPolicy?: 'allowlisted' | 'repository-history';
   credential?: ProjectCredential;
   runtimeOrigins?: string[];
   runtimeHeaders?: RuntimeHeaderConfig[];

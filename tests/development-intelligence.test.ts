@@ -10,7 +10,7 @@ import { sealLocalGraph } from '../src/intelligence/local.js';
 import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
 import { diffAcceptedToWorking, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
-import { listTools } from '../src/mcp.js';
+import { callTool, listTools } from '../src/mcp.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 
@@ -57,8 +57,21 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
   await fs.writeFile(path.join(source, 'README.md'), '# Sample Project\n\nManage item from the application.\n');
   await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', access_token: 'must-not-be-persisted' }, null, 2));
   await fs.writeFile(path.join(root, 'outside-secret.json'), JSON.stringify({ secret: 'outside-managed-source' }));
-  await fs.symlink('../../outside-secret.json', path.join(source, 'src', 'outside-link.json'));
+  const outsideLink = path.join(source, 'src', 'outside-link.json');
+  let nativeSymlink = true;
+  try {
+    await fs.symlink('../../outside-secret.json', outsideLink);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+    nativeSymlink = false;
+    await fs.writeFile(outsideLink, '../../outside-secret.json');
+  }
   await commit(source, 'initial source');
+  if (!nativeSymlink) {
+    const blob = (await runChecked('git', ['-C', source, 'hash-object', '-w', 'src/outside-link.json'])).stdout.trim();
+    await runChecked('git', ['-C', source, 'update-index', '--add', '--cacheinfo', '120000', blob, 'src/outside-link.json']);
+    await runChecked('git', ['-C', source, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '--amend', '--no-edit']);
+  }
   await sealLocalGraph(source, project);
   await commit(source, 'seal accepted graph A');
   await runChecked('git', ['-C', source, 'remote', 'add', 'origin', pathToFileURL(remote).href]);
@@ -73,6 +86,7 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
       repository: pathToFileURL(remote).href,
       defaultRef: 'refs/heads/main',
       allowedRefs: ['refs/heads/main'],
+      revisionPolicy: 'repository-history',
       credential: { type: 'none' },
       runtimeOrigins: [],
     },
@@ -98,6 +112,8 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     assert.ok(beforeGraph.nodes.some(node => node.kind === 'file' && node.name === 'src/panel.tsx'));
     assert.equal(beforeGraph.nodes.some(node => node.raw.includes('must-not-be-persisted')), false, 'secret-like values must remain redacted');
     assert.equal(beforeGraph.nodes.some(node => node.raw.includes('outside-managed-source')), false, 'tracked symlinks must not escape repository root');
+    const compactScan = await callTool('scan_graph', { project: fixture.project }) as any;
+    assert.equal(compactScan.coverage.files, undefined, 'ordinary scan responses stay compact; detailed coverage has a dedicated tool');
 
     const text = await fs.readFile(path.join(fixture.source, 'src', 'panel.tsx'), 'utf8');
     await fs.writeFile(path.join(fixture.source, 'src', 'panel.tsx'), text.replace('Manage item</button>', 'Administer item</button>'));
@@ -211,6 +227,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   const names = listed.map(tool => tool.name);
   assert.deepEqual(names, [
     'list_projects',
+    'resolve_revision',
     'project_status',
     'project_overview',
     'inspect_entity',
@@ -304,7 +321,18 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(html, /Sources/);
     assert.match(html, /Changes/);
     assert.match(html, /Inspector/);
+    assert.match(html, /Revision selector/);
     assert.match(html, /graph is one representation/i);
+
+    const historicalBase = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD~1'])).stdout.trim();
+    const historicalParams = new URLSearchParams({ project: fixture.project, action: 'changes', baseRef: `commit:${historicalBase}`, headRef: 'branch:main' });
+    const historical = await fetch(`${origin}/workbench/data?${historicalParams}`);
+    assert.equal(historical.status, 200);
+    const historicalBody = await historical.json() as any;
+    assert.equal(historicalBody.mode, 'revision-to-revision');
+    assert.equal(historicalBody.detail.comparisonMode, 'current-analyzer-replay');
+    assert.equal(historicalBody.detail.base.identity.sha, historicalBase);
+    assert.equal(historicalBody.detail.head.identity.kind, 'branch');
 
     const parity = await fetch(`${origin}/workbench/parity`, {
       method: 'POST',
