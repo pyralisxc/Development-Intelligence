@@ -14,15 +14,17 @@ The hosted service needs only:
 - Git;
 - temporary filesystem capacity for exact-revision checkout;
 - the project access registry and referenced credentials;
-- HTTP/MCP authentication.
+- HTTP/MCP authentication;
+- on horizontally scaled OAuth hosts such as Vercel, a tiny shared Redis store for one-time authorization codes.
 
-GitHub may own source/history and a platform may host the Workbench/MCP plus disposable compute. The hosting provider is not durable graph authority.
+GitHub may own source/history and a platform may host the Workbench/MCP plus disposable compute. The hosting provider is not durable graph authority. Shared OAuth code state is operational authentication state only and never becomes graph/project authority.
 
 ## Configuration
 
 | Variable | Purpose |
 |---|---|
 | `DEVINT_PROJECTS_FILE` | Operational repository/ref/runtime/technical-source allowlist registry |
+| `DEVINT_PROJECTS_JSON` | Optional inline hosted registry; takes precedence over the file when set |
 | `DEVINT_SCRATCH_DIR` | Optional disposable checkout root (defaults to OS temp) |
 | `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound |
 | `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots |
@@ -33,8 +35,14 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_HOST` | Optional bind host; defaults to loopback locally and `0.0.0.0` when a platform `PORT` is supplied |
 | `DEVINT_PORT` | Optional explicit local/service port override |
 | `PORT` | Hosting-platform port, used when `DEVINT_PORT` is not set |
+| `DEVINT_PUBLIC_BASE_URL` | Stable external origin used as OAuth issuer/resource origin in `oauth` mode |
+| `DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS` | Comma-separated trusted OAuth callback origins; defaults to `https://chatgpt.com` |
+| `DEVINT_OAUTH_SCOPES` | Resource scopes; defaults to `development-intelligence.read` |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Shared one-time OAuth authorization-code state for serverless/horizontally scaled hosts |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Accepted legacy Vercel aliases for the same Redis backing service |
+| `DEVINT_REQUIRE_SHARED_OAUTH_STATE` | Set to `1` to fail OAuth configuration closed unless the shared code store is available |
 
-There is no required durable `DEVINT_DATA_DIR`, graph database, or provider-specific storage configuration.
+There is no required durable `DEVINT_DATA_DIR` or graph database. Local/single-instance OAuth can use process-memory authorization codes. Vercel and other horizontally scaled deployments require a small shared Redis authorization-code store so separate authorization and token requests remain reliable and one-time.
 
 ## Project access registry
 
@@ -138,9 +146,45 @@ Evidence/analyzer drift alone does not invalidate accepted semantic topology. Co
 
 ## Authentication
 
-DI keeps authentication provider-neutral while supporting the small private deployment directly.
+DI keeps authentication provider-neutral while supporting a small private deployment directly. Authentication is an access boundary only and never enters graph semantics, accepted checkpoints, source authority, or analyzer behavior.
 
-### Native private mode — recommended for a single owner
+### Native OAuth mode — recommended for hosted ChatGPT
+
+`DEVINT_AUTH_MODE=oauth` combines the existing single-owner Workbench session with a standards-oriented OAuth MCP front door.
+
+Required deployment values:
+
+- `DEVINT_OWNER_PASSWORD` — owner browser sign-in and OAuth approval gate;
+- `DEVINT_SESSION_SECRET` — root secret for purpose-separated browser-session and OAuth signing;
+- `DEVINT_PUBLIC_BASE_URL` — exact stable external HTTPS origin.
+
+The native OAuth surface provides:
+
+- RFC 9728 protected-resource metadata at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`;
+- authorization-server metadata at `/.well-known/oauth-authorization-server`;
+- public-client registration at `/oauth/register`;
+- authorization at `/oauth/authorize`;
+- token/refresh exchange at `/oauth/token`;
+- authorization-code flow with PKCE `S256`;
+- explicit owner consent after sign-in;
+- short-lived signed access tokens scoped to the exact `/mcp` resource;
+- signed refresh tokens so refresh continuity does not require a local credential database.
+
+Dynamic registration accepts only allowlisted callback origins. `DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS` defaults to `https://chatgpt.com`. Do not broaden that list casually. Loopback HTTP redirects are disabled unless `DEVINT_OAUTH_ALLOW_LOOPBACK=1` is explicitly enabled for local-client testing.
+
+`DEVINT_OAUTH_SCOPES` defaults to `development-intelligence.read`. `offline_access` is accepted at authorization time for refresh continuity but is not itself a Development Intelligence resource capability.
+
+`DEVINT_OAUTH_ACCESS_TOKEN_TTL_SECONDS` and `DEVINT_OAUTH_REFRESH_TOKEN_TTL_SECONDS` may adjust bounded token lifetimes. Rotating `DEVINT_SESSION_SECRET` intentionally invalidates owner sessions, OAuth access/refresh tokens, and dynamically registered client IDs.
+
+Authorization codes are intentionally different from access/refresh tokens: they are random, short-lived, and one-time. A single-process/local service keeps them in memory. Horizontally scaled/serverless services use the Redis code store. Code consumption uses atomic `GETDEL`, preserving replay rejection even when the authorization and token requests hit different instances. Vercel sets `VERCEL`, so OAuth configuration there fails closed when shared Redis credentials are absent. `DEVINT_REQUIRE_SHARED_OAUTH_STATE=1` enables the same requirement on other scaled hosts.
+
+A deployment may optionally set `DEVINT_AGENT_TOKEN` in OAuth mode for a trusted non-OAuth client. This does not change what ChatGPT should use: ChatGPT should authenticate through OAuth.
+
+If a client cannot use dynamic registration, a static public client may be configured with `DEVINT_OAUTH_CLIENT_ID`, `DEVINT_OAUTH_CLIENT_NAME`, and the exact `DEVINT_OAUTH_REDIRECT_URIS` supplied by that client. Do not guess callback URLs.
+
+See [Vercel hosting](vercel-hosting.md) for the preferred hosted deployment and [ChatGPT publishing](chatgpt-publishing.md) for account-side setup and the required mixed Development Intelligence + GitHub acceptance.
+
+### Native private mode — direct/local single owner
 
 `DEVINT_AUTH_MODE=private` separates human and machine access:
 
@@ -160,26 +204,25 @@ Private mode intentionally does **not** create user accounts, roles, or a creden
 
 `DEVINT_AUTH_MODE=proxy` + `DEVINT_PROXY_SHARED_SECRET`; an authenticated gateway supplies `X-Devint-Proxy-Secret`.
 
+A gateway remains a valid interoperability option for deployments that need an external identity provider or multi-user policy, but it is no longer required merely to connect one-owner Development Intelligence to an OAuth-capable MCP client.
+
 ### Local development only
 
 Unauthenticated mode fails closed unless both `DEVINT_AUTH_MODE=none` and `DEVINT_ALLOW_UNAUTHENTICATED=1` are present.
 
-### Hosted OAuth
+### Hosted OAuth release acceptance
 
-OAuth is an interoperability boundary, not the graph engine's identity model. A ChatGPT-facing or other OAuth deployment may terminate OAuth at an appropriate gateway/proxy and forward authenticated requests into DI's trusted proxy boundary. Native private mode remains useful for direct browser and bearer-capable agent access.
+A successful unit test, native-private test, or proxy test does not substitute for physical acceptance through the real hosted client. A release intended for ChatGPT must prove end-to-end:
 
-When an OAuth client requires the standard MCP authorization flow, the deployment must expose the appropriate OAuth discovery/resource metadata, issue resource-scoped tokens, and preserve refresh-token connectivity where the client requires it. DI must not mislabel a static bearer token as OAuth.
-
-A release that changes or replaces the hosted OAuth gateway must prove end-to-end:
-
-1. OAuth authorization succeeds for the intended client;
-2. the gateway forwards to DI using the trusted boundary;
-3. MCP discovery and tool calls succeed;
-4. unauthorized requests fail closed;
-5. refresh/reauthorization behavior is appropriate for the client;
-6. the candidate exact SHA/version is the service actually reached.
-
-A successful native-private or proxy test does not substitute for this hosted OAuth acceptance when the real client uses OAuth.
+1. the final HTTPS origin exposes correct resource and authorization metadata;
+2. OAuth client registration/configuration succeeds;
+3. owner authorization and PKCE token exchange succeed;
+4. MCP discovery and tool calls succeed with the issued access token;
+5. unauthorized requests fail closed with the expected OAuth challenge;
+6. refresh/reauthorization behavior is appropriate for ChatGPT;
+7. the candidate exact SHA/version is the service actually reached;
+8. Development Intelligence and GitHub can both execute in the same ChatGPT task when that surface supports multi-app orchestration;
+9. a fresh Work session can repeat the mixed-source task when Work is part of the release scope.
 
 ## Pull-request Preview acceptance
 
@@ -212,6 +255,7 @@ There is deliberately little service-local recovery procedure:
 - lost canonical cache → regenerate from exact Git revision;
 - lost runtime snapshot → rescan if still needed;
 - lost host instance → regenerate from Git;
+- expired/lost OAuth authorization code → restart the client authorization flow;
 - damaged accepted checkpoint → regenerate/seal from the corresponding source revision and review the repair through Git.
 
 The canonical repository remains usable even if Development Intelligence is unavailable.

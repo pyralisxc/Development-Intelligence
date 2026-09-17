@@ -21,7 +21,7 @@ External tools can improve what Development Intelligence observes. They do not o
 - Runtime and technical-source access is allowlisted, bounded, and read-only.
 - Temporary checkouts/caches are disposable compute, not durable state.
 
-See [Architecture](docs/architecture.md), [Operations](docs/operations.md), and [Testing](docs/testing.md).
+See [Architecture](docs/architecture.md), [Operations](docs/operations.md), [Testing](docs/testing.md), and [ChatGPT publishing](docs/chatgpt-publishing.md).
 
 ## A / W / B lifecycle
 
@@ -152,13 +152,19 @@ DI sends bounded GET queries with query/capability/limit parameters. Credentials
 
 Repository visibility and service visibility are independent. DI can live in a public source repository while the running Workbench/MCP remains private.
 
-For a small single-owner deployment, `DEVINT_AUTH_MODE=private` provides:
+For hosted ChatGPT use, `DEVINT_AUTH_MODE=oauth` provides a native small single-owner OAuth boundary over the same service:
 
-- a native browser sign-in using `DEVINT_OWNER_PASSWORD` and a signed session cookie;
-- a separate `DEVINT_AGENT_TOKEN` bearer credential for agents/MCP;
-- a deployment-only `DEVINT_SESSION_SECRET` for session signing.
+- owner browser authentication with `DEVINT_OWNER_PASSWORD` and the signed Workbench session;
+- OAuth protected-resource and authorization-server discovery;
+- public-client registration restricted to allowlisted redirect origins;
+- authorization code + PKCE S256;
+- short-lived MCP bearer tokens plus refresh tokens;
+- `DEVINT_SESSION_SECRET` as the deployment-only root for purpose-separated session/OAuth signing;
+- optional `DEVINT_AGENT_TOKEN` fallback for trusted non-OAuth clients.
 
-These secrets stay out of Git. DI does not require a user-account database merely to support one owner plus explicitly credentialed agents. OAuth-capable clients can still use a thin authenticated gateway in front of DI when their protocol requires OAuth.
+For direct/local use, `DEVINT_AUTH_MODE=private` keeps the simpler owner-session + static agent-bearer model. `bearer` and trusted `proxy` modes remain available for other deployment topologies.
+
+These secrets stay out of Git. OAuth is an access boundary only: it does not enter the graph, checkpoints, project semantics, or source-authority model. See [ChatGPT publishing](docs/chatgpt-publishing.md) for the hosted setup and mixed Development Intelligence + GitHub release acceptance.
 
 ## Runtime observation snapshots
 
@@ -178,6 +184,8 @@ npm install
 npm run verify
 npm start
 ```
+
+The sample environment defaults to `private` auth so local development does not require a public OAuth origin. Switch a hosted deployment to `oauth` when connecting ChatGPT.
 
 Workbench: `GET /`
 

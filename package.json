@@ -17,6 +17,7 @@
     "stdio": "node dist/src/stdio.js"
   },
   "dependencies": {
+    "@upstash/redis": "1.38.4",
     "graphology": "0.26.0",
     "sigma": "3.0.3",
     "typescript": "5.8.3"

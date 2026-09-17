@@ -62,9 +62,27 @@ function validateProject(name: string, config: ProjectConfig): ProjectConfig {
   return { ...config, allowedRefs };
 }
 
+function parseRegistry(raw: string, source: string): ProjectRegistry {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('registry root must be an object');
+    return parsed as ProjectRegistry;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid Development Intelligence project registry from ${source}: ${message}`);
+  }
+}
+
+async function registrySource(): Promise<{ parsed: ProjectRegistry; source: string }> {
+  const inline = process.env.DEVINT_PROJECTS_JSON?.trim();
+  if (inline) return { parsed: parseRegistry(inline, 'DEVINT_PROJECTS_JSON'), source: 'DEVINT_PROJECTS_JSON' };
+  const file = projectsFile();
+  const raw = await fs.readFile(file, 'utf8');
+  return { parsed: parseRegistry(raw, file), source: file };
+}
+
 export async function loadRegistry(): Promise<ProjectRegistry> {
-  const raw = await fs.readFile(projectsFile(), 'utf8');
-  const parsed = JSON.parse(raw) as ProjectRegistry;
+  const { parsed } = await registrySource();
   const validated: ProjectRegistry = {};
   const storageKeys = new Map<string, string>();
   for (const [name, config] of Object.entries(parsed)) {
