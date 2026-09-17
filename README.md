@@ -1,12 +1,14 @@
 # Development Intelligence
 
-Development Intelligence is a standalone, project-neutral technical-intelligence service for software development.
+Development Intelligence is the **evidence layer for software development**: a standalone, project-neutral service that helps people and coding agents understand exact project reality before they decide or change anything.
 
-Its core is **one intrinsic evidence graph**. Code structure, runtime/API observations, UI/MCP relationships, configuration, documentation, tests, and generic technical-source observations all contribute evidence to the same technical reality. Search, tracing, architecture, parity, diffing, inspection, synthesis, and visualization are projections over that shared model.
+It turns exact Git revisions and bounded technical observations into one inspectable model of what a project contains, how its parts connect, what changed, and where evidence remains incomplete or uncertain. Search, tracing, architecture, parity, diffing, inspection, synthesis, and visualization are projections over that shared model.
 
-The human product is the **Development Intelligence Workbench**. The graph powers the Workbench, but the graph is only one representation of the intelligence.
+The human surface is the **Development Intelligence Workbench**. The agent surface is **MCP**. Both use the same capabilities and the same intrinsic evidence graph; the graph powers the product but is not the product identity.
 
-External tools can improve what Development Intelligence observes. They do not own its graph model, lifecycle, query semantics, storage, or hosting.
+Development Intelligence is built first for a solo software owner working with agents across many repositories, with enterprise-grade evidence discipline but without requiring team administration or process governance. It observes and explains; it does not own product intent, write inspected repositories, or become a development methodology.
+
+Read [Product direction](docs/product-direction.md) for the authoritative product identity, current truth, direction, decision filter, and non-goals. External tools can improve what Development Intelligence observes, but they do not own its graph model, lifecycle, query semantics, storage, or hosting.
 
 ## Core rules
 
@@ -21,7 +23,7 @@ External tools can improve what Development Intelligence observes. They do not o
 - Runtime and technical-source access is allowlisted, bounded, and read-only.
 - Temporary checkouts/caches are disposable compute, not durable state.
 
-See [Architecture](docs/architecture.md), [Operations](docs/operations.md), [Testing](docs/testing.md), and [ChatGPT publishing](docs/chatgpt-publishing.md).
+See [Product direction](docs/product-direction.md), [Architecture](docs/architecture.md), [Operations](docs/operations.md), [Testing](docs/testing.md), and [ChatGPT publishing](docs/chatgpt-publishing.md).
 
 ## A / W / B lifecycle
 
