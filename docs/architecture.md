@@ -208,7 +208,11 @@ capability/action
 
 Confirmed representation lists use resolved relationships only. Candidate and unresolved relationships remain visible separately.
 
-Parity reports what is observed. It does not decide which representations ought to exist. Product-resolution skills may compare desired intent against observed DI output externally.
+Parity reports what is observed. It does not decide which representations ought to exist.
+
+Callers may supply an explicit bounded **Parity Contract** as expectation overlay E. E contains required or forbidden entity/relationship obligations and is evaluated against canonical W or an explicit snapshot. The result distinguishes `satisfied`, `missing`, `forbidden-present`, and `unproven`; absence is not treated as proven when source coverage is incomplete.
+
+E is caller intent, not a fourth persisted graph role. It is never written into A/W/B, stored as service authority, or automatically promoted into accepted topology. Product-resolution methods own why an expectation exists; DI owns deterministic evaluation against observed evidence.
 
 There is no separate Parity scan lifecycle or database.
 
@@ -235,6 +239,7 @@ The permanent agent-facing tools are:
 - `get_evidence`
 - `diff_graph`
 - `query_parity`
+- `evaluate_parity`
 
 Graph-consuming tools address either canonical project/ref W or an explicit runtime `graphId` where applicable.
 

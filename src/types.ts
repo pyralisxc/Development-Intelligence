@@ -188,3 +188,28 @@ export type Observation = GraphNode;
 export type Resolution = GraphEdge;
 export type ResolutionStatus = RelationshipStatus;
 export type ParityScan = IntelligenceGraph;
+
+export type ParityExpectationRequirement = 'required' | 'forbidden';
+export type ParityExpectationResultStatus = 'satisfied' | 'missing' | 'forbidden-present' | 'unproven';
+
+export interface ParityEntityExpectation {
+  id: string;
+  requirement?: ParityExpectationRequirement;
+  rationale?: string;
+}
+
+export interface ParityRelationshipExpectation {
+  from: string;
+  kind: string;
+  to: string;
+  requirement?: ParityExpectationRequirement;
+  rationale?: string;
+}
+
+export interface ParityContract {
+  version: 1;
+  name?: string;
+  description?: string;
+  entities?: ParityEntityExpectation[];
+  relationships?: ParityRelationshipExpectation[];
+}

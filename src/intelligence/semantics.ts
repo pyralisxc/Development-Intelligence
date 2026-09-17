@@ -63,6 +63,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       category: 'technical-intelligence',
       relationships: [
         { kind: 'automated-by', to: 'mcp:query_parity' },
+        { kind: 'automated-by', to: 'mcp:evaluate_parity' },
       ],
     },
   },
@@ -141,6 +142,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     'get_evidence',
     'diff_graph',
     'query_parity',
+    'evaluate_parity',
   ].map(id => ({
     developmentIntelligence: {
       kind: 'mcp',

@@ -12,6 +12,7 @@ import { diffAcceptedToWorking, searchGraph, traceGraph } from '../src/intellige
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { listTools } from '../src/mcp.js';
 import { loadRegistry } from '../src/config/registry.js';
+import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 
 async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, 'add', '.']);
@@ -167,6 +168,31 @@ test('runtime observation snapshots are explicit and never contaminate canonical
     assert.ok(snapshot.edges.some(edge => edge.kind === 'imports' && edge.status === 'resolved'));
     assert.ok(snapshot.edges.some(edge => edge.kind === 'calls' && edge.strategy === 'module-resolution'));
 
+    const expectedNode = snapshot.nodes.find(node => node.layer === 'semantic') ?? snapshot.nodes[0]!;
+    const expectedEdge = snapshot.edges.find(edge => edge.status === 'resolved' && edge.from && edge.to)!;
+    assert.ok(expectedEdge, 'fixture must expose one resolved relationship for parity-contract evaluation');
+    const parity = await evaluateParityContract({
+      project: fixture.project,
+      graphId: snapshot.graphId,
+      contract: {
+        version: 1,
+        name: 'Manage item parity',
+        entities: [
+          { id: expectedNode.id, requirement: 'required' },
+          { id: 'capability:not-observed', requirement: 'required' },
+          { id: expectedNode.id, requirement: 'forbidden' },
+        ],
+        relationships: [
+          { from: expectedEdge.from!, kind: expectedEdge.kind, to: expectedEdge.to!, requirement: 'required' },
+          { from: expectedEdge.from!, kind: expectedEdge.kind, to: expectedEdge.to!, requirement: 'forbidden' },
+          { from: 'capability:not-observed', kind: 'exposed-on', to: 'surface:not-observed', requirement: 'required' },
+        ],
+      },
+    }) as any;
+    assert.equal(parity.passed, false);
+    assert.deepEqual(parity.counts, { satisfied: 2, missing: 2, forbiddenPresent: 2, unproven: 0 });
+    assert.match(parity.note, /ephemerally/i);
+
     const code = await searchCode({ project: fixture.project, graphId: snapshot.graphId, pattern: 'fetch', limit: 10 }) as any;
     assert.equal(code.revision, snapshot.repositoryRevision);
     assert.ok(code.matches.some((match: any) => match.file === 'src/panel.tsx'));
@@ -201,6 +227,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'get_evidence',
     'diff_graph',
     'query_parity',
+    'evaluate_parity',
   ]);
   for (const retired of [
     'graph_status', 'query_graph', 'scan_parity', 'diff_parity', 'clear_cache',
@@ -214,6 +241,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('query_source')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_parity')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
 });
 
 test('registry rejects project identities that collide in derived keys', async () => {
@@ -271,11 +299,22 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     const html = await workbench.text();
     assert.match(html, /Overview/);
     assert.match(html, /Explore/);
+    assert.match(html, /Parity/);
     assert.match(html, /Query/);
     assert.match(html, /Sources/);
     assert.match(html, /Changes/);
     assert.match(html, /Inspector/);
     assert.match(html, /graph is one representation/i);
+
+    const parity = await fetch(`${origin}/workbench/parity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: fixture.project, contract: { version: 1, entities: [{ id: 'capability:not-observed', requirement: 'required' }] } }),
+    });
+    assert.equal(parity.status, 200);
+    const parityBody = await parity.json() as any;
+    assert.equal(parityBody.counts.missing, 1);
+    assert.equal(parityBody.passed, false);
 
     const oldGraph = await fetch(`${origin}/graph?project=${fixture.project}`, { redirect: 'manual' });
     assert.equal(oldGraph.status, 303);

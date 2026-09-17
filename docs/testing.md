@@ -14,6 +14,8 @@ Permanent evidence protects durable Development Intelligence contracts, not hist
 
 Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.
 
+Parity Contract tests protect the boundary between caller intent and observed truth: E is evaluated ephemerally, resolved evidence satisfies requirements, forbidden observations fail explicitly, tentative evidence remains unproven, and incomplete coverage never manufactures a negative conclusion.
+
 ### Git-owned A/W/B lifecycle
 
 A committed checkpoint is accepted semantic topology for its source state. Currentness is dimensional: source/topology integrity controls accepted semantic currency while evidence/analyzer drift is reported separately rather than automatically manufacturing product drift.
