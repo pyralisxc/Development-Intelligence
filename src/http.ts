@@ -6,6 +6,7 @@ import { callTool, listTools } from './mcp.js';
 import { currentGraph } from './intelligence/service.js';
 import { diffAcceptedToWorking, viewerProjection } from './intelligence/query.js';
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbench, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
+import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import type { TechnicalSourceCapability } from './types.js';
 
@@ -161,7 +162,8 @@ export function createDevelopmentIntelligenceServer() {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN });
       return;
     }
-    if (requestUrl.pathname === '/login' && authMode() === 'private') {
+    if (await handleOAuthHttpRequest(req, res, requestUrl)) return;
+    if (requestUrl.pathname === '/login' && (authMode() === 'private' || authMode() === 'oauth')) {
       const returnTo = normalizeReturnTo(requestUrl.searchParams.get('returnTo'));
       if (req.method === 'GET') {
         res.writeHead(200, htmlHeaders());
@@ -191,7 +193,7 @@ export function createDevelopmentIntelligenceServer() {
       res.end();
       return;
     }
-    if (requestUrl.pathname === '/logout' && authMode() === 'private') {
+    if (requestUrl.pathname === '/logout' && (authMode() === 'private' || authMode() === 'oauth')) {
       clearOwnerSession(res);
       res.writeHead(303, { location: '/login', 'cache-control': 'no-store' });
       res.end();
