@@ -8,6 +8,19 @@ Development Intelligence owns **one intrinsic evidence graph**. Source inspectio
 
 Development Intelligence provides technical evidence. It does not decide product intent or development workflow and must not depend on custom agent methodologies.
 
+`docs/product-direction.md` is the living authority for product identity, intended direction, current product position, and enduring non-goals. Read it before material product or architecture work. Source/provider state remains authoritative for implementation and operational fact.
+
+## Documentation ownership
+
+- `README.md` — concise entry point and usage orientation.
+- `docs/product-direction.md` — identity, direction, current product position, decision filter, and non-goals.
+- `docs/architecture.md` — system design, graph semantics, lifecycle, and technical boundaries.
+- `docs/operations.md` — deployment, configuration, authentication, recovery, and production operation.
+- `docs/testing.md` — durable proof strategy and acceptance surfaces.
+- `docs/chatgpt-publishing.md` and `docs/vercel-hosting.md` — provider-specific publication/deployment mechanics.
+
+Keep each truth in its owner. Update an existing living document when its truth changes; do not create parallel strategy, roadmap, status, or handoff files.
+
 ## Non-negotiable invariants
 
 1. One canonical Development Intelligence graph model; do not create separate code/parity/provider graph authorities.
