@@ -14,15 +14,17 @@ The hosted service needs only:
 - Git;
 - temporary filesystem capacity for exact-revision checkout;
 - the project access registry and referenced credentials;
-- HTTP/MCP authentication.
+- HTTP/MCP authentication;
+- on horizontally scaled OAuth hosts such as Vercel, a tiny shared Redis store for one-time authorization codes.
 
-GitHub may own source/history and a platform may host the Workbench/MCP plus disposable compute. The hosting provider is not durable graph authority.
+GitHub may own source/history and a platform may host the Workbench/MCP plus disposable compute. The hosting provider is not durable graph authority. Shared OAuth code state is operational authentication state only and never becomes graph/project authority.
 
 ## Configuration
 
 | Variable | Purpose |
 |---|---|
 | `DEVINT_PROJECTS_FILE` | Operational repository/ref/runtime/technical-source allowlist registry |
+| `DEVINT_PROJECTS_JSON` | Optional inline hosted registry; takes precedence over the file when set |
 | `DEVINT_SCRATCH_DIR` | Optional disposable checkout root (defaults to OS temp) |
 | `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound |
 | `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots |
@@ -36,8 +38,11 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_PUBLIC_BASE_URL` | Stable external origin used as OAuth issuer/resource origin in `oauth` mode |
 | `DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS` | Comma-separated trusted OAuth callback origins; defaults to `https://chatgpt.com` |
 | `DEVINT_OAUTH_SCOPES` | Resource scopes; defaults to `development-intelligence.read` |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Shared one-time OAuth authorization-code state for serverless/horizontally scaled hosts |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Accepted legacy Vercel aliases for the same Redis backing service |
+| `DEVINT_REQUIRE_SHARED_OAUTH_STATE` | Set to `1` to fail OAuth configuration closed unless the shared code store is available |
 
-There is no required durable `DEVINT_DATA_DIR`, graph database, OAuth database, or provider-specific storage configuration.
+There is no required durable `DEVINT_DATA_DIR` or graph database. Local/single-instance OAuth can use process-memory authorization codes. Vercel and other horizontally scaled deployments require a small shared Redis authorization-code store so separate authorization and token requests remain reliable and one-time.
 
 ## Project access registry
 
@@ -171,11 +176,13 @@ Dynamic registration accepts only allowlisted callback origins. `DEVINT_OAUTH_AL
 
 `DEVINT_OAUTH_ACCESS_TOKEN_TTL_SECONDS` and `DEVINT_OAUTH_REFRESH_TOKEN_TTL_SECONDS` may adjust bounded token lifetimes. Rotating `DEVINT_SESSION_SECRET` intentionally invalidates owner sessions, OAuth access/refresh tokens, and dynamically registered client IDs.
 
+Authorization codes are intentionally different from access/refresh tokens: they are random, short-lived, and one-time. A single-process/local service keeps them in memory. Horizontally scaled/serverless services use the Redis code store. Code consumption uses atomic `GETDEL`, preserving replay rejection even when the authorization and token requests hit different instances. Vercel sets `VERCEL`, so OAuth configuration there fails closed when shared Redis credentials are absent. `DEVINT_REQUIRE_SHARED_OAUTH_STATE=1` enables the same requirement on other scaled hosts.
+
 A deployment may optionally set `DEVINT_AGENT_TOKEN` in OAuth mode for a trusted non-OAuth client. This does not change what ChatGPT should use: ChatGPT should authenticate through OAuth.
 
 If a client cannot use dynamic registration, a static public client may be configured with `DEVINT_OAUTH_CLIENT_ID`, `DEVINT_OAUTH_CLIENT_NAME`, and the exact `DEVINT_OAUTH_REDIRECT_URIS` supplied by that client. Do not guess callback URLs.
 
-See [ChatGPT publishing](chatgpt-publishing.md) for account-side setup and the required mixed Development Intelligence + GitHub acceptance.
+See [Vercel hosting](vercel-hosting.md) for the preferred hosted deployment and [ChatGPT publishing](chatgpt-publishing.md) for account-side setup and the required mixed Development Intelligence + GitHub acceptance.
 
 ### Native private mode — direct/local single owner
 
@@ -234,7 +241,7 @@ The Preview lane:
 - publishes the exact candidate SHA plus ephemeral owner/agent credentials only in a one-day private Actions artifact;
 - ends when the job is cancelled or reaches its timeout and creates no durable graph authority.
 
-The lane remains useful for exact-head Workbench/MCP review, but its ephemeral private-mode tunnel is not the hosted ChatGPT OAuth release gate. Hosted OAuth acceptance must use the final stable origin.
+The lane is intentionally a physical pre-merge acceptance surface for the same owner/agent access model recommended for small deployments. Passing it does not substitute for hosted OAuth acceptance when a client such as ChatGPT is configured to require OAuth.
 
 ## Runtime observation safety
 
@@ -248,8 +255,7 @@ There is deliberately little service-local recovery procedure:
 - lost canonical cache → regenerate from exact Git revision;
 - lost runtime snapshot → rescan if still needed;
 - lost host instance → regenerate from Git;
+- expired/lost OAuth authorization code → restart the client authorization flow;
 - damaged accepted checkpoint → regenerate/seal from the corresponding source revision and review the repair through Git.
-
-For OAuth mode, loss of process memory invalidates only authorization codes that were approved but not yet exchanged. Signed access tokens, refresh tokens, and dynamically registered client IDs remain valid until expiry or signing-secret rotation.
 
 The canonical repository remains usable even if Development Intelligence is unavailable.
