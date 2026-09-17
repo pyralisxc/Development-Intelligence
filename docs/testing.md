@@ -16,46 +16,109 @@ Code inspection and Parity operate on the same nodes/relationships. Public tooli
 
 ### Git-owned A/W/B lifecycle
 
-A committed checkpoint whose source fingerprint matches the project source is current A. Source changes make A stale while W reflects working reality. Sealing and committing B restores checkpoint/source parity; Git owns accepted history.
+A committed checkpoint is accepted semantic topology for its source state. Currentness is dimensional: source/topology integrity controls accepted semantic currency while evidence/analyzer drift is reported separately rather than automatically manufacturing product drift.
 
 ### No durable service database
 
 Remote analysis uses disposable exact-revision checkouts. Scratch state is removed after use. Losing service-local files/caches must not lose accepted intelligence.
 
-### Deterministic checkpoint
+### Deterministic and tamper-evident checkpoint
 
-`/.development-intelligence/manifest.json` plus deterministic sharded NDJSON records under `/.development-intelligence/graph/` contains stable records and excludes its own directory from source fingerprinting. Volatile observation timestamps/service paths do not enter the checkpoint. The same graph must produce byte-identical manifest/shard content.
+`/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/` excludes its own directory from source fingerprinting. Checkpoint reads recompute semantic topology from shard contents rather than trusting manifest counts/fingerprints alone. The same semantic topology must produce byte-identical checkpoint content.
 
 ### Source provenance and safety
 
-Remote reads are exact-SHA. Tracked symlinks are never followed as source content. Repository/runtime credentials never enter graph output. Secret-like structured values are redacted.
+A mutable ref is resolved once to an exact SHA and that revision context is carried through checkout, caching, graph generation, and source reads. Tracked symlinks are never followed outside the repository. Credentials never enter graph output. Secret-like structured values are redacted.
+
+### Runtime snapshot isolation
+
+Runtime observation creates an explicit ephemeral `graphId`. Later canonical project/ref queries must not inherit another request's runtime evidence.
 
 ### Universal analysis
 
 An unknown project with no project-specific semantic mapping can still produce useful file/symbol/UI/API/MCP/config/document observations and relationships. The generic source guard prevents known project/workflow nouns from entering production analyzers.
 
+### Stable structural identities
+
+For TypeScript/JavaScript, comment/line movement must not manufacture new symbols. Overload declarations coalesce where they represent one language symbol, while distinct lexical/static/instance identities remain distinct.
+
 ### Cross-file structural intelligence
 
-For TypeScript/JavaScript projects, generic module resolution must represent file imports, import bindings, re-exports, import-to-definition resolution, and provable cross-file calls. Representative CardForge benchmarking must demonstrate that traces reach known consumers rather than only returning large node counts.
+Generic module resolution must represent file imports, dynamic `import()` dependencies, import bindings, re-exports, import-to-definition resolution, and provable cross-file calls. Representative CardForge benchmarking demonstrates traces reach known consumers rather than only returning large node counts.
 
-### Evidence discipline
+### Evidence and conflict discipline
 
-Syntax-proven relationships may be resolved. Heuristic cross-source matches remain candidates. Unresolved relationships remain explicit rather than being silently promoted.
+Independent agreeing observations may accumulate evidence for one stable identity. Contradictory semantic assertions remain explicit conflicts. Syntax-proven relationships may be resolved; heuristic cross-source matches remain candidates; unresolved relationships remain explicit.
 
-### Runtime isolation
+### Coverage honesty
 
-Runtime observation is allowlisted, GET-only, bounded, and must not forward configured credentials across origins through redirects.
+Every eligible source file resolves to an explicit coverage state such as `complete`, `partial`, `unsupported`, `skipped`, or `failed`. Analyzer failure must never count as complete inspection.
 
-### Agent/human graph parity
+### Human Workbench over agent truth
 
-The human `/graph` viewer renders the same canonical graph records used by MCP query/trace tools.
+The human Workbench is a client of the same Development Intelligence services agents use. Durable UI acceptance covers:
+
+- project chooser and project switching;
+- Overview quick notes/currentness/coverage/change synthesis;
+- Explore using Summary/List/Table/Graph/Raw representations;
+- persistent Inspector with Summary/Connections/Code/Evidence/Changes;
+- Query routing over DI's own read-only capabilities;
+- Sources inventory including Git/runtime and optional technical sources;
+- Changes as readable accepted → working semantic intelligence;
+- `/graph?project=...` compatibility redirect into Explore/Graph.
+
+The graph remains an important representation, but the human product must not require a person to navigate primarily through dots and lines.
+
+### Workbench / MCP capability parity
+
+Durable intelligence primitives used by the Workbench must also be available to agents. The public MCP surface therefore includes `project_overview`, `inspect_entity`, `list_sources`, and `query_source` in addition to the graph/code primitives.
+
+The site must not grow a second private intelligence backend that agents cannot access.
+
+### Read-only technical sources
+
+Generic technical sources are operational access only, not semantic configuration. Tests protect that:
+
+- source types/capabilities are allowlisted;
+- endpoints are HTTPS;
+- credential values come from environment variables, not source config;
+- queries are GET-only, bounded by timeout/response-size/result-limit rules;
+- redirects are rejected;
+- query results remain observations/evidence and are not automatically sealed into accepted topology.
+
+### Native private access
+
+Private mode must preserve separate human and machine credentials:
+
+- unauthenticated browser Workbench access redirects to DI's own sign-in page;
+- valid owner password creates a bounded signed `HttpOnly` session cookie;
+- bad owner credentials fail;
+- unauthenticated MCP returns `401` with a Bearer challenge;
+- the independent agent token can reach MCP without reusing the browser credential;
+- logout invalidates the owner session cookie.
+
+Repository visibility is not an authentication mechanism. Public source must remain compatible with a privately gated running service.
 
 ### MCP protocol
 
-Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, and tool listing.
+Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, and the intrinsic public tool listing.
 
-## Evidence strategy
+## CardForge evidence strategy
 
-Use focused deterministic proof while changing graph/analyzer boundaries, then one full `npm run verify` candidate gate. The CardForge benchmark runs read-only against a pinned source SHA and produces disposable W plus review artifacts; it must not write a checkpoint into CardForge. Provider/host behavior should be proven at that real boundary only when hosting configuration is actually changed.
+The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It does not depend on the retired Product Reality oracle and never writes a DI checkpoint into CardForge.
 
-Do not preserve tests merely because they protected retired persistent-cache or external-engine behavior. Preserve the guarantees that still matter under the intrinsic Git-native architecture.
+## Preview acceptance
+
+A PR-scoped Preview is a physical acceptance surface after verify + CardForge are green. It runs the exact PR head, then proves through the public HTTPS tunnel that:
+
+- the native private owner sign-in page is reachable;
+- owner sign-in can open the Workbench;
+- Overview returns readable quick notes;
+- Sources exposes the project technical-source inventory;
+- unauthenticated MCP fails closed;
+- the separate agent bearer credential can complete modern MCP discovery/tool listing and sees the Workbench intelligence primitives;
+- the Workbench is navigable by a human before merge.
+
+Preview proof does not replace production OAuth acceptance when a specific remote MCP client is configured to require OAuth.
+
+Do not preserve tests merely because they protected retired persistent-cache, duplicate parity, graph-only UI, or external-engine behavior. Preserve the guarantees that still matter under the intrinsic Git-native architecture.

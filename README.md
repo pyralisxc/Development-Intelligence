@@ -2,7 +2,9 @@
 
 Development Intelligence is a standalone, project-neutral technical-intelligence service for software development.
 
-Its core is **one intrinsic evidence graph**. Code structure, runtime/API observations, UI/MCP relationships, configuration, documentation, tests, and future analyzer outputs all contribute evidence to the same graph. Search, tracing, architecture, parity, diffing, and visualization are lenses over that shared reality.
+Its core is **one intrinsic evidence graph**. Code structure, runtime/API observations, UI/MCP relationships, configuration, documentation, tests, and generic technical-source observations all contribute evidence to the same technical reality. Search, tracing, architecture, parity, diffing, inspection, synthesis, and visualization are projections over that shared model.
+
+The human product is the **Development Intelligence Workbench**. The graph powers the Workbench, but the graph is only one representation of the intelligence.
 
 External tools can improve what Development Intelligence observes. They do not own its graph model, lifecycle, query semantics, storage, or hosting.
 
@@ -16,61 +18,151 @@ External tools can improve what Development Intelligence observes. They do not o
 - Deterministic relationships may be resolved; heuristics remain candidates with evidence/confidence.
 - `unresolved` and unavailable observations are legitimate results.
 - Secret-like structured values are redacted before they enter the graph.
-- Runtime observation is allowlisted, bounded, GET-only, and read-only.
+- Runtime and technical-source access is allowlisted, bounded, and read-only.
 - Temporary checkouts/caches are disposable compute, not durable state.
 
 See [Architecture](docs/architecture.md), [Operations](docs/operations.md), and [Testing](docs/testing.md).
 
 ## A / W / B lifecycle
 
-Development Intelligence uses the Git-native reality lifecycle proven by Product Reality-style workflows:
+Development Intelligence uses a Git-native accepted/working/candidate lifecycle:
 
-- **A — accepted:** `/.development-intelligence/manifest.json` plus deterministic text shards under `/.development-intelligence/graph/` committed in the accepted branch.
-- **W — working:** a graph generated from the current working/ref state; disposable and not automatically persisted.
-- **B — sealed candidate:** a deterministic checkpoint generated for a candidate immediately before commit/promotion.
+- **A — accepted:** `/.development-intelligence/manifest.json` plus deterministic semantic shards under `/.development-intelligence/graph/` committed in the accepted branch.
+- **W — working:** a graph generated from one exact Git revision; structural, semantic, and representation intelligence is disposable and rebuilt as needed.
+- **B — sealed candidate:** a deterministic semantic-topology checkpoint generated from the exact candidate before promotion.
 - After normal Git merge, B is simply the new A. Previous A remains in Git history.
 
-Expectation overlays (sometimes called E by development methodologies) are optional caller evidence, not an intrinsic code-analysis requirement.
+Expectation/future overlays are optional caller evidence, not accepted current reality.
 
-The checkpoint source fingerprint excludes `/.development-intelligence/` itself, avoiding a self-referential commit-SHA problem while still detecting source changes. Records are deterministically assigned to hexadecimal NDJSON shards so large accepted graphs do not become one giant binary or text blob in Git.
+The checkpoint source fingerprint excludes `/.development-intelligence/` itself, avoiding a self-referential commit-SHA problem while still detecting source changes. Stable semantic records are deterministically assigned to hexadecimal NDJSON shards.
 
 ## Public MCP surface
 
-Shared/status:
+Workbench/intelligence primitives:
 
 - `list_projects`
 - `project_status`
+- `project_overview`
+- `inspect_entity`
+- `list_sources`
+- `query_source`
+
+Graph/code primitives:
+
 - `scan_graph`
-- `graph_status`
-- `clear_cache` (disposable acceleration only)
-
-Intrinsic graph/code:
-
 - `search_graph`
-- `query_graph`
 - `trace_path`
 - `search_code`
 - `get_code_snippet`
 - `get_graph_schema`
 - `get_architecture`
 - `check_graph_coverage`
+- `get_evidence`
 - `diff_graph`
-
-Parity lens over the same graph:
-
-- `scan_parity`
 - `query_parity`
-- `diff_parity`
 
-There is no separate Parity database and no external code-graph engine dependency.
+There is no separate Parity database, public cache-management API, provider-specific graph query language, or development-methodology API.
 
-## Human graph viewer
+`diff_graph` owns change intelligence. Without `baseRef` it compares accepted semantic A with canonical W. With `baseRef` it compares two Git revisions under the same current analyzer. Semantic diffs compare stable semantic topology rather than source locators/evidence references; evidence/analyzer drift is reported separately.
+
+## Coverage and negative answers
+
+Coverage is part of the answer, not an internal counter. Eligible source files are classified as `complete`, `partial`, `unsupported`, `skipped`, or `failed` with a reason where appropriate. Search/architecture/parity output carries a coverage summary, and `check_graph_coverage` provides the detailed file-level view.
+
+DI must not turn “analysis failed or was skipped” into “nothing exists.”
+
+## Human Workbench
 
 Authenticated HTTP deployments expose:
 
-`GET /graph?project=<project>[&ref=<allowlisted-ref>]`
+- `GET /` — project chooser
+- `GET /workbench?project=<project>[&ref=<allowlisted-ref>]` — project workspace
+- `GET /workbench/data?...` — human Workbench projections
+- `POST /workbench/query` — deterministic read-only Workbench query surface
 
-The viewer renders a bounded projection of the same graph queried by agents. It is intentionally a presentation layer, not a second graph model.
+Old `GET /graph?project=...` links remain a compatibility entry into Explore/Graph.
+
+The Workbench is a human client of the same Development Intelligence capabilities agents use. Its primary destinations are:
+
+### Overview
+
+Readable current-state synthesis:
+
+- quick project notes;
+- semantic/structural/representation counts;
+- coverage/currentness;
+- meaningful accepted → working change;
+- important semantic concepts and repository areas;
+- connected technical sources.
+
+### Explore
+
+Search the same intelligence and choose the representation that fits the task:
+
+- Summary
+- List
+- Table
+- Graph
+- Raw
+
+Graph mode is for relationship-heavy questions; it is not the mandatory navigation model.
+
+### Inspector
+
+Selecting an entity opens a persistent Inspector with:
+
+- Summary / quick notes
+- Connections
+- Code
+- Evidence
+- Changes
+
+The Inspector synthesizes graph/evidence records into a human-readable technical description while keeping raw evidence available.
+
+### Query
+
+The Workbench can route deterministic read-only questions across DI capabilities such as overview, search, code, parity, coverage, tracing, changes, and configured technical sources.
+
+This is not intended to masquerade as an unconstrained language model. Query results remain evidence-backed and inspectable.
+
+### Sources
+
+Sources are first-class operational inputs. Built-in sources include Git and allowlisted runtime observations. Optional configured technical sources may represent read-only databases, logs, metrics, provider APIs, or other technical systems.
+
+Technical-source results are observations/evidence. They are **not automatically promoted into accepted semantic topology**.
+
+### Changes
+
+Readable accepted → working semantic change, with structural/ref-to-ref analysis still available through `diff_graph`.
+
+## Technical-source adapters
+
+Projects may optionally configure generic read-only technical sources. A source declares only operational access:
+
+- stable source ID / display label;
+- type such as `database`, `logs`, `metrics`, `provider-api`, or `http-query`;
+- HTTPS endpoint;
+- supported capabilities (`query`, `logs`, `metrics`, `records`);
+- environment-backed request headers;
+- optional timeout.
+
+DI sends bounded GET queries with query/capability/limit parameters. Credentials stay server-side and outside Git. Source adapters do not define project meaning or ontology.
+
+## Public source, private runtime
+
+Repository visibility and service visibility are independent. DI can live in a public source repository while the running Workbench/MCP remains private.
+
+For a small single-owner deployment, `DEVINT_AUTH_MODE=private` provides:
+
+- a native browser sign-in using `DEVINT_OWNER_PASSWORD` and a signed session cookie;
+- a separate `DEVINT_AGENT_TOKEN` bearer credential for agents/MCP;
+- a deployment-only `DEVINT_SESSION_SECRET` for session signing.
+
+These secrets stay out of Git. DI does not require a user-account database merely to support one owner plus explicitly credentialed agents. OAuth-capable clients can still use a thin authenticated gateway in front of DI when their protocol requires OAuth.
+
+## Runtime observation snapshots
+
+Ordinary project/ref queries always address deterministic source-derived W. A runtime scan returns an explicit ephemeral `graphId`; callers must pass that identifier when they want the runtime-overlay snapshot. A previous runtime scan never silently changes subsequent canonical project/ref queries.
 
 ## Local development
 
@@ -87,6 +179,8 @@ npm run verify
 npm start
 ```
 
+Workbench: `GET /`
+
 MCP endpoint: `POST /mcp`
 
 Health endpoint: `GET /health`
@@ -101,9 +195,9 @@ node dist/src/graphCli.js seal --repo-path /path/to/project --project project-id
 node dist/src/graphCli.js check --repo-path /path/to/project --project project-id
 ```
 
-`seal` writes `/.development-intelligence/manifest.json` and deterministic NDJSON shards under `/.development-intelligence/graph/`. The project then commits that directory with its candidate according to its own repository workflow.
+`seal` writes `/.development-intelligence/manifest.json` and deterministic semantic NDJSON shards under `/.development-intelligence/graph/`. The project commits that directory with its candidate according to its own repository workflow.
 
-Development Intelligence itself does not commit or merge projects on behalf of callers merely to maintain graph state.
+Development Intelligence itself does not commit or merge inspected projects on behalf of callers merely to maintain graph state.
 
 ## Project access configuration
 
@@ -113,6 +207,7 @@ Operational configuration may declare only where DI is allowed to observe:
 - default/allowlisted Git refs;
 - process-scoped Git credentials;
 - allowlisted runtime origins;
-- environment-backed runtime request headers.
+- environment-backed runtime request headers;
+- optional read-only technical sources.
 
 It must not define project-specific semantic ontologies, product intent, source-authority maps, or analyzer branches keyed by project identity.

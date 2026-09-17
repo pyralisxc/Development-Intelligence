@@ -1,12 +1,14 @@
 {
   "name": "development-intelligence",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "description": "Project-neutral intrinsic development intelligence over Git, source, runtime evidence, and technical representations.",
   "engines": { "node": ">=22" },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build:server": "tsc -p tsconfig.json",
+    "build:viewer": "esbuild src/viewerClient.ts --bundle --platform=browser --format=iife --target=es2022 --outfile=dist/public/viewer.js",
+    "build": "npm run build:server && npm run build:viewer",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "verify": "npm run build && node --test dist/tests/*.test.js && node scripts/check-generic-boundary.mjs",
     "graph:seal": "node dist/src/graphCli.js seal",
@@ -15,6 +17,11 @@
     "stdio": "node dist/src/stdio.js"
   },
   "dependencies": {
+    "graphology": "0.26.0",
+    "sigma": "3.0.3",
     "typescript": "5.8.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

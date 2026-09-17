@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { withProjectCheckout } from '../source/git.js';
+import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { runChecked } from '../util/process.js';
-import { currentGraph } from './service.js';
+import { graphContext } from './service.js';
 import { locatorFileAndLine } from './query.js';
 import { GRAPH_DIRECTORY } from './repository.js';
 
@@ -16,6 +16,7 @@ async function trackedTextFiles(root: string): Promise<string[]> {
 export async function searchCode(input: {
   project: string;
   ref?: string | undefined;
+  graphId?: string | undefined;
   pattern: string;
   filePattern?: string | undefined;
   regex?: boolean | undefined;
@@ -23,7 +24,11 @@ export async function searchCode(input: {
   limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   if (!input.pattern) throw new Error('pattern must be a non-empty string');
-  return await withProjectCheckout(input.project, input.ref, async checkout => {
+  if (input.ref && input.graphId) throw new Error('Use either ref or graphId, not both');
+  const revision = input.graphId
+    ? (await graphContext(input.project, { graphId: input.graphId })).revision
+    : await resolveProjectRevision(input.project, input.ref);
+  return await withResolvedProjectCheckout(revision, async checkout => {
     const files = await trackedTextFiles(checkout.root);
     const matcher = input.regex ? new RegExp(input.pattern, 'i') : null;
     const fileMatcher = input.filePattern ? new RegExp(input.filePattern, 'i') : null;
@@ -54,38 +59,55 @@ export async function searchCode(input: {
       }
       if (matches.length >= limit) break;
     }
-    return { project: input.project, ref: checkout.ref, revision: checkout.sha, matches, total: matches.length };
+    return { project: input.project, graphId: input.graphId ?? null, ref: checkout.ref, revision: checkout.sha, matches, total: matches.length };
   });
 }
 
 export async function getCodeSnippet(input: {
   project: string;
   ref?: string | undefined;
+  graphId?: string | undefined;
   node?: string | undefined;
   context?: number | undefined;
 }): Promise<Record<string, unknown>> {
-  const graph = await currentGraph(input.project, input.ref);
-  const needle = input.node?.trim().toLowerCase();
-  if (!needle) throw new Error('node must be a non-empty graph node id/name/query');
-  const node = graph.nodes.find(item => item.id === input.node)
-    ?? graph.nodes.find(item => item.name?.toLowerCase() === needle)
-    ?? graph.nodes.find(item => `${item.name ?? ''} ${item.locator}`.toLowerCase().includes(needle));
-  if (!node) throw new Error(`Graph node not found: ${input.node}`);
+  const context = await graphContext(input.project, { ...(input.ref ? { ref: input.ref } : {}), ...(input.graphId ? { graphId: input.graphId } : {}) });
+  const graph = context.graph;
+  const query = input.node?.trim();
+  if (!query) throw new Error('node must be a non-empty graph node id/name/query');
+  const needle = query.toLowerCase();
+  const exactId = graph.nodes.find(item => item.id === query);
+  let candidates = exactId ? [exactId] : graph.nodes.filter(item => item.name?.toLowerCase() === needle);
+  if (!candidates.length) candidates = graph.nodes.filter(item => `${item.name ?? ''} ${item.locator}`.toLowerCase().includes(needle)).slice(0, 25);
+  if (!candidates.length) throw new Error(`Graph node not found: ${input.node}`);
+  if (!exactId && candidates.length > 1) {
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: true,
+      query,
+      candidates: candidates.slice(0, 12).map(item => ({ id: item.id, kind: item.kind, layer: item.layer ?? 'structural', name: item.name ?? null, locator: item.locator })),
+      instruction: 'Retry get_code_snippet with an exact node id.',
+    };
+  }
+  const node = exactId ?? candidates[0]!;
   const locator = locatorFileAndLine(node.locator);
-  return await withProjectCheckout(input.project, input.ref, async checkout => {
+  return await withResolvedProjectCheckout(context.revision, async checkout => {
     const absolute = path.resolve(checkout.root, locator.file);
     const root = path.resolve(checkout.root);
     if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) throw new Error('Graph node locator escapes repository root');
     const stat = await fs.lstat(absolute);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Graph node source is not a regular file: ${locator.file}`);
     const lines: string[] = String(await fs.readFile(absolute, 'utf8')).split(/\r?\n/u);
-    const context = Math.min(Math.max(input.context ?? 8, 0), 100);
+    const radius = Math.min(Math.max(input.context ?? 8, 0), 100);
     const center = locator.line ? locator.line - 1 : 0;
-    const start = Math.max(0, center - context);
-    const end = Math.min(lines.length, center + context + 1);
+    const start = Math.max(0, center - radius);
+    const end = Math.min(lines.length, center + radius + 1);
     return {
       project: input.project,
+      graphId: graph.graphId,
       revision: checkout.sha,
+      ambiguous: false,
       node,
       file: locator.file,
       startLine: start + 1,

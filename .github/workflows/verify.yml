@@ -20,7 +20,8 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run verify
-      - name: Verify committed Development Intelligence graph when present
+      - name: Verify accepted graph on main
+        if: github.event_name == 'push'
         run: |
           if [ -f .development-intelligence/manifest.json ]; then
             npm run graph:check -- --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
@@ -54,6 +55,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add .development-intelligence
             git commit -m "chore: seal Development Intelligence graph B"
+            node dist/src/graphCli.js check --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
             git push origin HEAD:${{ github.event.pull_request.head.ref }}
           else
             echo "Sealed B is already current."
@@ -72,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      CARDFORGE_BENCHMARK_SHA: 6d6788cf87dd37d7685d26fa10a15e06fa1208ba
+      CARDFORGE_BENCHMARK_SHA: bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084
     steps:
       - name: Check out Development Intelligence candidate
         uses: actions/checkout@v7
@@ -85,19 +87,181 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: pyralisxc/CardForge
-          ref: 6d6788cf87dd37d7685d26fa10a15e06fa1208ba
+          ref: bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084
           path: benchmark/cardforge
           persist-credentials: false
-      - name: Generate disposable W and run representative agent probes
+      - name: Generate disposable W and run generic structural + semantic probes
         run: |
           node scripts/benchmark-cardforge.mjs benchmark/cardforge
           cat benchmark-cardforge.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark evidence
         uses: actions/upload-artifact@v4
         with:
-          name: cardforge-intrinsic-graph-benchmark
+          name: cardforge-development-intelligence-benchmark
           path: |
             benchmark-cardforge.json
             benchmark-cardforge.md
           if-no-files-found: error
           retention-days: 14
+
+  preview:
+    if: github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.body, '<!-- devint-preview -->')
+    needs: [verify, cardforge-benchmark]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - name: Prepare isolated preview configuration
+        env:
+          PREVIEW_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git update-ref refs/heads/devint-preview "$PREVIEW_SHA"
+          PREVIEW_ROOT="$RUNNER_TEMP/devint-preview"
+          mkdir -p "$PREVIEW_ROOT"
+          REPOSITORY_URL="$(node -e "const {pathToFileURL}=require('node:url'); console.log(pathToFileURL(process.env.GITHUB_WORKSPACE + '/.git').href)")"
+          cat > "$PREVIEW_ROOT/projects.json" <<EOF
+          {
+            "Development-Intelligence": {
+              "repository": "$REPOSITORY_URL",
+              "defaultRef": "refs/heads/devint-preview",
+              "allowedRefs": ["refs/heads/devint-preview"],
+              "credential": { "type": "none" }
+            }
+          }
+          EOF
+          OWNER_PASSWORD="$(openssl rand -hex 18)"
+          AGENT_TOKEN="$(openssl rand -hex 32)"
+          SESSION_SECRET="$(openssl rand -hex 32)"
+          {
+            echo "PREVIEW_SHA=$PREVIEW_SHA"
+            echo "PREVIEW_ROOT=$PREVIEW_ROOT"
+            echo "DEVINT_PROJECTS_FILE=$PREVIEW_ROOT/projects.json"
+            echo "DEVINT_SCRATCH_DIR=$PREVIEW_ROOT/scratch"
+            echo "DEVINT_AUTH_MODE=private"
+            echo "DEVINT_OWNER_PASSWORD=$OWNER_PASSWORD"
+            echo "DEVINT_AGENT_TOKEN=$AGENT_TOKEN"
+            echo "DEVINT_SESSION_SECRET=$SESSION_SECRET"
+            echo "DEVINT_HOST=127.0.0.1"
+            echo "DEVINT_PORT=8787"
+          } >> "$GITHUB_ENV"
+      - name: Start native private preview and public tunnel
+        run: |
+          set -euo pipefail
+          mkdir -p "$DEVINT_SCRATCH_DIR"
+          node dist/src/http.js > "$PREVIEW_ROOT/service.log" 2>&1 &
+          echo $! > "$PREVIEW_ROOT/service.pid"
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8787/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8787/health > /dev/null
+          CLOUDFLARED_VERSION='2026.9.1'
+          CLOUDFLARED_SHA256='03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc'
+          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/cloudflared-linux-amd64" -o "$PREVIEW_ROOT/cloudflared"
+          echo "$CLOUDFLARED_SHA256  $PREVIEW_ROOT/cloudflared" | sha256sum -c -
+          chmod +x "$PREVIEW_ROOT/cloudflared"
+          "$PREVIEW_ROOT/cloudflared" tunnel --no-autoupdate --url http://127.0.0.1:8787 > "$PREVIEW_ROOT/cloudflared.log" 2>&1 &
+          echo $! > "$PREVIEW_ROOT/cloudflared.pid"
+          PREVIEW_URL=""
+          for attempt in $(seq 1 60); do
+            PREVIEW_URL="$(grep -Eo 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$PREVIEW_ROOT/cloudflared.log" | head -n 1 || true)"
+            [ -n "$PREVIEW_URL" ] && break
+            sleep 1
+          done
+          if [ -z "$PREVIEW_URL" ]; then
+            cat "$PREVIEW_ROOT/cloudflared.log"
+            exit 1
+          fi
+          echo "PREVIEW_URL=$PREVIEW_URL" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 40); do
+            if curl -fsS "$PREVIEW_URL/health" > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS "$PREVIEW_URL/health" > /dev/null
+
+          # Browser path: unauthenticated Workbench redirects to DI's native owner login.
+          STATUS="$(curl -sS -o /dev/null -w '%{http_code}' "$PREVIEW_URL/workbench?project=Development-Intelligence")"
+          [ "$STATUS" = '303' ]
+          curl -fsS "$PREVIEW_URL/login?returnTo=%2Fworkbench%3Fproject%3DDevelopment-Intelligence" | grep -q 'Private workspace'
+          curl -fsS -c "$PREVIEW_ROOT/cookies.txt" -b "$PREVIEW_ROOT/cookies.txt" \
+            -H 'content-type: application/x-www-form-urlencoded' \
+            --data-urlencode "password=$DEVINT_OWNER_PASSWORD" \
+            --data-urlencode 'returnTo=/workbench?project=Development-Intelligence' \
+            -o /dev/null "$PREVIEW_URL/login"
+          curl -fsS -b "$PREVIEW_ROOT/cookies.txt" "$PREVIEW_URL/workbench?project=Development-Intelligence" | grep -qi 'graph is one representation'
+          curl -fsS -b "$PREVIEW_ROOT/cookies.txt" "$PREVIEW_URL/workbench/data?project=Development-Intelligence&action=overview" | grep -q 'quickNotes'
+          curl -fsS -b "$PREVIEW_ROOT/cookies.txt" "$PREVIEW_URL/workbench/data?project=Development-Intelligence&action=sources" | grep -q 'Git repository'
+
+          # Agent path: separate bearer credential reaches the same Workbench primitives through MCP.
+          DISCOVER_BODY='{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+          curl -fsS -H "authorization: Bearer $DEVINT_AGENT_TOKEN" \
+            -H 'content-type: application/json' \
+            -H 'mcp-protocol-version: 2026-07-28' \
+            -H 'mcp-method: server/discover' \
+            --data "$DISCOVER_BODY" "$PREVIEW_URL/mcp" | grep -q 'Development Intelligence'
+          LIST_BODY='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+          curl -fsS -H "authorization: Bearer $DEVINT_AGENT_TOKEN" \
+            -H 'content-type: application/json' \
+            -H 'mcp-protocol-version: 2026-07-28' \
+            -H 'mcp-method: tools/list' \
+            --data "$LIST_BODY" "$PREVIEW_URL/mcp" | grep -q 'project_overview'
+          curl -fsS -H "authorization: Bearer $DEVINT_AGENT_TOKEN" \
+            -H 'content-type: application/json' \
+            -H 'mcp-protocol-version: 2026-07-28' \
+            -H 'mcp-method: tools/list' \
+            --data "$LIST_BODY" "$PREVIEW_URL/mcp" | grep -q 'inspect_entity'
+          UNAUTHORIZED_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H 'content-type: application/json' --data "$DISCOVER_BODY" "$PREVIEW_URL/mcp")"
+          [ "$UNAUTHORIZED_STATUS" = '401' ]
+
+          {
+            echo '## Development Intelligence Workbench Preview'
+            echo ''
+            echo "- Exact candidate: \`$PREVIEW_SHA\`"
+            echo "- Workbench: $PREVIEW_URL/workbench?project=Development-Intelligence"
+            echo "- MCP: $PREVIEW_URL/mcp"
+            echo '- Owner password and agent token are stored only in the private one-day Preview access artifact.'
+            echo '- Preview is ephemeral and ends when this job is cancelled or reaches its timeout.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Development Intelligence Workbench Preview::URL=$PREVIEW_URL SHA=$PREVIEW_SHA"
+      - name: Write private preview access record
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > "$PREVIEW_ROOT/access.txt" <<EOF
+          candidate=$PREVIEW_SHA
+          workbench=$PREVIEW_URL/workbench?project=Development-Intelligence
+          mcp=$PREVIEW_URL/mcp
+          owner_password=$DEVINT_OWNER_PASSWORD
+          agent_token=$DEVINT_AGENT_TOKEN
+          EOF
+      - name: Upload private preview access record
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-preview-access
+          path: ${{ runner.temp }}/devint-preview/access.txt
+          if-no-files-found: error
+          retention-days: 1
+      - name: Keep preview available for review
+        run: |
+          echo "Preview active at $PREVIEW_URL for candidate $PREVIEW_SHA"
+          while true; do
+            for process in service cloudflared; do
+              pid="$(cat "$PREVIEW_ROOT/$process.pid")"
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "$process exited unexpectedly"
+                cat "$PREVIEW_ROOT/$process.log" || true
+                exit 1
+              fi
+            done
+            sleep 30
+          done

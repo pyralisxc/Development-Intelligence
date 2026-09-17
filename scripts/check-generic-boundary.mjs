@@ -10,6 +10,8 @@ const forbiddenProjectCoupling = [
   /game\s*studio/i,
   /founder[- ]to[- ]feature/i,
   /developer\s*os/i,
+  /productRealityKind/i,
+  /planned[-_ ]mcp/i,
 ];
 const forbiddenArchitectureDependencies = [
   /codebase-memory-mcp/i,

@@ -1,27 +1,46 @@
 import { getProjectConfig } from '../config/registry.js';
-import type { GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
+import type { EvidenceRecord, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
-import { withProjectCheckout, resolveProjectRevision } from '../source/git.js';
+import { withResolvedProjectCheckout, resolveProjectRevision, type ProjectRevision } from '../source/git.js';
 import { analyzeHtml, analyzeJson } from './analyzers/index.js';
-import { checkpointToGraph, readCheckpoint } from './checkpoint.js';
+import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
+import { assertGraphIntegrity } from './integrity.js';
 import { buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_GRAPH_MAX_RUNTIME_BYTES ?? process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
 
+export interface GraphCurrentness {
+  acceptedSemanticCurrent: boolean;
+  sourceCurrent: boolean;
+  topologyCurrent: boolean;
+  evidenceCurrent: boolean;
+  analyzerCurrent: boolean;
+  schemaSupported: boolean;
+  integrityCurrent: boolean;
+  checkpointError: string | null;
+}
+
 interface CachedRepositoryGraph {
   graph: IntelligenceGraph;
   accepted: IntelligenceGraph | null;
-  acceptedCurrent: boolean;
+  currentness: GraphCurrentness;
+  revision: ProjectRevision;
+  touchedAt: number;
+}
+
+interface SnapshotGraph {
+  graph: IntelligenceGraph;
+  revision: ProjectRevision;
   touchedAt: number;
 }
 
 const repositoryCache = new Map<string, Promise<CachedRepositoryGraph>>();
-const latestGraphByProject = new Map<string, IntelligenceGraph>();
+const snapshotCache = new Map<string, SnapshotGraph>();
 
 function cacheKey(project: string, sha: string): string { return `${project}:${sha}`; }
 
-async function pruneCache(): Promise<void> {
+async function pruneRepositoryCache(): Promise<void> {
   const max = Math.max(1, Number(process.env.DEVINT_GRAPH_CACHE_SIZE ?? 6));
   if (repositoryCache.size <= max) return;
   const entries = [...repositoryCache.entries()];
@@ -30,12 +49,32 @@ async function pruneCache(): Promise<void> {
   while (repositoryCache.size > max && hydrated.length) repositoryCache.delete(hydrated.shift()![0]);
 }
 
+function pruneSnapshotCache(): void {
+  const max = Math.max(1, Number(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE ?? 12));
+  if (snapshotCache.size <= max) return;
+  const entries = [...snapshotCache.entries()].sort((a, b) => a[1].touchedAt - b[1].touchedAt);
+  while (snapshotCache.size > max && entries.length) snapshotCache.delete(entries.shift()![0]);
+}
+
+function emptyCurrentness(checkpointError: string | null = null): GraphCurrentness {
+  return {
+    acceptedSemanticCurrent: false,
+    sourceCurrent: false,
+    topologyCurrent: false,
+    evidenceCurrent: false,
+    analyzerCurrent: false,
+    schemaSupported: false,
+    integrityCurrent: false,
+    checkpointError,
+  };
+}
+
 async function buildCachedRepositoryGraph(project: string, ref?: string): Promise<CachedRepositoryGraph> {
   const revision = await resolveProjectRevision(project, ref);
   const key = cacheKey(project, revision.sha);
   let promise = repositoryCache.get(key);
   if (!promise) {
-    promise = withProjectCheckout(project, revision.ref, async checkout => {
+    promise = withResolvedProjectCheckout(revision, async checkout => {
       const graph = await buildRepositoryGraph({
         project,
         repository: checkout.repository,
@@ -43,12 +82,41 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         root: checkout.root,
         role: 'W',
       });
-      const checkpoint = await readCheckpoint(checkout.root);
+      assertGraphIntegrity(graph);
+
+      let checkpoint = null;
+      let checkpointError: string | null = null;
+      try {
+        checkpoint = await readCheckpoint(checkout.root);
+      } catch (error) {
+        checkpointError = error instanceof Error ? error.message : String(error);
+      }
       const accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
+      if (accepted) assertGraphIntegrity(accepted);
+      let currentness = emptyCurrentness(checkpointError);
+      if (checkpoint) {
+        const sourceCurrent = checkpoint.meta.sourceFingerprint === graph.sourceFingerprint;
+        const analyzerCurrent = checkpointAnalyzerCurrent(checkpoint.meta);
+        const topologyCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.topologyFingerprint === graph.topologyFingerprint;
+        const evidenceCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.evidenceFingerprint === graph.evidenceFingerprint;
+        const schemaSupported = checkpoint.meta.schemaVersion === 2;
+        const integrityCurrent = checkpoint.integrity.countsValid && checkpoint.integrity.topologyValid !== false;
+        currentness = {
+          acceptedSemanticCurrent: sourceCurrent && topologyCurrent && schemaSupported && integrityCurrent,
+          sourceCurrent,
+          topologyCurrent,
+          evidenceCurrent,
+          analyzerCurrent,
+          schemaSupported,
+          integrityCurrent,
+          checkpointError,
+        };
+      }
       return {
         graph,
         accepted,
-        acceptedCurrent: Boolean(accepted?.sourceFingerprint && accepted.sourceFingerprint === graph.sourceFingerprint),
+        currentness,
+        revision,
         touchedAt: Date.now(),
       };
     });
@@ -57,7 +125,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
   }
   const value = await promise;
   value.touchedAt = Date.now();
-  await pruneCache();
+  await pruneRepositoryCache();
   return value;
 }
 
@@ -71,7 +139,7 @@ function runtimeHeaders(projectHeaders: Array<{ name: string; valueEnv: string }
   return headers;
 }
 
-async function scanRuntimeUrl(project: string, urlText: string): Promise<{ source: SourceDescriptor; nodes: GraphNode[]; edges: GraphEdge[] }> {
+async function scanRuntimeUrl(project: string, urlText: string): Promise<{ source: SourceDescriptor; nodes: GraphNode[]; edges: GraphEdge[]; evidence: EvidenceRecord[] }> {
   const config = await getProjectConfig(project);
   const requested = new URL(urlText);
   const allowed = new Set((config.runtimeOrigins ?? []).map(value => new URL(value).origin));
@@ -102,20 +170,30 @@ async function scanRuntimeUrl(project: string, urlText: string): Promise<{ sourc
     const revision = response.headers.get('etag') ?? response.headers.get('last-modified');
     const source: SourceDescriptor = { id: `runtime:${requested.href}`, kind: 'runtime-http', locator: requested.href, revision, observedAt, available: true };
     const statusNode: GraphNode = {
-      id: stableHash([source.id, 'http-status']), sourceId: source.id, kind: 'http-status', locator: `${requested.href}:status`, field: 'status', name: String(response.status), value: response.status, raw: String(response.status),
+      id: stableHash([source.id, 'http-status']),
+      sourceId: source.id,
+      kind: 'http-status',
+      locator: `${requested.href}:status`,
+      field: 'status',
+      name: String(response.status),
+      value: response.status,
+      raw: String(response.status),
+      layer: 'representation',
+      checkpoint: false,
     };
     const contentType = response.headers.get('content-type') ?? '';
     const result = /text\/html/i.test(contentType)
       ? analyzeHtml({ source, text, locatorBase: requested.href })
       : /application\/(?:[^;]+\+)?json/i.test(contentType)
         ? analyzeJson({ source, text, locatorBase: requested.href })
-        : { observations: [], resolutions: [] };
-    return { source, nodes: [statusNode, ...result.observations], edges: result.resolutions };
+        : { observations: [], resolutions: [], evidence: [] };
+    return { source, nodes: [statusNode, ...result.observations.map(node => ({ ...node, layer: node.layer ?? 'representation', checkpoint: false }))], edges: result.resolutions.map(edge => ({ ...edge, layer: edge.layer ?? 'representation', checkpoint: false })), evidence: result.evidence ?? [] };
   } catch (error) {
     return {
       source: { id: `runtime:${requested.href}`, kind: 'runtime-http', locator: requested.href, revision: null, observedAt, available: false, error: error instanceof Error ? error.message : String(error) },
       nodes: [],
       edges: [],
+      evidence: [],
     };
   } finally {
     clearTimeout(timeout);
@@ -124,75 +202,105 @@ async function scanRuntimeUrl(project: string, urlText: string): Promise<{ sourc
 
 export async function scanGraph(project: string, options: { ref?: string | undefined; urls?: string[] } = {}): Promise<IntelligenceGraph> {
   const repository = await buildCachedRepositoryGraph(project, options.ref);
+  const urls = options.urls ?? [];
+  if (!urls.length) return repository.graph;
+
   const createdAt = new Date().toISOString();
   const sources = [...repository.graph.sources];
   const nodes = [...repository.graph.nodes];
+  const evidence = [...repository.graph.evidence];
   let edges = [...repository.graph.edges];
-  for (const url of options.urls ?? []) {
+  for (const url of urls) {
     const runtime = await scanRuntimeUrl(project, url);
     sources.push(runtime.source);
     nodes.push(...runtime.nodes);
     edges.push(...runtime.edges);
+    evidence.push(...runtime.evidence);
   }
   edges = resolveCrossSource(nodes, edges);
   const graph: IntelligenceGraph = {
     ...repository.graph,
-    graphId: `working-${repository.graph.repositoryRevision?.slice(0, 12) ?? 'unknown'}-${stableHash([createdAt, nodes.length, edges.length]).slice(0, 8)}`,
+    graphId: `snapshot-${repository.graph.repositoryRevision?.slice(0, 12) ?? 'unknown'}-${stableHash([createdAt, ...urls, nodes.length, edges.length]).slice(0, 10)}`,
     role: 'W',
     createdAt,
     sources,
+    evidence,
     nodes,
     edges,
     namingDivergences: deriveNamingDivergences(nodes, edges),
     unmatchedNodeIds: deriveUnmatched(nodes, edges),
     unavailableSourceIds: sources.filter(source => !source.available).map(source => source.id),
   };
-  latestGraphByProject.set(project, graph);
+  assertGraphIntegrity(graph);
+  snapshotCache.set(graph.graphId, { graph, revision: repository.revision, touchedAt: Date.now() });
+  pruneSnapshotCache();
   return graph;
 }
 
-export async function repositoryGraphs(project: string, ref?: string): Promise<{ accepted: IntelligenceGraph | null; working: IntelligenceGraph; acceptedCurrent: boolean }> {
+export async function repositoryGraphs(project: string, ref?: string): Promise<{ accepted: IntelligenceGraph | null; working: IntelligenceGraph; acceptedCurrent: boolean; currentness: GraphCurrentness }> {
   const value = await buildCachedRepositoryGraph(project, ref);
-  latestGraphByProject.set(project, value.graph);
-  return { accepted: value.accepted, working: value.graph, acceptedCurrent: value.acceptedCurrent };
+  return { accepted: value.accepted, working: value.graph, acceptedCurrent: value.currentness.acceptedSemanticCurrent, currentness: value.currentness };
 }
 
-export async function currentGraph(project: string, ref?: string): Promise<IntelligenceGraph> {
-  const cached = latestGraphByProject.get(project);
-  if (cached && (!ref || cached.repositoryRevision === (await resolveProjectRevision(project, ref)).sha)) return cached;
-  return (await repositoryGraphs(project, ref)).working;
+export async function graphContext(project: string, options: { ref?: string; graphId?: string } = {}): Promise<{ graph: IntelligenceGraph; revision: ProjectRevision }> {
+  if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
+  if (options.graphId) {
+    const snapshot = snapshotCache.get(options.graphId);
+    if (!snapshot || snapshot.graph.project !== project) throw new Error(`Graph snapshot is unavailable or expired: ${options.graphId}`);
+    snapshot.touchedAt = Date.now();
+    return { graph: snapshot.graph, revision: snapshot.revision };
+  }
+  const repository = await buildCachedRepositoryGraph(project, options.ref);
+  return { graph: repository.graph, revision: repository.revision };
+}
+
+export async function currentGraph(project: string, ref?: string, graphId?: string): Promise<IntelligenceGraph> {
+  return (await graphContext(project, { ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}) })).graph;
 }
 
 export function clearGraphCache(project?: string): void {
   if (!project) {
     repositoryCache.clear();
-    latestGraphByProject.clear();
+    snapshotCache.clear();
     return;
   }
   for (const key of [...repositoryCache.keys()]) if (key.startsWith(`${project}:`)) repositoryCache.delete(key);
-  latestGraphByProject.delete(project);
+  for (const [key, snapshot] of [...snapshotCache.entries()]) if (snapshot.graph.project === project) snapshotCache.delete(key);
 }
 
 export async function graphStatus(project: string, ref?: string): Promise<Record<string, unknown>> {
-  const revision = await resolveProjectRevision(project, ref);
-  const graphs = await repositoryGraphs(project, revision.ref);
+  const repository = await buildCachedRepositoryGraph(project, ref);
+  const graphs = { accepted: repository.accepted, working: repository.graph };
+  const semanticNodes = graphs.working.nodes.filter(node => node.layer === 'semantic').length;
+  const semanticEdges = graphs.working.edges.filter(edge => edge.layer === 'semantic').length;
   return {
     project,
-    repository: revision.repository,
-    ref: revision.ref,
-    revision: revision.sha,
+    repository: repository.revision.repository,
+    ref: repository.revision.ref,
+    revision: repository.revision.sha,
+    analyzerVersion: graphs.working.analyzerVersion,
+    currentness: repository.currentness,
     accepted: graphs.accepted ? {
       graphId: graphs.accepted.graphId,
       sourceFingerprint: graphs.accepted.sourceFingerprint,
-      current: graphs.acceptedCurrent,
+      topologyFingerprint: graphs.accepted.topologyFingerprint,
+      evidenceFingerprint: graphs.accepted.evidenceFingerprint,
+      analyzerVersion: graphs.accepted.analyzerVersion,
+      current: repository.currentness.acceptedSemanticCurrent,
       nodes: graphs.accepted.nodes.length,
       edges: graphs.accepted.edges.length,
     } : null,
     working: {
       graphId: graphs.working.graphId,
       sourceFingerprint: graphs.working.sourceFingerprint,
+      topologyFingerprint: graphs.working.topologyFingerprint,
+      evidenceFingerprint: graphs.working.evidenceFingerprint,
       nodes: graphs.working.nodes.length,
       edges: graphs.working.edges.length,
+      semanticNodes,
+      semanticEdges,
+      evidenceRecords: graphs.working.evidence.length,
+      explicitValueConflicts: graphs.working.explicitValueConflicts.length,
       coverage: graphs.working.coverage,
     },
   };
