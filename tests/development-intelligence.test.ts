@@ -190,7 +190,7 @@ test('runtime observation snapshots are explicit and never contaminate canonical
       },
     }) as any;
     assert.equal(parity.passed, false);
-    assert.deepEqual(parity.counts, { satisfied: 2, missing: 2, forbiddenPresent: 2, unproven: 0 });
+    assert.deepEqual(parity.counts, { satisfied: 2, missing: 0, forbiddenPresent: 2, unproven: 2 }, 'the intentionally skipped symlink source keeps negative expectations unproven');
     assert.match(parity.note, /ephemerally/i);
 
     const code = await searchCode({ project: fixture.project, graphId: snapshot.graphId, pattern: 'fetch', limit: 10 }) as any;
@@ -313,7 +313,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     });
     assert.equal(parity.status, 200);
     const parityBody = await parity.json() as any;
-    assert.equal(parityBody.counts.missing, 1);
+    assert.equal(parityBody.counts.unproven, 1);
     assert.equal(parityBody.passed, false);
 
     const oldGraph = await fetch(`${origin}/graph?project=${fixture.project}`, { redirect: 'manual' });
