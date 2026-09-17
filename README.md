@@ -60,8 +60,32 @@ Graph/code primitives:
 - `get_evidence`
 - `diff_graph`
 - `query_parity`
+- `evaluate_parity`
 
 There is no separate Parity database, public cache-management API, provider-specific graph query language, or development-methodology API.
+
+`evaluate_parity` accepts a bounded caller-owned **Parity Contract** (expectation overlay E) containing required or forbidden entities and relationships. It evaluates E against canonical W or an explicit graph snapshot and returns `satisfied`, `missing`, `forbidden-present`, or `unproven` for every obligation. E is ephemeral input: it is never persisted, sealed, or promoted into accepted A.
+
+```json
+{
+  "project": "owner/repository",
+  "contract": {
+    "version": 1,
+    "name": "Workspace automation parity",
+    "relationships": [
+      {
+        "from": "capability:workspace.manage",
+        "kind": "automated-by",
+        "to": "mcp:manage_workspace",
+        "requirement": "required",
+        "rationale": "Agents must be able to perform the same management operation."
+      }
+    ]
+  }
+}
+```
+
+Use stable IDs returned by `search_graph`, `inspect_entity`, or `query_parity`. Required relationships pass only on resolved evidence. Candidate or unresolved observations remain `unproven`; incomplete graph coverage also prevents DI from claiming that an absent entity or relationship is definitively missing or safely forbidden.
 
 `diff_graph` owns change intelligence. Without `baseRef` it compares accepted semantic A with canonical W. With `baseRef` it compares two Git revisions under the same current analyzer. Semantic diffs compare stable semantic topology rather than source locators/evidence references; evidence/analyzer drift is reported separately.
 
@@ -79,6 +103,7 @@ Authenticated HTTP deployments expose:
 - `GET /workbench?project=<project>[&ref=<allowlisted-ref>]` — project workspace
 - `GET /workbench/data?...` — human Workbench projections
 - `POST /workbench/query` — deterministic read-only Workbench query surface
+- `POST /workbench/parity` — ephemeral Parity Contract evaluation
 
 Old `GET /graph?project=...` links remain a compatibility entry into Explore/Graph.
 
@@ -106,6 +131,12 @@ Search the same intelligence and choose the representation that fits the task:
 - Raw
 
 Graph mode is for relationship-heavy questions; it is not the mandatory navigation model.
+
+### Parity Contracts
+
+Define the entities and relationships a caller expects to be required or forbidden, then evaluate that contract against the selected graph context. Results distinguish satisfied obligations, missing requirements, forbidden observed behavior, and cases that remain unproven because evidence or coverage is incomplete.
+
+Parity Contracts are caller intent, not observed project truth. They remain ephemeral and do not modify A, W, B, source code, or Git history.
 
 ### Inspector
 

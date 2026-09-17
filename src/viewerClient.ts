@@ -7,7 +7,7 @@ declare global {
   }
 }
 
-type Section = 'overview' | 'explore' | 'query' | 'sources' | 'changes';
+type Section = 'overview' | 'explore' | 'parity' | 'query' | 'sources' | 'changes';
 type ExploreMode = 'summary' | 'list' | 'table' | 'graph' | 'raw';
 type GraphLens = 'architecture' | 'parity' | 'code';
 type ProjectionNode = { id: string; kind: string; layer?: string; name?: string; locator?: string; value?: unknown; evidenceIds?: string[] };
@@ -28,7 +28,7 @@ const globalForm = document.getElementById('global-query') as HTMLFormElement;
 const globalInput = document.getElementById('global-query-input') as HTMLInputElement;
 const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-section]'));
 
-let section: Section = (['overview', 'explore', 'query', 'sources', 'changes'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
+let section: Section = (['overview', 'explore', 'parity', 'query', 'sources', 'changes'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
 let exploreMode: ExploreMode = 'summary';
 let graphLens: GraphLens = 'architecture';
 let exploreQuery = '';
@@ -37,10 +37,24 @@ let selectedInspection: any = null;
 let inspectorTab = 'summary';
 let renderer: Sigma | null = null;
 let preferredQuerySource = '';
+let parityContractText = `{
+  "version": 1,
+  "name": "Feature parity",
+  "relationships": [
+    {
+      "from": "capability:example",
+      "kind": "exposed-on",
+      "to": "surface:example",
+      "requirement": "required",
+      "rationale": "Replace these IDs with the expected project relationship."
+    }
+  ]
+}`;
 
 const sectionCopy: Record<Section, { title: string; description: string }> = {
   overview: { title: 'Overview', description: 'Readable project intelligence: current state, quick notes, important concepts, coverage and meaningful change.' },
   explore: { title: 'Explore', description: 'Search the same intelligence as Summary, List, Table, Graph or Raw records. Use the Inspector for the details.' },
+  parity: { title: 'Parity Contracts', description: 'Compare caller-owned expected entities and relationships with observed project reality. Expectations remain ephemeral and never become accepted truth.' },
   query: { title: 'Query', description: 'Ask Development Intelligence about the project or run a bounded read-only query against a configured technical source.' },
   sources: { title: 'Sources', description: 'See what DI can actually inspect: Git, runtime origins, databases/log adapters, freshness, coverage and query capabilities.' },
   changes: { title: 'Changes', description: 'Review accepted-to-working semantic change without confusing locator or evidence movement for product change.' },
@@ -249,6 +263,42 @@ async function renderQuery(prefill = ''): Promise<void> {
   (document.getElementById('run-query') as HTMLButtonElement).addEventListener('click', () => void run());
 }
 
+function parityStatusClass(status: string): string {
+  if (status === 'satisfied') return 'status-good';
+  if (status === 'unproven') return 'status-warn';
+  return 'status-bad';
+}
+
+function parityExpectationLabel(result: any): string {
+  if (result.type === 'entity') return result.expectation?.id ?? 'entity';
+  return `${result.expectation?.from ?? '?'} ${result.expectation?.kind ?? '?'} ${result.expectation?.to ?? '?'}`;
+}
+
+function renderParityEvaluation(data: any): string {
+  const counts = data.counts ?? {};
+  const results = data.results ?? [];
+  return `<div class="hero-grid"><div class="card"><h3>Contract result</h3><h2 class="${data.passed ? 'status-good' : 'status-warn'}">${data.passed ? 'Expectation satisfied' : 'Attention required'}</h2><p>${esc(data.note ?? '')}</p><p class="muted">Revision ${esc(data.revision ?? 'unknown')}</p></div><div class="card"><h3>Obligations</h3><div class="metric-grid">${metric('satisfied', counts.satisfied ?? 0)}${metric('missing', counts.missing ?? 0)}${metric('forbidden present', counts.forbiddenPresent ?? 0)}${metric('unproven', counts.unproven ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Evaluation detail</h3><div class="list">${results.map((result: any) => `<div class="row"><span class="badge ${parityStatusClass(result.status)}">${esc(result.status)}</span><span class="row-main"><strong>${esc(parityExpectationLabel(result))}</strong><small>${esc(result.explanation ?? '')}${result.expectation?.rationale ? ` · ${esc(result.expectation.rationale)}` : ''}</small></span></div>`).join('')}</div></div><details style="margin-top:12px"><summary class="muted">Raw evaluation</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`;
+}
+
+async function renderParity(): Promise<void> {
+  setHead();
+  content.innerHTML = `<div class="card"><h3>Expectation overlay E</h3><h2>Define what must be true</h2><p>Use stable graph IDs to describe required or forbidden entities and relationships. Development Intelligence evaluates this contract against the selected working graph without storing it or promoting it into A.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) auto;margin-top:13px"><textarea id="parity-contract" aria-label="Parity contract JSON" style="min-height:260px">${esc(parityContractText)}</textarea><button class="primary" id="evaluate-parity" type="button" style="align-self:start">Evaluate</button></div><p class="muted">Supported requirements: required and forbidden. Missing negative evidence becomes unproven when graph coverage is incomplete.</p></div><div id="parity-result" class="query-result"></div>`;
+  const run = async () => {
+    const textarea = document.getElementById('parity-contract') as HTMLTextAreaElement;
+    const target = document.getElementById('parity-result') as HTMLElement;
+    parityContractText = textarea.value;
+    target.innerHTML = empty('Evaluating contract', 'Comparing expected parity with the selected graph context…');
+    try {
+      const contract = JSON.parse(parityContractText);
+      const result = await postJson('/workbench/parity', { contract });
+      target.innerHTML = renderParityEvaluation(result);
+    } catch (error) {
+      target.innerHTML = `<div class="card"><h3>Parity evaluation failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
+    }
+  };
+  (document.getElementById('evaluate-parity') as HTMLButtonElement).addEventListener('click', () => void run());
+}
+
 function renderQueryResult(result: any): string {
   if (!result) return '';
   if (result.entity) return `<div class="list">${nodeRow(result.entity)}</div>`;
@@ -293,6 +343,7 @@ async function activateSection(next: Section): Promise<void> {
   try {
     if (section === 'overview') await renderOverview();
     else if (section === 'explore') await loadExplore();
+    else if (section === 'parity') await renderParity();
     else if (section === 'query') await renderQuery();
     else if (section === 'sources') await renderSources();
     else await renderChanges();

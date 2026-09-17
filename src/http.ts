@@ -6,6 +6,7 @@ import { callTool, listTools } from './mcp.js';
 import { currentGraph } from './intelligence/service.js';
 import { diffAcceptedToWorking, viewerProjection } from './intelligence/query.js';
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbench, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
+import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import type { TechnicalSourceCapability } from './types.js';
@@ -14,7 +15,7 @@ const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
 const SUPPORTED_MODERN = [MODERN_VERSION];
 const MAX_BODY = 4 * 1024 * 1024;
-const SERVER_INFO = { name: 'Development Intelligence', version: '2.3.0' };
+const SERVER_INFO = { name: 'Development Intelligence', version: '2.4.0' };
 const VIEWER_BUNDLE = fileURLToPath(new URL('../public/viewer.js', import.meta.url));
 
 async function readBody(req: any, maxBytes = MAX_BODY): Promise<Buffer> {
@@ -86,7 +87,7 @@ export async function handleRpc(body: any, requestInfo: { modern: boolean }): Pr
     return { status: 200, body: rpcResult(id, complete({
       supportedVersions: SUPPORTED_MODERN,
       capabilities: { tools: {} },
-      instructions: 'Project-neutral technical intelligence. Development Intelligence builds one evidence-backed graph and exposes it through agent tools and a human Workbench. Overview, Inspector, Explore, Query, Sources, Change, Code, Architecture and Parity are projections over source/evidence truth; Git/source remains implementation authority.',
+      instructions: 'Project-neutral technical intelligence. Development Intelligence builds one evidence-backed graph and exposes it through agent tools and a human Workbench. Overview, Inspector, Explore, Query, Sources, Change, Code, Architecture and Parity are projections over source/evidence truth. Caller-owned Parity Contracts are ephemeral expectation overlays and never replace Git/source authority.',
       ttlMs: 60_000,
       cacheScope: 'private',
     }, true)) };
@@ -294,6 +295,23 @@ export function createDevelopmentIntelligenceServer() {
         json(res, 200, result);
       } catch (error) {
         json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (requestUrl.pathname === '/workbench/parity' && req.method === 'POST') {
+      if (!authorize(req, res)) return;
+      try {
+        const body = await readJson(req);
+        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
+        const result = await evaluateParityContract({
+          project: body.project,
+          ref: typeof body.ref === 'string' ? body.ref : undefined,
+          graphId: typeof body.graphId === 'string' ? body.graphId : undefined,
+          contract: body.contract,
+        });
+        json(res, 200, result);
+      } catch (error) {
+        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }

@@ -1,6 +1,6 @@
 {
   "name": "development-intelligence",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
   "type": "module",
   "description": "Project-neutral intrinsic development intelligence over Git, source, runtime evidence, and technical representations.",

@@ -6,6 +6,7 @@ import { diffAcceptedToWorking, diffRevisions, graphArchitecture, graphCoverage,
 import { getCodeSnippet, searchCode } from './intelligence/code.js';
 import { inspectEntity, projectOverview, workbenchSources } from './intelligence/workbench.js';
 import { queryTechnicalSource } from './intelligence/technicalSources.js';
+import { evaluateParityContract } from './intelligence/parityContract.js';
 import type { GraphNodeLayer, GraphCoverageStatus, RelationshipStatus, TechnicalSourceCapability } from './types.js';
 
 export interface ToolDefinition {
@@ -25,6 +26,22 @@ const layersSchema = { type: 'array', items: { enum: ['semantic', 'structural', 
 const relationshipStatusSchema = { type: 'array', items: { enum: ['resolved', 'candidate', 'unresolved'] } };
 const coverageStatusSchema = { type: 'array', items: { enum: ['complete', 'partial', 'unsupported', 'skipped', 'failed'] } };
 const technicalCapabilitySchema = { enum: ['query', 'logs', 'metrics'] };
+const parityRequirementSchema = { enum: ['required', 'forbidden'] };
+const parityContractSchema = objectSchema({
+  version: { enum: [1] },
+  name: string,
+  description: string,
+  entities: {
+    type: 'array',
+    maxItems: 200,
+    items: objectSchema({ id: string, requirement: parityRequirementSchema, rationale: string }, ['id']),
+  },
+  relationships: {
+    type: 'array',
+    maxItems: 200,
+    items: objectSchema({ from: string, kind: string, to: string, requirement: parityRequirementSchema, rationale: string }, ['from', 'kind', 'to']),
+  },
+}, ['version']);
 
 function s(args: Record<string, unknown>, key: string): string {
   const value = args[key];
@@ -99,6 +116,7 @@ export const tools: ToolDefinition[] = [
   { name: 'get_evidence', description: 'Inspect first-class evidence supporting a semantic entity or relationship. Use exact IDs when a textual name is ambiguous.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, node: string, edge: string, evidenceIds: strings }, ['project']), handler: async args => { const ref = optString(args, 'ref'); const graphId = optString(args, 'graphId'); const node = optString(args, 'node'); const edge = optString(args, 'edge'); const evidenceIds = Array.isArray(args.evidenceIds) ? args.evidenceIds as string[] : undefined; return await graphEvidence({ project: s(args, 'project'), ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}), ...(node ? { node } : {}), ...(edge ? { edge } : {}), ...(evidenceIds?.length ? { evidenceIds } : {}) }); } },
   { name: 'diff_graph', description: 'Compare accepted semantic A to canonical W, or two Git revisions under the same current analyzer. Semantic diffs ignore provenance-only locator/evidence movement and report evidence/analyzer drift separately.', inputSchema: objectSchema({ project: string, ref: string, baseRef: string, layers: layersSchema }, ['project']), handler: async args => { const baseRef = optString(args, 'baseRef'); const ref = optString(args, 'ref'); const selectedLayers = layers(args); return baseRef ? await diffRevisions({ project: s(args, 'project'), baseRef, ...(ref ? { ref } : {}), ...(selectedLayers?.length ? { layers: selectedLayers } : {}) }) : await diffAcceptedToWorking(s(args, 'project'), ref); } },
   { name: 'query_parity', description: 'Inspect semantic entities and their observed human/agent/API/provider representations over the selected canonical graph. Only resolved relations populate confirmed representation lists; candidates and unresolved relations remain explicit.', inputSchema: objectSchema(queryProperties, ['project']), handler: async args => await parityLens({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), query: optString(args, 'query'), kinds: Array.isArray(args.kinds) ? args.kinds as string[] : undefined, sourceIds: Array.isArray(args.sourceIds) ? args.sourceIds as string[] : undefined, status: relationshipStatuses(args), limit: typeof args.limit === 'number' ? args.limit : undefined, offset: typeof args.offset === 'number' ? args.offset : undefined }) },
+  { name: 'evaluate_parity', description: 'Evaluate a caller-owned ephemeral expectation contract (E) against canonical W or an explicit graph snapshot. Reports satisfied, missing, forbidden-present, and unproven obligations without modifying accepted graph truth.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, contract: parityContractSchema }, ['project', 'contract']), handler: async args => await evaluateParityContract({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), contract: args.contract }) },
 ];
 
 function annotationsFor(name: string): Record<string, boolean> {
