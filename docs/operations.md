@@ -105,9 +105,9 @@ Warm process-memory graph reuse is allowed only when keyed by the exact project 
 
 ## Canonical W and runtime snapshots
 
-Ordinary project/ref queries always address canonical source-derived W.
+Ordinary project/ref queries always address canonical source-derived W. Canonical `repo-…` graph IDs embed the complete immutable Git SHA and may be reconstructed on any service instance; the bounded warm cache only accelerates that work.
 
-When `scan_graph` receives runtime URLs, DI returns an explicit ephemeral `graphId` for that observed snapshot. Callers pass that `graphId` to subsequent graph/code/Workbench operations that need the runtime overlay.
+When `scan_graph` receives runtime URLs, DI returns an explicit ephemeral `snapshot-…` graph ID for that observed snapshot. Callers pass that ID to subsequent graph/code/Workbench operations that need the runtime overlay.
 
 Runtime snapshots:
 

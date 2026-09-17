@@ -30,6 +30,7 @@ process.env.DEVINT_GRAPH_CACHE_SIZE = '3';
 
 const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
+const { clearGraphCache } = await import('../dist/src/intelligence/service.js');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
 const started = Date.now();
@@ -93,14 +94,32 @@ for (const probe of probes) {
 const sourceSearch = await callTool('search_code', { project, ref, pattern: 'createCreatorInteractionSession', context: 1, limit: 50 });
 if (Number(sourceSearch.total ?? 0) < 2) throw new Error('Source benchmark expected multiple createCreatorInteractionSession occurrences');
 
+const groupedSearch = await callTool('search_graph', { project, graphId: scan.graphId, queries: probes.map(probe => probe.query), limit: 40 });
+if (!Array.isArray(groupedSearch.results) || groupedSearch.results.length !== probes.length || groupedSearch.results.some(result => Number(result.nodeTotal ?? 0) < 1)) {
+  throw new Error('CardForge grouped search did not return every independent probe');
+}
+clearGraphCache(project);
+const reconstructedSearch = await callTool('search_graph', { project, graphId: scan.graphId, query: probes[0].query, limit: 1 });
+if (reconstructedSearch.graphId !== scan.graphId || Number(reconstructedSearch.nodeTotal ?? 0) < 1) throw new Error('Canonical CardForge graphId did not survive process-local cache loss');
+
+const workflowSearch = await callTool('search_graph', { project, graphId: scan.graphId, queries: ['camera', 'zoom', 'responsive', 'touch', 'overflow-x', 'workspaceResponsiveHardening'], limit: 20 });
+if (!Array.isArray(workflowSearch.results) || workflowSearch.results.length !== 6) throw new Error('CardForge workflow search did not preserve every independent query');
+for (const required of ['camera', 'responsive', 'overflow-x']) {
+  const result = workflowSearch.results.find(item => item.query === required);
+  if (Number(result?.nodeTotal ?? 0) < 1) throw new Error(`CardForge workflow search expected structural evidence for ${required}`);
+}
+
 const kindQueries = {};
-for (const kind of ['file', 'function', 'method', 'class', 'interface', 'type', 'import-binding', 'ui-element', 'http-call', 'mcp-tool', 'feature', 'api', 'route', 'provider', 'mcp', 'surface', 'capability', 'action']) {
+for (const kind of ['file', 'function', 'method', 'class', 'interface', 'type', 'import-binding', 'ui-element', 'http-call', 'mcp-tool', 'css-selector', 'css-at-rule', 'css-custom-property', 'feature', 'api', 'route', 'provider', 'mcp', 'surface', 'capability', 'action']) {
   const result = await callTool('search_graph', { project, ref, kinds: [kind], limit: 1 });
   kindQueries[kind] = Number(result.nodeTotal ?? 0);
 }
 
 for (const requiredKind of ['feature', 'api', 'provider', 'route', 'mcp']) {
   if (Number(kindQueries[requiredKind] ?? 0) < 1) throw new Error(`CardForge benchmark expected generic semantic kind ${requiredKind}`);
+}
+for (const requiredKind of ['css-selector', 'css-at-rule', 'css-custom-property']) {
+  if (Number(kindQueries[requiredKind] ?? 0) < 1) throw new Error(`CardForge benchmark expected generic CSS kind ${requiredKind}`);
 }
 
 const relationshipCounts = architecture?.summary?.relationshipKinds ?? {};
@@ -137,6 +156,11 @@ const report = {
     unresolvedRelationships: semanticEdges.filter(edge => edge.status === 'unresolved').length,
   },
   probes: probeResults,
+  groupedSearch: {
+    queryCount: groupedSearch.results.length,
+    canonicalGraphReconstructed: true,
+    workflowQueries: workflowSearch.results.map(result => ({ query: result.query, nodeTotal: result.nodeTotal, edgeTotal: result.edgeTotal })),
+  },
   sourceSearch: { total: sourceSearch.total ?? 0, sample: Array.isArray(sourceSearch.matches) ? sourceSearch.matches.slice(0, 5) : [] },
 };
 
@@ -157,6 +181,9 @@ const summary = [
   `- Resolved imports: **${relationshipCounts.imports ?? 0}**`,
   `- Import-to-definition resolutions: **${relationshipCounts.resolves_to ?? 0}**`,
   `- Call relationships: **${relationshipCounts.calls ?? 0}**`,
+  `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
+  `- Canonical graphId reconstructed after cache loss: **yes**`,
+  `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
   '',
   '## Representative structural agent probes',
   '',

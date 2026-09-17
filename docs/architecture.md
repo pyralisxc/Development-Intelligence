@@ -168,13 +168,13 @@ Ref-to-ref change analysis rebuilds both revisions with the same current analyze
 
 ## Canonical W and runtime snapshots
 
-Canonical project/ref queries always address source-derived W.
+Canonical project/ref queries always address source-derived W. Canonical `repo-…` graph identifiers carry the complete immutable Git SHA plus analyzer/source identity and are reconstructible from Git after process-local cache loss. Process memory accelerates canonical reads but is not their owner.
 
 If `scan_graph` is supplied runtime URLs, DI overlays bounded runtime evidence onto the same graph model and returns an explicit ephemeral `graphId`. Graph, source, parity, evidence, and Viewer tools may address that `graphId` directly.
 
 Runtime snapshots are disposable and do not become the implicit “latest graph.” A previous agent's runtime scan must never change another agent's ordinary project/ref result.
 
-If an ephemeral snapshot expires, callers recreate it; DI does not create a durable service database merely to preserve runtime observations.
+If an ephemeral `snapshot-…` graph expires, callers recreate it; DI does not create a durable service database merely to preserve runtime observations.
 
 ## Code intelligence
 
@@ -199,7 +199,7 @@ C#, Java, and Python use pinned ast-grep/tree-sitter parser packages behind one 
 - lexical containment between declarations;
 - explicit `partial` coverage when a parser recovers through syntax-error nodes.
 
-This syntax-derived structure remains structural, not semantic. The analyzer does not infer product meaning from language syntax, does not claim cross-file call/import binding for these languages yet, and does not reinterpret compiled Java bytecode or Unity scenes/assets as source. Unsupported precision is reported through coverage rather than guessed. `get_graph_schema` returns the deployed source-analysis support matrix.
+This syntax-derived structure remains structural, not semantic. C#, Java, and Python resolve supported local module/file imports and exact imported symbols, but do not claim general cross-file call binding. CSS contributes selectors, declarations, at-rules, custom properties, and nesting context without inferring which application component uses a selector. The analyzer does not infer product meaning from syntax or reinterpret compiled Java bytecode or Unity scenes/assets as source. Unsupported precision is reported through coverage rather than guessed. `get_graph_schema` returns the deployed source-analysis support matrix.
 
 ## Parity intelligence
 
@@ -250,7 +250,7 @@ The permanent agent-facing tools are:
 - `query_parity`
 - `evaluate_parity`
 
-Graph-consuming tools address either canonical project/ref W or an explicit runtime `graphId` where applicable.
+Graph-consuming tools address canonical project/ref W, a reconstructible canonical `repo-…` graph ID, or an explicit ephemeral runtime `snapshot-…` graph ID where applicable. `search_graph` and `query_parity` also accept up to 20 independent `queries`, evaluated over one loaded graph.
 
 `diff_graph` owns change intelligence:
 
