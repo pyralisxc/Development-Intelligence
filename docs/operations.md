@@ -25,6 +25,8 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 |---|---|
 | `DEVINT_PROJECTS_FILE` | Operational repository/ref/runtime/technical-source allowlist registry |
 | `DEVINT_PROJECTS_JSON` | Optional inline hosted registry; takes precedence over the file when set |
+| `DEVINT_GITHUB_ALLOWED_OWNERS` | Optional comma-separated GitHub owners whose repositories may be inspected dynamically as `owner/repository` |
+| `DEVINT_GITHUB_TOKEN_ENV` | Optional credential environment-variable name for dynamic GitHub repositories; defaults to `DEVINT_GITHUB_TOKEN` |
 | `DEVINT_SCRATCH_DIR` | Optional disposable checkout root (defaults to OS temp) |
 | `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound |
 | `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots |
@@ -37,6 +39,7 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `PORT` | Hosting-platform port, used when `DEVINT_PORT` is not set |
 | `DEVINT_PUBLIC_BASE_URL` | Stable external origin used as OAuth issuer/resource origin in `oauth` mode |
 | `DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS` | Comma-separated trusted OAuth callback origins; defaults to `https://chatgpt.com` |
+| `DEVINT_OAUTH_ALLOW_LOOPBACK` | Set to `1` to permit native OAuth clients to return only to HTTP loopback hosts with dynamic ports |
 | `DEVINT_OAUTH_SCOPES` | Resource scopes; defaults to `development-intelligence.read` |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Shared one-time OAuth authorization-code state for serverless/horizontally scaled hosts |
 | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Accepted legacy Vercel aliases for the same Redis backing service |
@@ -56,6 +59,8 @@ The registry may define only operational access:
 - optional read-only technical sources.
 
 It must not define project ontology, feature meaning, source authority, desired product behavior, or project-specific analyzer branches.
+
+`DEVINT_GITHUB_ALLOWED_OWNERS` adds a project-neutral GitHub access policy rather than project configuration. A caller points DI at `owner/repository`; DI constructs the canonical GitHub HTTPS URL, authenticates with the configured read-only token, and resolves `HEAD`. Owners not in the policy fail closed. The credential's GitHub permissions remain an independent second boundary, so an allowlisted name that the token cannot read is still unavailable.
 
 ### Technical sources
 

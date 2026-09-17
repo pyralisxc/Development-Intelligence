@@ -2,6 +2,21 @@ import { promises as fs } from 'node:fs';
 import { projectsFile, safeSegment } from './paths.js';
 import type { ProjectConfig, ProjectRegistry, RuntimeHeaderConfig } from '../types.js';
 
+const GITHUB_PROJECT_PATTERN = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]+)$/;
+
+export function listAuthorizedGithubOwners(): string[] {
+  const raw = process.env.DEVINT_GITHUB_ALLOWED_OWNERS?.trim();
+  if (!raw) return [];
+  const owners = raw.split(',').map(value => value.trim()).filter(Boolean);
+  const unique = new Map<string, string>();
+  for (const owner of owners) {
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(owner)) throw new Error(`Invalid GitHub owner in DEVINT_GITHUB_ALLOWED_OWNERS: ${owner}`);
+    const key = owner.toLowerCase();
+    if (!unique.has(key)) unique.set(key, owner);
+  }
+  return [...unique.values()].sort((a, b) => a.localeCompare(b));
+}
+
 function assertRepositoryUrl(value: string): void {
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) {
     const url = new URL(value);
@@ -62,6 +77,23 @@ function validateProject(name: string, config: ProjectConfig): ProjectConfig {
   return { ...config, allowedRefs };
 }
 
+function githubProjectConfig(project: string): ProjectConfig | null {
+  const match = GITHUB_PROJECT_PATTERN.exec(project);
+  if (!match) return null;
+  const [, requestedOwner, repository] = match;
+  if (!requestedOwner || !repository || repository === '.' || repository === '..' || repository.toLowerCase().endsWith('.git')) return null;
+  const owner = listAuthorizedGithubOwners().find(value => value.toLowerCase() === requestedOwner.toLowerCase());
+  if (!owner) return null;
+  const tokenEnv = process.env.DEVINT_GITHUB_TOKEN_ENV?.trim() || 'DEVINT_GITHUB_TOKEN';
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) throw new Error('DEVINT_GITHUB_TOKEN_ENV must name an environment variable');
+  return validateProject(project, {
+    repository: `https://github.com/${owner}/${repository}.git`,
+    defaultRef: 'HEAD',
+    allowedRefs: ['HEAD'],
+    credential: { type: 'token-env', tokenEnv, username: 'x-access-token' },
+  });
+}
+
 function parseRegistry(raw: string, source: string): ProjectRegistry {
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -98,6 +130,10 @@ export async function loadRegistry(): Promise<ProjectRegistry> {
 export async function getProjectConfig(project: string): Promise<ProjectConfig> {
   const registry = await loadRegistry();
   const config = registry[project];
-  if (!config) throw new Error(`Unknown project: ${project}`);
-  return config;
+  if (config) return config;
+  const github = githubProjectConfig(project);
+  if (github) return github;
+  const owners = listAuthorizedGithubOwners();
+  const hint = owners.length ? ` Use owner/repository under an authorized GitHub owner: ${owners.join(', ')}.` : '';
+  throw new Error(`Unknown project: ${project}.${hint}`);
 }

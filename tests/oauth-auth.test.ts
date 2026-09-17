@@ -30,6 +30,7 @@ test('OAuth mode supports ChatGPT-style DCR, PKCE, refresh, and MCP bearer acces
     session: process.env.DEVINT_SESSION_SECRET,
     publicBase: process.env.DEVINT_PUBLIC_BASE_URL,
     redirects: process.env.DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS,
+    loopback: process.env.DEVINT_OAUTH_ALLOW_LOOPBACK,
     cookie: process.env.DEVINT_COOKIE_SECURE,
   };
   process.env.DEVINT_AUTH_MODE = 'oauth';
@@ -38,6 +39,7 @@ test('OAuth mode supports ChatGPT-style DCR, PKCE, refresh, and MCP bearer acces
   process.env.DEVINT_COOKIE_SECURE = '0';
   delete process.env.DEVINT_AGENT_TOKEN;
   delete process.env.DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS;
+  delete process.env.DEVINT_OAUTH_ALLOW_LOOPBACK;
 
   const { server, origin } = await startServer();
   process.env.DEVINT_PUBLIC_BASE_URL = origin;
@@ -67,6 +69,28 @@ test('OAuth mode supports ChatGPT-style DCR, PKCE, refresh, and MCP bearer acces
       body: JSON.stringify({ redirect_uris: ['https://attacker.example/callback'], token_endpoint_auth_method: 'none' }),
     });
     assert.equal(badRegistration.status, 400);
+
+    const loopbackRegistrationDenied = await fetch(`${origin}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['http://127.0.0.1:49152/callback'], token_endpoint_auth_method: 'none' }),
+    });
+    assert.equal(loopbackRegistrationDenied.status, 400);
+
+    process.env.DEVINT_OAUTH_ALLOW_LOOPBACK = '1';
+    const loopbackRegistration = await fetch(`${origin}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Codex CLI',
+        application_type: 'native',
+        redirect_uris: ['http://127.0.0.1:49152/callback'],
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(loopbackRegistration.status, 201);
 
     const registration = await fetch(`${origin}/oauth/register`, {
       method: 'POST',
@@ -201,6 +225,7 @@ test('OAuth mode supports ChatGPT-style DCR, PKCE, refresh, and MCP bearer acces
     restore('DEVINT_SESSION_SECRET', previous.session);
     restore('DEVINT_PUBLIC_BASE_URL', previous.publicBase);
     restore('DEVINT_OAUTH_ALLOWED_REDIRECT_ORIGINS', previous.redirects);
+    restore('DEVINT_OAUTH_ALLOW_LOOPBACK', previous.loopback);
     restore('DEVINT_COOKIE_SECURE', previous.cookie);
   }
 });

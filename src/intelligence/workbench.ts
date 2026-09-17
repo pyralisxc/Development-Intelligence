@@ -1,4 +1,4 @@
-import { loadRegistry } from '../config/registry.js';
+import { listAuthorizedGithubOwners, loadRegistry } from '../config/registry.js';
 import { projectStatus } from '../projectStatus.js';
 import { listPublicProjects } from '../source/git.js';
 import type { GraphEdge, GraphNode, IntelligenceGraph, RelationshipStatus, TechnicalSourceCapability } from '../types.js';
@@ -81,6 +81,7 @@ export async function workbenchProjects(): Promise<Record<string, unknown>> {
         technicalSources: config.technicalSources?.map(source => ({ id: source.id, label: source.label ?? source.id, capabilities: source.capabilities })) ?? [],
       };
     }),
+    githubOwners: listAuthorizedGithubOwners(),
   };
 }
 
