@@ -1,4 +1,10 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+  oauthSharedAuthorizationStateConfigured,
+  oauthSharedAuthorizationStateRequired,
+  storeOAuthAuthorizationCode,
+  takeOAuthAuthorizationCode,
+} from './oauthCodeStore.js';
 
 const DEFAULT_SCOPE = 'development-intelligence.read';
 const DEFAULT_REDIRECT_ORIGINS = ['https://chatgpt.com'];
@@ -24,10 +30,6 @@ export interface OAuthAuthorizationRequest {
   codeChallenge: string;
 }
 
-interface AuthorizationCodeRecord extends OAuthAuthorizationRequest {
-  expiresAt: number;
-}
-
 interface SignedTokenPayload {
   v: 1;
   typ: 'access' | 'refresh' | 'client';
@@ -44,8 +46,6 @@ interface SignedTokenPayload {
   responseTypes?: string[];
   applicationType?: string;
 }
-
-const authorizationCodes = new Map<string, AuthorizationCodeRecord>();
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -270,11 +270,10 @@ export function renderOAuthConsent(request: OAuthAuthorizationRequest): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize — Development Intelligence</title><style>:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#070a10;color:#edf4ff}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 15%,#13233a 0,#070a10 46%)}.card{width:min(520px,calc(100vw - 28px));border:1px solid #293a54;background:#0b121ddf;box-shadow:0 26px 70px #0008;border-radius:18px;padding:26px}.mark{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:#142943;border:1px solid #365579;color:#a4e4fa;font-weight:800}.eyebrow{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8093aa;margin-top:20px}h1{font-size:24px;margin:7px 0 7px}p{color:#91a2b8;font-size:13px;line-height:1.55}.box{border:1px solid #283a52;background:#0d1725;border-radius:10px;padding:12px;margin:16px 0;font-size:12px;line-height:1.6}.box strong{color:#d8ecff}button{width:100%;border:1px solid #3d6488;background:#173451;color:#ecf8ff;border-radius:10px;padding:11px 12px;font-weight:700;cursor:pointer}.note{margin-top:16px;padding-top:14px;border-top:1px solid #213047;color:#74869d;font-size:10px;line-height:1.45}</style></head><body><main class="card"><div class="mark">DI</div><div class="eyebrow">MCP authorization</div><h1>Allow ${escapeHtml(request.clientName)}?</h1><p>This grants read access to Development Intelligence through the MCP endpoint. Git/source remains implementation authority and this authorization does not grant repository write access.</p><div class="box"><strong>Client</strong>: ${escapeHtml(request.clientName)}<br><strong>Return host</strong>: ${escapeHtml(redirectHost)}<br><strong>Scope</strong>: ${escapeHtml(request.scope)}</div><form method="post" action="/oauth/authorize">${hidden}<button type="submit">Authorize Development Intelligence</button></form><div class="note">Only approve this request if you initiated the connection from ChatGPT or another trusted MCP client.</div></main></body></html>`;
 }
 
-export function issueAuthorizationCode(request: OAuthAuthorizationRequest): string {
+export async function issueAuthorizationCode(request: OAuthAuthorizationRequest): Promise<string> {
   const now = nowSeconds();
-  for (const [code, record] of authorizationCodes) if (record.expiresAt <= now) authorizationCodes.delete(code);
   const code = randomBytes(32).toString('base64url');
-  authorizationCodes.set(code, { ...request, expiresAt: now + AUTHORIZATION_CODE_TTL_SECONDS });
+  await storeOAuthAuthorizationCode(code, { ...request, expiresAt: now + AUTHORIZATION_CODE_TTL_SECONDS }, AUTHORIZATION_CODE_TTL_SECONDS);
   return code;
 }
 
@@ -325,16 +324,15 @@ function pkceMatches(verifier: string, challenge: string): boolean {
   return safeEqual(actual, challenge);
 }
 
-export function exchangeOAuthToken(params: URLSearchParams): Record<string, unknown> {
+export async function exchangeOAuthToken(params: URLSearchParams): Promise<Record<string, unknown>> {
   const grantType = params.get('grant_type');
   const clientId = params.get('client_id') ?? '';
   if (!clientId) throw Object.assign(new Error('client_id is required'), { status: 400, oauthError: 'invalid_client' });
   resolveClient(clientId);
   if (grantType === 'authorization_code') {
     const code = params.get('code') ?? '';
-    const record = authorizationCodes.get(code);
+    const record = await takeOAuthAuthorizationCode(code);
     if (!record) throw Object.assign(new Error('Authorization code is invalid or expired'), { status: 400, oauthError: 'invalid_grant' });
-    authorizationCodes.delete(code);
     if (record.expiresAt <= nowSeconds() || record.clientId !== clientId) throw Object.assign(new Error('Authorization code is invalid or expired'), { status: 400, oauthError: 'invalid_grant' });
     if ((params.get('redirect_uri') ?? '') !== record.redirectUri) throw Object.assign(new Error('redirect_uri does not match the authorization request'), { status: 400, oauthError: 'invalid_grant' });
     const verifier = params.get('code_verifier') ?? '';
@@ -406,6 +404,7 @@ export function oauthConfigurationValid(): boolean {
     oauthPublicBaseUrl();
     signingSecret();
     allowedRedirectOrigins();
+    if (oauthSharedAuthorizationStateRequired() && !oauthSharedAuthorizationStateConfigured()) return false;
     return Boolean(process.env.DEVINT_OWNER_PASSWORD?.trim());
   } catch {
     return false;
