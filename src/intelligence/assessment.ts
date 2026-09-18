@@ -113,6 +113,15 @@ function finding(graph: IntelligenceGraph, input: Omit<AuditFinding, 'id'>): Aud
   return { ...input, id: stableHash(['assessment-finding-v1', input.ruleId, input.category, input.affectedIds.slice().sort()]) };
 }
 
+function answerStatus(claims: readonly IntelligenceClaim[]): AssessmentStatus {
+  const contractClaims = claims.filter(item => item.type === 'contract-facet');
+  const decisive = contractClaims.length ? contractClaims : claims;
+  if (decisive.some(item => item.status === 'contradicted')) return 'contradicted';
+  if (decisive.some(item => item.status === 'indeterminate')) return 'indeterminate';
+  if (decisive.some(item => item.status === 'unproven')) return 'unproven';
+  return decisive.some(item => item.status === 'supported') ? 'supported' : 'indeterminate';
+}
+
 export function auditGraph(graph: IntelligenceGraph): AuditFinding[] {
   const findings: AuditFinding[] = [];
   const coverage = graphCoverage(graph);
@@ -182,7 +191,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   return {
     project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
     question, mode, interpretedSubject: subject || null, ambiguous, candidates: matches.map(node => ({ id: node.id, name: node.name ?? node.id, kind: node.kind })),
-    answerStatus: claims.some(item => item.status === 'contradicted') ? 'contradicted' : claims.some(item => item.status === 'supported') ? 'supported' : claims[0]?.status ?? 'indeterminate',
+    answerStatus: answerStatus(claims),
     claims, realization, findings, coverage: graphCoverage(graph),
     note: 'Assessments are deterministic projections over the selected graph. They are not persisted graph authority or product intent.',
   };

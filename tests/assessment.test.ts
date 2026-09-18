@@ -54,8 +54,17 @@ test('assessment produces deterministic revision-bound claims, proof, realizatio
 
 test('incomplete coverage keeps absent expectations unproven and emits a coverage finding', () => {
   const result = assessGraph(graph(false), 'How is Checkout capability realized?', ['provider']) as any;
+  assert.equal(result.answerStatus, 'unproven');
   assert.ok(result.claims.some((item: any) => item.type === 'contract-facet' && item.status === 'unproven'));
   assert.ok(auditGraph(graph(false)).some(item => item.ruleId === 'coverage.incomplete'));
+});
+
+test('unavailable coverage keeps the overall required-facet answer indeterminate', () => {
+  const fixture = graph();
+  delete fixture.coverage;
+  const result = assessGraph(fixture, 'How is Checkout realized?', ['provider']) as any;
+  assert.equal(result.answerStatus, 'indeterminate');
+  assert.ok(result.claims.some((item: any) => item.type === 'contract-facet' && item.status === 'indeterminate'));
 });
 
 test('uncontracted unobserved facets are not manufactured into missing claims', () => {
