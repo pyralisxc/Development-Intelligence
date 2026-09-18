@@ -72,3 +72,14 @@ test('uncontracted unobserved facets are not manufactured into missing claims', 
   assert.equal(result.claims.some((item: any) => item.type === 'contract-facet'), false);
   assert.equal(result.realization.facets.provider.observed, false);
 });
+
+test('assessment remains part of a capability name and unmatched questions do not dump unrelated findings', () => {
+  const fixture = graph();
+  fixture.nodes.push(node('capability:assessment-intelligence', 'capability', 'semantic', 'Evidence-backed assessment intelligence'));
+  const matched = assessGraph(fixture, 'How is assessment intelligence realized?') as any;
+  assert.equal(matched.realization.root.id, 'capability:assessment-intelligence');
+
+  const unmatched = assessGraph(fixture, 'Prove a capability that does not exist') as any;
+  assert.equal(unmatched.answerStatus, 'contradicted');
+  assert.deepEqual(unmatched.findings, []);
+});
