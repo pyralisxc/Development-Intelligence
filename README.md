@@ -46,6 +46,7 @@ Workbench/intelligence primitives:
 - `resolve_revision`
 - `project_status`
 - `project_overview`
+- `query_intelligence`
 - `inspect_entity`
 - `list_sources`
 - `query_source`
@@ -63,6 +64,8 @@ Graph/code primitives:
 - `get_evidence`
 - `diff_graph`
 - `query_parity`
+
+`query_intelligence` is the shared deterministic Assessment Engine used by MCP and the Workbench. It projects revision-bound claims, proof bundles, capability-realization facets, and audit findings over the selected graph. Caller-required facets are ephemeral expectations: an unobserved facet becomes contradicted only when eligible-source coverage is complete, remains unproven under incomplete coverage, and is never written into accepted semantic topology.
 - `evaluate_parity`
 
 There is no separate Parity database, public cache-management API, provider-specific graph query language, or development-methodology API.

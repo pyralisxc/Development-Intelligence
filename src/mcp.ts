@@ -5,6 +5,7 @@ import { scanGraph } from './intelligence/service.js';
 import { diffAcceptedToWorking, diffRevisions, graphArchitecture, graphCoverage, graphEvidence, graphSchema, parityLens, searchGraph, traceGraph } from './intelligence/query.js';
 import { getCodeSnippet, searchCode } from './intelligence/code.js';
 import { inspectEntity, projectOverview, workbenchSources } from './intelligence/workbench.js';
+import { queryIntelligence, type RealizationFacet } from './intelligence/assessment.js';
 import { queryTechnicalSource } from './intelligence/technicalSources.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import type { GraphNodeLayer, GraphCoverageStatus, RelationshipStatus, TechnicalSourceCapability } from './types.js';
@@ -103,6 +104,8 @@ const queryProperties = {
   offset: integer,
 };
 
+const realizationFacetsSchema = { type: 'array', items: { enum: ['human', 'agent', 'transport', 'implementation', 'persistence', 'provider'] }, maxItems: 6 };
+
 export const tools: ToolDefinition[] = [
   { name: 'list_projects', description: 'List configured project identities and dynamic GitHub owner namespaces Development Intelligence is authorized to inspect. Repositories under an authorized owner are addressed as owner/repository. Access configuration grants technical reach; it does not define project meaning.', inputSchema: objectSchema({}), handler: async () => ({
     projects: await listPublicProjects(),
@@ -121,6 +124,7 @@ export const tools: ToolDefinition[] = [
   }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'project_status', description: 'Report repository revision plus accepted semantic checkpoint and working-graph currentness dimensions without assigning product intent.', inputSchema: objectSchema({ project: string, checkUpstream: boolean }, ['project']), handler: async args => await projectStatus(s(args, 'project'), args.checkUpstream !== false) },
   { name: 'project_overview', description: 'Return a human-readable project overview synthesized from the same graph, coverage, change, and source evidence used by the Workbench.', inputSchema: objectSchema({ project: string, ref: string, graphId: string }, ['project']), handler: async args => await projectOverview(s(args, 'project'), optString(args, 'ref'), optString(args, 'graphId')) },
+  { name: 'query_intelligence', description: 'Evaluate a bounded technical question as revision-bound claims, proof bundles, capability realization, and generic audit findings over the canonical graph. Assessments are deterministic derived projections and never become graph authority or product intent. Pass requiredFacets only for caller-owned realization expectations.', inputSchema: objectSchema({ project: string, question: string, ref: string, graphId: string, requiredFacets: realizationFacetsSchema }, ['project', 'question']), handler: async args => { const ref = optString(args, 'ref'); const graphId = optString(args, 'graphId'); const requiredFacets = Array.isArray(args.requiredFacets) ? args.requiredFacets as RealizationFacet[] : undefined; return await queryIntelligence({ project: s(args, 'project'), question: s(args, 'question'), ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}), ...(requiredFacets?.length ? { requiredFacets } : {}) }); } },
   { name: 'inspect_entity', description: 'Inspect one exact or unambiguous entity with quick notes, connections, evidence, source context, and accepted-to-working change state.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, node: string }, ['project', 'node']), handler: async args => await inspectEntity({ project: s(args, 'project'), node: s(args, 'node'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId') }) },
   { name: 'list_sources', description: 'List Git, runtime, and configured read-only technical sources available to a project, including query/log/metrics capabilities.', inputSchema: objectSchema({ project: string, ref: string, graphId: string }, ['project']), handler: async args => await workbenchSources(s(args, 'project'), optString(args, 'ref'), optString(args, 'graphId')) },
   { name: 'query_source', description: 'Run a bounded read-only query against one explicitly configured technical source adapter. Query results are observations and never automatically become accepted topology.', inputSchema: objectSchema({ project: string, sourceId: string, capability: technicalCapabilitySchema, query: string, limit: integer, from: string, to: string }, ['project', 'sourceId', 'query']), handler: async args => await queryTechnicalSource({ project: s(args, 'project'), sourceId: s(args, 'sourceId'), capability: optString(args, 'capability') as TechnicalSourceCapability | undefined, query: s(args, 'query'), limit: typeof args.limit === 'number' ? args.limit : undefined, from: optString(args, 'from'), to: optString(args, 'to') }) },

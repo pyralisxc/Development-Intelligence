@@ -6,6 +6,7 @@ import { getCodeSnippet, searchCode } from './code.js';
 import { currentGraph } from './service.js';
 import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLens, searchGraph, traceGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
+import { assessGraph, auditGraph, queryIntelligence } from './assessment.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -97,6 +98,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
   const representation = graph.nodes.filter(node => node.layer === 'representation');
   const relations = edgeCounts(graph.edges);
   const diffCounts = semanticDiffCounts(diff);
+  const findings = auditGraph(graph);
   const notes = [
     `${project} is currently mapped as ${semantic.length} semantic concepts, ${structural.length} structural/code entities, and ${representation.length} observed representations.`,
     coverageNote(graph),
@@ -106,6 +108,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
     ? `Accepted → working semantic change: ${diffCounts.added} added, ${diffCounts.removed} removed, ${diffCounts.changed} changed records.`
     : 'No accepted → working semantic topology change is currently detected.');
   if (graph.explicitValueConflicts.length) notes.push(`${graph.explicitValueConflicts.length} explicit semantic value conflict(s) need attention.`);
+  if (findings.length) notes.push(`${findings.length} deterministic evidence finding(s) currently deserve attention; findings remain revision-bound projections rather than accepted graph truth.`);
   return {
     project,
     graphId: graph.graphId,
@@ -128,6 +131,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
     highlights: semanticHighlights(graph).map(node => ({ id: node.id, kind: node.kind, name: displayName(node), locator: node.locator })),
     areas: topAreas(graph),
     changes: diff ? { ...diffCounts, detail: diff } : null,
+    findings: findings.slice(0, 20),
     sources,
   };
 }
@@ -189,6 +193,9 @@ export async function inspectEntity(input: { project: string; node: string; ref?
   ];
   if (resolvedNames.length) quickNotes.push(`Key resolved context: ${resolvedNames.join('; ')}.`);
   if (evidence.length) quickNotes.push(`${evidence.length} evidence record(s) support this entity or its visible relationships.`);
+  const assessment = assessGraph(graph, selected.id);
+  const assessmentStatus = String((assessment as any).answerStatus ?? 'indeterminate');
+  quickNotes.push(`Evidence-backed assessment: ${assessmentStatus}.`);
   let code: unknown = null;
   try { code = await getCodeSnippet({ project: input.project, ref: input.ref, graphId: input.graphId, node: selected.id, context: 5 }); } catch { /* semantic/runtime entities may not map to one source snippet */ }
   let change: unknown = null;
@@ -209,6 +216,7 @@ export async function inspectEntity(input: { project: string; node: string; ref?
     code,
     change,
     coverage: graph.coverage ?? null,
+    assessment,
   };
 }
 
@@ -246,6 +254,10 @@ export async function queryWorkbench(input: {
   if (input.sourceId) {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
     return { intent: 'source-query', answer: `Read-only query sent to ${input.sourceId}.`, result: external };
+  }
+  if (/\b(audit|finding|problem|risk|realiz\w*|implement\w*|capability|proof|prove)\b/.test(lower)) {
+    const result = await queryIntelligence({ project: input.project, question: text, ...(input.ref ? { ref: input.ref } : {}), ...(input.graphId ? { graphId: input.graphId } : {}) });
+    return { intent: 'intelligence', answer: `Evidence-backed assessment: ${String((result as any).answerStatus ?? 'indeterminate')}.`, result };
   }
   if (/\b(what changed|changes?|diff|delta)\b/.test(lower)) {
     const result = await diffAcceptedToWorking(input.project, input.ref);

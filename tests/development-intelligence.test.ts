@@ -275,6 +275,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'resolve_revision',
     'project_status',
     'project_overview',
+    'query_intelligence',
     'inspect_entity',
     'list_sources',
     'query_source',

@@ -237,6 +237,11 @@ The permanent agent-facing tools are:
 - `list_projects`
 - `resolve_revision`
 - `project_status`
+- `project_overview`
+- `query_intelligence`
+- `inspect_entity`
+- `list_sources`
+- `query_source`
 - `scan_graph`
 - `search_graph`
 - `trace_path`
@@ -249,6 +254,8 @@ The permanent agent-facing tools are:
 - `diff_graph`
 - `query_parity`
 - `evaluate_parity`
+
+The Assessment Engine is a derived query layer over this graph, not a second authority. `query_intelligence` and the Workbench use the same engine to produce deterministic, revision/analyzer-bound claims, proof bundles, capability-realization facets, and coverage/conflict/relationship/realization findings. Proof cites existing node, edge, and evidence identities. Assessments and caller-required facets are ephemeral and are not checkpointed. Complete coverage permits a bounded contradiction for a required but unobserved facet; incomplete or unavailable coverage keeps the conclusion unproven or indeterminate.
 
 Graph-consuming tools address canonical project/ref W, a reconstructible canonical `repo-…` graph ID, or an explicit ephemeral runtime `snapshot-…` graph ID where applicable. `search_graph` and `query_parity` also accept up to 20 independent `queries`, evaluated over one loaded graph.
 
