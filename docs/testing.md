@@ -68,7 +68,7 @@ Independent agreeing observations may accumulate evidence for one stable identit
 
 Every eligible source file resolves to an explicit coverage state such as `complete`, `partial`, `unsupported`, `skipped`, or `failed`. Analyzer failure must never count as complete inspection.
 
-Portfolio acceptance also checks exact GitHub revisions of representative C#/Unity and Java repositories. This is release evidence rather than a mandatory network test: the hermetic suite protects the parser and coverage contracts, while the portfolio replay proves those contracts still produce useful graph depth at real scale.
+Portfolio acceptance also checks exact GitHub revisions of representative C#/Unity (`pyralisxc/Game-Studio-Core`) and Java (`pyralisxc/Medieval-Sim`) repositories. The `polyglot-portfolio-benchmark` CI job pins both revisions, preserves incomplete coverage explicitly, and publishes disposable replay evidence. The hermetic suite protects parser and coverage contracts; the portfolio replay proves those contracts still produce useful graph depth at real scale.
 
 ### Human Workbench over agent truth
 
@@ -125,7 +125,7 @@ Acceptance covers modern `2026-07-28` discovery, routing headers, complete resul
 
 ## CardForge evidence strategy
 
-The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It also protects three agent-workflow concerns observed in real CardForge tasks: one-call grouped exploration, stateless reconstruction of canonical graph IDs, and searchable CSS structure for camera/responsive/layout evidence. It does not depend on the retired Product Reality oracle, interpret Product Reality metadata as DI semantics, or write a DI checkpoint into CardForge.
+The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It also protects three agent-workflow concerns observed in real CardForge tasks: one-call grouped exploration, stateless reconstruction of canonical graph IDs, and searchable CSS structure for camera/responsive/layout evidence. Assessment calibration additionally proves natural feature phrasing, present-symbol existence questions, and subject-scoped audits without manufacturing undeclared capability semantics. It does not depend on the retired Product Reality oracle, interpret Product Reality metadata as DI semantics, or write a DI checkpoint into CardForge.
 
 ## Preview acceptance
 

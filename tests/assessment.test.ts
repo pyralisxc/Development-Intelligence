@@ -83,3 +83,30 @@ test('assessment remains part of a capability name and unmatched questions do no
   assert.equal(unmatched.answerStatus, 'contradicted');
   assert.deepEqual(unmatched.findings, []);
 });
+
+test('natural existence and work phrasing resolves semantic subjects without false contradiction', () => {
+  const fixture = graph();
+  fixture.nodes.push(node('feature:storage-management', 'feature', 'semantic', 'storage-management'));
+  fixture.nodes.push(node('function:create-zone', 'function', 'structural', 'createLibraryZoneAction'));
+
+  const feature = assessGraph(fixture, 'How is storage management implemented?') as any;
+  assert.equal(feature.answerStatus, 'supported');
+  assert.equal(feature.realization.root.id, 'feature:storage-management');
+
+  const symbol = assessGraph(fixture, 'Prove createLibraryZoneAction exists') as any;
+  assert.equal(symbol.answerStatus, 'supported');
+  assert.equal(symbol.claims[0].subjectId, 'function:create-zone');
+});
+
+test('scoped audits do not return unrelated repository-wide relationship findings', () => {
+  const fixture = graph();
+  fixture.nodes.push(node('feature:storage-management', 'feature', 'semantic', 'storage-management'));
+  fixture.nodes.push(node('function:unrelated', 'function', 'structural', 'unrelated'));
+  fixture.edges.push(edge('unrelated-candidate', 'function:unrelated', null, 'calls', 'candidate'));
+
+  const scoped = assessGraph(fixture, 'Audit storage management') as any;
+  assert.deepEqual(scoped.findings, []);
+
+  const global = assessGraph(fixture, 'Audit graph') as any;
+  assert.ok(global.findings.some((item: any) => item.proof.edgeIds.includes('unrelated-candidate')));
+});

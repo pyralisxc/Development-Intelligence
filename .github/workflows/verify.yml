@@ -114,6 +114,49 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  polyglot-portfolio-benchmark:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GAME_STUDIO_CORE_BENCHMARK_SHA: 55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d
+      MEDIEVAL_SIM_BENCHMARK_SHA: 8f721556d9548dfd09378d337b06416415ee09e7
+    steps:
+      - name: Check out Development Intelligence candidate
+        uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Check out pinned C#/Unity target
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/Game-Studio-Core
+          ref: 55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d
+          path: benchmark/game-studio-core
+          persist-credentials: false
+      - name: Check out pinned Java target
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/Medieval-Sim
+          ref: 8f721556d9548dfd09378d337b06416415ee09e7
+          path: benchmark/medieval-sim
+          persist-credentials: false
+      - name: Replay pinned polyglot portfolio
+        run: |
+          node scripts/benchmark-polyglot-portfolio.mjs benchmark/game-studio-core benchmark/medieval-sim
+          cat benchmark-polyglot-portfolio.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload portfolio evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-polyglot-portfolio
+          path: |
+            benchmark-polyglot-portfolio.json
+            benchmark-polyglot-portfolio.md
+          if-no-files-found: error
+          retention-days: 14
+
   preview:
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.body, '<!-- devint-preview -->')
     needs: [verify, cardforge-benchmark]

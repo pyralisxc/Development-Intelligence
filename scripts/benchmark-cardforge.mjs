@@ -41,6 +41,21 @@ const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
 
+const assessmentStarted = Date.now();
+const featureAssessment = await callTool('query_intelligence', { project, graphId: scan.graphId, question: 'How is storage management implemented?' });
+if (featureAssessment.answerStatus !== 'supported' || featureAssessment.realization?.root?.id !== 'feature:storage-management') {
+  throw new Error('CardForge assessment did not resolve natural-language feature phrasing to storage-management');
+}
+const existenceAssessment = await callTool('query_intelligence', { project, graphId: scan.graphId, question: 'Prove createLibraryZoneAction exists' });
+if (existenceAssessment.answerStatus === 'contradicted' || existenceAssessment.interpretedSubject !== 'createLibraryZoneAction') {
+  throw new Error('CardForge assessment falsely contradicted a present symbol or retained existence boilerplate');
+}
+const scopedAudit = await callTool('query_intelligence', { project, graphId: scan.graphId, question: 'Audit storage management' });
+if (!Array.isArray(scopedAudit.findings) || scopedAudit.findings.length >= 1000) {
+  throw new Error(`CardForge scoped audit was not bounded: ${scopedAudit.findings?.length ?? 'missing'} findings`);
+}
+const assessmentElapsedMs = Date.now() - assessmentStarted;
+
 const probes = [
   {
     name: 'Library zone action factory',
@@ -155,6 +170,12 @@ const report = {
     candidateRelationships: semanticEdges.filter(edge => edge.status === 'candidate').length,
     unresolvedRelationships: semanticEdges.filter(edge => edge.status === 'unresolved').length,
   },
+  assessment: {
+    elapsedMs: assessmentElapsedMs,
+    feature: { answerStatus: featureAssessment.answerStatus, root: featureAssessment.realization?.root ?? null },
+    symbolExistence: { answerStatus: existenceAssessment.answerStatus, ambiguous: existenceAssessment.ambiguous, candidateCount: existenceAssessment.candidates?.length ?? 0 },
+    scopedAudit: { answerStatus: scopedAudit.answerStatus, findingCount: scopedAudit.findings.length },
+  },
   probes: probeResults,
   groupedSearch: {
     queryCount: groupedSearch.results.length,
@@ -184,6 +205,7 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
+  `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
   '',
   '## Representative structural agent probes',
   '',
