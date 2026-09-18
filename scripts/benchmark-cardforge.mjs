@@ -51,8 +51,11 @@ if (existenceAssessment.answerStatus === 'contradicted' || existenceAssessment.i
   throw new Error('CardForge assessment falsely contradicted a present symbol or retained existence boilerplate');
 }
 const scopedAudit = await callTool('query_intelligence', { project, graphId: scan.graphId, question: 'Audit storage management' });
-if (!Array.isArray(scopedAudit.findings) || scopedAudit.findings.length >= 1000) {
+if (!Array.isArray(scopedAudit.findings) || scopedAudit.findings.length >= 150) {
   throw new Error(`CardForge scoped audit was not bounded: ${scopedAudit.findings?.length ?? 'missing'} findings`);
+}
+if (scopedAudit.findingSummary?.total !== scopedAudit.findings.length || scopedAudit.findingSummary?.scope?.resolvedDepth !== 2 || !Array.isArray(scopedAudit.findingSummary?.groups)) {
+  throw new Error('CardForge scoped audit did not explain its blast radius and grouped findings');
 }
 const assessmentElapsedMs = Date.now() - assessmentStarted;
 
@@ -174,7 +177,7 @@ const report = {
     elapsedMs: assessmentElapsedMs,
     feature: { answerStatus: featureAssessment.answerStatus, root: featureAssessment.realization?.root ?? null },
     symbolExistence: { answerStatus: existenceAssessment.answerStatus, ambiguous: existenceAssessment.ambiguous, candidateCount: existenceAssessment.candidates?.length ?? 0 },
-    scopedAudit: { answerStatus: scopedAudit.answerStatus, findingCount: scopedAudit.findings.length },
+    scopedAudit: { answerStatus: scopedAudit.answerStatus, findingCount: scopedAudit.findings.length, summary: scopedAudit.findingSummary },
   },
   probes: probeResults,
   groupedSearch: {
