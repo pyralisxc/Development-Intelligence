@@ -2,8 +2,8 @@
   "type": "meta",
   "schemaVersion": 2,
   "format": "sharded-ndjson",
-  "analyzerVersion": "2.5.0-web-structure",
-  "sourceFingerprint": "08463a15d520058b14e9963a5c7a1ca0351736daec4114e903e1cd890dd22849",
+  "analyzerVersion": "2.6.0-behavior-observations",
+  "sourceFingerprint": "4f5a3e9257b3e74a1315c1181709d04c86ba02a2cfc808572c34cc7d0e256884",
   "topologyFingerprint": "e7d255a32ee27076b460b82334ff39d1bbbb823123ccb9240f3621ae0abaa283",
   "evidenceFingerprint": "86949f75aac9d83b7daeb7d3b2a22e6317f5cefb9b38d883f54665eca65ac4c7",
   "shards": [
