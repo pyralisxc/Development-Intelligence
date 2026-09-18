@@ -106,7 +106,21 @@ test('scoped audits do not return unrelated repository-wide relationship finding
 
   const scoped = assessGraph(fixture, 'Audit storage management') as any;
   assert.deepEqual(scoped.findings, []);
+  assert.deepEqual(scoped.findingSummary.scope, { rootId: 'feature:storage-management', resolvedDepth: 2, nodeCount: 1 });
 
   const global = assessGraph(fixture, 'Audit graph') as any;
   assert.ok(global.findings.some((item: any) => item.proof.edgeIds.includes('unrelated-candidate')));
+});
+
+test('audit summaries group underlying findings without discarding their evidence', () => {
+  const fixture = graph();
+  fixture.nodes.push(node('feature:storage-management', 'feature', 'semantic', 'storage-management'));
+  fixture.edges.push(edge('feature-path', 'feature:storage-management', 'function:checkout', 'implemented-by'));
+  fixture.edges.push(edge('candidate-one', 'function:checkout', 'api:/checkout', 'same_observed_name', 'candidate'));
+  fixture.edges.push(edge('candidate-two', 'function:checkout', 'mcp:checkout', 'same_observed_name', 'candidate'));
+
+  const result = assessGraph(fixture, 'Audit storage management') as any;
+  assert.equal(result.findings.length, 2);
+  assert.equal(result.findingSummary.total, result.findings.length);
+  assert.deepEqual(result.findingSummary.groups.map((item: any) => [item.relationshipKind, item.count]), [['same_observed_name', 2]]);
 });

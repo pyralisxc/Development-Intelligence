@@ -126,6 +126,27 @@ function answerStatus(claims: readonly IntelligenceClaim[]): AssessmentStatus {
   return decisive.some(item => item.status === 'supported') ? 'supported' : 'indeterminate';
 }
 
+function summarizeFindings(graph: IntelligenceGraph, findings: readonly AuditFinding[], scope: { rootId: string; resolvedDepth: number; nodeCount: number } | null): Record<string, unknown> {
+  const edges = new Map(graph.edges.map(edge => [edge.id, edge]));
+  const grouped = new Map<string, { category: AuditFinding['category']; ruleId: string; relationshipKind: string | null; count: number; affectedIds: Set<string>; sampleFindingIds: string[] }>();
+  for (const item of findings) {
+    const relationshipKind = item.proof.edgeIds.map(id => edges.get(id)?.kind).find(Boolean) ?? null;
+    const key = [item.category, item.ruleId, relationshipKind ?? ''].join('\0');
+    const group = grouped.get(key) ?? { category: item.category, ruleId: item.ruleId, relationshipKind, count: 0, affectedIds: new Set<string>(), sampleFindingIds: [] };
+    group.count += 1;
+    for (const id of item.affectedIds) group.affectedIds.add(id);
+    if (group.sampleFindingIds.length < 3) group.sampleFindingIds.push(item.id);
+    grouped.set(key, group);
+  }
+  return {
+    total: findings.length,
+    scope,
+    groups: [...grouped.values()]
+      .map(group => ({ ...group, affectedIds: [...group.affectedIds].sort() }))
+      .sort((a, b) => b.count - a.count || a.ruleId.localeCompare(b.ruleId) || (a.relationshipKind ?? '').localeCompare(b.relationshipKind ?? '')),
+  };
+}
+
 export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<string>): AuditFinding[] {
   const findings: AuditFinding[] = [];
   const coverage = graphCoverage(graph);
@@ -199,17 +220,21 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   }
 
   const globalAudit = mode === 'audit' && (!subject || /^(?:all|global|graph|project|repository)$/u.test(searchableText(subject)));
-  const findingScope = selected ? new Set(resolvedNeighborhood(graph, selected).nodes.map(node => node.id)) : undefined;
+  const auditNeighborhood = selected && mode === 'audit' ? resolvedNeighborhood(graph, selected, 2) : null;
+  const findingScope = auditNeighborhood ? new Set(auditNeighborhood.nodes.map(node => node.id)) : undefined;
   const findings = globalAudit
     ? auditGraph(graph)
     : selected
       ? auditGraph(graph, mode === 'audit' ? findingScope : new Set([selected.id]))
       : auditGraph(graph, new Set()).filter(item => item.category === 'coverage');
+  const findingSummary = summarizeFindings(graph, findings, selected && auditNeighborhood
+    ? { rootId: selected.id, resolvedDepth: 2, nodeCount: auditNeighborhood.nodes.length }
+    : null);
   return {
     project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
     question, mode, interpretedSubject: subject || null, ambiguous, candidates: matches.map(node => ({ id: node.id, name: node.name ?? node.id, kind: node.kind })),
     answerStatus: answerStatus(claims),
-    claims, realization, findings, coverage: graphCoverage(graph),
+    claims, realization, findings, findingSummary, coverage: graphCoverage(graph),
     note: 'Assessments are deterministic projections over the selected graph. They are not persisted graph authority or product intent.',
   };
 }
