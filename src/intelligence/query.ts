@@ -5,6 +5,7 @@ import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, Intelli
 import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
 import { currentGraph, graphContext, repositoryGraphs } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
+import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 
 function nodeText(node: GraphNode): string {
   return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ').toLowerCase();
@@ -227,7 +228,7 @@ export async function traceGraph(input: {
     };
   }
   const start = candidates.find(node => node.id === query) ?? candidates[0]!;
-  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const context = graphQueryContext(graph);
   const allowedKinds = new Set(input.relationshipKinds ?? []);
   const allowedStatuses = new Set(input.statuses ?? ['resolved']);
   const allowedLayers = new Set(input.layers ?? []);
@@ -236,11 +237,12 @@ export async function traceGraph(input: {
   const direction = input.direction ?? 'both';
   const visited = new Set<string>([start.id]);
   const selectedEdges: GraphEdge[] = [];
+  const selectedEdgeIds = new Set<string>();
   let frontier = [start.id];
   for (let depth = 0; depth < maxDepth && frontier.length && visited.size < limit; depth += 1) {
     const next: string[] = [];
     for (const current of frontier) {
-      for (const edge of graph.edges) {
+      for (const edge of context.incident(current)) {
         if (!allowedStatuses.has(edge.status) || !edge.from || !edge.to) continue;
         if (allowedKinds.size && !allowedKinds.has(edge.kind)) continue;
         if (!layersMatch(edge.layer, allowedLayers)) continue;
@@ -248,7 +250,7 @@ export async function traceGraph(input: {
         if ((direction === 'outbound' || direction === 'both') && edge.from === current) neighbor = edge.to;
         else if ((direction === 'inbound' || direction === 'both') && edge.to === current) neighbor = edge.from;
         if (!neighbor) continue;
-        if (!selectedEdges.some(item => item.id === edge.id)) selectedEdges.push(edge);
+        if (!selectedEdgeIds.has(edge.id)) { selectedEdgeIds.add(edge.id); selectedEdges.push(edge); }
         if (!visited.has(neighbor) && visited.size < limit) { visited.add(neighbor); next.push(neighbor); }
       }
     }
@@ -261,7 +263,7 @@ export async function traceGraph(input: {
     coverage: coverageSummary(graph),
     ambiguous: false,
     start,
-    nodes: [...visited].map(id => byId.get(id)).filter(Boolean),
+    nodes: [...visited].map(id => context.node(id)).filter(Boolean),
     edges: selectedEdges,
   };
 }
@@ -277,6 +279,7 @@ function architectureArea(node: GraphNode): string {
 
 export async function graphArchitecture(project: string, ref?: string, graphId?: string): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
+  const context = graphQueryContext(graph);
   const kinds: Record<string, number> = {};
   const relationshipKinds: Record<string, number> = {};
   const relationshipStatuses: Record<string, number> = {};
@@ -294,8 +297,9 @@ export async function graphArchitecture(project: string, ref?: string, graphId?:
   const semanticFeatures = graph.nodes.filter(node => node.layer === 'semantic' && node.kind === 'feature');
   const featureIds = new Set(semanticFeatures.map(node => node.id));
   const features = semanticFeatures.map(feature => {
-    const outgoing = graph.edges.filter(edge => edge.from === feature.id && edge.status === 'resolved');
-    const incoming = graph.edges.filter(edge => edge.to === feature.id && edge.status === 'resolved');
+    const outgoing = context.outgoing(feature.id).filter(edge => edge.status === 'resolved');
+    const incoming = context.incoming(feature.id).filter(edge => edge.status === 'resolved');
+    const related = context.incident(feature.id);
     return {
       id: feature.id,
       name: feature.name ?? feature.id.slice('feature:'.length),
@@ -305,8 +309,8 @@ export async function graphArchitecture(project: string, ref?: string, graphId?:
       routeCount: incoming.filter(edge => edge.kind === 'composes' && edge.from?.startsWith('route:')).length,
       mcpCount: incoming.filter(edge => edge.kind === 'implemented-by' && edge.from?.startsWith('mcp:')).length,
       providerCount: outgoing.filter(edge => edge.kind === 'integrates-with' && edge.to?.startsWith('provider:')).length,
-      candidateRelations: graph.edges.filter(edge => (edge.from === feature.id || edge.to === feature.id) && edge.status === 'candidate').length,
-      unresolvedRelations: graph.edges.filter(edge => (edge.from === feature.id || edge.to === feature.id) && edge.status === 'unresolved').length,
+      candidateRelations: related.filter(edge => edge.status === 'candidate').length,
+      unresolvedRelations: related.filter(edge => edge.status === 'unresolved').length,
     };
   }).sort((a, b) => (b.dependsOn.length + b.usedBy.length + b.apiCount + b.routeCount + b.mcpCount) - (a.dependsOn.length + a.usedBy.length + a.apiCount + a.routeCount + a.mcpCount));
 
@@ -334,9 +338,9 @@ export async function graphArchitecture(project: string, ref?: string, graphId?:
       semanticNodes: graph.nodes.filter(node => node.layer === 'semantic').length,
       structuralNodes: graph.nodes.filter(node => (node.layer ?? 'structural') === 'structural').length,
       representationNodes: graph.nodes.filter(node => node.layer === 'representation').length,
-      resolvedEdges: graph.edges.filter(edge => edge.status === 'resolved').length,
-      candidateEdges: graph.edges.filter(edge => edge.status === 'candidate').length,
-      unresolvedEdges: graph.edges.filter(edge => edge.status === 'unresolved').length,
+      resolvedEdges: context.edgesByStatus.get('resolved')?.length ?? 0,
+      candidateEdges: context.edgesByStatus.get('candidate')?.length ?? 0,
+      unresolvedEdges: context.edgesByStatus.get('unresolved')?.length ?? 0,
       nodeKinds: kinds,
       relationshipKinds,
       relationshipStatuses,
@@ -379,8 +383,10 @@ export async function graphCoverage(project: string, ref?: string, graphId?: str
   };
 }
 
-function semanticNeighborhood(graph: IntelligenceGraph, entityIds: Set<string>): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  const edges = graph.edges.filter(edge => edge.layer === 'semantic' && ((edge.from && entityIds.has(edge.from)) || (edge.to && entityIds.has(edge.to))));
+function semanticNeighborhood(graph: IntelligenceGraph, context: GraphQueryContext, entityIds: Set<string>): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const edgeIds = new Set<string>();
+  for (const entityId of entityIds) for (const edge of context.incident(entityId)) if (edge.layer === 'semantic') edgeIds.add(edge.id);
+  const edges = graph.edges.filter(edge => edgeIds.has(edge.id));
   const ids = new Set(entityIds);
   for (const edge of edges) {
     if (edge.from) ids.add(edge.from);
@@ -402,7 +408,7 @@ interface ParityLensInput {
   offset?: number | undefined;
 }
 
-function parityLensResult(graph: IntelligenceGraph, input: ParityLensInput, requestedQuery?: string): Record<string, unknown> {
+function parityLensResult(graph: IntelligenceGraph, context: GraphQueryContext, input: ParityLensInput, requestedQuery?: string): Record<string, unknown> {
   const query = requestedQuery?.trim().toLowerCase();
   const kinds = new Set(input.kinds ?? []);
   const offset = Math.max(input.offset ?? 0, 0);
@@ -413,11 +419,11 @@ function parityLensResult(graph: IntelligenceGraph, input: ParityLensInput, requ
     semantic = semantic.filter(node => sourceIds.has(node.sourceId));
   }
   const selected = semantic.slice(offset, offset + limit);
-  const neighborhood = semanticNeighborhood(graph, new Set(selected.map(node => node.id)));
+  const neighborhood = semanticNeighborhood(graph, context, new Set(selected.map(node => node.id)));
   const status = new Set(input.status ?? []);
   const relationships = neighborhood.edges.filter(edge => !status.size || status.has(edge.status));
   const representations = selected.map(entity => {
-    const related = graph.edges.filter(edge => edge.from === entity.id || edge.to === entity.id);
+    const related = context.incident(entity.id);
     const resolved = related.filter(edge => edge.status === 'resolved');
     const connected = (prefix: string) => [...new Set(resolved.flatMap(edge => [edge.from, edge.to]).filter((id): id is string => Boolean(id && id.startsWith(prefix))))];
     return {
@@ -450,6 +456,7 @@ function parityLensResult(graph: IntelligenceGraph, input: ParityLensInput, requ
 export async function parityLens(input: ParityLensInput): Promise<Record<string, unknown>> {
   if (input.query && input.queries?.length) throw new Error('Use either query or queries, not both');
   const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const context = graphQueryContext(graph);
   const common = {
     project: input.project,
     graphId: graph.graphId,
@@ -461,20 +468,19 @@ export async function parityLens(input: ParityLensInput): Promise<Record<string,
   if (input.queries) {
     const queries = input.queries.map(query => query.trim()).filter(Boolean);
     if (!queries.length) throw new Error('queries must contain at least one non-empty string');
-    return { ...common, results: queries.map(query => parityLensResult(graph, input, query)) };
+    return { ...common, results: queries.map(query => parityLensResult(graph, context, input, query)) };
   }
-  return { ...common, ...parityLensResult(graph, input, input.query) };
+  return { ...common, ...parityLensResult(graph, context, input, input.query) };
 }
 
-function boundedNeighborhood(graph: IntelligenceGraph, seedIds: string[], depth: number, limit: number): { nodes: GraphNode[]; edges: GraphEdge[] } {
+function boundedNeighborhood(graph: IntelligenceGraph, context: GraphQueryContext, seedIds: string[], depth: number, limit: number): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const visited = new Set(seedIds);
   let frontier = [...seedIds];
   for (let d = 0; d < depth && frontier.length && visited.size < limit; d += 1) {
     const next: string[] = [];
     for (const current of frontier) {
-      for (const edge of graph.edges) {
+      for (const edge of context.incident(current)) {
         if (edge.status !== 'resolved' || !edge.from || !edge.to) continue;
-        if (edge.from !== current && edge.to !== current) continue;
         const neighbor = edge.from === current ? edge.to : edge.from;
         if (!visited.has(neighbor) && visited.size < limit) { visited.add(neighbor); next.push(neighbor); }
       }
@@ -501,6 +507,7 @@ export async function viewerProjection(input: {
   limit?: number;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const context = graphQueryContext(graph);
   const view = input.view ?? 'architecture';
   const limit = Math.min(Math.max(input.limit ?? 700, 50), 2000);
   const depth = Math.min(Math.max(input.depth ?? 2, 1), 5);
@@ -512,7 +519,7 @@ export async function viewerProjection(input: {
       return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, query: requested, ambiguous: true, candidates: candidates.map(node => ({ id: node.id, kind: node.kind, layer: node.layer ?? 'structural', name: node.name ?? null, locator: node.locator })), nodes: [], edges: [] };
     }
     const selected = candidates.find(node => node.id === requested) ?? candidates[0]!;
-    const neighborhood = boundedNeighborhood(graph, [selected.id], depth, limit);
+    const neighborhood = boundedNeighborhood(graph, context, [selected.id], depth, limit);
     const evidenceIds = new Set([
       ...neighborhood.nodes.flatMap(node => node.evidenceIds ?? []),
       ...neighborhood.edges.flatMap(edge => edge.evidenceIds ?? []),

@@ -2,6 +2,7 @@ import ts from 'typescript';
 import type { AnalyzeContext, AnalyzeResult } from '../model.js';
 import { evidenceRecord, observation, redactSensitiveValue, resolution, semanticEntity, semanticRelationship } from '../model.js';
 import type { EvidenceRecord, Observation } from '../../types.js';
+import { callbackIdentifier, callLeafName, destructuredParameterNames, templateTarget } from './typescriptBehavior.js';
 
 const UI_TAGS = new Set(['button', 'a', 'input', 'select', 'textarea', 'form', 'label']);
 const SEMANTIC_DECLARATION_FIELD = 'developmentIntelligence';
@@ -87,10 +88,13 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const symbols = new Map<string, Observation[]>();
   const symbolsByIdentity = new Map<string, { observation: Observation; declaration: ts.Node }>();
   const identityCollisions = new Map<string, number>();
-  const pendingHandlers: Array<{ ui: Observation; handler: string; line: number }> = [];
+  const pendingHandlers: Array<{ ui: Observation; handler: string; line: number; ownerId: string | null }> = [];
   const pendingReferences: Array<{ from: Observation; targetName: string; kind: string; line: number }> = [];
   const functionStack: Observation[] = [];
   const scopeStack: string[] = [];
+  const componentPropsByOwner = new Map<string, Set<string>>();
+  const stateSetters = new Map<string, { state: string; binding: Observation }>();
+  const routerBindings = new Set<string>();
 
   const lineOf = (node: ts.Node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
   const locator = (node: ts.Node, suffix = '') => `${context.locatorBase}:${lineOf(node)}${suffix}`;
@@ -229,6 +233,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
 
     if (ts.isFunctionDeclaration(node) && node.name) {
       const symbol = addSymbol(node.name.text, 'function', node);
+      const props = destructuredParameterNames(node.parameters);
+      if (props.size) componentPropsByOwner.set(symbol.id, props);
       functionStack.push(symbol);
       scopeStack.push(node.name.text);
       pushedFunction = true;
@@ -243,6 +249,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
       const parentFunction = functionOwner();
       const nested = addSymbol(node.name.text, 'function', node);
+      const props = destructuredParameterNames(node.initializer.parameters);
+      if (props.size) componentPropsByOwner.set(nested.id, props);
       if (parentFunction) resolutions.push(resolution({ from: parentFunction.id, to: nested.id, kind: 'contains', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'structural', checkpoint: false }));
       functionStack.push(nested);
       scopeStack.push(node.name.text);
@@ -256,6 +264,24 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     else if (ts.isTypeAliasDeclaration(node)) addSymbol(node.name.text, 'type', node);
 
     if (ts.isObjectLiteralExpression(node)) parseSemanticDeclaration(node);
+
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const initializer = unwrap(node.initializer) ?? node.initializer;
+      if (ts.isArrayBindingPattern(node.name) && ts.isCallExpression(initializer) && callLeafName(initializer.expression) === 'useState') {
+        const stateElement = node.name.elements[0];
+        const setterElement = node.name.elements[1];
+        if (stateElement && setterElement && ts.isBindingElement(stateElement) && ts.isBindingElement(setterElement) && ts.isIdentifier(stateElement.name) && ts.isIdentifier(setterElement.name)) {
+          const state = stateElement.name.text;
+          const setter = setterElement.name.text;
+          const binding = observation({ sourceId: context.source.id, kind: 'state-binding', locator: locator(node, ':state'), name: state, field: 'state', value: { state, setter }, layer: 'representation', checkpoint: false });
+          observations.push(binding);
+          stateSetters.set(setter, { state, binding });
+          const owner = functionOwner();
+          if (owner) resolutions.push(resolution({ from: owner.id, to: binding.id, kind: 'declares-state', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'representation', checkpoint: false }));
+        }
+      }
+      if (ts.isIdentifier(node.name) && ts.isCallExpression(initializer) && callLeafName(initializer.expression) === 'useRouter') routerBindings.add(node.name.text);
+    }
 
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isObjectLiteralExpression(unwrap(node.initializer) ?? node.initializer)) {
       const owner = symbols.get(node.name.text)?.[0] ?? addSymbol(node.name.text, 'declaration', node);
@@ -294,10 +320,20 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         }
         if (onClick?.initializer && ts.isJsxExpression(onClick.initializer) && onClick.initializer.expression) {
           const expression = onClick.initializer.expression;
-          let handler: string | undefined;
-          if (ts.isIdentifier(expression)) handler = expression.text;
-          else if (ts.isArrowFunction(expression) && ts.isCallExpression(expression.body) && ts.isIdentifier(expression.body.expression)) handler = expression.body.expression.text;
-          if (handler) pendingHandlers.push({ ui, handler, line: lineOf(onClick) });
+          const handler = callbackIdentifier(expression);
+          if (handler) pendingHandlers.push({ ui, handler, line: lineOf(onClick), ownerId: functionOwner()?.id ?? null });
+        }
+      }
+      if (!UI_TAGS.has(tagName.toLowerCase()) && /^[A-Z]/u.test(tagName)) {
+        const attrs = opening.attributes.properties.filter(ts.isJsxAttribute);
+        for (const attr of attrs) {
+          const prop = attr.name.getText(sourceFile);
+          if (!/^on[A-Z]/u.test(prop) || !attr.initializer || !ts.isJsxExpression(attr.initializer) || !attr.initializer.expression) continue;
+          const handler = callbackIdentifier(attr.initializer.expression);
+          if (!handler) continue;
+          const binding = observation({ sourceId: context.source.id, kind: 'component-prop-binding', locator: locator(attr, `:${tagName}.${prop}`), name: `${tagName}.${prop}`, field: 'component-prop', value: { component: tagName, prop, handler }, layer: 'representation', checkpoint: false });
+          observations.push(binding);
+          pendingReferences.push({ from: binding, targetName: handler, kind: 'binds_to', line: lineOf(attr) });
         }
       }
     }
@@ -305,17 +341,44 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     if (ts.isCallExpression(node)) {
       const owner = functionOwner();
       const expressionText = node.expression.getText(sourceFile);
-      if (expressionText === 'fetch' && node.arguments.length >= 1 && ts.isStringLiteralLike(node.arguments[0]!)) {
-        const url = node.arguments[0]!.text;
-        let method = 'GET';
-        const init = node.arguments[1];
-        if (init && ts.isObjectLiteralExpression(unwrap(init) ?? init)) {
-          const methodProp = (unwrap(init)! as ts.ObjectLiteralExpression).properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(sourceFile) === 'method');
-          if (methodProp && ts.isPropertyAssignment(methodProp) && ts.isStringLiteralLike(methodProp.initializer)) method = methodProp.initializer.text.toUpperCase();
+      if (expressionText === 'fetch' && node.arguments.length >= 1) {
+        const target = templateTarget(node.arguments[0], sourceFile);
+        if (target) {
+          const url = target.text;
+          let method = 'GET';
+          const init = node.arguments[1];
+          if (init && ts.isObjectLiteralExpression(unwrap(init) ?? init)) {
+            const methodProp = (unwrap(init)! as ts.ObjectLiteralExpression).properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(sourceFile) === 'method');
+            if (methodProp && ts.isPropertyAssignment(methodProp) && ts.isStringLiteralLike(methodProp.initializer)) method = methodProp.initializer.text.toUpperCase();
+          }
+          const call = observation({ sourceId: context.source.id, kind: 'http-call', locator: locator(node, ':fetch'), name: `${method} ${url}`, field: 'http', value: { method, url, dynamic: target.dynamic }, layer: 'representation', checkpoint: false });
+          observations.push(call);
+          if (owner) resolutions.push(resolution({ from: owner.id, to: call.id, kind: 'invokes', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'representation', checkpoint: false }));
         }
-        const call = observation({ sourceId: context.source.id, kind: 'http-call', locator: locator(node, ':fetch'), name: `${method} ${url}`, field: 'http', value: { method, url }, layer: 'representation', checkpoint: false });
-        observations.push(call);
-        if (owner) resolutions.push(resolution({ from: owner.id, to: call.id, kind: 'invokes', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'representation', checkpoint: false }));
+      }
+      if (ts.isIdentifier(node.expression)) {
+        const state = stateSetters.get(node.expression.text);
+        if (state) {
+          const write = observation({ sourceId: context.source.id, kind: 'state-write', locator: locator(node, ':state-write'), name: state.state, field: 'state', value: { state: state.state, setter: node.expression.text, expression: node.arguments[0]?.getText(sourceFile) ?? null }, layer: 'representation', checkpoint: false });
+          observations.push(write);
+          resolutions.push(resolution({ from: state.binding.id, to: write.id, kind: 'writes', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'representation', checkpoint: false }));
+          if (owner) resolutions.push(resolution({ from: owner.id, to: write.id, kind: 'invokes', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'representation', checkpoint: false }));
+        }
+      }
+      if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'rpc') {
+        const routine = staticString(node.arguments[0]);
+        if (routine) {
+          const call = observation({ sourceId: context.source.id, kind: 'rpc-call', locator: locator(node, ':rpc'), name: routine, field: 'rpc', value: { routine }, layer: 'representation', checkpoint: false });
+          observations.push(call);
+          if (owner) resolutions.push(resolution({ from: owner.id, to: call.id, kind: 'invokes', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'representation', checkpoint: false }));
+        }
+      }
+      if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression) && routerBindings.has(node.expression.expression.text) && ['push', 'replace'].includes(node.expression.name.text)) {
+        const target = templateTarget(node.arguments[0], sourceFile);
+        const navTarget = target?.text ?? node.arguments[0]?.getText(sourceFile) ?? null;
+        const nav = observation({ sourceId: context.source.id, kind: 'navigation-call', locator: locator(node, ':navigation'), name: String(navTarget ?? node.expression.getText(sourceFile)), field: 'navigation', value: { operation: `router.${node.expression.name.text}`, target: navTarget, dynamic: target?.dynamic ?? null }, layer: 'representation', checkpoint: false });
+        observations.push(nav);
+        if (owner) resolutions.push(resolution({ from: owner.id, to: nav.id, kind: 'invokes', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'representation', checkpoint: false }));
       }
       if ((expressionText.endsWith('.assign') || expressionText.endsWith('.replace')) && /location/.test(expressionText)) {
         const target = node.arguments[0] && ts.isStringLiteralLike(node.arguments[0]) ? node.arguments[0].text : node.arguments[0]?.getText(sourceFile) ?? null;
@@ -343,8 +406,19 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   for (const pending of pendingHandlers) {
     const targets = symbols.get(pending.handler) ?? [];
     const target = targets.length === 1 ? targets[0] : undefined;
-    if (target) resolutions.push(resolution({ from: pending.ui.id, to: target.id, kind: 'handled_by', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${pending.line}`], layer: 'representation', checkpoint: false }));
-    else resolutions.push(resolution({ from: pending.ui.id, to: null, kind: 'handled_by', strategy: targets.length > 1 ? 'ambiguous' : 'unresolved', confidence: null, status: 'unresolved', evidence: [targets.length > 1 ? `handler identifier ${pending.handler} is ambiguous in ${context.locatorBase}:${pending.line}` : `handler identifier ${pending.handler} was not resolved in ${context.locatorBase}:${pending.line}`], layer: 'representation', checkpoint: false }));
+    if (target) {
+      resolutions.push(resolution({ from: pending.ui.id, to: target.id, kind: 'handled_by', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${pending.line}`], layer: 'representation', checkpoint: false }));
+      continue;
+    }
+    const owner = pending.ownerId ? symbolsByIdentity.get(pending.ownerId)?.observation : undefined;
+    const props = pending.ownerId ? componentPropsByOwner.get(pending.ownerId) : undefined;
+    if (targets.length === 0 && owner && props?.has(pending.handler)) {
+      const prop = observation({ sourceId: context.source.id, kind: 'component-prop-handler', locator: `${context.locatorBase}:${pending.line}:prop-handler`, name: `${owner.name ?? owner.id}.${pending.handler}`, field: 'component-prop', value: { component: owner.name ?? owner.id, prop: pending.handler }, layer: 'representation', checkpoint: false });
+      observations.push(prop);
+      resolutions.push(resolution({ from: pending.ui.id, to: prop.id, kind: 'handled_by', strategy: 'component-prop', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${pending.line}`], layer: 'representation', checkpoint: false }));
+      continue;
+    }
+    resolutions.push(resolution({ from: pending.ui.id, to: null, kind: 'handled_by', strategy: targets.length > 1 ? 'ambiguous' : 'unresolved', confidence: null, status: 'unresolved', evidence: [targets.length > 1 ? `handler identifier ${pending.handler} is ambiguous in ${context.locatorBase}:${pending.line}` : `handler identifier ${pending.handler} was not resolved in ${context.locatorBase}:${pending.line}`], layer: 'representation', checkpoint: false }));
   }
   for (const pending of pendingReferences) {
     const targets = symbols.get(pending.targetName) ?? [];

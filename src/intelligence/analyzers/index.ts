@@ -7,6 +7,7 @@ import { analyzeHtml } from './html.js';
 import { analyzePolyglot } from './polyglot.js';
 import { analyzeUnityMeta, analyzeUnitySerialized } from './unity.js';
 import { analyzeCss } from './css.js';
+import { analyzeSql } from './sql.js';
 
 const EMPTY: AnalyzeResult = { observations: [], resolutions: [] };
 
@@ -14,7 +15,7 @@ export const SOURCE_ANALYSIS_SUPPORT = [
   {
     technology: 'TypeScript/JavaScript',
     extensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
-    precision: 'declarations, containment, modules, imports, re-exports, provable calls, and selected representation evidence',
+    precision: 'declarations, containment, modules, imports, re-exports, provable calls, component callback bindings, dynamic HTTP targets, state, navigation, RPC, and selected representation evidence',
   },
   {
     technology: 'C#',
@@ -42,6 +43,11 @@ export const SOURCE_ANALYSIS_SUPPORT = [
     precision: 'selectors, declarations, at-rules, custom properties, and nesting context; source-to-selector usage is not inferred',
   },
   {
+    technology: 'SQL',
+    extensions: ['.sql'],
+    precision: 'tables, functions/procedures, triggers, policies, indexes, privileges, and conservative routine read/write references',
+  },
+  {
     technology: 'Unity serialized assets',
     extensions: ['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer'],
     precision: 'asset GUID identity, serialized objects, local object relationships, and uniquely provable cross-asset references',
@@ -61,6 +67,7 @@ export function analyzeByTechnology(context: AnalyzeContext): AnalyzeResult {
     if (['.md', '.mdx'].includes(ext)) return analyzeMarkdown(context);
     if (['.html', '.htm'].includes(ext)) return analyzeHtml(context);
     if (ext === '.css') return analyzeCss(context);
+    if (ext === '.sql') return analyzeSql(context);
     if (['.cs', '.java', '.py'].includes(ext)) return analyzePolyglot(context, ext);
     if (ext === '.meta') return analyzeUnityMeta(context);
     if (['.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer'].includes(ext)) return analyzeUnitySerialized(context);
@@ -85,3 +92,4 @@ export function analyzeByTechnology(context: AnalyzeContext): AnalyzeResult {
 export { analyzeHtml } from './html.js';
 export { analyzeJson } from './json.js';
 export { analyzeCss } from './css.js';
+export { analyzeSql } from './sql.js';
