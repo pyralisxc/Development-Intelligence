@@ -75,18 +75,22 @@ function nodeText(node: GraphNode): string {
   return [node.id, node.name, node.kind, node.locator, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ').toLowerCase();
 }
 
+function searchableText(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}_./:@]+/gu, ' ').replace(/\s+/gu, ' ').trim();
+}
+
 function candidates(graph: IntelligenceGraph, query: string): GraphNode[] {
-  const needle = query.trim().toLowerCase();
+  const needle = searchableText(query);
   if (!needle) return [];
   const exact = graph.nodes.find(node => node.id === query);
   if (exact) return [exact];
-  const named = graph.nodes.filter(node => node.name?.toLowerCase() === needle);
-  return (named.length ? named : graph.nodes.filter(node => nodeText(node).includes(needle))).slice(0, 20);
+  const named = graph.nodes.filter(node => node.name && searchableText(node.name) === needle);
+  return (named.length ? named : graph.nodes.filter(node => searchableText(nodeText(node)).includes(needle))).slice(0, 20);
 }
 
 function subjectFromQuestion(question: string): string {
   return question
-    .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|show|inspect|what|where|the|for|of|in)\b/giu, ' ')
+    .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|show|inspect|what|where|the|for|of|in|exists?|existence|works?|working)\b/giu, ' ')
     .replace(/[^\p{L}\p{N}_./:@-]+/gu, ' ')
     .replace(/\s+/gu, ' ')
     .trim();
@@ -122,7 +126,7 @@ function answerStatus(claims: readonly IntelligenceClaim[]): AssessmentStatus {
   return decisive.some(item => item.status === 'supported') ? 'supported' : 'indeterminate';
 }
 
-export function auditGraph(graph: IntelligenceGraph): AuditFinding[] {
+export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<string>): AuditFinding[] {
   const findings: AuditFinding[] = [];
   const coverage = graphCoverage(graph);
   if (!coverage || !coverage.completeForEligibleSources) findings.push(finding(graph, {
@@ -130,19 +134,19 @@ export function auditGraph(graph: IntelligenceGraph): AuditFinding[] {
     summary: coverage ? `Coverage is incomplete (${coverage.partial} partial, ${coverage.failed} failed, ${coverage.skipped} skipped eligible sources). Negative conclusions must remain qualified.` : 'Coverage details are unavailable; negative conclusions are indeterminate.',
     affectedIds: graph.unavailableSourceIds.slice().sort(), proof: proof(graph, 'coverage.incomplete', [], []),
   }));
-  for (const conflict of graph.explicitValueConflicts) findings.push(finding(graph, {
+  for (const conflict of graph.explicitValueConflicts.filter(item => !affectedIds || affectedIds.has(item.entityId))) findings.push(finding(graph, {
     ruleId: 'evidence.explicit-conflict', category: 'conflict', status: 'attention',
     summary: `Conflicting observed values for ${conflict.entityId}.${conflict.key}.`, affectedIds: [conflict.entityId],
     proof: proof(graph, 'evidence.explicit-conflict', graph.nodes.filter(node => node.id === conflict.entityId), []),
   }));
-  for (const edge of graph.edges.filter(item => item.status !== 'resolved')) findings.push(finding(graph, {
+  for (const edge of graph.edges.filter(item => item.status !== 'resolved' && (!affectedIds || (typeof item.from === 'string' && affectedIds.has(item.from)) || (typeof item.to === 'string' && affectedIds.has(item.to))))) findings.push(finding(graph, {
     ruleId: `relationship.${edge.status}`, category: 'relationship', status: 'attention',
     summary: `${edge.kind} relationship remains ${edge.status}; it cannot satisfy a proof requiring resolved evidence.`,
     affectedIds: [edge.from, edge.to].filter((id): id is string => Boolean(id)),
     proof: proof(graph, `relationship.${edge.status}`, graph.nodes.filter(node => node.id === edge.from || node.id === edge.to), [edge]),
   }));
   const context = graphQueryContext(graph);
-  for (const node of graph.nodes.filter(item => item.layer === 'semantic' && ['capability', 'action'].includes(item.kind))) {
+  for (const node of graph.nodes.filter(item => item.layer === 'semantic' && ['capability', 'action'].includes(item.kind) && (!affectedIds || affectedIds.has(item.id)))) {
     const incident = context.incident(node.id);
     if (!incident.some(edge => edge.status === 'resolved')) findings.push(finding(graph, {
       ruleId: 'realization.disconnected', category: 'realization', status: 'attention',
@@ -159,7 +163,14 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   const subject = subjectFromQuestion(question);
   const matches = candidates(graph, subject || question);
   const semanticCapabilities = matches.filter(node => node.layer === 'semantic' && node.kind === 'capability');
-  const selected = matches.length === 1 ? matches[0] : mode === 'realization' && semanticCapabilities.length === 1 ? semanticCapabilities[0] : undefined;
+  const semanticRoots = matches.filter(node => node.layer === 'semantic' && ['capability', 'action', 'feature', 'api', 'route', 'provider', 'mcp', 'surface'].includes(node.kind));
+  const selected = matches.length === 1
+    ? matches[0]
+    : mode === 'realization' && semanticCapabilities.length === 1
+      ? semanticCapabilities[0]
+      : mode === 'realization' && semanticRoots.length === 1
+        ? semanticRoots[0]
+        : undefined;
   const ambiguous = matches.length > 1 && !selected;
   const claims: IntelligenceClaim[] = [];
   let realization: Record<string, unknown> | null = null;
@@ -187,7 +198,13 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
     claims.push(claim({ type: 'entity-exists', status: ambiguous ? 'unproven' : coverage ? (coverage.completeForEligibleSources ? 'contradicted' : 'unproven') : 'indeterminate', statement: ambiguous ? `“${subject || question}” is ambiguous.` : `No entity matching “${subject || question}” was observed.`, subjectId: null, proof: proof(graph, 'entity.exists', matches, []) }));
   }
 
-  const findings = auditGraph(graph).filter(item => mode === 'audit' ? true : selected ? item.affectedIds.includes(selected.id) : item.category === 'coverage');
+  const globalAudit = mode === 'audit' && (!subject || /^(?:all|global|graph|project|repository)$/u.test(searchableText(subject)));
+  const findingScope = selected ? new Set(resolvedNeighborhood(graph, selected).nodes.map(node => node.id)) : undefined;
+  const findings = globalAudit
+    ? auditGraph(graph)
+    : selected
+      ? auditGraph(graph, mode === 'audit' ? findingScope : new Set([selected.id]))
+      : auditGraph(graph, new Set()).filter(item => item.category === 'coverage');
   return {
     project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
     question, mode, interpretedSubject: subject || null, ambiguous, candidates: matches.map(node => ({ id: node.id, name: node.name ?? node.id, kind: node.kind })),
