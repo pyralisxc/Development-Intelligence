@@ -179,6 +179,8 @@ The Inspector synthesizes graph/evidence records into a human-readable technical
 
 The Workbench can route deterministic read-only questions across DI capabilities such as overview, search, code, parity, coverage, tracing, changes, and configured technical sources.
 
+Evidence-backed assessment questions render as a human-readable explanation rather than a raw graph payload: overall status, revision and coverage context, capability-realization facets, individual claims with proof counts and evidence locations, and bounded audit findings. The raw assessment remains available as an expandable technical record.
+
 This is not intended to masquerade as an unconstrained language model. Query results remain evidence-backed and inspectable.
 
 ### Sources

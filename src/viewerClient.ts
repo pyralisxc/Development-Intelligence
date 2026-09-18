@@ -111,6 +111,36 @@ function wireNodeButtons(root: ParentNode = content): void {
   }
 }
 
+function assessmentStatusClass(status: string): string {
+  if (status === 'supported') return 'status-good';
+  if (status === 'contradicted') return 'status-bad';
+  return 'status-warn';
+}
+
+function renderAssessment(data: any, compact = false): string {
+  if (!data?.claims || !Array.isArray(data.claims)) return '';
+  const claims = data.claims as any[];
+  const findings = Array.isArray(data.findings) ? data.findings as any[] : [];
+  const facets = Object.entries(data.realization?.facets ?? {}) as Array<[string, any]>;
+  const requiredFacets = new Set<string>(data.realization?.requiredFacets ?? []);
+  const coverage = data.coverage;
+  const coverageLabel = coverage?.completeForEligibleSources === true ? 'complete eligible-source coverage' : coverage ? 'incomplete eligible-source coverage' : 'coverage unavailable';
+  const facetRows = facets.map(([name, facet]) => {
+    const required = requiredFacets.has(name);
+    const statusClass = facet.observed ? 'status-good' : required ? 'status-warn' : '';
+    const label = facet.observed ? 'observed' : required ? 'required · not observed' : 'not observed';
+    return `<div class="assessment-facet"><span class="badge ${statusClass}">${esc(label)}</span><strong>${esc(name)}</strong>${compact ? '' : `<small>${esc((facet.nodeIds ?? []).length)} supporting node(s)</small>`}</div>`;
+  }).join('');
+  const claimRows = claims.map(item => {
+    const proof = item.proof ?? {};
+    const proofSummary = `${(proof.nodeIds ?? []).length} nodes · ${(proof.edgeIds ?? []).length} relationships · ${(proof.evidenceIds ?? []).length} evidence records`;
+    const evidence = (proof.evidence ?? []).map((record: any) => `<li>${esc(record.locator ?? record.id)}</li>`).join('');
+    return `<div class="assessment-item"><div><span class="badge ${assessmentStatusClass(item.status)}">${esc(item.status)}</span> <span class="muted">${esc(proof.ruleId ?? item.type)}</span></div><strong>${esc(item.statement)}</strong><small>${esc(proofSummary)}</small>${!compact && evidence ? `<details><summary class="muted">Evidence locations</summary><ul>${evidence}</ul></details>` : ''}</div>`;
+  }).join('');
+  const findingRows = findings.map(item => `<div class="assessment-item"><div><span class="badge status-warn">${esc(item.category)}</span> <span class="muted">${esc(item.ruleId)}</span></div><strong>${esc(item.summary)}</strong><small>${esc((item.affectedIds ?? []).length)} affected graph record(s)</small></div>`).join('');
+  return `<div class="assessment"><div class="assessment-head"><div><h3>Evidence-backed assessment</h3><h2 class="${assessmentStatusClass(data.answerStatus)}">${esc(data.answerStatus)}</h2></div><div class="assessment-meta">Revision ${esc(data.revision ?? 'unknown')}<br>${esc(coverageLabel)}</div></div>${facets.length ? `<div class="assessment-section"><h3>Capability realization</h3><div class="assessment-facets">${facetRows}</div></div>` : ''}<div class="assessment-section"><h3>Claims and proof</h3><div class="list">${claimRows}</div></div>${findings.length ? `<div class="assessment-section"><h3>Findings</h3><div class="list">${findingRows}</div></div>` : ''}${compact ? '' : `<details><summary class="muted">Raw assessment record</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`}</div>`;
+}
+
 function setInspectorTabs(): void {
   const tabs = ['summary', 'connections', 'code', 'evidence', 'changes'];
   inspectorTabs.innerHTML = tabs.map(tab => `<button data-inspector-tab="${tab}" class="${inspectorTab === tab ? 'active' : ''}">${tab[0]!.toUpperCase()}${tab.slice(1)}</button>`).join('');
@@ -134,7 +164,7 @@ function renderInspector(): void {
   inspectorContext.textContent = entity.kind ?? '';
   setInspectorTabs();
   if (inspectorTab === 'summary') {
-    inspectorBody.innerHTML = `<div class="inspector-title">${esc(entity.name ?? entity.id)}</div><div class="inspector-sub">${esc(entity.id)}<br>${esc(entity.locator ?? '')}</div><div style="margin:10px 0"><span class="badge">${esc(entity.kind)}</span> <span class="badge">${esc(entity.layer ?? 'structural')}</span></div>${(data.quickNotes ?? []).map((note: string) => `<div class="quick-note">${esc(note)}</div>`).join('')}<details style="margin-top:12px"><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(entity, null, 2))}</pre></details>`;
+    inspectorBody.innerHTML = `<div class="inspector-title">${esc(entity.name ?? entity.id)}</div><div class="inspector-sub">${esc(entity.id)}<br>${esc(entity.locator ?? '')}</div><div style="margin:10px 0"><span class="badge">${esc(entity.kind)}</span> <span class="badge">${esc(entity.layer ?? 'structural')}</span></div>${(data.quickNotes ?? []).map((note: string) => `<div class="quick-note">${esc(note)}</div>`).join('')}${renderAssessment(data.assessment, true)}<details style="margin-top:12px"><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(entity, null, 2))}</pre></details>`;
     return;
   }
   if (inspectorTab === 'connections') {
@@ -175,7 +205,8 @@ async function renderOverview(epoch: number): Promise<void> {
   if (!sectionIsCurrent(epoch, 'overview')) return;
   const counts = data.counts ?? {};
   const currentness = data.currentness ?? {};
-  content.innerHTML = `<div class="hero-grid"><div class="card"><h3>Quick documentation</h3><h2>${esc(viewerConfig.project)}</h2><p>${esc(data.summary)}</p>${(data.quickNotes ?? []).map((note: string) => `<div class="note"><span class="note-dot"></span><span>${esc(note)}</span></div>`).join('')}</div><div class="card"><h3>Current state</h3><div class="metric-grid">${metric('semantic concepts', counts.semantic ?? 0)}${metric('code entities', counts.structural ?? 0)}${metric('representations', counts.representation ?? 0)}${metric('evidence records', counts.evidence ?? 0)}${metric('candidate relations', counts.relationships?.candidate ?? 0)}${metric('conflicts', counts.conflicts ?? 0)}</div><p class="muted">Accepted semantic current: ${currentness.acceptedSemanticCurrent === true ? 'yes' : currentness.acceptedSemanticCurrent === false ? 'no' : 'unknown'}</p></div></div><div class="hero-grid" style="margin-top:14px"><div class="card"><h3>Important concepts</h3><div class="list">${(data.highlights ?? []).slice(0, 12).map((item: any) => nodeRow(item)).join('') || '<p>No explicit semantic concepts were discovered. Structural intelligence is still available in Explore.</p>'}</div></div><div class="card"><h3>Repository areas</h3><div class="list">${(data.areas ?? []).map((area: any) => `<div class="row"><span class="row-main"><strong>${esc(area.name)}</strong><small>${esc(area.count)} mapped entities</small></span></div>`).join('')}</div></div></div><div class="card" style="margin-top:14px"><h3>Sources at a glance</h3><div class="grid">${(data.sources ?? []).map((source: any) => `<div class="source-card card"><span class="badge">${esc(source.type)}</span><h2 style="font-size:15px;margin-top:9px">${esc(source.label)}</h2><p>${esc((source.capabilities ?? []).join(' · '))}</p><div class="source-status status-good">${source.configured ? 'configured' : 'not configured'} · ${esc(source.access ?? 'read-only')}</div></div>`).join('')}</div></div>`;
+  const overviewFindings = (data.findings ?? []).slice(0, 8);
+  content.innerHTML = `<div class="hero-grid"><div class="card"><h3>Quick documentation</h3><h2>${esc(viewerConfig.project)}</h2><p>${esc(data.summary)}</p>${(data.quickNotes ?? []).map((note: string) => `<div class="note"><span class="note-dot"></span><span>${esc(note)}</span></div>`).join('')}</div><div class="card"><h3>Current state</h3><div class="metric-grid">${metric('semantic concepts', counts.semantic ?? 0)}${metric('code entities', counts.structural ?? 0)}${metric('representations', counts.representation ?? 0)}${metric('evidence records', counts.evidence ?? 0)}${metric('candidate relations', counts.relationships?.candidate ?? 0)}${metric('conflicts', counts.conflicts ?? 0)}</div><p class="muted">Accepted semantic current: ${currentness.acceptedSemanticCurrent === true ? 'yes' : currentness.acceptedSemanticCurrent === false ? 'no' : 'unknown'}</p></div></div>${overviewFindings.length ? `<div class="card" style="margin-top:14px"><h3>Evidence findings</h3><div class="list">${overviewFindings.map((item: any) => `<div class="assessment-item"><div><span class="badge status-warn">${esc(item.category)}</span> <span class="muted">${esc(item.ruleId)}</span></div><strong>${esc(item.summary)}</strong><small>${esc((item.affectedIds ?? []).length)} affected graph record(s)</small></div>`).join('')}</div></div>` : ''}<div class="hero-grid" style="margin-top:14px"><div class="card"><h3>Important concepts</h3><div class="list">${(data.highlights ?? []).slice(0, 12).map((item: any) => nodeRow(item)).join('') || '<p>No explicit semantic concepts were discovered. Structural intelligence is still available in Explore.</p>'}</div></div><div class="card"><h3>Repository areas</h3><div class="list">${(data.areas ?? []).map((area: any) => `<div class="row"><span class="row-main"><strong>${esc(area.name)}</strong><small>${esc(area.count)} mapped entities</small></span></div>`).join('')}</div></div></div><div class="card" style="margin-top:14px"><h3>Sources at a glance</h3><div class="grid">${(data.sources ?? []).map((source: any) => `<div class="source-card card"><span class="badge">${esc(source.type)}</span><h2 style="font-size:15px;margin-top:9px">${esc(source.label)}</h2><p>${esc((source.capabilities ?? []).join(' · '))}</p><div class="source-status status-good">${source.configured ? 'configured' : 'not configured'} · ${esc(source.access ?? 'read-only')}</div></div>`).join('')}</div></div>`;
   wireNodeButtons();
 }
 
@@ -258,7 +289,7 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
   const sourceData = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
   if (!sectionIsCurrent(epoch, 'query')) return;
   const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
-  content.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: What changed? What depends on query_parity? Show code for ownerPasswordMatches. Or choose a technical source and enter a database/log query.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><p class="muted">DI queries are deterministic projections over graph/code/change evidence. External technical sources are bounded read-only adapter requests and do not automatically become accepted topology.</p></div><div id="query-result" class="query-result"></div>`;
+  content.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><p class="muted">DI queries are deterministic projections over graph/code/change evidence. External technical sources are bounded read-only adapter requests and do not automatically become accepted topology.</p></div><div id="query-result" class="query-result"></div>`;
   const run = async () => {
     const text = (document.getElementById('query-text') as HTMLTextAreaElement).value.trim();
     const sourceId = (document.getElementById('query-source') as HTMLSelectElement).value;
@@ -316,6 +347,7 @@ async function renderParity(epoch: number): Promise<void> {
 
 function renderQueryResult(result: any): string {
   if (!result) return '';
+  if (Array.isArray(result.claims) && result.answerStatus) return renderAssessment(result);
   if (result.entity) return `<div class="list">${nodeRow(result.entity)}</div>`;
   if (Array.isArray(result.nodes)) return `<div class="list">${result.nodes.slice(0, 30).map(nodeRow).join('')}</div><details><summary class="muted">Raw result</summary><pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre></details>`;
   if (result.data !== undefined) return `<pre class="raw">${esc(JSON.stringify(result.data, null, 2))}</pre>`;

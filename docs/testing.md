@@ -80,6 +80,7 @@ The human Workbench is a client of the same Development Intelligence services ag
 - persistent Inspector with Summary/Connections/Code/Evidence/Changes;
 - Query routing over DI's own read-only capabilities;
 - shared evidence-backed assessment for Claim/Proof, Capability Realization, and audit findings;
+- readable Workbench assessment presentation with status, coverage, facets, claims/proof, findings, and an inspectable raw record;
 - Sources inventory including Git/runtime and optional technical sources;
 - Changes as readable accepted → working semantic intelligence and arbitrary revision-to-revision replay;
 - `/graph?project=...` compatibility redirect into Explore/Graph.
