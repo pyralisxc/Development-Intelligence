@@ -369,6 +369,25 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(html, /Inspector/);
     assert.match(html, /Revision selector/);
     assert.match(html, /graph is one representation/i);
+    assert.match(html, /assessment-head/);
+
+    const viewerBundle = await fetch(`${origin}/viewer.js`);
+    assert.equal(viewerBundle.status, 200);
+    const viewerJavaScript = await viewerBundle.text();
+    assert.match(viewerJavaScript, /Evidence-backed assessment/);
+    assert.match(viewerJavaScript, /Claims and proof/);
+
+    const intelligenceQuery = await fetch(`${origin}/workbench/query`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: fixture.project, text: 'How is feature:storage capability realized?' }),
+    });
+    assert.equal(intelligenceQuery.status, 200);
+    const intelligenceBody = await intelligenceQuery.json() as any;
+    assert.equal(intelligenceBody.intent, 'intelligence');
+    assert.ok(Array.isArray(intelligenceBody.result.claims));
+    assert.equal(typeof intelligenceBody.result.answerStatus, 'string');
+    assert.equal(typeof intelligenceBody.result.revision, 'string');
 
     const historicalBase = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD~1'])).stdout.trim();
     const historicalParams = new URLSearchParams({ project: fixture.project, action: 'changes', baseRef: `commit:${historicalBase}`, headRef: 'branch:main' });

@@ -86,7 +86,7 @@ function candidates(graph: IntelligenceGraph, query: string): GraphNode[] {
 
 function subjectFromQuestion(question: string): string {
   return question
-    .replace(/\b(audit|assess|assessment|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|show|inspect|what|where|the|for|of|in)\b/giu, ' ')
+    .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|show|inspect|what|where|the|for|of|in)\b/giu, ' ')
     .replace(/[^\p{L}\p{N}_./:@-]+/gu, ' ')
     .replace(/\s+/gu, ' ')
     .trim();
@@ -187,7 +187,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
     claims.push(claim({ type: 'entity-exists', status: ambiguous ? 'unproven' : coverage ? (coverage.completeForEligibleSources ? 'contradicted' : 'unproven') : 'indeterminate', statement: ambiguous ? `“${subject || question}” is ambiguous.` : `No entity matching “${subject || question}” was observed.`, subjectId: null, proof: proof(graph, 'entity.exists', matches, []) }));
   }
 
-  const findings = auditGraph(graph).filter(item => mode === 'audit' || !selected || item.affectedIds.includes(selected.id));
+  const findings = auditGraph(graph).filter(item => mode === 'audit' ? true : selected ? item.affectedIds.includes(selected.id) : item.category === 'coverage');
   return {
     project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
     question, mode, interpretedSubject: subject || null, ambiguous, candidates: matches.map(node => ({ id: node.id, name: node.name ?? node.id, kind: node.kind })),
