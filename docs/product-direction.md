@@ -79,8 +79,9 @@ As of release **v2.9.0**, the production service at `https://devint.cardforges.c
 - one schema-v2 intrinsic graph with semantic, structural, and representation layers;
 - exact Git revision resolution for commits, branches, tags, and explicit pull-request head/base/result identities;
 - accepted/working/candidate graph lifecycle with deterministic Git-owned semantic checkpoints;
-- graph search, grouped multi-query search, relationship tracing, exact-revision source search/snippets, architecture, coverage, evidence, change, parity, and caller-owned Parity Contract evaluation;
+- graph search, grouped multi-query search, relationship tracing, exact-revision source search/snippets, architecture, coverage, evidence, change, parity, caller-owned Parity Contract evaluation, and deterministic evidence-backed assessment;
 - a human Workbench and modern MCP `2026-07-28` surface over the same intelligence;
+- shared Claim/Proof, Capability Realization, and audit-finding projections through `query_intelligence` and the Workbench, without creating a second graph authority;
 - TypeScript/JavaScript, C#, Java, Python, CSS, structured-text, and Unity serialized/configuration analysis at the precision disclosed by `get_graph_schema`;
 - optional source-adjacent generic semantic declarations;
 - allowlisted runtime observations and generic bounded read-only HTTP technical sources;
@@ -94,6 +95,7 @@ Current boundaries are equally important:
 - TypeScript/JavaScript has the deepest cross-file call intelligence; other language analyzers expose narrower, disclosed precision.
 - CSS structure is searchable, but component-to-selector usage is not inferred.
 - Runtime and configured technical-source observations do not automatically become accepted semantic topology.
+- Assessment results and caller-required realization facets are ephemeral projections; they are not accepted semantic topology or inferred product intent.
 - Source-adjacent declarations can state generic current semantics; Development Intelligence does not determine whether those semantics are desirable product intent.
 - Arbitrary external analyzers may contribute evidence only after a generic adapter contract exists; no plugin may dictate graph identity or lifecycle.
 - The service inspects and explains. It does not write inspected repositories or operate their providers.

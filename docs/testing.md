@@ -79,6 +79,7 @@ The human Workbench is a client of the same Development Intelligence services ag
 - Explore using Summary/List/Table/Graph/Raw representations;
 - persistent Inspector with Summary/Connections/Code/Evidence/Changes;
 - Query routing over DI's own read-only capabilities;
+- shared evidence-backed assessment for Claim/Proof, Capability Realization, and audit findings;
 - Sources inventory including Git/runtime and optional technical sources;
 - Changes as readable accepted → working semantic intelligence and arbitrary revision-to-revision replay;
 - `/graph?project=...` compatibility redirect into Explore/Graph.
@@ -87,7 +88,9 @@ The graph remains an important representation, but the human product must not re
 
 ### Workbench / MCP capability parity
 
-Durable intelligence primitives used by the Workbench must also be available to agents. The public MCP surface therefore includes `project_overview`, `inspect_entity`, `list_sources`, and `query_source` in addition to the graph/code primitives.
+Durable intelligence primitives used by the Workbench must also be available to agents. The public MCP surface therefore includes `project_overview`, `query_intelligence`, `inspect_entity`, `list_sources`, and `query_source` in addition to the graph/code primitives.
+
+Assessment acceptance protects deterministic revision-bound claim/finding identities, proof references to canonical graph evidence, realization-facet traversal over resolved relationships, coverage-qualified negative conclusions, and the rule that absent facets are not treated as missing unless the caller explicitly requires them.
 
 The site must not grow a second private intelligence backend that agents cannot access.
 
