@@ -45,6 +45,8 @@ test('assessment produces deterministic revision-bound claims, proof, realizatio
   assert.equal(first.realization.facets.agent.observed, true);
   assert.equal(first.realization.facets.persistence.observed, true);
   assert.equal(first.realization.facets.provider.observed, false);
+  assert.ok(first.realization.paths.some((item: any) => item.facet === 'implementation' && item.relationshipKinds.includes('implemented-by')));
+  assert.ok(first.claims.some((item: any) => item.type === 'facet-observed' && item.proof.admissibility.purpose === 'realization'));
   assert.ok(first.claims.some((item: any) => item.type === 'contract-facet' && item.status === 'contradicted' && item.statement.startsWith('provider')));
   assert.ok(first.claims.some((item: any) => item.proof.evidenceIds.includes('proof:capability')));
   assert.ok(first.findings.some((item: any) => item.ruleId === 'relationship.unresolved'));
@@ -71,6 +73,12 @@ test('uncontracted unobserved facets are not manufactured into missing claims', 
   const result = assessGraph(graph(), 'How is Checkout capability realized?') as any;
   assert.equal(result.claims.some((item: any) => item.type === 'contract-facet'), false);
   assert.equal(result.realization.facets.provider.observed, false);
+
+  const declarationOnly = graph();
+  declarationOnly.edges = [edge('declares-only', 'capability:checkout', 'function:checkout', 'declares')];
+  const implementation = assessGraph(declarationOnly, 'How is Checkout capability realized?', ['implementation']) as any;
+  assert.equal(implementation.realization.facets.implementation.observed, false);
+  assert.equal(implementation.answerStatus, 'contradicted');
 });
 
 test('assessment remains part of a capability name and unmatched questions do not dump unrelated findings', () => {
@@ -102,22 +110,25 @@ test('scoped audits do not return unrelated repository-wide relationship finding
   const fixture = graph();
   fixture.nodes.push(node('feature:storage-management', 'feature', 'semantic', 'storage-management'));
   fixture.nodes.push(node('function:unrelated', 'function', 'structural', 'unrelated'));
-  fixture.edges.push(edge('unrelated-candidate', 'function:unrelated', null, 'calls', 'candidate'));
+  fixture.edges.push(edge('unrelated-unresolved', 'function:unrelated', null, 'calls', 'unresolved'));
+  fixture.edges.push(edge('selected-candidate', 'feature:storage-management', 'api:/checkout', 'integrates-with', 'candidate'));
 
   const scoped = assessGraph(fixture, 'Audit storage management') as any;
   assert.deepEqual(scoped.findings, []);
+  assert.ok(scoped.hypotheses.items.some((item: any) => item.edgeId === 'selected-candidate'));
   assert.deepEqual(scoped.findingSummary.scope, { rootId: 'feature:storage-management', resolvedDepth: 2, nodeCount: 1 });
 
   const global = assessGraph(fixture, 'Audit graph') as any;
-  assert.ok(global.findings.some((item: any) => item.proof.edgeIds.includes('unrelated-candidate')));
+  assert.ok(global.findings.some((item: any) => item.proof.edgeIds.includes('unrelated-unresolved')));
+  assert.equal(global.findings.some((item: any) => item.proof.edgeIds.includes('selected-candidate')), false);
 });
 
 test('audit summaries group underlying findings without discarding their evidence', () => {
   const fixture = graph();
   fixture.nodes.push(node('feature:storage-management', 'feature', 'semantic', 'storage-management'));
   fixture.edges.push(edge('feature-path', 'feature:storage-management', 'function:checkout', 'implemented-by'));
-  fixture.edges.push(edge('candidate-one', 'function:checkout', 'api:/checkout', 'same_observed_name', 'candidate'));
-  fixture.edges.push(edge('candidate-two', 'function:checkout', 'mcp:checkout', 'same_observed_name', 'candidate'));
+  fixture.edges.push(edge('unresolved-one', 'function:checkout', 'api:/checkout', 'same_observed_name', 'unresolved'));
+  fixture.edges.push(edge('unresolved-two', 'function:checkout', 'mcp:checkout', 'same_observed_name', 'unresolved'));
 
   const result = assessGraph(fixture, 'Audit storage management') as any;
   assert.equal(result.findings.length, 2);
