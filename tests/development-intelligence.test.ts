@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { sealLocalGraph } from '../src/intelligence/local.js';
 import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
-import { diffAcceptedToWorking, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
+import { analyzeImpact, diffAcceptedToWorking, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools } from '../src/mcp.js';
 import { loadRegistry } from '../src/config/registry.js';
@@ -267,6 +267,41 @@ test('runtime observation snapshots are explicit and never contaminate canonical
   }
 });
 
+test('impact analysis seeds from actual changed files even when topology is stable', async () => {
+  const fixture = await makeFixture();
+  try {
+    const base = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD'])).stdout.trim();
+    await fs.writeFile(path.join(fixture.source, 'src', 'helper.ts'), `
+export function helper() { return 'changed implementation'; }
+`);
+    const head = await commit(fixture.source, 'change helper implementation');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache();
+
+    const impact = await analyzeImpact({
+      project: fixture.project,
+      baseRef: `commit:${base}`,
+      ref: `commit:${head}`,
+      direction: 'inbound',
+      depth: 3,
+      limit: 500,
+    }) as any;
+
+    assert.equal(impact.base.identity.sha, base);
+    assert.equal(impact.head.identity.sha, head);
+    assert.equal(impact.changedFileCount, 1);
+    assert.equal(impact.changedFiles[0]?.path, 'src/helper.ts');
+    assert.ok(impact.afterImpact.seedTotal > 0, 'changed source file must seed graph entities even when structural topology is unchanged');
+    assert.ok(impact.afterImpact.nodes.some((node: any) => node.sourceId === 'repo:src/helper.ts'));
+    assert.ok(
+      impact.afterImpact.nodes.some((node: any) => node.sourceId === 'repo:src/panel.tsx'),
+      'inbound impact should reach a caller in panel.tsx',
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
@@ -289,6 +324,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'check_graph_coverage',
     'get_evidence',
     'diff_graph',
+    'analyze_impact',
     'query_parity',
     'evaluate_parity',
   ]);
@@ -422,3 +458,4 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
+

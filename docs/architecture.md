@@ -254,6 +254,7 @@ The permanent agent-facing tools are:
 - `check_graph_coverage`
 - `get_evidence`
 - `diff_graph`
+- `analyze_impact`
 - `query_parity`
 - `evaluate_parity`
 
@@ -265,6 +266,8 @@ Graph-consuming tools address canonical project/ref W, a reconstructible canonic
 
 - no `baseRef` → accepted semantic A vs canonical W;
 - `baseRef` → two immutable revision selectors under the same current analyzer.
+
+`analyze_impact` composes Git change truth with graph reach. It seeds from actual changed paths between two resolved revisions, maps those paths into both graphs, and traverses bounded dependency relationships. It does not infer that unchanged topology means unchanged implementation, and it reports unmapped paths/coverage rather than silently dropping unsupported evidence.
 
 Authorized repository-history selectors are full commits, branches, tags, and explicit pull-request head/base/result identities. Resolution happens once before graph construction. PR result fails when the PR was not merged; Development Intelligence never silently replaces accepted history with an abandoned proposal.
 
@@ -292,3 +295,4 @@ Search runs against the full selected graph; selection loads a bounded neighborh
 ## Authentication boundary
 
 DI supports bearer, trusted-proxy, private owner-session, native single-owner OAuth, and explicit local unauthenticated modes. Authentication remains an HTTP/deployment boundary over the graph engine; ChatGPT-specific behavior must not become graph semantics.
+

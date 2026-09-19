@@ -1,1 +1,2 @@
+{"type":"node","id":"mcp:analyze_impact","sourceId":"checkpoint","kind":"mcp","locator":"mcp:analyze_impact","name":"analyze_impact","value":{"id":"mcp:analyze_impact","referenced":true},"raw":"{\"id\":\"mcp:analyze_impact\",\"referenced\":true}","tags":["semantic"],"layer":"semantic","checkpoint":true}
 {"type":"edge","id":"f18b753655f49e32a889f185","from":"capability:code-intelligence","to":"mcp:get_code_snippet","kind":"automated-by","strategy":"source-adjacent-declaration","confidence":1,"status":"resolved","evidence":[],"layer":"semantic","checkpoint":true}

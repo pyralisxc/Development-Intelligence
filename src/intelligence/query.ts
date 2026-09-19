@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { getProjectConfig } from '../config/registry.js';
-import { revisionIdentity } from '../source/git.js';
+import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus } from '../types.js';
 import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
 import { currentGraph, graphContext, repositoryGraphs } from './service.js';
@@ -114,9 +114,9 @@ export async function diffAcceptedToWorking(project: string, ref?: string): Prom
 
 export async function diffRevisions(input: {
   project: string;
-  ref?: string;
+  ref?: string | undefined;
   baseRef?: string;
-  layers?: GraphNodeLayer[];
+  layers?: GraphNodeLayer[] | undefined;
 }): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(input.project);
   const headRef = input.ref ?? config.defaultRef;
@@ -131,6 +131,181 @@ export async function diffRevisions(input: {
     comparisonMode: 'current-analyzer-replay',
     base: { ...result.base, identity: revisionIdentity(base.revision) },
     head: { ...result.head, identity: revisionIdentity(head.revision) },
+  };
+}
+
+interface ImpactTraversalOptions {
+  direction?: 'inbound' | 'outbound' | 'both' | undefined;
+  depth?: number | undefined;
+  relationshipKinds?: string[] | undefined;
+  statuses?: RelationshipStatus[] | undefined;
+  layers?: GraphNodeLayer[] | undefined;
+  limit?: number | undefined;
+}
+
+function nodePath(node: GraphNode): string {
+  if (node.sourceId.startsWith('repo:')) return node.sourceId.slice('repo:'.length);
+  return locatorFileAndLine(node.locator).file;
+}
+
+function changedPathSets(files: Array<{ status: string; path: string; previousPath?: string }>): { base: Set<string>; head: Set<string> } {
+  const base = new Set<string>();
+  const head = new Set<string>();
+  for (const file of files) {
+    const kind = file.status.charAt(0);
+    if (kind !== 'A') base.add(file.previousPath ?? file.path);
+    if (kind !== 'D') head.add(file.path);
+  }
+  return { base, head };
+}
+
+function nodesForChangedPaths(graph: IntelligenceGraph, paths: ReadonlySet<string>, layers?: GraphNodeLayer[]): GraphNode[] {
+  const allowedLayers = new Set(layers ?? []);
+  return graph.nodes.filter(node => paths.has(nodePath(node)) && layersMatch(node.layer, allowedLayers));
+}
+
+function impactNeighborhood(
+  graph: IntelligenceGraph,
+  seeds: GraphNode[],
+  options: ImpactTraversalOptions,
+): Record<string, unknown> {
+  const context = graphQueryContext(graph);
+  const direction = options.direction ?? 'inbound';
+  const maxDepth = Math.min(Math.max(options.depth ?? 3, 0), 10);
+  const limit = Math.min(Math.max(options.limit ?? 500, 1), 5000);
+  const allowedKinds = new Set(options.relationshipKinds ?? []);
+  const allowedStatuses = new Set(options.statuses ?? ['resolved']);
+  const allowedLayers = new Set(options.layers ?? []);
+  const uniqueSeeds = [...new Map(seeds.map(node => [node.id, node])).values()];
+  const boundedSeeds = uniqueSeeds.slice(0, limit);
+  const visited = new Set(boundedSeeds.map(node => node.id));
+  const hops = new Map(boundedSeeds.map(node => [node.id, 0]));
+  const selectedEdges: GraphEdge[] = [];
+  const selectedEdgeIds = new Set<string>();
+  let frontier = boundedSeeds.map(node => node.id);
+  let reachedLimit = uniqueSeeds.length > boundedSeeds.length;
+
+  for (let depth = 0; depth < maxDepth && frontier.length && !reachedLimit; depth += 1) {
+    const next: string[] = [];
+    for (const current of frontier) {
+      const candidates = direction === 'inbound'
+        ? context.incoming(current)
+        : direction === 'outbound'
+          ? context.outgoing(current)
+          : context.incident(current);
+      for (const edge of candidates) {
+        if (!allowedStatuses.has(edge.status) || !edge.from || !edge.to) continue;
+        if (allowedKinds.size && !allowedKinds.has(edge.kind)) continue;
+        if (!layersMatch(edge.layer, allowedLayers)) continue;
+        let neighbor: string | null = null;
+        if ((direction === 'outbound' || direction === 'both') && edge.from === current) neighbor = edge.to;
+        if (!neighbor && (direction === 'inbound' || direction === 'both') && edge.to === current) neighbor = edge.from;
+        if (!neighbor) continue;
+        if (!selectedEdgeIds.has(edge.id)) {
+          selectedEdgeIds.add(edge.id);
+          selectedEdges.push(edge);
+        }
+        if (visited.has(neighbor)) continue;
+        if (visited.size >= limit) {
+          reachedLimit = true;
+          break;
+        }
+        visited.add(neighbor);
+        hops.set(neighbor, depth + 1);
+        next.push(neighbor);
+      }
+      if (reachedLimit) break;
+    }
+    frontier = next;
+  }
+
+  const nodes = [...visited].map(id => context.node(id)).filter((node): node is GraphNode => Boolean(node));
+  const pathSet = new Set(nodes.map(node => nodePath(node)));
+  return {
+    seedTotal: uniqueSeeds.length,
+    seedIds: boundedSeeds.map(node => node.id),
+    seedTruncated: uniqueSeeds.length > boundedSeeds.length,
+    direction,
+    depth: maxDepth,
+    limit,
+    truncated: reachedLimit,
+    nodeTotal: nodes.length,
+    edgeTotal: selectedEdges.length,
+    paths: [...pathSet].sort(),
+    hops: Object.fromEntries([...hops.entries()]),
+    nodes,
+    edges: selectedEdges,
+  };
+}
+
+export async function analyzeImpact(input: {
+  project: string;
+  baseRef: string;
+  ref?: string | undefined;
+  direction?: 'inbound' | 'outbound' | 'both' | undefined;
+  depth?: number | undefined;
+  relationshipKinds?: string[] | undefined;
+  statuses?: RelationshipStatus[] | undefined;
+  layers?: GraphNodeLayer[] | undefined;
+  limit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const config = await getProjectConfig(input.project);
+  const headRef = input.ref ?? config.defaultRef;
+  const changes = await changedFilesBetweenRevisions(input.project, input.baseRef, headRef);
+  const [base, head] = await Promise.all([
+    graphContext(input.project, { ref: input.baseRef }),
+    graphContext(input.project, { ref: headRef }),
+  ]);
+  if (base.graph.repositoryRevision !== changes.base.sha || head.graph.repositoryRevision !== changes.head.sha) {
+    throw new Error('Repository revision changed while preparing impact analysis; retry against immutable selectors');
+  }
+
+  const paths = changedPathSets(changes.files);
+  const baseSeeds = nodesForChangedPaths(base.graph, paths.base, input.layers);
+  const headSeeds = nodesForChangedPaths(head.graph, paths.head, input.layers);
+  const mappedBasePaths = new Set(baseSeeds.map(node => nodePath(node)));
+  const mappedHeadPaths = new Set(headSeeds.map(node => nodePath(node)));
+  const graphDiff = diffGraphs(base.graph, head.graph, input.layers) as any;
+
+  return {
+    project: input.project,
+    comparisonMode: 'current-analyzer-replay',
+    base: {
+      graphId: base.graph.graphId,
+      revision: base.graph.repositoryRevision,
+      identity: revisionIdentity(changes.base),
+      coverage: coverageSummary(base.graph),
+    },
+    head: {
+      graphId: head.graph.graphId,
+      revision: head.graph.repositoryRevision,
+      identity: revisionIdentity(changes.head),
+      coverage: coverageSummary(head.graph),
+    },
+    changedFiles: changes.files,
+    changedFileCount: changes.files.length,
+    mapping: {
+      baseUnmappedPaths: [...paths.base].filter(path => !mappedBasePaths.has(path)).sort(),
+      headUnmappedPaths: [...paths.head].filter(path => !mappedHeadPaths.has(path)).sort(),
+    },
+    topology: {
+      topologyChanged: graphDiff.topologyChanged,
+      evidenceChanged: graphDiff.evidenceChanged,
+      analyzerChanged: graphDiff.analyzerChanged,
+      nodeCounts: {
+        added: graphDiff.nodes.added.length,
+        removed: graphDiff.nodes.removed.length,
+        changed: graphDiff.nodes.changed.length,
+      },
+      edgeCounts: {
+        added: graphDiff.edges.added.length,
+        removed: graphDiff.edges.removed.length,
+        changed: graphDiff.edges.changed.length,
+      },
+    },
+    beforeImpact: impactNeighborhood(base.graph, baseSeeds, input),
+    afterImpact: impactNeighborhood(head.graph, headSeeds, input),
+    note: 'Impact is seeded from actual Git changed paths, then projected through the selected revision graphs. Resolved relationships are used by default; candidate or unresolved relationships are included only when explicitly requested. Coverage and unmapped changed paths remain explicit.',
   };
 }
 
@@ -498,13 +673,13 @@ function boundedNeighborhood(graph: IntelligenceGraph, context: GraphQueryContex
 
 export async function viewerProjection(input: {
   project: string;
-  ref?: string;
+  ref?: string | undefined;
   graphId?: string;
   view?: 'architecture' | 'parity' | 'code' | 'change';
   query?: string;
   node?: string;
-  depth?: number;
-  limit?: number;
+  depth?: number | undefined;
+  limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const context = graphQueryContext(graph);
@@ -561,7 +736,7 @@ export function nodeArea(node: GraphNode): string {
 
 export async function graphEvidence(input: {
   project: string;
-  ref?: string;
+  ref?: string | undefined;
   graphId?: string;
   node?: string;
   edge?: string;
@@ -594,3 +769,5 @@ export async function graphEvidence(input: {
   const evidence = graph.evidence.filter(item => ids.has(item.id));
   return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, coverage: coverageSummary(graph), ambiguous: false, node: node ?? null, edge: edge ?? null, evidence };
 }
+
+

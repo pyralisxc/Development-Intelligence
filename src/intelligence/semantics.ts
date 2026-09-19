@@ -103,6 +103,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       category: 'technical-intelligence',
       relationships: [
         { kind: 'automated-by', to: 'mcp:diff_graph' },
+        { kind: 'automated-by', to: 'mcp:analyze_impact' },
       ],
     },
   },
@@ -172,6 +173,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     'check_graph_coverage',
     'get_evidence',
     'diff_graph',
+    'analyze_impact',
     'query_parity',
     'evaluate_parity',
   ].map(id => ({
@@ -183,3 +185,4 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     },
   })),
 ] as const;
+
