@@ -65,7 +65,7 @@ Graph/code primitives:
 - `diff_graph`
 - `query_parity`
 
-`query_intelligence` is the shared deterministic Assessment Engine used by MCP and the Workbench. It projects revision-bound claims, proof bundles, capability-realization facets, and audit findings over the selected graph. Caller-required facets are ephemeral expectations: an unobserved facet becomes contradicted only when eligible-source coverage is complete, remains unproven under incomplete coverage, and is never written into accepted semantic topology.
+`query_intelligence` is the shared deterministic Assessment Engine used by MCP and the Workbench. It projects revision-bound claims, proof bundles, typed capability-realization paths, hypotheses, and audit findings over the selected graph. Proof is purpose-aware: a relationship may be resolved in the graph yet still be inadmissible for a realization claim (for example, declaration-only or naming-correlation edges). Caller-required facets are ephemeral expectations: an unobserved facet becomes contradicted only when the claim's repository scope is exhaustively covered across tracked sources; unsupported, partial, skipped, failed, or unavailable sources keep absence unproven.
 - `evaluate_parity`
 
 There is no separate Parity database, public cache-management API, provider-specific graph query language, or development-methodology API.
@@ -91,7 +91,7 @@ There is no separate Parity database, public cache-management API, provider-spec
 }
 ```
 
-Use stable IDs returned by `search_graph`, `inspect_entity`, or `query_parity`. Required relationships pass only on resolved evidence. Candidate or unresolved observations remain `unproven`; incomplete graph coverage also prevents DI from claiming that an absent entity or relationship is definitively missing or safely forbidden.
+Use stable IDs returned by `search_graph`, `inspect_entity`, or `query_parity`. Required relationships pass only on resolved evidence. Candidate relationships are hypotheses only and never satisfy proof; unresolved relationships remain explicit uncertainty. Negative Parity conclusions require exhaustive tracked-source coverage for the claim scope, so unsupported as well as partial/skipped/failed coverage prevents DI from claiming that an absent entity or relationship is definitively missing or safely forbidden.
 
 `resolve_revision` converts an authorized historical selector into one immutable Git object ID without building a graph. Dynamic repositories under an authorized GitHub owner support:
 
