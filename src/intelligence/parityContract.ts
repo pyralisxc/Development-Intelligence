@@ -83,7 +83,30 @@ function coverageSupportsNegative(coverage: GraphCoverage | undefined): boolean 
     && coverage.failedFiles === 0
     && coverage.partialFiles === 0
     && coverage.skippedFiles === 0
-    && coverage.analyzedFiles === coverage.eligibleFiles);
+    && coverage.unsupportedFiles === 0
+    && coverage.analyzedFiles === coverage.eligibleFiles
+    && coverage.completeFiles === coverage.trackedFiles);
+}
+
+function negativeCoverage(graph: IntelligenceGraph) {
+  const coverage = graph.coverage;
+  if (!coverage) return {
+    scope: 'repository' as const,
+    supportsNegative: false,
+    blockers: [],
+    note: 'Coverage is unavailable, so absence cannot prove a negative expectation.',
+  };
+  const blockers = (coverage.files ?? [])
+    .filter(item => item.status !== 'complete')
+    .map(item => ({ path: item.path, status: item.status, ...(item.reason ? { reason: item.reason } : {}) }));
+  return {
+    scope: 'repository' as const,
+    supportsNegative: coverageSupportsNegative(coverage) && graph.unavailableSourceIds.length === 0,
+    blockers,
+    note: blockers.length
+      ? 'Unsupported, partial, skipped, or failed tracked sources can contain contrary evidence; absence remains unproven.'
+      : 'Repository coverage is exhaustive for tracked sources and may support bounded negative conclusions.',
+  };
 }
 
 function negativeStatus(complete: boolean, requirementValue: ParityExpectationRequirement): ParityExpectationResultStatus {
@@ -104,7 +127,7 @@ function evaluateEntity(graph: IntelligenceGraph, expectation: ParityEntityExpec
     observed,
     explanation: observed
       ? requirementValue === 'required' ? 'The expected entity is present.' : 'A forbidden entity is present.'
-      : status === 'unproven' ? 'The entity was not observed, but coverage is incomplete so absence is not proven.'
+      : status === 'unproven' ? 'The entity was not observed, but claim-scope coverage is not exhaustive so absence is not proven.'
         : requirementValue === 'required' ? 'The required entity was not observed.' : 'The forbidden entity was not observed.',
   };
 }
@@ -130,14 +153,15 @@ function evaluateRelationship(graph: IntelligenceGraph, expectation: ParityRelat
     explanation: resolved.length
       ? requirementValue === 'required' ? 'The required relationship is resolved.' : 'A forbidden relationship is resolved.'
       : tentative.length ? 'The relationship has candidate or unresolved evidence but is not proven.'
-        : status === 'unproven' ? 'The relationship was not observed, but coverage is incomplete so absence is not proven.'
+        : status === 'unproven' ? 'The relationship was not observed, but claim-scope coverage is not exhaustive so absence is not proven.'
           : requirementValue === 'required' ? 'The required relationship was not observed.' : 'The forbidden relationship was not observed.',
   };
 }
 
 export function evaluateParityContractGraph(graph: IntelligenceGraph, contractInput: unknown): Record<string, unknown> {
   const contract = normalizeParityContract(contractInput);
-  const complete = coverageSupportsNegative(graph.coverage);
+  const claimCoverage = negativeCoverage(graph);
+  const complete = claimCoverage.supportsNegative;
   const results = [
     ...(contract.entities ?? []).map(item => evaluateEntity(graph, item, complete)),
     ...(contract.relationships ?? []).map(item => evaluateRelationship(graph, item, complete)),
@@ -159,7 +183,8 @@ export function evaluateParityContractGraph(graph: IntelligenceGraph, contractIn
     counts,
     results,
     coverage: graph.coverage ?? null,
-    note: 'This caller-owned expectation overlay is evaluated ephemerally. It does not modify or become accepted graph truth.',
+    claimCoverage,
+    note: 'This caller-owned expectation overlay is evaluated ephemerally. Candidate or unresolved relationships never satisfy proof, and non-exhaustive claim coverage keeps absence unproven. It does not modify or become accepted graph truth.',
   };
 }
 
