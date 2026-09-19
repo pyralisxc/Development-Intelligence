@@ -1,6 +1,7 @@
 import type { EvidenceRecord, GraphCoverageStatus, GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { graphQueryContext } from './queryContext.js';
+import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
 
 export type AssessmentStatus = 'supported' | 'contradicted' | 'unproven' | 'indeterminate';
@@ -373,6 +374,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   const ambiguous = matches.length > 1 && !selected;
   const claims: IntelligenceClaim[] = [];
   let realization: Record<string, unknown> | null = null;
+  let reach: Record<string, unknown> | null = null;
 
   if (selected) {
     claims.push(claim({ type: 'entity-exists', status: 'supported', statement: (selected.name ?? selected.id) + ' exists in the selected graph.', subjectId: selected.id, proof: proof(graph, 'entity.exists', [selected], [], 'existence') }));
@@ -412,6 +414,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
       resolvedPaths: { nodes: traversal.nodes, edges: traversal.edges },
       requiredFacets: [...new Set(requiredFacets)],
     };
+    reach = projectTypedReach(graph, selected);
   } else {
     const existenceProof = proof(graph, 'entity.exists', matches, [], 'existence', 'repository');
     claims.push(claim({
@@ -454,8 +457,8 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
     project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
     question, mode, interpretedSubject: subject || null, ambiguous, candidates: matches.map(node => ({ id: node.id, name: node.name ?? node.id, kind: node.kind })),
     answerStatus: answerStatus(claims),
-    claims, realization, findings, findingSummary, hypotheses, coverage: graphCoverage(graph),
-    note: 'Assessments are deterministic projections over the selected graph. Candidate relationships remain hypotheses and never satisfy proof. Assessments are not persisted graph authority or product intent.',
+    claims, realization, reach, findings, findingSummary, hypotheses, coverage: graphCoverage(graph),
+    note: 'Assessments are deterministic projections over the selected graph. Candidate relationships remain hypotheses and never satisfy proof. Typed reach reports resolved connection mechanisms and paths without assigning severity. Assessments are not persisted graph authority or product intent.',
   };
 }
 
