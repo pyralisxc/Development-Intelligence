@@ -1,5 +1,7 @@
 # Vercel hosting for Development Intelligence
 
+> **Deployment ownership:** this Vercel project hosts the Development Intelligence evidence service and its specialist Workbench. AI Systems Control is the canonical integrated owner website and must use a separate Vercel project in the same Vercel team. Do not repurpose the Development Intelligence deployment as the ASC frontend.
+
 Development Intelligence is intended to run on Vercel for the ChatGPT publishing path.
 
 Vercel can run the repository as a Node/container-backed Vercel Function. The DI workload is compatible with that model because Git checkouts, structural graphs, and caches are disposable. The only cross-request state required by OAuth is the short-lived one-time authorization code, which DI stores in a shared Redis backing service when deployed on Vercel.
