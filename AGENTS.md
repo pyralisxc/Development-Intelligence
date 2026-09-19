@@ -34,7 +34,8 @@ Keep each truth in its owner. Update an existing living document when its truth 
 9. Local checkouts, parser caches, indexes, and Vercel/Sandbox files are disposable computation space, never durable graph authority.
 10. External tools may contribute evidence but may not dictate DI graph schema, lifecycle, query semantics, hosting, or storage.
 11. Do not add development workflow, PR orchestration, or Build-authorization policy to the public intelligence API.
-12. The human graph viewer and agent tools project the same canonical graph.
+12. MCP, the Workbench, AI Systems Control, and future clients must project the same canonical DI intelligence rather than create client-specific intelligence backends.
+13. The Workbench is a specialist diagnostic/reference surface. Do not add control-plane ownership or duplicate ASC product responsibilities merely to preserve it as a competing primary website.
 
 ## Accepted checkpoint
 

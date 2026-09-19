@@ -4,7 +4,7 @@ Development Intelligence is the **evidence layer for software development**: a s
 
 It turns exact Git revisions and bounded technical observations into one inspectable model of what a project contains, how its parts connect, what changed, and where evidence remains incomplete or uncertain. Search, tracing, architecture, parity, diffing, inspection, synthesis, and visualization are projections over that shared model.
 
-The human surface is the **Development Intelligence Workbench**. The agent surface is **MCP**. Both use the same capabilities and the same intrinsic evidence graph; the graph powers the product but is not the product identity.
+The canonical programmatic surface is **MCP**. The **Development Intelligence Workbench** remains the direct specialist human surface for inspection, diagnostics, and independent verification. Within the wider development system, **AI Systems Control is the canonical integrated owner-facing website** and consumes Development Intelligence as a specialist capability service. All surfaces use the same intrinsic evidence model; none owns separate truth.
 
 Development Intelligence is built first for a solo software owner working with agents across many repositories, with enterprise-grade evidence discipline but without requiring team administration or process governance. It observes and explains; it does not own product intent, write inspected repositories, or become a development methodology.
 
@@ -132,7 +132,7 @@ Authenticated HTTP deployments expose:
 
 Old `GET /graph?project=...` links remain a compatibility entry into Explore/Graph.
 
-The Workbench is a human client of the same Development Intelligence capabilities agents use. Its primary destinations are:
+The Workbench is a specialist human client of the same Development Intelligence capabilities that MCP and integrated products consume. It remains supported for engine development, diagnostics, deep inspection, and independent verification. Routine integrated owner workflows are expected to move into AI Systems Control as parity is demonstrated. Its primary destinations are:
 
 ### Overview
 

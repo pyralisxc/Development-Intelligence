@@ -4,7 +4,7 @@
 
 Development Intelligence is the **evidence layer for software development**.
 
-It turns exact Git revisions and bounded technical observations into one inspectable model of what a software project contains, how its parts connect, what changed, what remains uncertain, and whether important representations agree. People use that intelligence through the Workbench. Agents use the same intelligence through MCP.
+It turns exact Git revisions and bounded technical observations into one inspectable model of what a software project contains, how its parts connect, what changed, what remains uncertain, and whether important representations agree. Integrated owner products consume that intelligence through stable service contracts; agents use MCP directly; the Workbench remains a direct specialist surface for inspection, diagnostics, and independent verification.
 
 The graph is the internal model, not the product identity. The product outcome is faster, more trustworthy understanding before a person or agent decides or changes anything.
 
@@ -29,12 +29,13 @@ It is most valuable when an agent or owner must reason across a repository witho
 
 ## Product shape
 
-Development Intelligence has two equal product surfaces over the same capabilities:
+Development Intelligence is a standalone evidence service with one canonical intelligence model and multiple clients:
 
-- **Workbench** — the human surface for overview, exploration, inspection, source/evidence review, change analysis, parity contracts, and connected technical sources.
-- **MCP** — the agent surface for the same project, revision, graph, code, architecture, coverage, evidence, change, and parity intelligence.
+- **MCP / service contracts** — the canonical programmatic integration surface for project, revision, graph, code, architecture, coverage, evidence, change, parity, and assessment intelligence.
+- **Workbench** — the direct specialist human surface for engine development, diagnostics, deep inspection, debugging, and independent verification.
+- **AI Systems Control** — the canonical integrated owner-facing product for routine use of Development Intelligence alongside other specialist development systems. ASC is a separate product and deployment; it consumes DI capabilities without owning DI graph/evidence semantics.
 
-Neither surface owns separate truth. A capability that matters to one surface should normally be available to the other unless the difference is inherently presentational.
+These surfaces must not create separate truth. Capabilities that ASC or another client presents should come from Development Intelligence contracts rather than reimplementing intelligence logic outside DI. The Workbench remains supported until integrated clients demonstrate equivalent or intentionally improved access to the relevant capability.
 
 Each inspected project remains autonomous:
 
@@ -51,7 +52,7 @@ Each inspected project remains autonomous:
 3. **Exact history matters.** Current HEAD, a PR proposal, its base, its accepted result, and any historical commit are distinct identities.
 4. **Absence requires coverage.** “Not found” is not “does not exist” when inspection was incomplete.
 5. **Uncertainty stays visible.** Candidate, unresolved, unavailable, partial, and conflicting evidence are valid outcomes.
-6. **Humans and agents share capability.** The Workbench and MCP must not drift into separate products or intelligence backends.
+6. **Clients share capability contracts.** MCP, the Workbench, AI Systems Control, and future clients must not drift into separate intelligence backends or duplicate DI semantics.
 7. **Projects keep their meaning.** Generic analysis may understand technologies and explicit source-adjacent declarations; it may not invent product intent or branch on project identity.
 8. **Accepted truth travels with source.** Git owns durable accepted graph history; service caches and checkouts are disposable.
 9. **Observation is bounded.** Repository, runtime, and technical-source access is allowlisted, read-only, credential-safe, and explicit.
@@ -114,7 +115,7 @@ The next durable improvements should come from five directions:
 4. **Broader generic evidence inputs.** Let mature external analyzers, logs, metrics, databases, and provider APIs contribute bounded evidence through stable generic contracts while preserving one graph owner.
 5. **Portfolio-grade proof.** Continuously test the product against materially different real repositories, languages, scales, and workflows so generic claims are earned rather than inferred from one flagship project.
 
-The Workbench should increasingly feel like an intelligence workspace, not a graph administration console. MCP should increasingly let agents ask fewer, better-scoped questions. Both should remain explainable projections over the same evidence.
+The Workbench should remain an excellent specialist intelligence workspace and diagnostic reference, not a second competing control-plane product. MCP/service contracts should increasingly let integrated clients such as AI Systems Control ask fewer, better-scoped questions while preserving explainable evidence.
 
 ## Decision filter
 
