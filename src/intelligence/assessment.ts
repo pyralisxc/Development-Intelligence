@@ -374,7 +374,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   const ambiguous = matches.length > 1 && !selected;
   const claims: IntelligenceClaim[] = [];
   let realization: Record<string, unknown> | null = null;
-  let reach: Record<string, unknown> | null = null;
+  let reach: ReturnType<typeof projectTypedReach> | null = null;
 
   if (selected) {
     claims.push(claim({ type: 'entity-exists', status: 'supported', statement: (selected.name ?? selected.id) + ' exists in the selected graph.', subjectId: selected.id, proof: proof(graph, 'entity.exists', [selected], [], 'existence') }));
