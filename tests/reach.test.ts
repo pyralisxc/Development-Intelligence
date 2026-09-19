@@ -56,7 +56,7 @@ test('typed reach reports dimensions and shortest resolved paths without a globa
   assert.equal(reach.dimensions.persistence.observed, true);
   assert.equal(reach.dimensions.provider.observed, true);
   assert.equal(reach.dimensions['cross-feature'].targetIds.includes('feature:orders'), true);
-  assert.equal(reach.dimensions.persistence.paths[0].relationshipKinds.includes('writes'), true);
+  assert.equal(reach.dimensions.persistence.paths[0]!.relationshipKinds.includes('writes'), true);
   assert.equal(reach.mechanisms.execution > 0, true);
   assert.equal(reach.mechanisms.persistence > 0, true);
   assert.equal(reach.mechanisms.provider > 0, true);
