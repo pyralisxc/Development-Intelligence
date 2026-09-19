@@ -224,6 +224,7 @@ function resolvedNeighborhood(graph: IntelligenceGraph, seed: GraphNode, depth =
 
 function realizationTraversal(graph: IntelligenceGraph, seed: GraphNode, depth = 5, limit = 300): { nodes: GraphNode[]; edges: GraphEdge[]; paths: RealizationPath[] } {
   const context = graphQueryContext(graph);
+  const edgesById = new Map(graph.edges.map(edge => [edge.id, edge]));
   const pathByNode = new Map<string, { nodeIds: string[]; edgeIds: string[] }>([[seed.id, { nodeIds: [seed.id], edgeIds: [] }]]);
   let frontier = [seed.id];
   for (let level = 0; level < depth && frontier.length && pathByNode.size < limit; level += 1) {
@@ -246,7 +247,7 @@ function realizationTraversal(graph: IntelligenceGraph, seed: GraphNode, depth =
     if (!target) continue;
     for (const [facet, kinds] of Object.entries(FACET_KINDS) as Array<[RealizationFacet, Set<string>]>) {
       if (!kinds.has(target.kind)) continue;
-      const edges = path.edgeIds.map(id => context.edge(id)).filter((edge): edge is GraphEdge => Boolean(edge));
+      const edges = path.edgeIds.map(id => edgesById.get(id)).filter((edge): edge is GraphEdge => Boolean(edge));
       paths.push({
         facet,
         targetId,
