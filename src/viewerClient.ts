@@ -133,6 +133,20 @@ function renderAssessment(data: any, compact = false): string {
     const label = facet.observed ? 'proven' : required ? 'required · proof incomplete' : 'not proven';
     return `<div class="assessment-facet"><span class="badge ${statusClass}">${esc(label)}</span><strong>${esc(name)}</strong>${compact ? '' : `<small>${esc((facet.nodeIds ?? []).length)} supporting node(s)</small>`}</div>`;
   }).join('');
+  const reachDimensions = (Object.entries(data.reach?.dimensions ?? {}) as Array<[string, any]>).filter(([, dimension]) => dimension?.observed);
+  const reachRows = reachDimensions.map(([name, dimension]) => {
+    const shortest = Array.isArray(dimension.paths) ? dimension.paths[0] : null;
+    const pathLabel = shortest?.relationshipKinds?.length ? shortest.relationshipKinds.join(' → ') : 'resolved graph path';
+    return `<div class="assessment-facet"><span class="badge status-good">resolved</span><strong>${esc(name)}</strong><small>${esc(dimension.count ?? dimension.targetIds?.length ?? 0)} reachable target(s)${compact ? '' : ` · shortest: ${esc(pathLabel)}`}</small></div>`;
+  }).join('');
+  const reachMechanisms = (Object.entries(data.reach?.mechanisms ?? {}) as Array<[string, unknown]>)
+    .filter(([, count]) => Number(count) > 0)
+    .map(([name, count]) => `<span class="badge">${esc(name)} · ${esc(Number(count))}</span>`)
+    .join(' ');
+  const reachExcluded = data.reach?.excludedRelationships;
+  const reachSection = reachDimensions.length
+    ? `<div class="assessment-section"><h3>Typed reach</h3><p class="muted">Resolved paths only · reach describes connection, not impact severity.</p><div class="assessment-facets">${reachRows}</div>${!compact && reachMechanisms ? `<p class="muted" style="margin-top:8px">Connection mechanisms</p><div>${reachMechanisms}</div>` : ''}${!compact && reachExcluded ? `<p class="muted" style="margin-top:8px">${esc(reachExcluded.candidate ?? 0)} candidate and ${esc(reachExcluded.unresolved ?? 0)} unresolved relationship(s) excluded from reach paths.</p>` : ''}</div>`
+    : '';
   const claimRows = claims.map(item => {
     const proof = item.proof ?? {};
     const proofSummary = `${(proof.nodeIds ?? []).length} nodes · ${(proof.edgeIds ?? []).length} admissible relationships · ${(proof.evidenceIds ?? []).length} evidence records`;
@@ -147,7 +161,7 @@ function renderAssessment(data: any, compact = false): string {
   const findingGroupRows = findingGroups.map(item => `<div class="assessment-item"><div><span class="badge status-warn">${esc(item.count)} finding${item.count === 1 ? '' : 's'}</span> <span class="muted">${esc(item.relationshipKind ?? item.ruleId)}</span></div><strong>${esc(item.ruleId)}</strong><small>${esc((item.affectedIds ?? []).length)} distinct affected graph record(s)</small></div>`).join('');
   const findingScope = data.findingSummary?.scope;
   const findingScopeLabel = findingScope ? `Resolved radius ${findingScope.resolvedDepth} from ${findingScope.rootId} · ${findingScope.nodeCount} nodes in scope` : 'Repository-wide or coverage-only scope';
-  return `<div class="assessment"><div class="assessment-head"><div><h3>Evidence-backed assessment</h3><h2 class="${assessmentStatusClass(data.answerStatus)}">${esc(data.answerStatus)}</h2></div><div class="assessment-meta">Revision ${esc(data.revision ?? 'unknown')}<br>${esc(coverageLabel)}</div></div>${facets.length ? `<div class="assessment-section"><h3>Capability realization</h3><div class="assessment-facets">${facetRows}</div></div>` : ''}<div class="assessment-section"><h3>Claims and proof</h3><div class="list">${claimRows}</div></div>${hypotheses.length ? `<div class="assessment-section"><h3>Suggested relationships</h3><p class="muted">Candidates are hypotheses for follow-up inspection, not findings and not proof.</p><div class="list">${hypothesisRows}</div></div>` : ''}${findings.length ? `<div class="assessment-section"><h3>Finding groups</h3><p class="muted">${esc(findingScopeLabel)}</p><div class="list">${findingGroupRows}</div>${compact ? '' : `<details><summary class="muted">${esc(findings.length)} underlying findings</summary><div class="list" style="margin-top:8px">${findingRows}</div></details>`}</div>` : ''}${compact ? '' : `<details><summary class="muted">Raw assessment record</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`}</div>`;
+  return `<div class="assessment"><div class="assessment-head"><div><h3>Evidence-backed assessment</h3><h2 class="${assessmentStatusClass(data.answerStatus)}">${esc(data.answerStatus)}</h2></div><div class="assessment-meta">Revision ${esc(data.revision ?? 'unknown')}<br>${esc(coverageLabel)}</div></div>${facets.length ? `<div class="assessment-section"><h3>Capability realization</h3><div class="assessment-facets">${facetRows}</div></div>` : ''}${reachSection}<div class="assessment-section"><h3>Claims and proof</h3><div class="list">${claimRows}</div></div>${hypotheses.length ? `<div class="assessment-section"><h3>Suggested relationships</h3><p class="muted">Candidates are hypotheses for follow-up inspection, not findings and not proof.</p><div class="list">${hypothesisRows}</div></div>` : ''}${findings.length ? `<div class="assessment-section"><h3>Finding groups</h3><p class="muted">${esc(findingScopeLabel)}</p><div class="list">${findingGroupRows}</div>${compact ? '' : `<details><summary class="muted">${esc(findings.length)} underlying findings</summary><div class="list" style="margin-top:8px">${findingRows}</div></details>`}</div>` : ''}${compact ? '' : `<details><summary class="muted">Raw assessment record</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`}</div>`;
 }
 
 function setInspectorTabs(): void {

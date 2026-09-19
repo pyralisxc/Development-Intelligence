@@ -375,6 +375,8 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(viewerBundle.status, 200);
     const viewerJavaScript = await viewerBundle.text();
     assert.match(viewerJavaScript, /Evidence-backed assessment/);
+    assert.match(viewerJavaScript, /Typed reach/);
+    assert.match(viewerJavaScript, /reach describes connection, not impact severity/i);
     assert.match(viewerJavaScript, /Claims and proof/);
 
     const intelligenceQuery = await fetch(`${origin}/workbench/query`, {
@@ -388,6 +390,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.ok(Array.isArray(intelligenceBody.result.claims));
     assert.equal(typeof intelligenceBody.result.answerStatus, 'string');
     assert.equal(typeof intelligenceBody.result.revision, 'string');
+    assert.ok('reach' in intelligenceBody.result, 'Workbench query must preserve the shared assessment reach field even when no entity is unambiguously selected');
 
     const historicalBase = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD~1'])).stdout.trim();
     const historicalParams = new URLSearchParams({ project: fixture.project, action: 'changes', baseRef: `commit:${historicalBase}`, headRef: 'branch:main' });
