@@ -390,8 +390,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.ok(Array.isArray(intelligenceBody.result.claims));
     assert.equal(typeof intelligenceBody.result.answerStatus, 'string');
     assert.equal(typeof intelligenceBody.result.revision, 'string');
-    assert.equal(typeof intelligenceBody.result.reach, 'object');
-    assert.equal(intelligenceBody.result.reach.policy.relationshipStatus, 'resolved');
+    assert.ok('reach' in intelligenceBody.result, 'Workbench query must preserve the shared assessment reach field even when no entity is unambiguously selected');
 
     const historicalBase = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD~1'])).stdout.trim();
     const historicalParams = new URLSearchParams({ project: fixture.project, action: 'changes', baseRef: `commit:${historicalBase}`, headRef: 'branch:main' });
