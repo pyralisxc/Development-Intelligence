@@ -190,6 +190,52 @@ export async function upstreamStatus(project: string, ref?: string): Promise<{ r
   }
 }
 
+export interface RepositoryChangedFile {
+  status: string;
+  path: string;
+  previousPath?: string;
+}
+
+export async function changedFilesBetweenRevisions(
+  project: string,
+  baseRef: string | undefined,
+  headRef: string | undefined,
+): Promise<{ base: ProjectRevision; head: ProjectRevision; files: RepositoryChangedFile[] }> {
+  const [base, head] = await Promise.all([
+    resolveProjectRevision(project, baseRef),
+    resolveProjectRevision(project, headRef),
+  ]);
+  if (base.repository !== head.repository) throw new Error(`Repository changed while comparing ${project}`);
+  const config = await getProjectConfig(project);
+  const scratchRoot = path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir());
+  await fs.mkdir(scratchRoot, { recursive: true });
+  const root = await fs.mkdtemp(path.join(scratchRoot, `devint-diff-${project.replace(/[^a-zA-Z0-9._-]+/g, '-')}-`));
+  const auth = await gitAuth(config);
+  try {
+    await runChecked('git', ['init', '--initial-branch=devint', root], { timeoutMs: 60_000 });
+    await runChecked('git', ['-C', root, 'remote', 'add', 'origin', config.repository]);
+    for (const sha of new Set([base.sha, head.sha])) {
+      await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', sha], { env: auth.env, timeoutMs: 5 * 60_000 });
+    }
+    const result = await runChecked('git', ['-C', root, 'diff', '--name-status', '-M', base.sha, head.sha, '--'], { timeoutMs: 2 * 60_000 });
+    const files = result.stdout.trim()
+      ? result.stdout.trim().split(/\r?\n/u).filter(Boolean).map(line => {
+        const [status = '', first = '', second] = line.split('\t');
+        if (!status || !first) throw new Error(`Malformed git diff name-status row: ${line}`);
+        if (/^[RC]/u.test(status)) {
+          if (!second) throw new Error(`Malformed git rename/copy row: ${line}`);
+          return { status, previousPath: first, path: second };
+        }
+        return { status, path: first };
+      })
+      : [];
+    return { base, head, files };
+  } finally {
+    await auth.cleanup();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
 export async function withResolvedProjectCheckout<T>(
   revision: ProjectRevision,
   fn: (input: ProjectRevision & { root: string }) => Promise<T>,
@@ -234,3 +280,4 @@ export async function listPublicProjects(): Promise<Array<Record<string, unknown
     revisionPolicy: config.revisionPolicy ?? 'allowlisted',
   }));
 }
+

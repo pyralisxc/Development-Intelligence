@@ -63,6 +63,7 @@ Graph/code primitives:
 - `check_graph_coverage`
 - `get_evidence`
 - `diff_graph`
+- `analyze_impact`
 - `query_parity`
 
 `query_intelligence` is the shared deterministic Assessment Engine used by MCP and the Workbench. It projects revision-bound claims, proof bundles, typed capability-realization paths, hypotheses, and audit findings over the selected graph. Proof is purpose-aware: a relationship may be resolved in the graph yet still be inadmissible for a realization claim (for example, declaration-only or naming-correlation edges). Caller-required facets are ephemeral expectations: an unobserved facet becomes contradicted only when the claim's repository scope is exhaustively covered across tracked sources; unsupported, partial, skipped, failed, or unavailable sources keep absence unproven.
@@ -105,6 +106,8 @@ Use stable IDs returned by `search_graph`, `inspect_entity`, or `query_parity`. 
 PR head means the proposal, base means the exact target observed by GitHub, and result means the accepted merge result. DI never silently substitutes one for another.
 
 `diff_graph` owns change intelligence. Without `baseRef` it compares accepted semantic A with canonical W. With `baseRef` it compares any two authorized historical selectors under the same current analyzer and reports both resolved identities. Revision distance is irrelevant after resolution; a comparison may span unrelated PRs or hundreds of commits. Semantic diffs compare stable semantic topology rather than source locators/evidence references; evidence/analyzer drift is reported separately.
+
+`analyze_impact` owns revision-aware blast-radius analysis. It resolves two authorized Git revisions, obtains the actual Git changed paths, maps those files into each revision graph, and traces bounded inbound/outbound relationships from the affected entities. This catches implementation-only changes that may leave graph topology unchanged. Coverage, unmapped changed paths, relationship status, and immutable revision identities remain explicit.
 
 ## Coverage and negative answers
 
@@ -296,3 +299,4 @@ Operational configuration may declare only where DI is allowed to observe:
 For owner-scoped GitHub use, `DEVINT_GITHUB_ALLOWED_OWNERS` authorizes canonical `owner/repository` project identifiers without creating one registry entry per repository. The shared read-only GitHub credential still determines whether a public or private repository can actually be fetched, and dynamic projects inspect only the repository's default `HEAD`. Fixed registry entries remain available when a repository needs explicit refs, runtime origins, headers, or technical sources.
 
 It must not define project-specific semantic ontologies, product intent, source-authority maps, or analyzer branches keyed by project identity.
+
