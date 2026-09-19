@@ -121,28 +121,33 @@ function renderAssessment(data: any, compact = false): string {
   if (!data?.claims || !Array.isArray(data.claims)) return '';
   const claims = data.claims as any[];
   const findings = Array.isArray(data.findings) ? data.findings as any[] : [];
+  const hypotheses = Array.isArray(data.hypotheses?.items) ? data.hypotheses.items as any[] : [];
   const findingGroups = Array.isArray(data.findingSummary?.groups) ? data.findingSummary.groups as any[] : [];
   const facets = Object.entries(data.realization?.facets ?? {}) as Array<[string, any]>;
   const requiredFacets = new Set<string>(data.realization?.requiredFacets ?? []);
   const coverage = data.coverage;
-  const coverageLabel = coverage?.completeForEligibleSources === true ? 'complete eligible-source coverage' : coverage ? 'incomplete eligible-source coverage' : 'coverage unavailable';
+  const coverageLabel = coverage?.completeForTrackedSources === true ? 'exhaustive tracked-source coverage' : coverage?.completeForEligibleSources === true ? 'eligible sources complete · tracked coverage not exhaustive' : coverage ? 'incomplete eligible-source coverage' : 'coverage unavailable';
   const facetRows = facets.map(([name, facet]) => {
     const required = requiredFacets.has(name);
     const statusClass = facet.observed ? 'status-good' : required ? 'status-warn' : '';
-    const label = facet.observed ? 'observed' : required ? 'required · not observed' : 'not observed';
+    const label = facet.observed ? 'proven' : required ? 'required · proof incomplete' : 'not proven';
     return `<div class="assessment-facet"><span class="badge ${statusClass}">${esc(label)}</span><strong>${esc(name)}</strong>${compact ? '' : `<small>${esc((facet.nodeIds ?? []).length)} supporting node(s)</small>`}</div>`;
   }).join('');
   const claimRows = claims.map(item => {
     const proof = item.proof ?? {};
-    const proofSummary = `${(proof.nodeIds ?? []).length} nodes · ${(proof.edgeIds ?? []).length} relationships · ${(proof.evidenceIds ?? []).length} evidence records`;
+    const proofSummary = `${(proof.nodeIds ?? []).length} nodes · ${(proof.edgeIds ?? []).length} admissible relationships · ${(proof.evidenceIds ?? []).length} evidence records`;
+    const scope = proof.coverage?.claimScope;
+    const scopeLabel = scope ? `${scope.scope} scope · ${scope.completeForClaimScope ? 'coverage complete' : 'coverage incomplete'}${scope.supportsNegative ? ' · absence may support a bounded negative' : ''}` : 'claim coverage unavailable';
+    const rejected = proof.admissibility?.rejectedEdgeIds?.length ? ` · ${proof.admissibility.rejectedEdgeIds.length} relationship(s) excluded for this proof purpose` : '';
     const evidence = (proof.evidence ?? []).map((record: any) => `<li>${esc(record.locator ?? record.id)}</li>`).join('');
-    return `<div class="assessment-item"><div><span class="badge ${assessmentStatusClass(item.status)}">${esc(item.status)}</span> <span class="muted">${esc(proof.ruleId ?? item.type)}</span></div><strong>${esc(item.statement)}</strong><small>${esc(proofSummary)}</small>${!compact && evidence ? `<details><summary class="muted">Evidence locations</summary><ul>${evidence}</ul></details>` : ''}</div>`;
+    return `<div class="assessment-item"><div><span class="badge ${assessmentStatusClass(item.status)}">${esc(item.status)}</span> <span class="muted">${esc(proof.ruleId ?? item.type)}</span></div><strong>${esc(item.statement)}</strong><small>${esc(proofSummary + rejected)}</small><small>${esc(scopeLabel)}</small>${!compact && evidence ? `<details><summary class="muted">Evidence locations</summary><ul>${evidence}</ul></details>` : ''}</div>`;
   }).join('');
+  const hypothesisRows = hypotheses.map(item => `<div class="assessment-item"><div><span class="badge status-warn">suggested · proof incomplete</span> <span class="muted">${esc(item.kind)}</span></div><strong>${esc((item.from ?? 'unknown') + ' → ' + (item.to ?? 'unresolved'))}</strong><small>Candidate relationship ${esc(item.edgeId)} · does not satisfy proof</small></div>`).join('');
   const findingRows = findings.map(item => `<div class="assessment-item"><div><span class="badge status-warn">${esc(item.category)}</span> <span class="muted">${esc(item.ruleId)}</span></div><strong>${esc(item.summary)}</strong><small>${esc((item.affectedIds ?? []).length)} affected graph record(s)</small></div>`).join('');
   const findingGroupRows = findingGroups.map(item => `<div class="assessment-item"><div><span class="badge status-warn">${esc(item.count)} finding${item.count === 1 ? '' : 's'}</span> <span class="muted">${esc(item.relationshipKind ?? item.ruleId)}</span></div><strong>${esc(item.ruleId)}</strong><small>${esc((item.affectedIds ?? []).length)} distinct affected graph record(s)</small></div>`).join('');
   const findingScope = data.findingSummary?.scope;
   const findingScopeLabel = findingScope ? `Resolved radius ${findingScope.resolvedDepth} from ${findingScope.rootId} · ${findingScope.nodeCount} nodes in scope` : 'Repository-wide or coverage-only scope';
-  return `<div class="assessment"><div class="assessment-head"><div><h3>Evidence-backed assessment</h3><h2 class="${assessmentStatusClass(data.answerStatus)}">${esc(data.answerStatus)}</h2></div><div class="assessment-meta">Revision ${esc(data.revision ?? 'unknown')}<br>${esc(coverageLabel)}</div></div>${facets.length ? `<div class="assessment-section"><h3>Capability realization</h3><div class="assessment-facets">${facetRows}</div></div>` : ''}<div class="assessment-section"><h3>Claims and proof</h3><div class="list">${claimRows}</div></div>${findings.length ? `<div class="assessment-section"><h3>Finding groups</h3><p class="muted">${esc(findingScopeLabel)}</p><div class="list">${findingGroupRows}</div>${compact ? '' : `<details><summary class="muted">${esc(findings.length)} underlying findings</summary><div class="list" style="margin-top:8px">${findingRows}</div></details>`}</div>` : ''}${compact ? '' : `<details><summary class="muted">Raw assessment record</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`}</div>`;
+  return `<div class="assessment"><div class="assessment-head"><div><h3>Evidence-backed assessment</h3><h2 class="${assessmentStatusClass(data.answerStatus)}">${esc(data.answerStatus)}</h2></div><div class="assessment-meta">Revision ${esc(data.revision ?? 'unknown')}<br>${esc(coverageLabel)}</div></div>${facets.length ? `<div class="assessment-section"><h3>Capability realization</h3><div class="assessment-facets">${facetRows}</div></div>` : ''}<div class="assessment-section"><h3>Claims and proof</h3><div class="list">${claimRows}</div></div>${hypotheses.length ? `<div class="assessment-section"><h3>Suggested relationships</h3><p class="muted">Candidates are hypotheses for follow-up inspection, not findings and not proof.</p><div class="list">${hypothesisRows}</div></div>` : ''}${findings.length ? `<div class="assessment-section"><h3>Finding groups</h3><p class="muted">${esc(findingScopeLabel)}</p><div class="list">${findingGroupRows}</div>${compact ? '' : `<details><summary class="muted">${esc(findings.length)} underlying findings</summary><div class="list" style="margin-top:8px">${findingRows}</div></details>`}</div>` : ''}${compact ? '' : `<details><summary class="muted">Raw assessment record</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`}</div>`;
 }
 
 function setInspectorTabs(): void {
