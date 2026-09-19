@@ -116,12 +116,16 @@ export function projectTypedReach(
   }
 
   const edgesById = new Map(graph.edges.map(edge => [edge.id, edge]));
-  const dimensions = Object.fromEntries(DIMENSIONS.map(dimension => [dimension, {
-    observed: false,
-    count: 0,
-    targetIds: [],
-    paths: [],
-  }])) as Record<ReachDimension, TypedReachDimension>;
+  const emptyDimension = (): TypedReachDimension => ({ observed: false, count: 0, targetIds: [], paths: [] });
+  const dimensions: Record<ReachDimension, TypedReachDimension> = {
+    implementation: emptyDimension(),
+    human: emptyDimension(),
+    agent: emptyDimension(),
+    transport: emptyDimension(),
+    persistence: emptyDimension(),
+    provider: emptyDimension(),
+    'cross-feature': emptyDimension(),
+  };
 
   const usedEdgeIds = new Set<string>();
   for (const [targetId, path] of pathByNode) {
