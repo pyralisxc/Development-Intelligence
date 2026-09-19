@@ -195,7 +195,14 @@ export async function inspectEntity(input: { project: string; node: string; ref?
   if (evidence.length) quickNotes.push(`${evidence.length} evidence record(s) support this entity or its visible relationships.`);
   const assessment = assessGraph(graph, selected.id);
   const assessmentStatus = String((assessment as any).answerStatus ?? 'indeterminate');
+  const reach = (assessment as any).reach ?? null;
   quickNotes.push(`Evidence-backed assessment: ${assessmentStatus}.`);
+  if (reach?.dimensions) {
+    const observed = Object.entries(reach.dimensions)
+      .filter(([, value]: any) => value?.observed)
+      .map(([dimension, value]: any) => `${dimension} (${value.count})`);
+    if (observed.length) quickNotes.push(`Typed reach: ${observed.join(', ')}. Reach describes resolved connection paths, not impact severity.`);
+  }
   let code: unknown = null;
   try { code = await getCodeSnippet({ project: input.project, ref: input.ref, graphId: input.graphId, node: selected.id, context: 5 }); } catch { /* semantic/runtime entities may not map to one source snippet */ }
   let change: unknown = null;
@@ -217,6 +224,7 @@ export async function inspectEntity(input: { project: string; node: string; ref?
     change,
     coverage: graph.coverage ?? null,
     assessment,
+    reach,
   };
 }
 

@@ -45,6 +45,12 @@ test('assessment produces deterministic revision-bound claims, proof, realizatio
   assert.equal(first.realization.facets.agent.observed, true);
   assert.equal(first.realization.facets.persistence.observed, true);
   assert.equal(first.realization.facets.provider.observed, false);
+  assert.equal(first.reach.dimensions.human.observed, true);
+  assert.equal(first.reach.dimensions.agent.observed, true);
+  assert.equal(first.reach.dimensions.transport.observed, true);
+  assert.equal(first.reach.dimensions.implementation.observed, true);
+  assert.equal(first.reach.dimensions.persistence.observed, true);
+  assert.match(first.reach.policy.interpretation, /does not score severity/i);
   assert.ok(first.realization.paths.some((item: any) => item.facet === 'implementation' && item.relationshipKinds.includes('implemented-by')));
   assert.ok(first.claims.some((item: any) => item.type === 'facet-observed' && item.proof.admissibility.purpose === 'realization'));
   assert.ok(first.claims.some((item: any) => item.type === 'contract-facet' && item.status === 'contradicted' && item.statement.startsWith('provider')));
