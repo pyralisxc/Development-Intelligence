@@ -14,7 +14,7 @@ Permanent evidence protects durable Development Intelligence contracts, not hist
 
 Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.
 
-Parity Contract tests protect the boundary between caller intent and observed truth: E is evaluated ephemerally, resolved evidence satisfies requirements, forbidden observations fail explicitly, tentative evidence remains unproven, and incomplete coverage never manufactures a negative conclusion.
+Parity Contract tests protect the boundary between caller intent and observed truth: E is evaluated ephemerally, resolved evidence satisfies requirements, forbidden observations fail explicitly, candidate/unresolved evidence remains unproven, and unsupported as well as partial/skipped/failed coverage prevents absence from manufacturing a negative conclusion.
 
 ### Git-owned A/W/B lifecycle
 
@@ -91,7 +91,7 @@ The graph remains an important representation, but the human product must not re
 
 Durable intelligence primitives used by the Workbench must also be available to agents. The public MCP surface therefore includes `project_overview`, `query_intelligence`, `inspect_entity`, `list_sources`, and `query_source` in addition to the graph/code primitives.
 
-Assessment acceptance protects deterministic revision-bound claim/finding identities, proof references to canonical graph evidence, realization-facet traversal over resolved relationships, coverage-qualified negative conclusions, and the rule that absent facets are not treated as missing unless the caller explicitly requires them.
+Assessment acceptance protects deterministic revision-bound claim/finding identities, purpose-aware proof references to canonical graph evidence, typed realization paths over admissible resolved relationships, claim-scoped coverage-qualified negatives, candidate-as-hypothesis behavior, and the rule that absent facets are not treated as missing unless the caller explicitly requires them. Declaration/containment/correlation relationships may remain valid graph facts without being allowed to prove implementation realization.
 
 The site must not grow a second private intelligence backend that agents cannot access.
 

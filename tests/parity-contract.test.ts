@@ -79,6 +79,32 @@ test('Parity Contracts keep absent observations unproven when coverage is incomp
   assert.deepEqual(result.counts, { satisfied: 0, missing: 0, forbiddenPresent: 0, unproven: 2 });
 });
 
+test('Parity Contracts keep negatives unproven when unsupported tracked sources could hide contrary evidence', () => {
+  const fixture = graph();
+  fixture.coverage = {
+    ...fixture.coverage!,
+    trackedFiles: 2,
+    eligibleFiles: 1,
+    analyzedFiles: 1,
+    completeFiles: 1,
+    unsupportedFiles: 1,
+    files: [
+      { path: 'src/manage.ts', status: 'complete' },
+      { path: 'workflow.yml', status: 'unsupported', reason: 'unsupported extension .yml' },
+    ],
+  };
+  const result = evaluateParityContractGraph(fixture, {
+    version: 1,
+    entities: [
+      { id: 'capability:missing', requirement: 'required' },
+      { id: 'capability:forbidden-but-unseen', requirement: 'forbidden' },
+    ],
+  }) as any;
+  assert.deepEqual(result.counts, { satisfied: 0, missing: 0, forbiddenPresent: 0, unproven: 2 });
+  assert.equal(result.claimCoverage.supportsNegative, false);
+  assert.deepEqual(result.claimCoverage.blockers.map((item: any) => item.path), ['workflow.yml']);
+});
+
 test('Parity Contracts reject empty expectation overlays', () => {
   assert.throws(() => normalizeParityContract({ version: 1 }), /at least one entity or relationship/i);
 });

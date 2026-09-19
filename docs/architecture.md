@@ -72,6 +72,8 @@ Relationships retain kind, strategy, confidence, evidence references, and one of
 
 Certainty survives every lens. For example, a direct provider import may resolve an integration, while a provider hostname appearing in arbitrary source text remains a candidate.
 
+Relationship certainty and claim proof are deliberately separate. `resolved` means DI proved that graph relationship under its relationship rule; it does not mean the edge is admissible for every downstream claim. Assessment proof applies a declared purpose (`existence`, `realization`, `contract`, or `audit`). Realization/contract proof rejects structural declaration, containment, import/re-export, resolution, and naming-correlation edges even when those edges are themselves resolved. Candidate relationships remain hypotheses for follow-up inspection and never become findings or proof merely because they are nearby.
+
 ### Coverage
 
 Coverage is part of the truth model. Eligible sources are described as:
@@ -82,7 +84,7 @@ Coverage is part of the truth model. Eligible sources are described as:
 - `skipped`;
 - `failed`.
 
-Negative/exhaustive answers must not collapse “nothing found” with “DI could not fully inspect this scope.” `check_graph_coverage` exposes detailed file-level status and reasons; higher-level lenses carry compact coverage context.
+Negative/exhaustive answers must not collapse “nothing found” with “DI could not fully inspect this scope.” Coverage is evaluated at the claim scope. Positive proof can cite the exact covered source paths that support it; a repository-wide absence claim requires exhaustive tracked-source coverage. `unsupported`, `partial`, `skipped`, `failed`, or unavailable sources therefore block a definitive negative when they could contain contrary evidence. `check_graph_coverage` exposes detailed file-level status and reasons; higher-level lenses carry compact coverage context.
 
 ## Generic semantic declarations
 
@@ -255,7 +257,7 @@ The permanent agent-facing tools are:
 - `query_parity`
 - `evaluate_parity`
 
-The Assessment Engine is a derived query layer over this graph, not a second authority. `query_intelligence` and the Workbench use the same engine to produce deterministic, revision/analyzer-bound claims, proof bundles, capability-realization facets, and coverage/conflict/relationship/realization findings. Proof cites existing node, edge, and evidence identities. Assessments and caller-required facets are ephemeral and are not checkpointed. Complete coverage permits a bounded contradiction for a required but unobserved facet; incomplete or unavailable coverage keeps the conclusion unproven or indeterminate.
+The Assessment Engine is a derived query layer over this graph, not a second authority. `query_intelligence` and the Workbench use the same engine to produce deterministic, revision/analyzer-bound claims, purpose-aware proof bundles, typed capability-realization paths, candidate hypotheses, and coverage/conflict/relationship/realization findings. Proof cites existing node, edge, and evidence identities and discloses both admissibility and claim-scope coverage. Assessments and caller-required facets are ephemeral and are not checkpointed. A required but unobserved facet is contradicted only when its repository-wide claim scope is exhaustively covered across tracked sources; incomplete, unsupported, skipped, failed, or unavailable coverage keeps the conclusion unproven or indeterminate.
 
 Graph-consuming tools address canonical project/ref W, a reconstructible canonical `repo-…` graph ID, or an explicit ephemeral runtime `snapshot-…` graph ID where applicable. `search_graph` and `query_parity` also accept up to 20 independent `queries`, evaluated over one loaded graph.
 
