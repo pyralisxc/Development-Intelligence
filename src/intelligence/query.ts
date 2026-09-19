@@ -114,9 +114,9 @@ export async function diffAcceptedToWorking(project: string, ref?: string): Prom
 
 export async function diffRevisions(input: {
   project: string;
-  ref?: string;
+  ref?: string | undefined;
   baseRef?: string;
-  layers?: GraphNodeLayer[];
+  layers?: GraphNodeLayer[] | undefined;
 }): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(input.project);
   const headRef = input.ref ?? config.defaultRef;
@@ -135,12 +135,12 @@ export async function diffRevisions(input: {
 }
 
 interface ImpactTraversalOptions {
-  direction?: 'inbound' | 'outbound' | 'both';
-  depth?: number;
-  relationshipKinds?: string[];
-  statuses?: RelationshipStatus[];
-  layers?: GraphNodeLayer[];
-  limit?: number;
+  direction?: 'inbound' | 'outbound' | 'both' | undefined;
+  depth?: number | undefined;
+  relationshipKinds?: string[] | undefined;
+  statuses?: RelationshipStatus[] | undefined;
+  layers?: GraphNodeLayer[] | undefined;
+  limit?: number | undefined;
 }
 
 function nodePath(node: GraphNode): string {
@@ -241,13 +241,13 @@ function impactNeighborhood(
 export async function analyzeImpact(input: {
   project: string;
   baseRef: string;
-  ref?: string;
-  direction?: 'inbound' | 'outbound' | 'both';
-  depth?: number;
-  relationshipKinds?: string[];
-  statuses?: RelationshipStatus[];
-  layers?: GraphNodeLayer[];
-  limit?: number;
+  ref?: string | undefined;
+  direction?: 'inbound' | 'outbound' | 'both' | undefined;
+  depth?: number | undefined;
+  relationshipKinds?: string[] | undefined;
+  statuses?: RelationshipStatus[] | undefined;
+  layers?: GraphNodeLayer[] | undefined;
+  limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(input.project);
   const headRef = input.ref ?? config.defaultRef;
@@ -673,13 +673,13 @@ function boundedNeighborhood(graph: IntelligenceGraph, context: GraphQueryContex
 
 export async function viewerProjection(input: {
   project: string;
-  ref?: string;
+  ref?: string | undefined;
   graphId?: string;
   view?: 'architecture' | 'parity' | 'code' | 'change';
   query?: string;
   node?: string;
-  depth?: number;
-  limit?: number;
+  depth?: number | undefined;
+  limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const context = graphQueryContext(graph);
@@ -736,7 +736,7 @@ export function nodeArea(node: GraphNode): string {
 
 export async function graphEvidence(input: {
   project: string;
-  ref?: string;
+  ref?: string | undefined;
   graphId?: string;
   node?: string;
   edge?: string;
@@ -769,4 +769,5 @@ export async function graphEvidence(input: {
   const evidence = graph.evidence.filter(item => ids.has(item.id));
   return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, coverage: coverageSummary(graph), ambiguous: false, node: node ?? null, edge: edge ?? null, evidence };
 }
+
 
