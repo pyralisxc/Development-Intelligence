@@ -5,6 +5,7 @@ import { getProjectConfig, loadRegistry } from '../config/registry.js';
 import type { ProjectConfig } from '../types.js';
 import { runChecked } from '../util/process.js';
 import { gitAuth } from './gitAuth.js';
+import { resolveRepositoryCredential } from './repositoryCredential.js';
 
 export interface ProjectRevision {
   project: string;
@@ -111,15 +112,13 @@ function githubRepository(repository: string): { owner: string; name: string } |
 async function githubPullRequest(config: ProjectConfig, number: number): Promise<PullRequestRevision> {
   const repository = githubRepository(config.repository);
   if (!repository) throw new Error('Pull request revision selectors require a github.com HTTPS repository');
-  const credential = config.credential;
-  const token = credential?.type === 'token-env' ? process.env[credential.tokenEnv] : undefined;
-  if (credential?.type === 'token-env' && !token) throw new Error(`Missing configured repository credential environment variable: ${credential.tokenEnv}`);
+  const resolved = await resolveRepositoryCredential(config);
   const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}`, {
     headers: {
       accept: 'application/vnd.github+json',
       'x-github-api-version': '2022-11-28',
       'user-agent': 'development-intelligence',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(resolved ? { authorization: `Bearer ${resolved.token}` } : {}),
     },
     redirect: 'error',
   });
@@ -280,4 +279,3 @@ export async function listPublicProjects(): Promise<Array<Record<string, unknown
     revisionPolicy: config.revisionPolicy ?? 'allowlisted',
   }));
 }
-

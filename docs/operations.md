@@ -28,7 +28,9 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_PROJECTS_FILE` | Operational repository/ref/runtime/technical-source allowlist registry |
 | `DEVINT_PROJECTS_JSON` | Optional inline hosted registry; takes precedence over the file when set |
 | `DEVINT_GITHUB_ALLOWED_OWNERS` | Optional comma-separated GitHub owners whose repositories may be inspected dynamically as `owner/repository` |
-| `DEVINT_GITHUB_TOKEN_ENV` | Optional credential environment-variable name for dynamic GitHub repositories; defaults to `DEVINT_GITHUB_TOKEN` |
+| `DEVINT_GITHUB_APP_ID` | Preferred dedicated read-only GitHub App ID for dynamic GitHub repositories |
+| `DEVINT_GITHUB_APP_PRIVATE_KEY` | Private key for the dedicated DI GitHub App; used only to mint short-lived single-repository read-only installation tokens |
+| `DEVINT_GITHUB_TOKEN_ENV` | Token fallback environment-variable name for dynamic GitHub repositories; defaults to `DEVINT_GITHUB_TOKEN` |
 | `DEVINT_SCRATCH_DIR` | Optional disposable checkout root (defaults to OS temp) |
 | `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound |
 | `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots |

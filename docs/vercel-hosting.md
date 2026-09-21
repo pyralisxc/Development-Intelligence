@@ -100,14 +100,22 @@ Store the compact JSON as the `DEVINT_PROJECTS_JSON` environment value.
 Also add:
 
 ```text
-DEVINT_GITHUB_TOKEN=<read-only GitHub credential>
 DEVINT_GITHUB_ALLOWED_OWNERS=pyralisxc
+
+# Preferred: dedicated Development Intelligence GitHub App.
+DEVINT_GITHUB_APP_ID=<app id>
+DEVINT_GITHUB_APP_PRIVATE_KEY=<private key PEM>
+
+# Optional token fallback when the App is not configured.
+DEVINT_GITHUB_TOKEN=<read-only GitHub credential>
 DEVINT_GITHUB_TOKEN_ENV=DEVINT_GITHUB_TOKEN
 ```
 
 The fixed registry keeps explicit configuration for Development Intelligence itself. The owner policy additionally lets callers inspect any repository under `pyralisxc` by using the project identifier `pyralisxc/<repository>`. Dynamic projects default to `HEAD` and support typed historical commit/branch/tag/PR selectors while remaining free of project-specific semantics, runtime origins, or technical-source configuration.
 
-For a private repository, the credential must be able to read the repositories DI inspects. Prefer a fine-grained read-only credential limited to the repositories the service should reach. Development Intelligence does not require GitHub write access. Owner policy and token reach are independent: both must permit access.
+For private repositories, prefer a dedicated Development Intelligence GitHub App installed on the repositories DI may inspect. Grant only **Contents: Read-only** and **Pull requests: Read-only** (GitHub provides Metadata read access automatically). DI mints a short-lived token restricted to the requested repository and fails if GitHub returns any non-read permission. The static token remains a fallback only.
+
+Development Intelligence never requires GitHub write access. Owner policy and credential reach are independent: both must permit access.
 
 ## 4. Stable hostname bootstrap
 

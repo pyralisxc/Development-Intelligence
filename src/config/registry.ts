@@ -42,8 +42,13 @@ function validateHeaders(name: string, headers: RuntimeHeaderConfig[] | undefine
 function validateProject(name: string, config: ProjectConfig): ProjectConfig {
   if (!name.trim()) throw new Error('Project names must be non-empty');
   assertRepositoryUrl(config.repository);
-  if (config.credential?.type === 'token-env' && !config.repository.startsWith('https://')) {
-    throw new Error(`${name}: token-env repository credentials require an HTTPS repository URL; use host SSH credentials with credential.type=none for SSH repositories`);
+  if (config.credential && config.credential.type !== 'none' && !config.repository.startsWith('https://')) {
+    throw new Error(`${name}: configured repository credentials require an HTTPS repository URL; use host SSH credentials with credential.type=none for SSH repositories`);
+  }
+  if (config.credential?.type === 'github-app-env') {
+    for (const [label, value] of [['appIdEnv', config.credential.appIdEnv], ['privateKeyEnv', config.credential.privateKeyEnv]] as const) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) throw new Error(`${name}: github-app-env ${label} must name an environment variable`);
+    }
   }
   if (!config.defaultRef?.trim()) throw new Error(`${name}: defaultRef is required`);
   const revisionPolicy = config.revisionPolicy ?? 'allowlisted';
@@ -86,6 +91,11 @@ function githubProjectConfig(project: string): ProjectConfig | null {
   if (!requestedOwner || !repository || repository === '.' || repository === '..' || repository.toLowerCase().endsWith('.git')) return null;
   const owner = listAuthorizedGithubOwners().find(value => value.toLowerCase() === requestedOwner.toLowerCase());
   if (!owner) return null;
+  const appId = process.env.DEVINT_GITHUB_APP_ID?.trim();
+  const privateKey = process.env.DEVINT_GITHUB_APP_PRIVATE_KEY?.trim();
+  if (Boolean(appId) !== Boolean(privateKey)) {
+    throw new Error('DEVINT_GITHUB_APP_ID and DEVINT_GITHUB_APP_PRIVATE_KEY must be configured together');
+  }
   const tokenEnv = process.env.DEVINT_GITHUB_TOKEN_ENV?.trim() || 'DEVINT_GITHUB_TOKEN';
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) throw new Error('DEVINT_GITHUB_TOKEN_ENV must name an environment variable');
   return validateProject(project, {
@@ -93,7 +103,14 @@ function githubProjectConfig(project: string): ProjectConfig | null {
     defaultRef: 'HEAD',
     allowedRefs: ['HEAD'],
     revisionPolicy: 'repository-history',
-    credential: { type: 'token-env', tokenEnv, username: 'x-access-token' },
+    credential: appId && privateKey
+      ? {
+          type: 'github-app-env',
+          appIdEnv: 'DEVINT_GITHUB_APP_ID',
+          privateKeyEnv: 'DEVINT_GITHUB_APP_PRIVATE_KEY',
+          username: 'x-access-token',
+        }
+      : { type: 'token-env', tokenEnv, username: 'x-access-token' },
   });
 }
 
