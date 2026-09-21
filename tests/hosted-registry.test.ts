@@ -29,10 +29,14 @@ test('authorized GitHub owners provide read-only dynamic repository projects wit
     registry: process.env.DEVINT_PROJECTS_JSON,
     owners: process.env.DEVINT_GITHUB_ALLOWED_OWNERS,
     tokenEnv: process.env.DEVINT_GITHUB_TOKEN_ENV,
+    appId: process.env.DEVINT_GITHUB_APP_ID,
+    appKey: process.env.DEVINT_GITHUB_APP_PRIVATE_KEY,
   };
   process.env.DEVINT_PROJECTS_JSON = '{}';
   process.env.DEVINT_GITHUB_ALLOWED_OWNERS = 'pyralisxc, PyralisXC';
   delete process.env.DEVINT_GITHUB_TOKEN_ENV;
+  delete process.env.DEVINT_GITHUB_APP_ID;
+  delete process.env.DEVINT_GITHUB_APP_PRIVATE_KEY;
   try {
     assert.deepEqual(listAuthorizedGithubOwners(), ['pyralisxc']);
     const config = await getProjectConfig('pyralisxc/CardForge');
@@ -63,5 +67,7 @@ test('authorized GitHub owners provide read-only dynamic repository projects wit
     restore('DEVINT_PROJECTS_JSON', previous.registry);
     restore('DEVINT_GITHUB_ALLOWED_OWNERS', previous.owners);
     restore('DEVINT_GITHUB_TOKEN_ENV', previous.tokenEnv);
+    restore('DEVINT_GITHUB_APP_ID', previous.appId);
+    restore('DEVINT_GITHUB_APP_PRIVATE_KEY', previous.appKey);
   }
 });

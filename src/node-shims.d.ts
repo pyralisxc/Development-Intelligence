@@ -2,7 +2,15 @@ declare type Buffer = any;
 declare const Buffer: any;
 declare namespace NodeJS { interface ProcessEnv { [key: string]: string | undefined } interface ErrnoException extends Error { code?: string } }
 declare const process: { env: NodeJS.ProcessEnv; [key: string]: any };
-declare module 'node:crypto' { export const createHash: any; export const createHmac: any; export const randomBytes: any; export const timingSafeEqual: any; }
+declare module 'node:crypto' {
+  export const createHash: any;
+  export const createHmac: any;
+  export const createPrivateKey: any;
+  export const generateKeyPairSync: any;
+  export const randomBytes: any;
+  export const sign: any;
+  export const timingSafeEqual: any;
+}
 declare module 'node:fs' { export const promises: any; }
 declare module 'node:path' { const value: any; export default value; }
 declare module 'node:os' { const value: any; export default value; }
