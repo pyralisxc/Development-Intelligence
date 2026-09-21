@@ -40,7 +40,10 @@ function base64url(value: string | Buffer): string {
 }
 
 function appJwt(appId: string, privateKey: string, now = new Date()): string {
-  if (!/^[1-9]\\d*$/.test(appId)) throw new Error('DEVINT_GITHUB_APP_ID must be a positive integer');
+  const numericAppId = Number(appId);
+  if (!Number.isSafeInteger(numericAppId) || numericAppId < 1 || String(numericAppId) !== appId) {
+    throw new Error('DEVINT_GITHUB_APP_ID must be a positive integer');
+  }
   const nowSeconds = Math.floor(now.getTime() / 1000);
   const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const payload = base64url(JSON.stringify({
