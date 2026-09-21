@@ -21,11 +21,14 @@ function githubRepository(repository: string): { owner: string; name: string } {
   if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'github.com') {
     throw new Error('github-app-env credentials require a github.com HTTPS repository');
   }
-  const segments = url.pathname.replace(/^\\/+|\\/+$/g, '').replace(/\\.git$/i, '').split('/');
+  const segments = url.pathname.split('/').filter(Boolean);
   if (segments.length !== 2 || !segments[0] || !segments[1]) {
     throw new Error('github-app-env credentials require an owner/repository GitHub URL');
   }
-  return { owner: segments[0], name: segments[1] };
+  const rawName = segments[1];
+  const name = rawName.toLowerCase().endsWith('.git') ? rawName.slice(0, -4) : rawName;
+  if (!name) throw new Error('github-app-env credentials require a repository name');
+  return { owner: segments[0], name };
 }
 
 function normalizePrivateKey(value: string): string {
