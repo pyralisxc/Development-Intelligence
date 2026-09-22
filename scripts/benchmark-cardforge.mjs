@@ -30,6 +30,7 @@ process.env.DEVINT_GRAPH_CACHE_SIZE = '3';
 
 const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
+const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { clearGraphCache } = await import('../dist/src/intelligence/service.js');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
@@ -40,6 +41,24 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+
+const pipelineSubject = graph.nodes.find(node => node.kind === 'function' && node.name === 'buildPipelineContentReview');
+const persistenceSubject = graph.nodes.find(node => node.kind === 'file' && node.locator === 'src/features/contributor-access/server/profileStore.ts');
+if (!pipelineSubject || !persistenceSubject) throw new Error('CardForge benchmark expected pipeline and persistence motif subjects');
+
+assessGraph(graph, pipelineSubject.id);
+const pipelineMotifStarted = process.hrtime.bigint();
+const pipelineMotifAssessment = assessGraph(graph, pipelineSubject.id);
+const pipelineMotifElapsedMs = Number(process.hrtime.bigint() - pipelineMotifStarted) / 1_000_000;
+const pipelineMotif = pipelineMotifAssessment.orientation?.certainty?.derived?.find(item => item.kind === 'pipeline');
+if (!pipelineMotif || pipelineMotif.signals.length < 2 || pipelineMotif.proofEligible !== false) throw new Error('CardForge pipeline motif was not conservatively derived');
+
+const persistenceMotifStarted = process.hrtime.bigint();
+const persistenceMotifAssessment = assessGraph(graph, persistenceSubject.id);
+const persistenceMotifElapsedMs = Number(process.hrtime.bigint() - persistenceMotifStarted) / 1_000_000;
+const persistenceMotif = persistenceMotifAssessment.orientation?.certainty?.derived?.find(item => item.kind === 'persistence-owner');
+if (!persistenceMotif || persistenceMotif.confidence !== 'high' || persistenceMotif.signals.length < 3 || persistenceMotif.proofEligible !== false) throw new Error('CardForge profile store persistence-owner motif was not conservatively derived');
+if (Math.max(pipelineMotifElapsedMs, persistenceMotifElapsedMs) > 1000) throw new Error('CardForge motif query exceeded 1000 ms acceptance budget');
 
 const assessmentStarted = Date.now();
 const featureAssessment = await callTool('query_intelligence', { project, graphId: scan.graphId, question: 'How is storage management implemented?' });
@@ -175,6 +194,11 @@ const report = {
   },
   assessment: {
     elapsedMs: assessmentElapsedMs,
+    motifs: {
+      pipeline: { confidence: pipelineMotif.confidence, signalCount: pipelineMotif.signals.length, elapsedMs: Number(pipelineMotifElapsedMs.toFixed(3)) },
+      persistenceOwner: { confidence: persistenceMotif.confidence, signalCount: persistenceMotif.signals.length, elapsedMs: Number(persistenceMotifElapsedMs.toFixed(3)) },
+      maxQueryBudgetMs: 1000,
+    },
     feature: { answerStatus: featureAssessment.answerStatus, root: featureAssessment.realization?.root ?? null },
     symbolExistence: { answerStatus: existenceAssessment.answerStatus, ambiguous: existenceAssessment.ambiguous, candidateCount: existenceAssessment.candidates?.length ?? 0 },
     scopedAudit: { answerStatus: scopedAudit.answerStatus, findingCount: scopedAudit.findings.length, summary: scopedAudit.findingSummary },
@@ -209,6 +233,7 @@ const summary = [
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
+  `- Derived motif calibration: **pipeline ${pipelineMotif.confidence} (${pipelineMotif.signals.length} signals, ${pipelineMotifElapsedMs.toFixed(3)} ms) / persistence-owner ${persistenceMotif.confidence} (${persistenceMotif.signals.length} signals, ${persistenceMotifElapsedMs.toFixed(3)} ms) / 1000 ms budget**`,
   '',
   '## Representative structural agent probes',
   '',

@@ -178,3 +178,88 @@ test('orientation distinguishes proven missing claims from coverage-limited unkn
   assert.equal(coverageLimited.orientation.certainty.missing.some((item: string) => /provider realization/i.test(item)), false);
   assert.ok(coverageLimited.orientation.certainty.unknown.some((item: string) => /provider realization is not proven/i.test(item)));
 });
+
+test('derived motifs require independent structural signals and remain non-authoritative', () => {
+  {
+    const fixture = graph();
+    const stateMachine = node('class:session-state-machine', 'class', 'structural', 'SessionStateMachine');
+    stateMachine.locator = 'src/session/SessionStateMachine.cs:5';
+    const currentState = node('property:current-state', 'property', 'structural', 'CurrentState');
+    const transition = node('method:try-transition', 'method', 'structural', 'TryTransitionTo');
+    fixture.nodes.push(stateMachine, currentState, transition);
+    fixture.edges.push(edge('state-current', stateMachine.id, currentState.id, 'contains'));
+    fixture.edges.push(edge('state-transition', stateMachine.id, transition.id, 'contains'));
+
+    const state = assessGraph(fixture, stateMachine.id) as any;
+    const stateMotif = state.orientation.certainty.derived.find((item: any) => item.kind === 'state-machine');
+    assert.equal(stateMotif.status, 'derived');
+    assert.equal(stateMotif.confidence, 'high');
+    assert.equal(stateMotif.proofEligible, false);
+    assert.equal(stateMotif.persisted, false);
+    assert.ok(stateMotif.signals.length >= 3);
+  }
+
+  {
+    const fixture = graph();
+    const adapter = node('class:input-adapter', 'class', 'structural', 'InteractionInputAdapter');
+    adapter.locator = 'src/input/InteractionInputAdapter.cs:8';
+    const handle = node('method:handle-input', 'method', 'structural', 'HandleInteractionInput');
+    fixture.nodes.push(adapter, handle);
+    fixture.edges.push(edge('adapter-handle', adapter.id, handle.id, 'contains'));
+
+    const adapted = assessGraph(fixture, adapter.id) as any;
+    assert.ok(adapted.orientation.certainty.derived.some((item: any) => item.kind === 'adapter'));
+  }
+
+  {
+    const fixture = graph();
+    const pipeline = node('function:pipeline-review', 'function', 'structural', 'buildPipelineContentReview');
+    pipeline.locator = 'src/features/pipeline/pipelineContentReview.ts:7';
+    const stageTwo = node('function:stage-two', 'function', 'structural', 'normalizeClassification');
+    fixture.nodes.push(pipeline, stageTwo);
+    fixture.edges.push(edge('pipeline-call-one', pipeline.id, 'function:checkout', 'calls'));
+    fixture.edges.push(edge('pipeline-call-two', pipeline.id, stageTwo.id, 'calls'));
+
+    const piped = assessGraph(fixture, pipeline.id) as any;
+    assert.ok(piped.orientation.certainty.derived.some((item: any) => item.kind === 'pipeline'));
+  }
+
+  {
+    const fixture = graph();
+    const store = node('file:profile-store', 'file', 'structural', 'profileStore.ts');
+    store.locator = 'src/server/profileStore.ts';
+    const read = node('function:read-profile', 'function', 'structural', 'readProfileRows');
+    const upsert = node('function:upsert-profile', 'function', 'structural', 'upsertContributorProfile');
+    const database = node('file:supabase-server', 'file', 'structural', 'supabaseServer.ts');
+    database.locator = 'src/infrastructure/database/supabaseServer.ts';
+    fixture.nodes.push(store, read, upsert, database);
+    fixture.edges.push(edge('store-read', store.id, read.id, 'contains'));
+    fixture.edges.push(edge('store-upsert', store.id, upsert.id, 'contains'));
+    fixture.edges.push(edge('store-db', store.id, database.id, 'imports'));
+
+    const stored = assessGraph(fixture, store.id) as any;
+    assert.ok(stored.orientation.certainty.derived.some((item: any) => item.kind === 'persistence-owner'));
+  }
+
+  {
+    const fixture = graph();
+    const bootstrap = node('class:bootstrap-root', 'class', 'structural', 'GameplaySessionBootstrap');
+    bootstrap.locator = 'src/bootstrap/GameplaySessionBootstrap.cs:5';
+    const configure = node('method:configure-services', 'method', 'structural', 'ConfigureServices');
+    fixture.nodes.push(bootstrap, configure);
+    fixture.edges.push(edge('bootstrap-configure', bootstrap.id, configure.id, 'contains'));
+
+    const composed = assessGraph(fixture, bootstrap.id) as any;
+    assert.ok(composed.orientation.certainty.derived.some((item: any) => item.kind === 'composition-root'));
+  }
+
+  {
+    const fixture = graph();
+    const nameOnly = node('class:name-only-adapter', 'class', 'structural', 'DecorativeAdapter');
+    nameOnly.locator = 'src/ui/DecorativeAdapter.ts:1';
+    fixture.nodes.push(nameOnly);
+
+    const nameOnlyResult = assessGraph(fixture, nameOnly.id) as any;
+    assert.equal(nameOnlyResult.orientation.certainty.derived.some((item: any) => item.kind === 'adapter'), false);
+  }
+});
