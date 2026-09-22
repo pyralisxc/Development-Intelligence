@@ -138,6 +138,7 @@ export function projectOrientation(
   const unresolved = incident.filter(edge => edge.status === 'unresolved').map(relationshipOrientation);
   const supportedClaims = claims.filter(item => item.status === 'supported' && item.type !== 'hypothesis-ruled-out').map(item => item.statement);
   const ruledOutClaims = claims.filter(item => item.status === 'supported' && item.type === 'hypothesis-ruled-out').map(item => item.statement);
+  const ruleOutContradictions = claims.filter(item => item.status === 'contradicted' && item.type === 'hypothesis-ruled-out').map(item => item.statement);
   const missingClaims = claims.filter(item => item.status === 'contradicted' && item.type !== 'hypothesis-ruled-out').map(item => item.statement);
   const unknownClaims = claims.filter(item => item.status === 'unproven' || item.status === 'indeterminate').map(item => item.statement);
   const derived = selected ? deriveMotifs(graph, selected) : [];
@@ -175,6 +176,7 @@ export function projectOrientation(
         ...(selected ? [`${selected.name ?? selected.id} is directly observed as a ${selected.kind} in the selected revision.`] : []),
         ...(resolved.length ? [`${resolved.length} incident relationship(s) are deterministically resolved for the selected entity.`] : []),
         ...supportedClaims,
+        ...ruleOutContradictions,
       ]),
       derived,
       possible,

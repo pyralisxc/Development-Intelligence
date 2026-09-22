@@ -384,13 +384,13 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   let realization: Record<string, unknown> | null = null;
   let reach: ReturnType<typeof projectTypedReach> | null = null;
 
-  if (selected && mode === 'rule-out') {
+  if (mode === 'rule-out' && matches.length > 0) {
     claims.push(claim({
       type: 'hypothesis-ruled-out',
       status: 'contradicted',
-      statement: 'The hypothesis that “' + (selected.name ?? selected.id) + '” exists is not ruled out because that entity is directly observed in the selected revision.',
-      subjectId: selected.id,
-      proof: proof(graph, 'hypothesis.rule-out.existence', [selected], [], 'existence'),
+      statement: 'The hypothesis that “' + (subject || question) + '” exists is not ruled out because ' + matches.length + ' matching entity observation(s) are directly observed in the selected revision.',
+      subjectId: selected?.id ?? null,
+      proof: proof(graph, 'hypothesis.rule-out.existence', matches, [], 'existence'),
     }));
   } else if (selected) {
     claims.push(claim({ type: 'entity-exists', status: 'supported', statement: (selected.name ?? selected.id) + ' exists in the selected graph.', subjectId: selected.id, proof: proof(graph, 'entity.exists', [selected], [], 'existence') }));
