@@ -56,7 +56,7 @@ export interface RealizationHypothesis {
 
 export interface IntelligenceClaim {
   id: string;
-  type: 'entity-exists' | 'relationship-resolved' | 'facet-observed' | 'contract-facet';
+  type: 'entity-exists' | 'relationship-resolved' | 'facet-observed' | 'contract-facet' | 'hypothesis-ruled-out';
   status: AssessmentStatus;
   statement: string;
   subjectId: string | null;
@@ -201,7 +201,8 @@ function candidates(graph: IntelligenceGraph, query: string): GraphNode[] {
 
 function subjectFromQuestion(question: string): string {
   return question
-    .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|show|inspect|what|where|the|for|of|in|exists?|existence|works?|working)\b/giu, ' ')
+    .replace(/\b(?:can\s+(?:we|you)\s+)?(?:rule|ruled)\s+out\b/giu, ' ')
+    .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|show|inspect|what|where|the|for|of|in|exists?|existence|works?|working|whether|hypothesis|hypotheses)\b/giu, ' ')
     .replace(/[^\p{L}\p{N}_./:@-]+/gu, ' ')
     .replace(/\s+/gu, ' ')
     .trim();
@@ -360,7 +361,13 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
 
 export function assessGraph(graph: IntelligenceGraph, question: string, requiredFacets: RealizationFacet[] = []): Record<string, unknown> {
   const lower = question.toLowerCase();
-  const mode = /\b(audit|finding|problem|risk)\b/u.test(lower) ? 'audit' : /\b(realiz\w*|implement\w*|capability|work)\b/u.test(lower) ? 'realization' : 'assessment';
+  const mode = /\b(?:rule|ruled)\s+out\b/u.test(lower)
+    ? 'rule-out'
+    : /\b(audit|finding|problem|risk)\b/u.test(lower)
+      ? 'audit'
+      : /\b(realiz\w*|implement\w*|capability|work)\b/u.test(lower)
+        ? 'realization'
+        : 'assessment';
   const subject = subjectFromQuestion(question);
   const matches = candidates(graph, subject || question);
   const semanticCapabilities = matches.filter(node => node.layer === 'semantic' && node.kind === 'capability');
@@ -377,7 +384,15 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   let realization: Record<string, unknown> | null = null;
   let reach: ReturnType<typeof projectTypedReach> | null = null;
 
-  if (selected) {
+  if (mode === 'rule-out' && matches.length > 0) {
+    claims.push(claim({
+      type: 'hypothesis-ruled-out',
+      status: 'contradicted',
+      statement: 'The hypothesis that “' + (subject || question) + '” exists is not ruled out because ' + matches.length + ' matching entity observation(s) are directly observed in the selected revision.',
+      subjectId: selected?.id ?? null,
+      proof: proof(graph, 'hypothesis.rule-out.existence', matches, [], 'existence'),
+    }));
+  } else if (selected) {
     claims.push(claim({ type: 'entity-exists', status: 'supported', statement: (selected.name ?? selected.id) + ' exists in the selected graph.', subjectId: selected.id, proof: proof(graph, 'entity.exists', [selected], [], 'existence') }));
     const traversal = realizationTraversal(graph, selected);
     const facets = Object.fromEntries((Object.keys(FACET_KINDS) as RealizationFacet[]).map(facet => {
@@ -417,20 +432,43 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
     };
     reach = projectTypedReach(graph, selected);
   } else {
-    const existenceProof = proof(graph, 'entity.exists', matches, [], 'existence', 'repository');
-    claims.push(claim({
-      type: 'entity-exists',
-      status: ambiguous
+    const existenceProof = proof(graph, mode === 'rule-out' ? 'hypothesis.rule-out.existence' : 'entity.exists', matches, [], 'existence', 'repository');
+    if (mode === 'rule-out') {
+      const status: AssessmentStatus = ambiguous
         ? 'unproven'
         : existenceProof.coverage?.claimScope.supportsNegative
-          ? 'contradicted'
+          ? 'supported'
           : existenceProof.coverage
             ? 'unproven'
-            : 'indeterminate',
-      statement: ambiguous ? '“' + (subject || question) + '” is ambiguous.' : 'No entity matching “' + (subject || question) + '” was observed.',
-      subjectId: null,
-      proof: existenceProof,
-    }));
+            : 'indeterminate';
+      claims.push(claim({
+        type: 'hypothesis-ruled-out',
+        status,
+        statement: ambiguous
+          ? 'The hypothesis that “' + (subject || question) + '” exists cannot be ruled out because the subject is ambiguous.'
+          : status === 'supported'
+            ? 'The hypothesis that “' + (subject || question) + '” exists is ruled out for the selected revision by complete repository claim-scope coverage.'
+            : status === 'unproven'
+              ? 'The hypothesis that “' + (subject || question) + '” exists cannot be ruled out because repository claim-scope coverage is incomplete.'
+              : 'The hypothesis that “' + (subject || question) + '” exists cannot be ruled out because coverage evidence is unavailable.',
+        subjectId: null,
+        proof: existenceProof,
+      }));
+    } else {
+      claims.push(claim({
+        type: 'entity-exists',
+        status: ambiguous
+          ? 'unproven'
+          : existenceProof.coverage?.claimScope.supportsNegative
+            ? 'contradicted'
+            : existenceProof.coverage
+              ? 'unproven'
+              : 'indeterminate',
+        statement: ambiguous ? '“' + (subject || question) + '” is ambiguous.' : 'No entity matching “' + (subject || question) + '” was observed.',
+        subjectId: null,
+        proof: existenceProof,
+      }));
+    }
   }
 
   const globalAudit = mode === 'audit' && (!subject || /^(?:all|global|graph|project|repository)$/u.test(searchableText(subject)));

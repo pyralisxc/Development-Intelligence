@@ -65,6 +65,10 @@ for (const target of targets) {
     const unknown = assessGraph(graph, 'Prove DefinitelyMissingRuntimeOwner exists');
     const unknownElapsedMs = Number(process.hrtime.bigint() - unknownStarted) / 1_000_000;
 
+    const ruleOutStarted = process.hrtime.bigint();
+    const ruleOut = assessGraph(graph, 'Rule out DefinitelyMissingRuntimeOwner exists');
+    const ruleOutElapsedMs = Number(process.hrtime.bigint() - ruleOutStarted) / 1_000_000;
+
     if (known.answerStatus !== 'supported') throw new Error(`Game-Studio-Core bootstrap orientation expected supported, got ${known.answerStatus}`);
     if (known.orientation?.subject?.id !== bootstrap.id) throw new Error('Game-Studio-Core bootstrap orientation selected the wrong subject');
     if (known.orientation?.source?.scope !== 'implementation') throw new Error(`Game-Studio-Core bootstrap source scope expected implementation, got ${known.orientation?.source?.scope}`);
@@ -80,8 +84,11 @@ for (const target of targets) {
     if (unknown.answerStatus !== 'unproven') throw new Error(`Game-Studio-Core absent subject must remain unproven under incomplete tracked-source coverage, got ${unknown.answerStatus}`);
     if (!unknown.orientation?.certainty?.unknown?.some(item => /No entity matching/i.test(item))) throw new Error('Game-Studio-Core absent subject must be represented as unknown evidence');
     if ((unknown.orientation?.certainty?.missing ?? []).length !== 0) throw new Error('Game-Studio-Core absent subject must not be promoted to proven missing under incomplete coverage');
+    if (ruleOut.answerStatus !== 'unproven') throw new Error(`Game-Studio-Core incomplete coverage must refuse rule-out, got ${ruleOut.answerStatus}`);
+    if ((ruleOut.orientation?.certainty?.ruledOut ?? []).length !== 0) throw new Error('Game-Studio-Core incomplete coverage must not produce ruled-out existence claims');
+    if (!ruleOut.orientation?.certainty?.unknown?.some(item => /cannot be ruled out/i.test(item))) throw new Error('Game-Studio-Core rule-out refusal must explain uncertainty');
 
-    const maxQueryMs = Math.max(knownElapsedMs, stateElapsedMs, adapterElapsedMs, unknownElapsedMs);
+    const maxQueryMs = Math.max(knownElapsedMs, stateElapsedMs, adapterElapsedMs, unknownElapsedMs, ruleOutElapsedMs);
     if (maxQueryMs > 1000) throw new Error(`Game-Studio-Core orientation query exceeded bounded acceptance budget: ${maxQueryMs.toFixed(2)} ms`);
 
     orientationProbe = {
@@ -113,6 +120,12 @@ for (const target of targets) {
         missingCount: unknown.orientation.certainty.missing.length,
         unknownCount: unknown.orientation.certainty.unknown.length,
         elapsedMs: Number(unknownElapsedMs.toFixed(3)),
+      },
+      ruleOut: {
+        answerStatus: ruleOut.answerStatus,
+        ruledOutCount: ruleOut.orientation.certainty.ruledOut.length,
+        unknownCount: ruleOut.orientation.certainty.unknown.length,
+        elapsedMs: Number(ruleOutElapsedMs.toFixed(3)),
       },
       maxQueryBudgetMs: 1000,
     };
@@ -155,6 +168,7 @@ const summary = [
       `- orientation known query: **${item.orientationProbe.known.elapsedMs} ms** — ${item.orientationProbe.known.answerStatus}, ${item.orientationProbe.known.analyzerTechnology}/${item.orientationProbe.known.analyzerDepth}, ${item.orientationProbe.known.disambiguatingEvidenceCount} disambiguating-evidence hint(s)`,
       `- orientation motifs: bootstrap **${item.orientationProbe.known.motifs.join(', ')}** / state-machine **${item.orientationProbe.stateMachine.confidence}, ${item.orientationProbe.stateMachine.signalCount} signals, ${item.orientationProbe.stateMachine.elapsedMs} ms** / adapter **${item.orientationProbe.adapter.confidence}, ${item.orientationProbe.adapter.signalCount} signals, ${item.orientationProbe.adapter.elapsedMs} ms**`,
       `- orientation absent-subject query: **${item.orientationProbe.unknown.elapsedMs} ms** — ${item.orientationProbe.unknown.answerStatus}, ${item.orientationProbe.unknown.missingCount} proven missing / ${item.orientationProbe.unknown.unknownCount} unknown`,
+      `- orientation rule-out query: **${item.orientationProbe.ruleOut.elapsedMs} ms** — ${item.orientationProbe.ruleOut.answerStatus}, ${item.orientationProbe.ruleOut.ruledOutCount} ruled out / ${item.orientationProbe.ruleOut.unknownCount} unknown`,
       `- orientation bounded query budget: **${item.orientationProbe.maxQueryBudgetMs} ms**`,
     ] : []),
     '',

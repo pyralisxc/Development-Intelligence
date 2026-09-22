@@ -69,6 +69,13 @@ const existenceAssessment = await callTool('query_intelligence', { project, grap
 if (existenceAssessment.answerStatus === 'contradicted' || existenceAssessment.interpretedSubject !== 'createLibraryZoneAction') {
   throw new Error('CardForge assessment falsely contradicted a present symbol or retained existence boilerplate');
 }
+const existingRuleOutStarted = process.hrtime.bigint();
+const existingRuleOut = await callTool('query_intelligence', { project, graphId: scan.graphId, question: 'Rule out createLibraryZoneAction exists' });
+const existingRuleOutElapsedMs = Number(process.hrtime.bigint() - existingRuleOutStarted) / 1_000_000;
+if (existingRuleOut.answerStatus !== 'contradicted') throw new Error(`CardForge observed symbol must contradict rule-out, got ${existingRuleOut.answerStatus}`);
+if ((existingRuleOut.orientation?.certainty?.ruledOut ?? []).length !== 0) throw new Error('CardForge observed symbol was falsely ruled out');
+if (!existingRuleOut.orientation?.certainty?.known?.some(item => /directly observed/i.test(item))) throw new Error('CardForge rule-out contradiction must retain direct observed evidence');
+if (existingRuleOutElapsedMs > 1000) throw new Error(`CardForge rule-out query exceeded 1000 ms acceptance budget: ${existingRuleOutElapsedMs.toFixed(2)} ms`);
 const scopedAudit = await callTool('query_intelligence', { project, graphId: scan.graphId, question: 'Audit storage management' });
 if (!Array.isArray(scopedAudit.findings) || scopedAudit.findings.length >= 150) {
   throw new Error(`CardForge scoped audit was not bounded: ${scopedAudit.findings?.length ?? 'missing'} findings`);
@@ -201,6 +208,7 @@ const report = {
     },
     feature: { answerStatus: featureAssessment.answerStatus, root: featureAssessment.realization?.root ?? null },
     symbolExistence: { answerStatus: existenceAssessment.answerStatus, ambiguous: existenceAssessment.ambiguous, candidateCount: existenceAssessment.candidates?.length ?? 0 },
+    observedRuleOut: { answerStatus: existingRuleOut.answerStatus, ruledOutCount: existingRuleOut.orientation?.certainty?.ruledOut?.length ?? 0, elapsedMs: Number(existingRuleOutElapsedMs.toFixed(3)) },
     scopedAudit: { answerStatus: scopedAudit.answerStatus, findingCount: scopedAudit.findings.length, summary: scopedAudit.findingSummary },
   },
   probes: probeResults,
@@ -232,7 +240,7 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
-  `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
+  `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
   `- Derived motif calibration: **pipeline ${pipelineMotif.confidence} (${pipelineMotif.signals.length} signals, ${pipelineMotifElapsedMs.toFixed(3)} ms) / persistence-owner ${persistenceMotif.confidence} (${persistenceMotif.signals.length} signals, ${persistenceMotifElapsedMs.toFixed(3)} ms) / 1000 ms budget**`,
   '',
   '## Representative structural agent probes',
