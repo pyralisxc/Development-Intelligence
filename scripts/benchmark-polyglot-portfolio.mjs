@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { assessGraph } from '../dist/src/intelligence/assessment.js';
+import { synthesizeRepositoryAudit } from '../dist/src/intelligence/repositoryAudit.js';
 
 const targets = [
   {
@@ -35,6 +36,15 @@ for (const target of targets) {
   for (const [kind, count] of Object.entries(relationshipCounts)) if (count < 1) throw new Error(`${target.project} expected resolved ${kind} relationships`);
   if (!graph.coverage || graph.coverage.failedFiles > 0) throw new Error(`${target.project} has failed or unavailable coverage`);
   if (graph.coverage.analyzedFiles < 1 || graph.nodes.length < 1 || graph.edges.length < 1) throw new Error(`${target.project} did not produce useful graph depth`);
+  const auditStarted = process.hrtime.bigint();
+  const repositoryAudit = synthesizeRepositoryAudit(graph, { acceptedPresent: false, currentness: null, limit: 20 });
+  const auditElapsedMs = Number(process.hrtime.bigint() - auditStarted) / 1_000_000;
+  if (auditElapsedMs > 1000) throw new Error(`${target.project} repository audit exceeded 1000 ms acceptance budget: ${auditElapsedMs.toFixed(2)} ms`);
+  if (!Array.isArray(repositoryAudit.investigationTargets) || repositoryAudit.investigationTargets.length > 20) throw new Error(`${target.project} repository audit was not bounded`);
+  if (target.project === 'Game-Studio-Core') {
+    if (!repositoryAudit.relationshipConcentrations.some(item => item.status === 'unresolved' && item.kind === 'uses-script' && item.count > 0)) throw new Error('Game-Studio-Core audit expected unresolved uses-script concentration');
+    if (!repositoryAudit.coverageBlockers.some(item => item.status === 'partial' && item.count > 0)) throw new Error('Game-Studio-Core audit expected partial coverage blockers');
+  }
   let orientationProbe = null;
   if (target.project === 'Game-Studio-Core') {
     const bootstrap = graph.nodes.find(node => node.kind === 'class' && node.name === 'GameplaySessionBootstrap');
@@ -147,6 +157,7 @@ for (const target of targets) {
     kindCounts,
     strategyCounts,
     relationshipCounts,
+    repositoryAudit: { elapsedMs: Number(auditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers },
     orientationProbe,
   });
 }
@@ -164,6 +175,7 @@ const summary = [
     `## ${item.project} evidence`,
     '',
     ...Object.entries({ ...item.kindCounts, ...item.strategyCounts, ...item.relationshipCounts }).map(([name, count]) => `- ${name}: **${count}**`),
+    `- repository audit: **${item.repositoryAudit.elapsedMs} ms** — ${item.repositoryAudit.findingTotal} deterministic findings / ${item.repositoryAudit.targetCount} bounded investigation target(s)`,
     ...(item.orientationProbe ? [
       `- orientation known query: **${item.orientationProbe.known.elapsedMs} ms** — ${item.orientationProbe.known.answerStatus}, ${item.orientationProbe.known.analyzerTechnology}/${item.orientationProbe.known.analyzerDepth}, ${item.orientationProbe.known.disambiguatingEvidenceCount} disambiguating-evidence hint(s)`,
       `- orientation motifs: bootstrap **${item.orientationProbe.known.motifs.join(', ')}** / state-machine **${item.orientationProbe.stateMachine.confidence}, ${item.orientationProbe.stateMachine.signalCount} signals, ${item.orientationProbe.stateMachine.elapsedMs} ms** / adapter **${item.orientationProbe.adapter.confidence}, ${item.orientationProbe.adapter.signalCount} signals, ${item.orientationProbe.adapter.elapsedMs} ms**`,

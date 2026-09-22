@@ -51,6 +51,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       category: 'technical-intelligence',
       relationships: [
         { kind: 'automated-by', to: 'mcp:query_intelligence' },
+        { kind: 'automated-by', to: 'mcp:audit_repository' },
         { kind: 'implemented-by', to: 'feature:workbench' },
       ],
     },
@@ -160,6 +161,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     'project_status',
     'project_overview',
     'query_intelligence',
+    'audit_repository',
     'inspect_entity',
     'list_sources',
     'query_source',
