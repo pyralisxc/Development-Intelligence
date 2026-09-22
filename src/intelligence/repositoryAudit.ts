@@ -35,7 +35,38 @@ function groupFindings(graph: IntelligenceGraph, limit: number) {
       .map(group => ({ ...group, affectedIds: [...group.affectedIds].sort() }))
       .sort((a, b) => b.count - a.count || a.ruleId.localeCompare(b.ruleId))
       .slice(0, limit),
-    samples: findings.slice(0, Math.min(limit, 20)),
+    samples: findings.slice(0, Math.min(limit, 20)).map(item => ({
+      id: item.id,
+      category: item.category,
+      ruleId: item.ruleId,
+      status: item.status,
+      summary: item.summary,
+      affectedIds: item.affectedIds.slice(0, 20),
+      proof: {
+        ruleId: item.proof.ruleId,
+        nodeIds: item.proof.nodeIds.slice(0, 20),
+        edgeIds: item.proof.edgeIds.slice(0, 20),
+        evidenceIds: item.proof.evidenceIds.slice(0, 30),
+        admissibility: item.proof.admissibility,
+        coverage: item.proof.coverage
+          ? {
+              completeForEligibleSources: item.proof.coverage.completeForEligibleSources,
+              completeForTrackedSources: item.proof.coverage.completeForTrackedSources,
+              partial: item.proof.coverage.partial,
+              failed: item.proof.coverage.failed,
+              skipped: item.proof.coverage.skipped,
+              unsupported: item.proof.coverage.unsupported,
+              claimScope: {
+                scope: item.proof.coverage.claimScope.scope,
+                completeForClaimScope: item.proof.coverage.claimScope.completeForClaimScope,
+                supportsNegative: item.proof.coverage.claimScope.supportsNegative,
+                pathCount: item.proof.coverage.claimScope.paths.length,
+                blockerCount: item.proof.coverage.claimScope.blockers.length,
+              },
+            }
+          : null,
+      },
+    })),
   };
 }
 
