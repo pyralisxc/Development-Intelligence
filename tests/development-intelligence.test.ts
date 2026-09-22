@@ -35,9 +35,10 @@ async function makeFixture(): Promise<{ root: string; source: string; remote: st
   await fs.writeFile(path.join(source, 'src', 'helper.ts'), `
 export function helper() { return 'ok'; }
 `);
-  await fs.writeFile(path.join(source, 'src', 'prototype-keys.ts'), `
-export class ArchitectureAggregateProbe {
-  constructor(public readonly value = 1) {}
+  await fs.writeFile(path.join(source, 'src', 'ArchitectureAggregateProbe.cs'), `
+public sealed class ArchitectureAggregateProbe
+{
+    public ArchitectureAggregateProbe() {}
 }
 `);
   await fs.writeFile(path.join(source, 'src', 'panel.tsx'), `
