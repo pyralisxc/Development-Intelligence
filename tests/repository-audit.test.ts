@@ -4,7 +4,7 @@ import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
 import { synthesizeRepositoryAudit } from '../src/intelligence/repositoryAudit.js';
 
 const source = { id: 'repository', kind: 'repository', locator: 'fixture', revision: 'abc', observedAt: new Date(0).toISOString(), available: true };
-const node = (id: string, kind: string, layer: GraphNode['layer'], locator: string): GraphNode => ({
+const node = (id: string, kind: string, layer: NonNullable<GraphNode['layer']>, locator: string): GraphNode => ({
   id, sourceId: source.id, kind, layer, locator, name: id, value: id, raw: id, checkpoint: layer === 'semantic', evidenceIds: [],
 });
 const edge = (id: string, from: string, to: string | null, kind: string, status: GraphEdge['status']): GraphEdge => ({
