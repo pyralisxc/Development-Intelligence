@@ -34,16 +34,31 @@ function areaForPath(file: string): string {
   return slash >= 0 ? file.slice(0, slash) || '(root)' : '(root)';
 }
 
-function fixSurface(graph: IntelligenceGraph, nodeIds: readonly string[], extraPaths: readonly string[] = []): { paths: string[]; areas: string[] } {
+interface AuditIndexes {
+  nodes: Map<string, GraphNode>;
+  paths: Map<string, string | null>;
+  areas: Map<string, string>;
+}
+
+function auditIndexes(graph: IntelligenceGraph): AuditIndexes {
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+  const paths = new Map<string, string | null>();
+  const areas = new Map<string, string>();
+  for (const node of graph.nodes) {
+    paths.set(node.id, sourcePath(node));
+    areas.set(node.id, nodeArea(node));
+  }
+  return { nodes, paths, areas };
+}
+
+function fixSurface(indexes: AuditIndexes, nodeIds: readonly string[], extraPaths: readonly string[] = []): { paths: string[]; areas: string[] } {
   const paths = new Set(extraPaths.filter(Boolean));
   const areas = new Set<string>();
   for (const id of nodeIds) {
-    const node = nodes.get(id);
-    if (!node) continue;
-    const file = sourcePath(node);
+    const file = indexes.paths.get(id);
     if (file) paths.add(file);
-    areas.add(nodeArea(node));
+    const area = indexes.areas.get(id);
+    if (area) areas.add(area);
   }
   for (const file of paths) areas.add(areaForPath(file));
   return {
@@ -52,8 +67,7 @@ function fixSurface(graph: IntelligenceGraph, nodeIds: readonly string[], extraP
   };
 }
 
-function bidirectionalArchitectureBoundaries(graph: IntelligenceGraph, limit: number) {
-  const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+function bidirectionalArchitectureBoundaries(graph: IntelligenceGraph, limit: number, indexes: AuditIndexes) {
   const directed = new Map<string, {
     fromArea: string;
     toArea: string;
@@ -66,11 +80,11 @@ function bidirectionalArchitectureBoundaries(graph: IntelligenceGraph, limit: nu
 
   for (const edge of graph.edges) {
     if (edge.status !== 'resolved' || !edge.from || !edge.to || !BOUNDARY_RELATIONSHIP_KINDS.has(edge.kind)) continue;
-    const from = nodes.get(edge.from);
-    const to = nodes.get(edge.to);
+    const from = indexes.nodes.get(edge.from);
+    const to = indexes.nodes.get(edge.to);
     if (!from || !to) continue;
-    const fromArea = nodeArea(from);
-    const toArea = nodeArea(to);
+    const fromArea = indexes.areas.get(from.id);
+    const toArea = indexes.areas.get(to.id);
     if (!fromArea || !toArea || fromArea === toArea) continue;
     const key = `${fromArea}\0${toArea}`;
     const group = directed.get(key) ?? {
@@ -102,7 +116,7 @@ function bidirectionalArchitectureBoundaries(graph: IntelligenceGraph, limit: nu
         { from: reverse.fromArea, to: reverse.toArea, count: reverse.count, kinds: [...reverse.kinds].sort(), edgeIds: reverse.edgeIds },
       ].sort((a, b) => a.from.localeCompare(b.from)),
       evidenceIds: [...new Set([...group.evidenceIds, ...reverse.evidenceIds])].sort(),
-      fixSurface: fixSurface(graph, nodeIds),
+      fixSurface: fixSurface(indexes, nodeIds),
       interpretation: 'Resolved technical relationships cross this repository-area boundary in both directions. This is an investigation signal, not proof that the architecture is incorrect.',
       nextEvidence: 'Inspect the participating contracts and ownership boundaries to determine whether the two-way dependency is intentional or should be separated behind a narrower interface.',
     });
@@ -164,8 +178,7 @@ function groupFindings(graph: IntelligenceGraph, limit: number) {
   };
 }
 
-function relationshipConcentrations(graph: IntelligenceGraph, limit: number) {
-  const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+function relationshipConcentrations(graph: IntelligenceGraph, limit: number, indexes: AuditIndexes) {
   const groups = new Map<string, {
     status: AuditRelationshipStatus;
     kind: string;
@@ -192,7 +205,7 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number) {
     for (const id of edge.evidenceIds ?? []) if (group.evidenceIds.size < 30) group.evidenceIds.add(id);
     if (group.samples.length < 3) group.samples.push({ id: edge.id, from: edge.from, to: edge.to, evidence: edge.evidence.slice(0, 2) });
     const endpointNodes = [edge.from, edge.to]
-      .map(id => id ? nodes.get(id) : undefined)
+      .map(id => id ? indexes.nodes.get(id) : undefined)
       .filter((node): node is GraphNode => Boolean(node));
     for (const node of endpointNodes) {
       const area = nodeArea(node);
@@ -211,7 +224,7 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number) {
         .map(([area, count]) => ({ area, count }))
         .sort((a, b) => b.count - a.count || a.area.localeCompare(b.area))
         .slice(0, 5),
-      fixSurface: fixSurface(graph, [...new Set(group.samples.flatMap(item => [item.from, item.to].filter((id): id is string => Boolean(id))))]),
+      fixSurface: fixSurface(indexes, [...new Set(group.samples.flatMap(item => [item.from, item.to].filter((id): id is string => Boolean(id))))]),
       samples: group.samples,
       nextEvidence: group.status === 'unresolved'
         ? 'Resolve target identity or supply the missing source/runtime/provider evidence before using these relationships as proof.'
@@ -263,10 +276,11 @@ function staleDimensions(currentness: GraphCurrentness | null | undefined): stri
 
 export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: RepositoryAuditOptions = {}): Record<string, unknown> {
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+  const indexes = auditIndexes(graph);
   const findings = groupFindings(graph, limit);
-  const relationships = relationshipConcentrations(graph, limit);
+  const relationships = relationshipConcentrations(graph, limit, indexes);
   const blockers = coverageBlockers(graph, limit);
-  const architectureBoundaries = bidirectionalArchitectureBoundaries(graph, limit);
+  const architectureBoundaries = bidirectionalArchitectureBoundaries(graph, limit, indexes);
   const stale = staleDimensions(options.currentness);
   const targets: Array<Record<string, unknown>> = [];
 
@@ -306,7 +320,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     count: group.count,
     summary: `${group.count} ${group.ruleId} finding(s) require investigation.`,
     evidence: { category: group.category, ruleId: group.ruleId, findingIds: group.findingIds, affectedIds: group.affectedIds },
-    fixSurface: fixSurface(graph, group.affectedIds),
+    fixSurface: fixSurface(indexes, group.affectedIds),
     nextEvidence: group.category === 'realization'
       ? 'Verify whether realization is required by caller-owned expectations; if it is, establish a resolved realization relationship.'
       : 'Inspect the conflicting observed values and their source evidence before selecting or accepting one value.',
