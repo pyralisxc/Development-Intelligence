@@ -349,11 +349,11 @@ function resolvedLinks(
 }
 
 function blastRadius(links: PortfolioLink[]): PortfolioBlastRadius[] {
-  const grouped = new Map<string, { target: Record<string, unknown>; consumers: Set<string>; linkIds: string[]; kinds: Set<string> }>();
+  const grouped = new Map<string, { target: PortfolioEndpoint; consumers: Set<string>; linkIds: string[]; kinds: Set<string> }>();
   for (const link of links) {
     if (link.status !== 'resolved') continue;
-    const to = link.to as Record<string, unknown>;
-    const from = link.from as Record<string, unknown>;
+    const to = link.to;
+    const from = link.from;
     const key = `${String(to.participant)}::${String(to.nodeId)}`;
     const bucket = grouped.get(key) ?? { target: to, consumers: new Set<string>(), linkIds: [], kinds: new Set<string>() };
     bucket.consumers.add(String(from.participant));
