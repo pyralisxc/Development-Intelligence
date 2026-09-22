@@ -243,12 +243,12 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
 export async function repositoryAudit(input: { project: string; ref?: string; graphId?: string; limit?: number }): Promise<Record<string, unknown>> {
   if (input.graphId) {
     const graph = await currentGraph(input.project, input.ref, input.graphId);
-    return synthesizeRepositoryAudit(graph, { currentness: null, acceptedPresent: null, limit: input.limit });
+    return synthesizeRepositoryAudit(graph, { currentness: null, acceptedPresent: null, ...(typeof input.limit === 'number' ? { limit: input.limit } : {}) });
   }
   const repository = await repositoryGraphs(input.project, input.ref);
   return synthesizeRepositoryAudit(repository.working, {
     currentness: repository.currentness,
     acceptedPresent: Boolean(repository.accepted),
-    limit: input.limit,
+    ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
   });
 }
