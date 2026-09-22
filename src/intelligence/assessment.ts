@@ -3,6 +3,7 @@ import { stableHash } from '../util/hash.js';
 import { graphQueryContext } from './queryContext.js';
 import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
+import { projectOrientation } from './orientation.js';
 
 export type AssessmentStatus = 'supported' | 'contradicted' | 'unproven' | 'indeterminate';
 export type RealizationFacet = 'human' | 'agent' | 'transport' | 'implementation' | 'persistence' | 'provider';
@@ -453,11 +454,12 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
           ? new Set([selected.id])
           : new Set<string>();
   const hypotheses = candidateHypotheses(graph, hypothesisScope);
+  const orientation = projectOrientation(graph, selected, matches, ambiguous, claims);
   return {
     project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
     question, mode, interpretedSubject: subject || null, ambiguous, candidates: matches.map(node => ({ id: node.id, name: node.name ?? node.id, kind: node.kind })),
     answerStatus: answerStatus(claims),
-    claims, realization, reach, findings, findingSummary, hypotheses, coverage: graphCoverage(graph),
+    claims, realization, reach, findings, findingSummary, hypotheses, orientation, coverage: graphCoverage(graph),
     note: 'Assessments are deterministic projections over the selected graph. Candidate relationships remain hypotheses and never satisfy proof. Typed reach reports resolved connection mechanisms and paths without assigning severity. Assessments are not persisted graph authority or product intent.',
   };
 }

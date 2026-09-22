@@ -141,3 +141,40 @@ test('audit summaries group underlying findings without discarding their evidenc
   assert.equal(result.findingSummary.total, result.findings.length);
   assert.deepEqual(result.findingSummary.groups.map((item: any) => [item.relationshipKind, item.count]), [['same_observed_name', 2]]);
 });
+
+test('orientation reports analyzer depth, source scope, and bounded uncertainty without promoting derived truth', () => {
+  const fixture = graph();
+  const bootstrap = node('class:bootstrap', 'class', 'structural', 'GameplaySessionBootstrap');
+  bootstrap.locator = 'src/gameplay/GameplaySessionBootstrap.cs:26';
+  fixture.nodes.push(bootstrap);
+  fixture.edges.push(edge('bootstrap-contained', bootstrap.id, 'function:checkout', 'contains'));
+  fixture.edges.push(edge('bootstrap-candidate', bootstrap.id, 'api:/checkout', 'calls', 'candidate'));
+  fixture.edges.push(edge('bootstrap-unresolved', bootstrap.id, null, 'uses-script', 'unresolved'));
+
+  const result = assessGraph(fixture, 'Prove GameplaySessionBootstrap exists') as any;
+
+  assert.equal(result.answerStatus, 'supported');
+  assert.equal(result.orientation.subject.id, bootstrap.id);
+  assert.equal(result.orientation.source.ownership, 'repository');
+  assert.equal(result.orientation.source.scope, 'implementation');
+  assert.equal(result.orientation.analyzer.technology, 'C#');
+  assert.equal(result.orientation.analyzer.depth, 'structural');
+  assert.match(result.orientation.analyzer.limitations.join(' '), /cross-file call binding/i);
+  assert.equal(result.orientation.relationshipSummary.resolved, 1);
+  assert.equal(result.orientation.certainty.possible[0].status, 'candidate');
+  assert.equal(result.orientation.certainty.unresolved[0].status, 'unresolved');
+  assert.deepEqual(result.orientation.certainty.derived, []);
+  assert.equal(result.orientation.policy.persisted, false);
+  assert.equal(result.orientation.policy.acceptedCheckpointAffected, false);
+  assert.ok(result.orientation.certainty.disambiguatingEvidence.some((item: string) => /cross-file relationship evidence/i.test(item)));
+});
+
+test('orientation distinguishes proven missing claims from coverage-limited unknowns', () => {
+  const proven = assessGraph(graph(), 'How is Checkout realized?', ['provider']) as any;
+  assert.ok(proven.orientation.certainty.missing.some((item: string) => /provider realization is not proven/i.test(item)));
+  assert.equal(proven.orientation.certainty.unknown.some((item: string) => /provider realization/i.test(item)), false);
+
+  const coverageLimited = assessGraph(graph(false), 'How is Checkout realized?', ['provider']) as any;
+  assert.equal(coverageLimited.orientation.certainty.missing.some((item: string) => /provider realization/i.test(item)), false);
+  assert.ok(coverageLimited.orientation.certainty.unknown.some((item: string) => /provider realization is not proven/i.test(item)));
+});
