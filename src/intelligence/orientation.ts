@@ -16,6 +16,7 @@ export type SourceOwnership = 'repository' | 'configured-external-source' | 'unk
 export type AnalyzerDepth = 'behavioral' | 'structural' | 'serialized' | 'format' | 'unknown';
 
 interface ClaimState {
+  type?: string;
   status: 'supported' | 'contradicted' | 'unproven' | 'indeterminate';
   statement: string;
 }
@@ -135,8 +136,9 @@ export function projectOrientation(
   const resolved = incident.filter(edge => edge.status === 'resolved');
   const possible = incident.filter(edge => edge.status === 'candidate').map(relationshipOrientation);
   const unresolved = incident.filter(edge => edge.status === 'unresolved').map(relationshipOrientation);
-  const supportedClaims = claims.filter(item => item.status === 'supported').map(item => item.statement);
-  const missingClaims = claims.filter(item => item.status === 'contradicted').map(item => item.statement);
+  const supportedClaims = claims.filter(item => item.status === 'supported' && item.type !== 'hypothesis-ruled-out').map(item => item.statement);
+  const ruledOutClaims = claims.filter(item => item.status === 'supported' && item.type === 'hypothesis-ruled-out').map(item => item.statement);
+  const missingClaims = claims.filter(item => item.status === 'contradicted' && item.type !== 'hypothesis-ruled-out').map(item => item.statement);
   const unknownClaims = claims.filter(item => item.status === 'unproven' || item.status === 'indeterminate').map(item => item.statement);
   const derived = selected ? deriveMotifs(graph, selected) : [];
 
@@ -178,7 +180,7 @@ export function projectOrientation(
       possible,
       unresolved,
       missing: unique(missingClaims),
-      ruledOut: [],
+      ruledOut: unique(ruledOutClaims),
       unknown: unique(unknownClaims),
       disambiguatingEvidence: unique(disambiguatingEvidence),
     },

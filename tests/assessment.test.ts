@@ -263,3 +263,32 @@ test('derived motifs require independent structural signals and remain non-autho
     assert.equal(nameOnlyResult.orientation.certainty.derived.some((item: any) => item.kind === 'adapter'), false);
   }
 });
+
+test('rule-out queries distinguish falsified existence hypotheses from missing and unknown evidence', () => {
+  const exhaustive = graph();
+  const ruledOut = assessGraph(exhaustive, 'Rule out DefinitelyMissingRuntimeOwner exists') as any;
+  assert.equal(ruledOut.mode, 'rule-out');
+  assert.equal(ruledOut.answerStatus, 'supported');
+  assert.equal(ruledOut.claims[0].type, 'hypothesis-ruled-out');
+  assert.equal(ruledOut.claims[0].status, 'supported');
+  assert.ok(ruledOut.orientation.certainty.ruledOut.some((item: string) => /DefinitelyMissingRuntimeOwner/i.test(item)));
+  assert.deepEqual(ruledOut.orientation.certainty.missing, []);
+  assert.equal(ruledOut.orientation.certainty.unknown.some((item: string) => /DefinitelyMissingRuntimeOwner/i.test(item)), false);
+
+  const incomplete = graph(false);
+  const unknown = assessGraph(incomplete, 'Can we rule out DefinitelyMissingRuntimeOwner exists?') as any;
+  assert.equal(unknown.mode, 'rule-out');
+  assert.equal(unknown.answerStatus, 'unproven');
+  assert.deepEqual(unknown.orientation.certainty.ruledOut, []);
+  assert.deepEqual(unknown.orientation.certainty.missing, []);
+  assert.ok(unknown.orientation.certainty.unknown.some((item: string) => /cannot be ruled out/i.test(item)));
+
+  const present = assessGraph(graph(), 'Rule out Checkout exists') as any;
+  assert.equal(present.mode, 'rule-out');
+  assert.equal(present.answerStatus, 'contradicted');
+  assert.equal(present.claims[0].type, 'hypothesis-ruled-out');
+  assert.equal(present.claims[0].status, 'contradicted');
+  assert.deepEqual(present.orientation.certainty.ruledOut, []);
+  assert.deepEqual(present.orientation.certainty.missing, []);
+  assert.ok(present.orientation.certainty.known.some((item: string) => /directly observed/i.test(item)));
+});
