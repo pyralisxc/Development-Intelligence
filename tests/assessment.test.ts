@@ -168,3 +168,13 @@ test('orientation reports analyzer depth, source scope, and bounded uncertainty 
   assert.equal(result.orientation.policy.acceptedCheckpointAffected, false);
   assert.ok(result.orientation.certainty.disambiguatingEvidence.some((item: string) => /cross-file relationship evidence/i.test(item)));
 });
+
+test('orientation distinguishes proven missing claims from coverage-limited unknowns', () => {
+  const proven = assessGraph(graph(), 'How is Checkout realized?', ['provider']) as any;
+  assert.ok(proven.orientation.certainty.missing.some((item: string) => /provider realization is not proven/i.test(item)));
+  assert.equal(proven.orientation.certainty.unknown.some((item: string) => /provider realization/i.test(item)), false);
+
+  const coverageLimited = assessGraph(graph(false), 'How is Checkout realized?', ['provider']) as any;
+  assert.equal(coverageLimited.orientation.certainty.missing.some((item: string) => /provider realization/i.test(item)), false);
+  assert.ok(coverageLimited.orientation.certainty.unknown.some((item: string) => /provider realization is not proven/i.test(item)));
+});
