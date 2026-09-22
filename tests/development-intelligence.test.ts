@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { sealLocalGraph } from '../src/intelligence/local.js';
 import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
-import { analyzeImpact, diffAcceptedToWorking, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
+import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools } from '../src/mcp.js';
 import { loadRegistry } from '../src/config/registry.js';
@@ -34,6 +34,12 @@ async function makeFixture(): Promise<{ root: string; source: string; remote: st
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
   await fs.writeFile(path.join(source, 'src', 'helper.ts'), `
 export function helper() { return 'ok'; }
+`);
+  await fs.writeFile(path.join(source, 'src', 'ArchitectureAggregateProbe.cs'), `
+public sealed class ArchitectureAggregateProbe
+{
+    public ArchitectureAggregateProbe() {}
+}
 `);
   await fs.writeFile(path.join(source, 'src', 'panel.tsx'), `
 import { helper } from './helper';
@@ -142,6 +148,11 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     assert.equal(beforeGraph.nodes.some(node => node.raw.includes('outside-managed-source')), false, 'tracked symlinks must not escape repository root');
     const compactScan = await callTool('scan_graph', { project: fixture.project }) as any;
     assert.equal(compactScan.coverage.files, undefined, 'ordinary scan responses stay compact; detailed coverage has a dedicated tool');
+
+    const architecture = await graphArchitecture(fixture.project) as any;
+    assert.equal(typeof architecture.summary.nodeKinds.constructor, 'number');
+    assert.ok(architecture.summary.nodeKinds.constructor >= 1, 'constructor node kinds must count numerically without Object.prototype collision');
+    assert.equal(Number.isFinite(architecture.summary.nodeKinds.constructor), true);
 
     const text = await fs.readFile(path.join(fixture.source, 'src', 'panel.tsx'), 'utf8');
     await fs.writeFile(path.join(fixture.source, 'src', 'panel.tsx'), text.replace('Manage item</button>', 'Administer item</button>'));

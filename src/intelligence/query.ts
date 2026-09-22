@@ -443,6 +443,10 @@ export async function traceGraph(input: {
   };
 }
 
+function emptyCountMap(): Record<string, number> {
+  return Object.create(null) as Record<string, number>;
+}
+
 function architectureArea(node: GraphNode): string {
   const file = locatorFileAndLine(node.locator).file;
   const parts = file.split('/');
@@ -455,10 +459,10 @@ function architectureArea(node: GraphNode): string {
 export async function graphArchitecture(project: string, ref?: string, graphId?: string): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
   const context = graphQueryContext(graph);
-  const kinds: Record<string, number> = {};
-  const relationshipKinds: Record<string, number> = {};
-  const relationshipStatuses: Record<string, number> = {};
-  const layers: Record<string, number> = {};
+  const kinds = emptyCountMap();
+  const relationshipKinds = emptyCountMap();
+  const relationshipStatuses = emptyCountMap();
+  const layers = emptyCountMap();
   for (const node of graph.nodes) {
     kinds[node.kind] = (kinds[node.kind] ?? 0) + 1;
     const layer = node.layer ?? 'structural';
@@ -492,7 +496,7 @@ export async function graphArchitecture(project: string, ref?: string, graphId?:
   const areas = new Map<string, { nodes: number; kinds: Record<string, number> }>();
   for (const node of graph.nodes.filter(node => node.layer !== 'semantic')) {
     const area = architectureArea(node);
-    const bucket = areas.get(area) ?? { nodes: 0, kinds: {} };
+    const bucket = areas.get(area) ?? { nodes: 0, kinds: emptyCountMap() };
     bucket.nodes += 1;
     bucket.kinds[node.kind] = (bucket.kinds[node.kind] ?? 0) + 1;
     areas.set(area, bucket);
