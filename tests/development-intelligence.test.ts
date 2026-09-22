@@ -11,6 +11,7 @@ import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/ser
 import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools } from '../src/mcp.js';
+import { projectOverview } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -148,6 +149,21 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     assert.equal(beforeGraph.nodes.some(node => node.raw.includes('outside-managed-source')), false, 'tracked symlinks must not escape repository root');
     const compactScan = await callTool('scan_graph', { project: fixture.project }) as any;
     assert.equal(compactScan.coverage.files, undefined, 'ordinary scan responses stay compact; detailed coverage has a dedicated tool');
+
+    const helperSubject = beforeGraph.nodes.find(node => node.kind === 'function' && node.name === 'helper')!;
+    const csharpSubject = beforeGraph.nodes.find(node => node.kind === 'class' && node.name === 'ArchitectureAggregateProbe')!;
+    assert.ok(helperSubject && csharpSubject, 'fixture must expose exact subjects for bundled overview');
+    const overview = await projectOverview(fixture.project, undefined, compactScan.graphId, [helperSubject.id, csharpSubject.id, 'DefinitelyMissingRuntimeOwner']) as any;
+    assert.equal(overview.graphId, compactScan.graphId);
+    assert.equal(overview.coverage.files, undefined, 'project overview must stay compact; per-file coverage belongs to check_graph_coverage');
+    assert.equal(overview.currentness, null, 'exact graphId overview must not resolve unrelated default-branch currentness');
+    assert.equal(overview.subjects.length, 3);
+    assert.equal(overview.subjects[0].entity.name, 'helper');
+    assert.equal(overview.subjects[0].observed, true);
+    assert.equal(overview.subjects[1].entity.name, 'ArchitectureAggregateProbe');
+    assert.equal(overview.subjects[1].observed, true);
+    assert.equal(overview.subjects[2].observed, false);
+    assert.equal(typeof overview.subjects[2].answerStatus, 'string');
 
     const architecture = await graphArchitecture(fixture.project) as any;
     assert.equal(typeof architecture.summary.nodeKinds.constructor, 'number');
