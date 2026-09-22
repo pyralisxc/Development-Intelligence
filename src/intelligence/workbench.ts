@@ -6,7 +6,7 @@ import { getCodeSnippet, searchCode } from './code.js';
 import { currentGraph } from './service.js';
 import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLens, searchGraph, traceGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
-import { assessGraph, auditGraph, queryIntelligence } from './assessment.js';
+import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -154,6 +154,8 @@ function projectSubjectBrief(graph: IntelligenceGraph, query: string): Record<st
   };
 }
 
+const OVERVIEW_FINDING_CATEGORIES = new Set<AuditFinding['category']>(['coverage', 'conflict', 'realization']);
+
 export async function projectOverview(project: string, ref?: string | undefined, graphId?: string | undefined, subjects: string[] = []): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
   const [status, diff, sources] = await Promise.all([
@@ -166,7 +168,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
   const representation = graph.nodes.filter(node => node.layer === 'representation');
   const relations = edgeCounts(graph.edges);
   const diffCounts = semanticDiffCounts(diff);
-  const findings = auditGraph(graph);
+  const findings = auditGraph(graph, undefined, OVERVIEW_FINDING_CATEGORIES);
   const notes = [
     `${project} is currently mapped as ${semantic.length} semantic concepts, ${structural.length} structural/code entities, and ${representation.length} observed representations.`,
     coverageNote(graph),

@@ -42,6 +42,18 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+const warmOverviewDurations = [];
+for (let index = 0; index < 3; index += 1) {
+  const warmOverviewStarted = process.hrtime.bigint();
+  const warmOverview = await callTool('project_overview', { project, graphId: scan.graphId });
+  const warmOverviewElapsedMs = Number(process.hrtime.bigint() - warmOverviewStarted) / 1_000_000;
+  warmOverviewDurations.push(warmOverviewElapsedMs);
+  if (warmOverview.graphId !== scan.graphId) throw new Error('CardForge warm project overview changed graph identity');
+  if ((warmOverview.findings ?? []).some(item => item.category === 'relationship')) throw new Error('CardForge compact overview materialized per-edge relationship findings');
+}
+const warmOverviewMaxMs = Math.max(...warmOverviewDurations);
+if (warmOverviewMaxMs > 1000) throw new Error(`CardForge warm project overview exceeded 1000 ms budget: ${warmOverviewMaxMs.toFixed(2)} ms`);
+
 const repositoryAuditStarted = process.hrtime.bigint();
 const repositoryAudit = synthesizeRepositoryAudit(graph, { acceptedPresent: true, currentness: null, limit: 20 });
 const repositoryAuditElapsedMs = Number(process.hrtime.bigint() - repositoryAuditStarted) / 1_000_000;
@@ -208,6 +220,7 @@ const report = {
     candidateRelationships: semanticEdges.filter(edge => edge.status === 'candidate').length,
     unresolvedRelationships: semanticEdges.filter(edge => edge.status === 'unresolved').length,
   },
+  warmOverview: { durationsMs: warmOverviewDurations.map(value => Number(value.toFixed(3))), maxMs: Number(warmOverviewMaxMs.toFixed(3)) },
   repositoryAudit: { elapsedMs: Number(repositoryAuditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers, architectureBoundaryCount: repositoryAudit.architectureBoundaries.length },
   assessment: {
     elapsedMs: assessmentElapsedMs,
@@ -250,6 +263,7 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
+  `- Warm exact-graph project overview: **${warmOverviewMaxMs.toFixed(3)} ms max across 3 reads / 1000 ms budget**`,
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
   `- Derived motif calibration: **pipeline ${pipelineMotif.confidence} (${pipelineMotif.signals.length} signals, ${pipelineMotifElapsedMs.toFixed(3)} ms) / persistence-owner ${persistenceMotif.confidence} (${persistenceMotif.signals.length} signals, ${persistenceMotifElapsedMs.toFixed(3)} ms) / 1000 ms budget**`,
