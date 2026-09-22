@@ -164,6 +164,7 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     assert.equal(overview.subjects[1].observed, true);
     assert.equal(overview.subjects[2].observed, false);
     assert.equal(typeof overview.subjects[2].answerStatus, 'string');
+    assert.equal(overview.findings.some((item: any) => item.category === 'relationship'), false, 'compact overview must not materialize per-edge relationship findings; audit_repository owns relationship investigation');
 
     const architecture = await graphArchitecture(fixture.project) as any;
     assert.equal(typeof architecture.summary.nodeKinds.constructor, 'number');
