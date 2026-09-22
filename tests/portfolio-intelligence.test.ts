@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { GraphNode, IntelligenceGraph } from '../src/types.js';
-import { synthesizePortfolio } from '../src/intelligence/portfolio.js';
+import { synthesizePortfolio, tracePortfolioGraphs } from '../src/intelligence/portfolio.js';
 
 const source = (path: string) => ({ id: `repo:${path}`, kind: 'repository-file', locator: path, revision: 'abc', observedAt: new Date(0).toISOString(), available: true });
 const node = (id: string, sourceId: string, kind: string, locator: string, field: string | undefined, value: unknown, layer: GraphNode['layer'] = 'structural'): GraphNode => ({
@@ -47,5 +47,18 @@ test('portfolio composition preserves repository authority and derives bounded c
   assert.match(packageLink.from.nodeId, /^a::/u);
   assert.match(packageLink.to.nodeId, /^b::/u);
   assert.notEqual(packageLink.from.nodeId, packageLink.to.nodeId);
+  assert.ok(result.audit.investigationTargets.some((item: any) => item.kind === 'shared-dependency'));
+  assert.ok(result.audit.investigationTargets.some((item: any) => item.kind === 'unavailable-participant'));
   assert.equal(result.truncated, false);
+
+  const trace = tracePortfolioGraphs([
+    { key: 'a', project: 'Repo-A', graph: a },
+    { key: 'b', project: 'Repo-B', graph: b },
+  ], [], { start: 'b::http-status', direction: 'outbound', depth: 1, statuses: ['resolved'], limit: 20 }) as any;
+  assert.ok(trace.nodes.some((item: any) => item.nodeId === 'a::api:/api/status'));
+  assert.ok(trace.hops.some((item: any) => item.scope === 'cross-repository' && item.kind === 'references-api'));
+  assert.ok(trace.crossRepositoryHopCount >= 1);
+  const crossHop = trace.hops.find((item: any) => item.scope === 'cross-repository');
+  assert.equal(crossHop.provenance.from.participant, 'b');
+  assert.equal(crossHop.provenance.to.participant, 'a');
 });

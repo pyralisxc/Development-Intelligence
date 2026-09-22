@@ -270,6 +270,31 @@ function resolvedLinks(
       to: { participant: owner.key, project: owner.project, nodeId: owner.namespacedNodeId, locator: owner.locator },
     });
   }
+  const groupedTechnical = new Map<string, IdentityEvidence[]>();
+  for (const owner of technicalIdentityOwners) {
+    const key = `${owner.family}\u0000${owner.identifier}`;
+    const bucket = groupedTechnical.get(key) ?? [];
+    bucket.push(owner);
+    groupedTechnical.set(key, bucket);
+  }
+  for (const owners of groupedTechnical.values()) {
+    const distinct = owners.filter((owner, index) => owners.findIndex(candidate => candidate.key === owner.key && candidate.nodeId === owner.nodeId) === index);
+    for (let leftIndex = 0; leftIndex < distinct.length; leftIndex += 1) for (let rightIndex = leftIndex + 1; rightIndex < distinct.length; rightIndex += 1) {
+      const left = distinct[leftIndex]!;
+      const right = distinct[rightIndex]!;
+      if (left.key === right.key) continue;
+      links.push({
+        id: stableHash(['portfolio-link', 'technical-correlation', left.family, left.namespacedNodeId, right.namespacedNodeId]),
+        kind: `correlates-${left.family}`,
+        status: 'candidate',
+        strategy: 'exact-typed-identifier-correlation',
+        identifier: left.identifier,
+        from: { participant: left.key, project: left.project, nodeId: left.namespacedNodeId, locator: left.locator },
+        to: { participant: right.key, project: right.project, nodeId: right.namespacedNodeId, locator: right.locator },
+        note: 'Exact typed identity correlation across repositories; this does not prove a dependency direction.',
+      });
+    }
+  }
   return links.sort((a, b) => String(a.kind).localeCompare(String(b.kind)) || String(a.id).localeCompare(String(b.id)));
 }
 
@@ -316,6 +341,41 @@ export function synthesizePortfolio(
     .sort();
   const portfolioId = `portfolio-${stableHash([...exactIdentities, ...unavailable.map(item => `unavailable|${item.key}|${item.project}`).sort()]).slice(0, 16)}`;
 
+  const radius = blastRadius(links);
+  const investigationTargets = [
+    ...unavailable.map(item => ({
+      kind: 'unavailable-participant',
+      basis: 'availability',
+      summary: `${item.key} is unavailable to this portfolio investigation.`,
+      participant: item,
+      nextEvidence: 'Restore repository/revision access or remove the participant before drawing portfolio-wide absence conclusions.',
+    })),
+    ...links.filter(link => link.status === 'candidate').map(link => ({
+      kind: 'candidate-cross-repository-link',
+      basis: 'candidate-evidence',
+      summary: `${String(link.kind)} for ${String(link.identifier)} is correlated but not uniquely proven.`,
+      linkId: link.id,
+      nextEvidence: 'Provide a deterministic producer/reference identifier or remove the ambiguous owner before promoting this relationship to resolved.',
+    })),
+    ...sharedDependencies.map(item => ({
+      kind: 'shared-dependency',
+      basis: 'observed-manifests',
+      summary: `${String(item.identifier)} is declared by ${item.participants.length} portfolio participants.`,
+      identifier: item.identifier,
+      participants: item.participants,
+      nextEvidence: 'Inspect version/range divergence and affected consumers when changing or upgrading this dependency.',
+    })),
+    ...radius.map(item => ({
+      kind: 'cross-repository-blast-radius',
+      basis: 'resolved-cross-repository-links',
+      summary: `${String((item.target as any).nodeId)} has ${item.consumerParticipants.length} observed cross-repository consumer participant(s).`,
+      target: item.target,
+      consumerParticipants: item.consumerParticipants,
+      linkIds: item.linkIds,
+      nextEvidence: 'Inspect the owning entity and listed consumer links before changing the target contract.',
+    })),
+  ].slice(0, boundedLimit);
+
   return {
     portfolioId,
     participants: participants.map(item => ({
@@ -334,7 +394,8 @@ export function synthesizePortfolio(
     sharedDependencyTotal: sharedDependencies.length,
     technicalCorrelations: technicalCorrelations.slice(0, boundedLimit),
     technicalCorrelationTotal: technicalCorrelations.length,
-    blastRadius: blastRadius(links).slice(0, boundedLimit),
+    blastRadius: radius.slice(0, boundedLimit),
+    audit: { investigationTargets, sharedDependencyCount: sharedDependencies.length, likelyBlastRadiusCount: radius.length, unavailableParticipantCount: unavailable.length },
     truncated: links.length > boundedLimit || sharedDependencies.length > boundedLimit || technicalCorrelations.length > boundedLimit,
     policy: {
       persisted: false,
@@ -347,16 +408,16 @@ export function synthesizePortfolio(
   };
 }
 
-export async function inspectPortfolio(input: { participants: PortfolioParticipantInput[]; limit?: number }): Promise<Record<string, unknown>> {
-  if (!Array.isArray(input.participants) || input.participants.length < 2 || input.participants.length > 12) throw new Error('participants must contain 2-12 repositories/revisions');
+async function resolvePortfolioParticipants(inputs: PortfolioParticipantInput[]): Promise<{ resolved: ResolvedParticipant[]; unavailable: UnavailableParticipant[] }> {
+  if (!Array.isArray(inputs) || inputs.length < 2 || inputs.length > 12) throw new Error('participants must contain 2-12 repositories/revisions');
   const keys = new Set<string>();
   const resolved: ResolvedParticipant[] = [];
   const unavailable: UnavailableParticipant[] = [];
-
-  await Promise.all(input.participants.map(async participant => {
+  await Promise.all(inputs.map(async participant => {
     if (!participant || typeof participant.project !== 'string' || !participant.project.trim()) throw new Error('each portfolio participant requires project');
     if (participant.ref && participant.graphId) throw new Error(`${participant.project}: use either ref or graphId, not both`);
     const key = participantKey(participant);
+    if (key.includes('::')) throw new Error(`portfolio participant key may not contain "::": ${key}`);
     if (keys.has(key)) throw new Error(`duplicate portfolio participant key: ${key}`);
     keys.add(key);
     try {
@@ -375,6 +436,132 @@ export async function inspectPortfolio(input: { participants: PortfolioParticipa
       });
     }
   }));
+  return { resolved, unavailable };
+}
 
+export function tracePortfolioGraphs(
+  participants: ResolvedParticipant[],
+  unavailable: UnavailableParticipant[],
+  input: { start: string; direction?: 'inbound' | 'outbound' | 'both'; depth?: number; statuses?: Array<'resolved' | 'candidate' | 'unresolved'>; limit?: number },
+): Record<string, unknown> {
+  const direction = input.direction ?? 'both';
+  const depth = Math.max(1, Math.min(4, Math.floor(input.depth ?? 2)));
+  const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 200)));
+  const statuses = new Set(input.statuses?.length ? input.statuses : ['resolved']);
+  const nodes = new Map<string, Record<string, unknown>>();
+  for (const participant of participants) for (const node of participant.graph.nodes) nodes.set(namespaceId(participant.key, node.id), {
+    participant: participant.key,
+    project: participant.project,
+    nodeId: namespaceId(participant.key, node.id),
+    originalNodeId: node.id,
+    kind: node.kind,
+    layer: node.layer ?? 'structural',
+    name: node.name ?? null,
+    locator: node.locator,
+  });
+  if (!nodes.has(input.start)) throw new Error(`portfolio trace start node not found: ${input.start}`);
+
+  const outgoing = new Map<string, Array<Record<string, unknown>>>();
+  const incoming = new Map<string, Array<Record<string, unknown>>>();
+  const addHop = (from: string, to: string, hop: Record<string, unknown>) => {
+    const out = outgoing.get(from) ?? [];
+    out.push(hop);
+    outgoing.set(from, out);
+    const inn = incoming.get(to) ?? [];
+    inn.push(hop);
+    incoming.set(to, inn);
+  };
+
+  for (const participant of participants) for (const edge of participant.graph.edges) {
+    if (!edge.from || !edge.to || !statuses.has(edge.status)) continue;
+    const from = namespaceId(participant.key, edge.from);
+    const to = namespaceId(participant.key, edge.to);
+    if (!nodes.has(from) || !nodes.has(to)) continue;
+    addHop(from, to, {
+      id: namespaceId(participant.key, edge.id),
+      scope: 'repository',
+      participant: participant.key,
+      project: participant.project,
+      originalEdgeId: edge.id,
+      from,
+      to,
+      kind: edge.kind,
+      status: edge.status,
+      strategy: edge.strategy,
+      evidence: edge.evidence,
+      evidenceIds: edge.evidenceIds ?? [],
+    });
+  }
+
+  const packageIdentityOwners = packageOwners(participants);
+  const dependencies = packageDependencies(participants);
+  const technicalIdentityOwners = technicalOwners(participants);
+  const references = technicalReferences(participants);
+  const crossLinks = resolvedLinks(dependencies, packageIdentityOwners, references, technicalIdentityOwners);
+  for (const link of crossLinks) {
+    const status = String(link.status) as 'resolved' | 'candidate' | 'unresolved';
+    if (!statuses.has(status)) continue;
+    const from = String((link.from as any).nodeId);
+    const to = String((link.to as any).nodeId);
+    if (!nodes.has(from) || !nodes.has(to)) continue;
+    addHop(from, to, {
+      id: link.id,
+      scope: 'cross-repository',
+      from,
+      to,
+      kind: link.kind,
+      status: link.status,
+      strategy: link.strategy,
+      identifier: link.identifier,
+      provenance: { from: link.from, to: link.to, note: link.note ?? null },
+    });
+  }
+
+  const visited = new Map<string, number>([[input.start, 0]]);
+  const queue: string[] = [input.start];
+  const selectedHops = new Map<string, Record<string, unknown>>();
+  while (queue.length && selectedHops.size < limit) {
+    const current = queue.shift()!;
+    const currentDepth = visited.get(current) ?? 0;
+    if (currentDepth >= depth) continue;
+    const candidates: Array<{ hop: Record<string, unknown>; next: string }> = [];
+    if (direction === 'outbound' || direction === 'both') for (const hop of outgoing.get(current) ?? []) candidates.push({ hop, next: String(hop.to) });
+    if (direction === 'inbound' || direction === 'both') for (const hop of incoming.get(current) ?? []) candidates.push({ hop, next: String(hop.from) });
+    for (const candidate of candidates) {
+      if (selectedHops.size >= limit) break;
+      selectedHops.set(String(candidate.hop.id), candidate.hop);
+      if (!visited.has(candidate.next)) {
+        visited.set(candidate.next, currentDepth + 1);
+        queue.push(candidate.next);
+      }
+    }
+  }
+
+  const participantSummary = synthesizePortfolio(participants, unavailable, Math.min(limit, 200)) as any;
+  const selectedNodes = [...visited.keys()].map(id => nodes.get(id)!).filter(Boolean);
+  const hops = [...selectedHops.values()];
+  return {
+    portfolioId: participantSummary.portfolioId,
+    participants: participantSummary.participants,
+    unavailableParticipants: participantSummary.unavailableParticipants,
+    start: input.start,
+    direction,
+    depth,
+    statuses: [...statuses],
+    nodes: selectedNodes,
+    hops,
+    crossRepositoryHopCount: hops.filter(hop => hop.scope === 'cross-repository').length,
+    truncated: selectedHops.size >= limit,
+    policy: participantSummary.policy,
+  };
+}
+
+export async function inspectPortfolio(input: { participants: PortfolioParticipantInput[]; limit?: number }): Promise<Record<string, unknown>> {
+  const { resolved, unavailable } = await resolvePortfolioParticipants(input.participants);
   return synthesizePortfolio(resolved, unavailable, input.limit);
+}
+
+export async function tracePortfolio(input: { participants: PortfolioParticipantInput[]; start: string; direction?: 'inbound' | 'outbound' | 'both'; depth?: number; statuses?: Array<'resolved' | 'candidate' | 'unresolved'>; limit?: number }): Promise<Record<string, unknown>> {
+  const { resolved, unavailable } = await resolvePortfolioParticipants(input.participants);
+  return tracePortfolioGraphs(resolved, unavailable, input);
 }
