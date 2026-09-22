@@ -340,6 +340,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'project_overview',
     'query_intelligence',
     'audit_repository',
+    'inspect_portfolio',
     'inspect_entity',
     'list_sources',
     'query_source',
@@ -369,6 +370,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('query_source')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_parity')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('inspect_portfolio')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('inspect_portfolio')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
 });
 

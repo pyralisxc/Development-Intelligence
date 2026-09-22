@@ -32,6 +32,7 @@ const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
 const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
+const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
 const { clearGraphCache } = await import('../dist/src/intelligence/service.js');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
@@ -42,6 +43,20 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+const devintGraph = await buildLocalGraph(path.resolve('.'), 'Development-Intelligence');
+const portfolioStarted = process.hrtime.bigint();
+const portfolio = synthesizePortfolio([
+  { key: 'Development-Intelligence', project: 'Development-Intelligence', graph: devintGraph },
+  { key: 'CardForge', project: 'CardForge', graph },
+], [], 50);
+const portfolioElapsedMs = Number(process.hrtime.bigint() - portfolioStarted) / 1_000_000;
+if (portfolioElapsedMs > 1000) throw new Error(`DI + CardForge portfolio synthesis exceeded 1000 ms acceptance budget: ${portfolioElapsedMs.toFixed(2)} ms`);
+if (portfolio.participants.length !== 2) throw new Error('DI + CardForge portfolio must retain both exact participants');
+if (portfolio.participants.find(item => item.key === 'CardForge')?.revision !== actualSha) throw new Error('CardForge portfolio participant lost exact benchmark SHA');
+if (portfolio.participants.find(item => item.key === 'Development-Intelligence')?.revision !== devintGraph.repositoryRevision) throw new Error('Development Intelligence portfolio participant lost exact candidate SHA');
+if (Number(portfolio.sharedDependencyTotal ?? 0) < 1) throw new Error('DI + CardForge portfolio expected at least one shared package dependency');
+if (portfolio.policy?.persisted !== false || portfolio.policy?.participantAuthorityPreserved !== true) throw new Error('Portfolio synthesis must remain ephemeral and preserve participant authority');
+
 const warmOverviewDurations = [];
 for (let index = 0; index < 3; index += 1) {
   const warmOverviewStarted = process.hrtime.bigint();
@@ -220,6 +235,15 @@ const report = {
     candidateRelationships: semanticEdges.filter(edge => edge.status === 'candidate').length,
     unresolvedRelationships: semanticEdges.filter(edge => edge.status === 'unresolved').length,
   },
+  portfolio: {
+    elapsedMs: Number(portfolioElapsedMs.toFixed(3)),
+    portfolioId: portfolio.portfolioId,
+    participantCount: portfolio.participants.length,
+    sharedDependencyTotal: portfolio.sharedDependencyTotal,
+    crossRepositoryLinkTotal: portfolio.crossRepositoryLinkTotal,
+    technicalCorrelationTotal: portfolio.technicalCorrelationTotal,
+    blastRadiusCount: portfolio.blastRadius.length,
+  },
   warmOverview: { durationsMs: warmOverviewDurations.map(value => Number(value.toFixed(3))), maxMs: Number(warmOverviewMaxMs.toFixed(3)) },
   repositoryAudit: { elapsedMs: Number(repositoryAuditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers, architectureBoundaryCount: repositoryAudit.architectureBoundaries.length },
   assessment: {
@@ -263,6 +287,7 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
+  `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Warm exact-graph project overview: **${warmOverviewMaxMs.toFixed(3)} ms max across 3 reads / 1000 ms budget**`,
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
