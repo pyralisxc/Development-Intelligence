@@ -11,7 +11,7 @@ function graph(project: string, revision: string, nodes: GraphNode[]): Intellige
   return {
     schemaVersion: 2, analyzerVersion: 'fixture', graphId: `repo-${revision}-fixture0000`, project, role: 'W',
     createdAt: new Date(0).toISOString(), repositoryRevision: revision, sourceFingerprint: revision, topologyFingerprint: revision,
-    evidenceFingerprint: revision, sources: [...new Map(nodes.map(item => [item.sourceId, source(item.sourceId.replace(/^repo:/u, ''))])).values()],
+    evidenceFingerprint: revision, sources: [...new Map(nodes.map(item => [item.sourceId, source(item.sourceId.replace(/^repo:/u, ''))] as const)).values()],
     evidence: [], nodes, edges: [], namingDivergences: [], explicitValueConflicts: [], unmatchedNodeIds: [], unavailableSourceIds: [],
     coverage: { trackedFiles: 1, eligibleFiles: 1, analyzedFiles: 1, completeFiles: 1, partialFiles: 0, unsupportedFiles: 0, skippedFiles: 0, failedFiles: 0, skippedOversizedFiles: 0, skippedNonRegularFiles: 0, skippedFileLimitFiles: 0, files: [{ path: 'package.json', status: 'complete' }] },
   };
