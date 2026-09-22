@@ -15,6 +15,7 @@ Development Intelligence provides technical evidence. It does not decide product
 - `README.md` — concise entry point and usage orientation.
 - `docs/product-direction.md` — identity, direction, current product position, decision filter, and non-goals.
 - `docs/architecture.md` — system design, graph semantics, lifecycle, and technical boundaries.
+- `ORCHESTRATION.md` — project-local branch, seal, preview, provider, evidence, and human-gate execution policy; it points to the operational owners rather than duplicating them.
 - `docs/operations.md` — deployment, configuration, authentication, recovery, and production operation.
 - `docs/testing.md` — durable proof strategy and acceptance surfaces.
 - `docs/chatgpt-publishing.md` and `docs/vercel-hosting.md` — provider-specific publication/deployment mechanics.
