@@ -9,7 +9,6 @@ import { queryIntelligence, type RealizationFacet } from './intelligence/assessm
 import { queryTechnicalSource } from './intelligence/technicalSources.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
-import { inspectPortfolio, tracePortfolio, type PortfolioParticipantInput } from './intelligence/portfolio.js';
 import type { GraphNodeLayer, GraphCoverageStatus, RelationshipStatus, TechnicalSourceCapability } from './types.js';
 
 export interface ToolDefinition {
@@ -27,7 +26,6 @@ const integer = { type: 'integer' };
 const strings = { type: 'array', items: string };
 const boundedQueries = { type: 'array', items: string, maxItems: 20 };
 const boundedSubjects = { type: 'array', items: string, maxItems: 10 };
-const portfolioParticipantsSchema = { type: 'array', maxItems: 12, items: objectSchema({ key: string, project: string, ref: string, graphId: string }, ['project']) };
 const layersSchema = { type: 'array', items: { enum: ['semantic', 'structural', 'representation'] } };
 const relationshipStatusSchema = { type: 'array', items: { enum: ['resolved', 'candidate', 'unresolved'] } };
 const coverageStatusSchema = { type: 'array', items: { enum: ['complete', 'partial', 'unsupported', 'skipped', 'failed'] } };
@@ -139,8 +137,6 @@ export const tools: ToolDefinition[] = [
       ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
     });
   } },
-  { name: 'inspect_portfolio', description: 'Compose 2-12 independently revision-bound repository graphs into one ephemeral cross-repository investigation. Preserves each repository authority, namespaces identities only in the portfolio result, surfaces resolved package/API dependencies, shared dependencies, typed technical correlations, unavailable participants, and bounded blast-radius evidence without persisting a mega-graph.', inputSchema: objectSchema({ participants: portfolioParticipantsSchema, limit: integer }, ['participants']), handler: async args => await inspectPortfolio({ participants: args.participants as PortfolioParticipantInput[], ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }) },
-  { name: 'trace_portfolio', description: 'Traverse bounded resolved/candidate technical relationships across 2-12 exact repository graphs without creating a durable combined graph. Start from a namespaced <participant-key>::<node-id>; every hop reports whether it came from an original repository edge or derived cross-repository evidence and preserves provenance.', inputSchema: objectSchema({ participants: portfolioParticipantsSchema, start: string, direction: { enum: ['inbound', 'outbound', 'both'] }, depth: integer, status: relationshipStatusSchema, limit: integer }, ['participants', 'start']), handler: async args => await tracePortfolio({ participants: args.participants as PortfolioParticipantInput[], start: s(args, 'start'), ...(typeof args.direction === 'string' ? { direction: args.direction as 'inbound' | 'outbound' | 'both' } : {}), ...(typeof args.depth === 'number' ? { depth: args.depth } : {}), ...(relationshipStatuses(args)?.length ? { statuses: relationshipStatuses(args)! } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }) },
   { name: 'inspect_entity', description: 'Inspect one exact or unambiguous entity with quick notes, connections, evidence, source context, and accepted-to-working change state.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, node: string }, ['project', 'node']), handler: async args => await inspectEntity({ project: s(args, 'project'), node: s(args, 'node'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId') }) },
   { name: 'list_sources', description: 'List Git, runtime, and configured read-only technical sources available to a project, including query/log/metrics capabilities.', inputSchema: objectSchema({ project: string, ref: string, graphId: string }, ['project']), handler: async args => await workbenchSources(s(args, 'project'), optString(args, 'ref'), optString(args, 'graphId')) },
   { name: 'query_source', description: 'Run a bounded read-only query against one explicitly configured technical source adapter. Query results are observations and never automatically become accepted topology.', inputSchema: objectSchema({ project: string, sourceId: string, capability: technicalCapabilitySchema, query: string, limit: integer, from: string, to: string }, ['project', 'sourceId', 'query']), handler: async args => await queryTechnicalSource({ project: s(args, 'project'), sourceId: s(args, 'sourceId'), capability: optString(args, 'capability') as TechnicalSourceCapability | undefined, query: s(args, 'query'), limit: typeof args.limit === 'number' ? args.limit : undefined, from: optString(args, 'from'), to: optString(args, 'to') }) },
