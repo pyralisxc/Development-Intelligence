@@ -65,7 +65,7 @@ for (const target of targets) {
     if ((unknown.orientation?.certainty?.missing ?? []).length !== 0) throw new Error('Game-Studio-Core absent subject must not be promoted to proven missing under incomplete coverage');
 
     const maxQueryMs = Math.max(knownElapsedMs, unknownElapsedMs);
-    if (maxQueryMs > 5000) throw new Error(`Game-Studio-Core orientation query exceeded bounded acceptance budget: ${maxQueryMs.toFixed(2)} ms`);
+    if (maxQueryMs > 1000) throw new Error(`Game-Studio-Core orientation query exceeded bounded acceptance budget: ${maxQueryMs.toFixed(2)} ms`);
 
     orientationProbe = {
       known: {
@@ -86,7 +86,7 @@ for (const target of targets) {
         unknownCount: unknown.orientation.certainty.unknown.length,
         elapsedMs: Number(unknownElapsedMs.toFixed(3)),
       },
-      maxQueryBudgetMs: 5000,
+      maxQueryBudgetMs: 1000,
     };
   }
   reports.push({
