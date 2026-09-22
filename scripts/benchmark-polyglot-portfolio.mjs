@@ -44,6 +44,8 @@ for (const target of targets) {
   if (target.project === 'Game-Studio-Core') {
     if (!repositoryAudit.relationshipConcentrations.some(item => item.status === 'unresolved' && item.kind === 'uses-script' && item.count > 0)) throw new Error('Game-Studio-Core audit expected unresolved uses-script concentration');
     if (!repositoryAudit.coverageBlockers.some(item => item.status === 'partial' && item.count > 0)) throw new Error('Game-Studio-Core audit expected partial coverage blockers');
+    const unresolvedScript = repositoryAudit.relationshipConcentrations.find(item => item.status === 'unresolved' && item.kind === 'uses-script');
+    if (!unresolvedScript?.fixSurface?.paths?.length) throw new Error('Game-Studio-Core unresolved uses-script audit target must expose a source fix surface');
   }
   let orientationProbe = null;
   if (target.project === 'Game-Studio-Core') {
@@ -157,7 +159,7 @@ for (const target of targets) {
     kindCounts,
     strategyCounts,
     relationshipCounts,
-    repositoryAudit: { elapsedMs: Number(auditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers },
+    repositoryAudit: { elapsedMs: Number(auditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers, architectureBoundaryCount: repositoryAudit.architectureBoundaries.length },
     orientationProbe,
   });
 }

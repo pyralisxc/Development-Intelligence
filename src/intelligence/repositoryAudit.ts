@@ -1,9 +1,14 @@
 import type { GraphEdge, GraphNode, GraphCoverageStatus, IntelligenceGraph } from '../types.js';
 import { auditGraph } from './assessment.js';
 import { currentGraph, repositoryGraphs, type GraphCurrentness } from './service.js';
-import { nodeArea } from './query.js';
+import { locatorFileAndLine, nodeArea } from './query.js';
 
 type AuditRelationshipStatus = 'candidate' | 'unresolved';
+
+const BOUNDARY_RELATIONSHIP_KINDS = new Set([
+  'calls', 'imports-file', 'depends-on', 'composes', 'writes', 'reads', 'state-write',
+  'uses-script', 'implemented-by', 'automated-by', 'exposes', 'integrates-with',
+]);
 
 interface RepositoryAuditOptions {
   currentness?: GraphCurrentness | null;
@@ -16,6 +21,95 @@ function compactCoverage(graph: IntelligenceGraph): Record<string, unknown> | nu
   if (!coverage) return null;
   const { files: _files, ...summary } = coverage;
   return summary;
+}
+
+function sourcePath(node: GraphNode): string | null {
+  if (node.sourceId.startsWith('repo:')) return node.sourceId.slice('repo:'.length);
+  const file = locatorFileAndLine(node.locator).file;
+  return file.includes('/') || /\.[A-Za-z0-9]+$/u.test(file) ? file : null;
+}
+
+function areaForPath(file: string): string {
+  const slash = file.lastIndexOf('/');
+  return slash >= 0 ? file.slice(0, slash) || '(root)' : '(root)';
+}
+
+function fixSurface(graph: IntelligenceGraph, nodeIds: readonly string[], extraPaths: readonly string[] = []): { paths: string[]; areas: string[] } {
+  const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+  const paths = new Set(extraPaths.filter(Boolean));
+  const areas = new Set<string>();
+  for (const id of nodeIds) {
+    const node = nodes.get(id);
+    if (!node) continue;
+    const file = sourcePath(node);
+    if (file) paths.add(file);
+    areas.add(nodeArea(node));
+  }
+  for (const file of paths) areas.add(areaForPath(file));
+  return {
+    paths: [...paths].sort().slice(0, 20),
+    areas: [...areas].sort().slice(0, 12),
+  };
+}
+
+function bidirectionalArchitectureBoundaries(graph: IntelligenceGraph, limit: number) {
+  const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+  const directed = new Map<string, {
+    fromArea: string;
+    toArea: string;
+    count: number;
+    edgeIds: string[];
+    evidenceIds: Set<string>;
+    nodeIds: Set<string>;
+    kinds: Set<string>;
+  }>();
+
+  for (const edge of graph.edges) {
+    if (edge.status !== 'resolved' || !edge.from || !edge.to || !BOUNDARY_RELATIONSHIP_KINDS.has(edge.kind)) continue;
+    const from = nodes.get(edge.from);
+    const to = nodes.get(edge.to);
+    if (!from || !to) continue;
+    const fromArea = nodeArea(from);
+    const toArea = nodeArea(to);
+    if (!fromArea || !toArea || fromArea === toArea) continue;
+    const key = `${fromArea}\0${toArea}`;
+    const group = directed.get(key) ?? {
+      fromArea, toArea, count: 0, edgeIds: [], evidenceIds: new Set<string>(), nodeIds: new Set<string>(), kinds: new Set<string>(),
+    };
+    group.count += 1;
+    if (group.edgeIds.length < 20) group.edgeIds.push(edge.id);
+    for (const id of edge.evidenceIds ?? []) if (group.evidenceIds.size < 30) group.evidenceIds.add(id);
+    if (group.nodeIds.size < 30) { group.nodeIds.add(from.id); group.nodeIds.add(to.id); }
+    group.kinds.add(edge.kind);
+    directed.set(key, group);
+  }
+
+  const output: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  for (const group of directed.values()) {
+    const reverse = directed.get(`${group.toArea}\0${group.fromArea}`);
+    if (!reverse) continue;
+    const canonical = [group.fromArea, group.toArea].sort();
+    const pairKey = canonical.join('\0');
+    if (seen.has(pairKey)) continue;
+    seen.add(pairKey);
+    const nodeIds = [...new Set([...group.nodeIds, ...reverse.nodeIds])];
+    output.push({
+      areas: canonical,
+      count: group.count + reverse.count,
+      directions: [
+        { from: group.fromArea, to: group.toArea, count: group.count, kinds: [...group.kinds].sort(), edgeIds: group.edgeIds },
+        { from: reverse.fromArea, to: reverse.toArea, count: reverse.count, kinds: [...reverse.kinds].sort(), edgeIds: reverse.edgeIds },
+      ].sort((a, b) => a.from.localeCompare(b.from)),
+      evidenceIds: [...new Set([...group.evidenceIds, ...reverse.evidenceIds])].sort(),
+      fixSurface: fixSurface(graph, nodeIds),
+      interpretation: 'Resolved technical relationships cross this repository-area boundary in both directions. This is an investigation signal, not proof that the architecture is incorrect.',
+      nextEvidence: 'Inspect the participating contracts and ownership boundaries to determine whether the two-way dependency is intentional or should be separated behind a narrower interface.',
+    });
+  }
+  return output
+    .sort((a: any, b: any) => b.count - a.count || a.areas.join('\0').localeCompare(b.areas.join('\0')))
+    .slice(0, limit);
 }
 
 function groupFindings(graph: IntelligenceGraph, limit: number) {
@@ -117,6 +211,7 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number) {
         .map(([area, count]) => ({ area, count }))
         .sort((a, b) => b.count - a.count || a.area.localeCompare(b.area))
         .slice(0, 5),
+      fixSurface: fixSurface(graph, [...new Set(group.samples.flatMap(item => [item.from, item.to].filter((id): id is string => Boolean(id))))]),
       samples: group.samples,
       nextEvidence: group.status === 'unresolved'
         ? 'Resolve target identity or supply the missing source/runtime/provider evidence before using these relationships as proof.'
@@ -171,6 +266,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
   const findings = groupFindings(graph, limit);
   const relationships = relationshipConcentrations(graph, limit);
   const blockers = coverageBlockers(graph, limit);
+  const architectureBoundaries = bidirectionalArchitectureBoundaries(graph, limit);
   const stale = staleDimensions(options.currentness);
   const targets: Array<Record<string, unknown>> = [];
 
@@ -180,6 +276,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     count: stale.length,
     summary: `Accepted/current graph dimensions are not current: ${stale.join(', ')}.`,
     evidence: { dimensions: stale, checkpointError: options.currentness?.checkpointError ?? null },
+    fixSurface: { paths: [], areas: [] },
     nextEvidence: 'Reconcile the accepted checkpoint/current analyzer state for the exact candidate before treating accepted semantics as current.',
   });
 
@@ -189,6 +286,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     count: blocker.count,
     summary: `${blocker.count} tracked source path(s) are ${blocker.status}.`,
     evidence: { status: blocker.status, paths: blocker.samplePaths, reasons: blocker.reasons },
+    fixSurface: { paths: blocker.samplePaths, areas: [...new Set(blocker.samplePaths.map(areaForPath))].sort().slice(0, 12) },
     nextEvidence: blocker.nextEvidence,
   });
 
@@ -198,6 +296,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     count: group.count,
     summary: `${group.count} ${group.kind} relationship(s) remain ${group.status}.`,
     evidence: { status: group.status, kind: group.kind, edgeIds: group.edgeIds, evidenceIds: group.evidenceIds, areas: group.areas, samples: group.samples },
+    fixSurface: group.fixSurface,
     nextEvidence: group.nextEvidence,
   });
 
@@ -207,9 +306,20 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     count: group.count,
     summary: `${group.count} ${group.ruleId} finding(s) require investigation.`,
     evidence: { category: group.category, ruleId: group.ruleId, findingIds: group.findingIds, affectedIds: group.affectedIds },
+    fixSurface: fixSurface(graph, group.affectedIds),
     nextEvidence: group.category === 'realization'
       ? 'Verify whether realization is required by caller-owned expectations; if it is, establish a resolved realization relationship.'
       : 'Inspect the conflicting observed values and their source evidence before selecting or accepting one value.',
+  });
+
+  for (const boundary of architectureBoundaries) targets.push({
+    kind: 'architecture-boundary',
+    basis: 'derived-investigation',
+    count: boundary.count,
+    summary: `Resolved technical relationships cross ${(boundary.areas as string[]).join(' ↔ ')} in both directions.`,
+    evidence: { areas: boundary.areas, directions: boundary.directions, evidenceIds: boundary.evidenceIds },
+    fixSurface: boundary.fixSurface,
+    nextEvidence: boundary.nextEvidence,
   });
 
   return {
@@ -228,13 +338,14 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     findings: findings.samples,
     relationshipConcentrations: relationships,
     coverageBlockers: blockers,
+    architectureBoundaries,
     investigationTargets: targets.slice(0, limit),
     policy: {
       projection: 'audit-only',
       persisted: false,
       modifiesRepository: false,
       createsWorkItems: false,
-      ranking: 'Currentness, coverage, unresolved relationships, candidate relationships, then deterministic conflict/realization findings; counts break ties before lexical identity.',
+      ranking: 'Currentness, coverage, unresolved relationships, candidate relationships, deterministic conflict/realization findings, then bidirectional architecture-boundary investigations; counts break ties before lexical identity.',
       note: 'Repository audits synthesize revision-bound technical evidence. They do not assign product intent, authorize changes, or create durable project-management truth.',
     },
   };
