@@ -150,7 +150,10 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     const compactScan = await callTool('scan_graph', { project: fixture.project }) as any;
     assert.equal(compactScan.coverage.files, undefined, 'ordinary scan responses stay compact; detailed coverage has a dedicated tool');
 
-    const overview = await projectOverview(fixture.project, undefined, compactScan.graphId, ['helper', 'ArchitectureAggregateProbe', 'DefinitelyMissingRuntimeOwner']) as any;
+    const helperSubject = beforeGraph.nodes.find(node => node.kind === 'function' && node.name === 'helper')!;
+    const csharpSubject = beforeGraph.nodes.find(node => node.kind === 'class' && node.name === 'ArchitectureAggregateProbe')!;
+    assert.ok(helperSubject && csharpSubject, 'fixture must expose exact subjects for bundled overview');
+    const overview = await projectOverview(fixture.project, undefined, compactScan.graphId, [helperSubject.id, csharpSubject.id, 'DefinitelyMissingRuntimeOwner']) as any;
     assert.equal(overview.graphId, compactScan.graphId);
     assert.equal(overview.coverage.files, undefined, 'project overview must stay compact; per-file coverage belongs to check_graph_coverage');
     assert.equal(overview.currentness, null, 'exact graphId overview must not resolve unrelated default-branch currentness');
@@ -158,6 +161,7 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     assert.equal(overview.subjects[0].entity.name, 'helper');
     assert.equal(overview.subjects[0].observed, true);
     assert.equal(overview.subjects[1].entity.name, 'ArchitectureAggregateProbe');
+    assert.equal(overview.subjects[1].observed, true);
     assert.equal(overview.subjects[2].observed, false);
     assert.equal(typeof overview.subjects[2].answerStatus, 'string');
 
