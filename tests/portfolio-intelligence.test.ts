@@ -4,7 +4,7 @@ import type { GraphNode, IntelligenceGraph } from '../src/types.js';
 import { synthesizePortfolio, tracePortfolioGraphs } from '../src/intelligence/portfolio.js';
 
 const source = (path: string) => ({ id: `repo:${path}`, kind: 'repository-file', locator: path, revision: 'abc', observedAt: new Date(0).toISOString(), available: true });
-const node = (id: string, sourceId: string, kind: string, locator: string, field: string | undefined, value: unknown, layer: GraphNode['layer'] = 'structural'): GraphNode => ({
+const node = (id: string, sourceId: string, kind: string, locator: string, field: string | undefined, value: unknown, layer: NonNullable<GraphNode['layer']> = 'structural'): GraphNode => ({
   id, sourceId, kind, locator, ...(field ? { field } : {}), name: typeof value === 'string' ? value : id, value, raw: JSON.stringify(value), layer, checkpoint: layer === 'semantic', evidenceIds: [],
 });
 function graph(project: string, revision: string, nodes: GraphNode[]): IntelligenceGraph {
