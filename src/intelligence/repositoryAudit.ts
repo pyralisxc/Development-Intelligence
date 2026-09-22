@@ -1,5 +1,5 @@
 import type { GraphEdge, GraphNode, GraphCoverageStatus, IntelligenceGraph } from '../types.js';
-import { auditGraph } from './assessment.js';
+import { auditGraph, type AuditFinding } from './assessment.js';
 import { currentGraph, repositoryGraphs, type GraphCurrentness } from './service.js';
 import { locatorFileAndLine, nodeArea } from './query.js';
 
@@ -126,8 +126,10 @@ function bidirectionalArchitectureBoundaries(graph: IntelligenceGraph, limit: nu
     .slice(0, limit);
 }
 
+const REPOSITORY_AUDIT_FINDING_CATEGORIES = new Set<AuditFinding['category']>(['coverage', 'conflict', 'realization']);
+
 function groupFindings(graph: IntelligenceGraph, limit: number) {
-  const findings = auditGraph(graph);
+  const findings = auditGraph(graph, undefined, REPOSITORY_AUDIT_FINDING_CATEGORIES);
   const groups = new Map<string, { category: string; ruleId: string; count: number; findingIds: string[]; affectedIds: Set<string> }>();
   for (const item of findings) {
     const key = `${item.category}\0${item.ruleId}`;

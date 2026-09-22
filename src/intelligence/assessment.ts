@@ -328,27 +328,28 @@ function summarizeFindings(graph: IntelligenceGraph, findings: readonly AuditFin
   };
 }
 
-export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<string>): AuditFinding[] {
+export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<string>, categories?: ReadonlySet<AuditFinding['category']>): AuditFinding[] {
   const findings: AuditFinding[] = [];
+  const includes = (category: AuditFinding['category']) => !categories || categories.has(category);
   const coverage = graphCoverage(graph);
-  if (!coverage || !coverage.completeForTrackedSources) findings.push(finding(graph, {
+  if (includes('coverage') && (!coverage || !coverage.completeForTrackedSources)) findings.push(finding(graph, {
     ruleId: 'coverage.incomplete', category: 'coverage', status: 'attention',
     summary: coverage ? 'Coverage is not exhaustive across tracked sources (' + coverage.partial + ' partial, ' + coverage.failed + ' failed, ' + coverage.skipped + ' skipped, ' + coverage.unsupported + ' unsupported). Negative conclusions must remain qualified.' : 'Coverage details are unavailable; negative conclusions are indeterminate.',
     affectedIds: graph.unavailableSourceIds.slice().sort(), proof: proof(graph, 'coverage.incomplete', [], [], 'audit', 'repository'),
   }));
-  for (const conflict of graph.explicitValueConflicts.filter(item => !affectedIds || affectedIds.has(item.entityId))) findings.push(finding(graph, {
+  if (includes('conflict')) for (const conflict of graph.explicitValueConflicts.filter(item => !affectedIds || affectedIds.has(item.entityId))) findings.push(finding(graph, {
     ruleId: 'evidence.explicit-conflict', category: 'conflict', status: 'attention',
     summary: `Conflicting observed values for ${conflict.entityId}.${conflict.key}.`, affectedIds: [conflict.entityId],
     proof: proof(graph, 'evidence.explicit-conflict', graph.nodes.filter(node => node.id === conflict.entityId), [], 'audit'),
   }));
-  for (const edge of graph.edges.filter(item => item.status === 'unresolved' && (!affectedIds || (typeof item.from === 'string' && affectedIds.has(item.from)) || (typeof item.to === 'string' && affectedIds.has(item.to))))) findings.push(finding(graph, {
+  if (includes('relationship')) for (const edge of graph.edges.filter(item => item.status === 'unresolved' && (!affectedIds || (typeof item.from === 'string' && affectedIds.has(item.from)) || (typeof item.to === 'string' && affectedIds.has(item.to))))) findings.push(finding(graph, {
     ruleId: `relationship.${edge.status}`, category: 'relationship', status: 'attention',
     summary: `${edge.kind} relationship remains ${edge.status}; it cannot satisfy a proof requiring resolved evidence.`,
     affectedIds: [edge.from, edge.to].filter((id): id is string => Boolean(id)),
     proof: proof(graph, 'relationship.' + edge.status, graph.nodes.filter(node => node.id === edge.from || node.id === edge.to), [edge], 'audit'),
   }));
   const context = graphQueryContext(graph);
-  for (const node of graph.nodes.filter(item => item.layer === 'semantic' && ['capability', 'action'].includes(item.kind) && (!affectedIds || affectedIds.has(item.id)))) {
+  if (includes('realization')) for (const node of graph.nodes.filter(item => item.layer === 'semantic' && ['capability', 'action'].includes(item.kind) && (!affectedIds || affectedIds.has(item.id)))) {
     const incident = context.incident(node.id);
     if (!incident.some(edge => edgeAdmissible(edge, 'realization'))) findings.push(finding(graph, {
       ruleId: 'realization.disconnected', category: 'realization', status: 'attention',
