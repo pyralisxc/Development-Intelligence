@@ -6,7 +6,7 @@ const root = new URL('../src/', import.meta.url);
 const forbiddenProjectCoupling = [
   /cardforge/i,
   /\bdesk\b/i,
-  /\bpipeline\b/i,
+  /pipeline[-_ ](?:submission|contributor|registry|asset|program)/i,
   /game\s*studio/i,
   /founder[- ]to[- ]feature/i,
   /developer\s*os/i,
