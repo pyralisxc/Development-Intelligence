@@ -31,6 +31,7 @@ process.env.DEVINT_GRAPH_CACHE_SIZE = '3';
 const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
 const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
+const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { clearGraphCache } = await import('../dist/src/intelligence/service.js');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
@@ -41,6 +42,12 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+const repositoryAuditStarted = process.hrtime.bigint();
+const repositoryAudit = synthesizeRepositoryAudit(graph, { acceptedPresent: true, currentness: null, limit: 20 });
+const repositoryAuditElapsedMs = Number(process.hrtime.bigint() - repositoryAuditStarted) / 1_000_000;
+if (repositoryAuditElapsedMs > 1000) throw new Error(`CardForge repository audit exceeded 1000 ms acceptance budget: ${repositoryAuditElapsedMs.toFixed(2)} ms`);
+if (repositoryAudit.investigationTargets.length > 20) throw new Error('CardForge repository audit must remain bounded');
+if ((repositoryAudit.coverage?.partialFiles ?? 0) !== 0 || (repositoryAudit.coverage?.failedFiles ?? 0) !== 0 || (repositoryAudit.coverage?.skippedFiles ?? 0) !== 0) throw new Error('CardForge benchmark expects complete eligible-source audit coverage');
 
 const pipelineSubject = graph.nodes.find(node => node.kind === 'function' && node.name === 'buildPipelineContentReview');
 const persistenceSubject = graph.nodes.find(node => node.kind === 'file' && node.locator === 'src/features/contributor-access/server/profileStore.ts');
@@ -199,6 +206,7 @@ const report = {
     candidateRelationships: semanticEdges.filter(edge => edge.status === 'candidate').length,
     unresolvedRelationships: semanticEdges.filter(edge => edge.status === 'unresolved').length,
   },
+  repositoryAudit: { elapsedMs: Number(repositoryAuditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers },
   assessment: {
     elapsedMs: assessmentElapsedMs,
     motifs: {
@@ -240,6 +248,7 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
+  `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
   `- Derived motif calibration: **pipeline ${pipelineMotif.confidence} (${pipelineMotif.signals.length} signals, ${pipelineMotifElapsedMs.toFixed(3)} ms) / persistence-owner ${persistenceMotif.confidence} (${persistenceMotif.signals.length} signals, ${persistenceMotifElapsedMs.toFixed(3)} ms) / 1000 ms budget**`,
   '',
