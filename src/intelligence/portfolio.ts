@@ -38,6 +38,56 @@ interface DependencyEvidence extends IdentityEvidence {
   requested: string;
 }
 
+interface PortfolioEndpoint {
+  participant: string;
+  project: string;
+  nodeId: string;
+  locator: string;
+  requested?: string;
+}
+
+interface PortfolioLink {
+  id: string;
+  kind: string;
+  status: 'resolved' | 'candidate';
+  strategy: string;
+  identifier: string;
+  from: PortfolioEndpoint;
+  to: PortfolioEndpoint;
+  note?: string;
+}
+
+interface SharedDependencyGroup {
+  identifier: string;
+  participants: string[];
+  requests: Array<{
+    participant: string;
+    project: string;
+    dependencyType: string;
+    requested: string;
+    nodeId: string;
+    locator: string;
+  }>;
+}
+
+interface TechnicalCorrelation {
+  family: string;
+  identifier: string;
+  participants: string[];
+  status: 'candidate';
+  reason: string;
+  evidence: Array<{ participant: string; project: string; nodeId: string; locator: string }>;
+}
+
+interface PortfolioBlastRadius {
+  target: PortfolioEndpoint;
+  consumerParticipants: string[];
+  relationshipKinds: string[];
+  linkIds: string[];
+  basis: 'resolved-cross-repository-links';
+  note: string;
+}
+
 function participantKey(input: PortfolioParticipantInput): string {
   const key = input.key?.trim() || input.project.trim();
   if (!key) throw new Error('portfolio participant key must be non-empty');
@@ -176,7 +226,7 @@ function technicalReferences(participants: ResolvedParticipant[]): IdentityEvide
   return values;
 }
 
-function sharedDependencyGroups(dependencies: DependencyEvidence[]): Array<Record<string, unknown>> {
+function sharedDependencyGroups(dependencies: DependencyEvidence[]): SharedDependencyGroup[] {
   const grouped = new Map<string, DependencyEvidence[]>();
   for (const dependency of dependencies) {
     const bucket = grouped.get(dependency.identifier) ?? [];
@@ -200,7 +250,7 @@ function sharedDependencyGroups(dependencies: DependencyEvidence[]): Array<Recor
     .sort((a, b) => b.participants.length - a.participants.length || String(a.identifier).localeCompare(String(b.identifier)));
 }
 
-function sharedTechnicalIdentifiers(owners: IdentityEvidence[]): Array<Record<string, unknown>> {
+function sharedTechnicalIdentifiers(owners: IdentityEvidence[]): TechnicalCorrelation[] {
   const grouped = new Map<string, IdentityEvidence[]>();
   for (const owner of owners) {
     const groupKey = `${owner.family}\u0000${owner.identifier}`;
@@ -226,8 +276,8 @@ function resolvedLinks(
   packageIdentityOwners: IdentityEvidence[],
   references: IdentityEvidence[],
   technicalIdentityOwners: IdentityEvidence[],
-): Array<Record<string, unknown>> {
-  const links: Array<Record<string, unknown>> = [];
+): PortfolioLink[] {
+  const links: PortfolioLink[] = [];
   const packageByName = new Map<string, IdentityEvidence[]>();
   for (const owner of packageIdentityOwners) {
     const bucket = packageByName.get(owner.identifier) ?? [];
@@ -298,7 +348,7 @@ function resolvedLinks(
   return links.sort((a, b) => String(a.kind).localeCompare(String(b.kind)) || String(a.id).localeCompare(String(b.id)));
 }
 
-function blastRadius(links: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+function blastRadius(links: PortfolioLink[]): PortfolioBlastRadius[] {
   const grouped = new Map<string, { target: Record<string, unknown>; consumers: Set<string>; linkIds: string[]; kinds: Set<string> }>();
   for (const link of links) {
     if (link.status !== 'resolved') continue;
