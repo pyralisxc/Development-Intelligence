@@ -71,6 +71,18 @@ For a material change:
 8. Promote to `main` only after the owner-approved merge gate is satisfied for the exact candidate.
 9. When the change affects hosted behavior, complete the applicable Vercel/OAuth/ChatGPT acceptance after or around promotion as required by the owning release docs; do not infer provider success from GitHub alone.
 
+## Ownership and issue routing
+
+Development Intelligence may observe defects anywhere it has evidence, but development changes must follow the system that owns the defect.
+
+- Fix Development Intelligence defects in this repository.
+- If the evidence points to another repository or connected system, preserve the exact revision/check/provider evidence and route the problem to that owner instead of patching around it in Development Intelligence.
+- Before creating an issue in another repository, inspect its active/upcoming work. Add evidence to an existing item when it already represents the problem; create a new issue only when the finding is materially useful and not already covered.
+- If an external provider has no writable repository, record the provider-bound limitation or acceptance requirement in the nearest owning issue/docs rather than changing Development Intelligence semantics to hide it.
+- Compatibility behavior belongs here only when Development Intelligence genuinely owns that compatibility boundary.
+
+Development Intelligence has an additional portfolio-testing role: most repositories use DI to do their work, while DI intentionally examines representative repositories to test its own honesty, latency, evidence depth, and usefulness. Project-owned defects discovered during that testing are routed to the project; recurring DI-owned gaps become DI work with benchmark evidence.
+
 ## Evidence and uncertainty
 
 GitHub checks, benchmark artifacts, exact Git identities, provider deployment state, and physical hosted-client tests are evidence. Keep them distinct.

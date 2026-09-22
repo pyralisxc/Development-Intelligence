@@ -70,6 +70,20 @@ Every eligible source file resolves to an explicit coverage state such as `compl
 
 Portfolio acceptance also checks exact GitHub revisions of representative C#/Unity (`pyralisxc/Game-Studio-Core`) and Java (`pyralisxc/Medieval-Sim`) repositories. The `polyglot-portfolio-benchmark` CI job pins both revisions, preserves incomplete coverage explicitly, and publishes disposable replay evidence. The hermetic suite protects parser and coverage contracts; the portfolio replay proves those contracts still produce useful graph depth at real scale.
 
+### Portfolio battle-testing and issue routing
+
+Development Intelligence uses real repositories as a standing evidence portfolio, not merely as synthetic fixtures. Most repositories primarily consume DI for development work; DI additionally replays representative repositories to pressure-test its own capability, honesty, latency, uncertainty handling, and actionability.
+
+Portfolio testing must remain read-only and SHA-pinned. When a replay discovers a potentially real repository problem:
+
+1. establish whether the evidence represents a DI limitation or a project-owned defect;
+2. inspect that repository's active/upcoming work before creating anything new;
+3. attach exact revision/evidence to existing work when it already covers the problem;
+4. create a repository-owned GitHub issue only when the project problem is materially useful and not already represented;
+5. keep analyzer/coverage/tooling limitations in Development Intelligence rather than exporting false project defects.
+
+Useful portfolio feedback includes orientation call count, warm/cold latency, evidence depth, uncertainty honesty, fix-surface quality, and whether an agent can act without manually rediscovering the codebase. Recurring weaknesses become DI work items backed by real-repository evidence. External repositories do not need to adopt DI-specific product semantics in order to serve as benchmark evidence.
+
 ### Human Workbench over agent truth
 
 The human Workbench is a client of the same Development Intelligence services agents use. Durable UI acceptance covers:
