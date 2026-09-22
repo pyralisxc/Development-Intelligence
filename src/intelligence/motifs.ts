@@ -126,17 +126,13 @@ function motif(
 
 export function deriveMotifs(graph: IntelligenceGraph, selected: GraphNode): DerivedMotif[] {
   if ((selected.layer ?? 'structural') === 'semantic') return [];
-  const context = graphQueryContext(graph);
   const file = containingFile(graph, selected);
-  const localMembers = members(graph, selected.kind === 'file' ? selected : selected);
+  const localMembers = members(graph, selected);
   const fileMembers = file && file.id !== selected.id ? members(graph, file) : localMembers;
   const memberPool = selected.kind === 'file' ? localMembers : localMembers;
   const dependencyEdges = fileDependencies(graph, file);
   const executionEdges = directExecutionEdges(graph, selected);
   const identity = searchable([selected.name ?? '', locatorPath(selected.locator)].join(' '));
-  const memberNames = memberPool.map(node => nodeText(node));
-  const dependencyTargets = dependencyEdges.map(edge => targetText(graph, edge));
-  const executionTargets = executionEdges.map(edge => targetText(graph, edge));
   const output: DerivedMotif[] = [];
 
   const compositionIdentity = /(bootstrap|composition root|lifetime scope|service registration|service installer|startup)/u.test(identity);
