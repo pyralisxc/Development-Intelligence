@@ -86,10 +86,78 @@ export async function workbenchProjects(): Promise<Record<string, unknown>> {
   };
 }
 
-export async function projectOverview(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {
+function compactCoverage(graph: IntelligenceGraph): Record<string, unknown> | null {
+  const coverage = graph.coverage;
+  if (!coverage) return null;
+  const { files: _files, ...summary } = coverage;
+  return summary;
+}
+
+function projectSubjectBrief(graph: IntelligenceGraph, query: string): Record<string, unknown> {
+  const candidates = findGraphNodeCandidates(graph, query, 20);
+  if (candidates.length === 0) {
+    const assessment = assessGraph(graph, query) as any;
+    return {
+      query,
+      observed: false,
+      ambiguous: false,
+      answerStatus: assessment.answerStatus ?? 'indeterminate',
+      orientation: assessment.orientation ?? null,
+      candidates: [],
+    };
+  }
+  if (candidates.length > 1 && !candidates.some(node => node.id === query)) {
+    return {
+      query,
+      observed: true,
+      ambiguous: true,
+      candidates: candidates.slice(0, 10).map(node => ({
+        id: node.id,
+        name: displayName(node),
+        kind: node.kind,
+        layer: node.layer ?? 'structural',
+        locator: node.locator,
+      })),
+    };
+  }
+  const selected = candidates.find(node => node.id === query) ?? candidates[0]!;
+  const incident = graph.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+  const assessment = assessGraph(graph, selected.id) as any;
+  return {
+    query,
+    observed: true,
+    ambiguous: false,
+    entity: {
+      id: selected.id,
+      name: displayName(selected),
+      kind: selected.kind,
+      layer: selected.layer ?? 'structural',
+      locator: selected.locator,
+    },
+    connectionCounts: edgeCounts(incident),
+    evidenceCount: new Set([
+      ...(selected.evidenceIds ?? []),
+      ...incident.flatMap(edge => edge.evidenceIds ?? []),
+    ]).size,
+    answerStatus: assessment.answerStatus ?? 'indeterminate',
+    orientation: assessment.orientation ?? null,
+    reach: assessment.reach
+      ? {
+          totals: assessment.reach.totals ?? null,
+          mechanisms: assessment.reach.mechanisms ?? null,
+          dimensions: Object.fromEntries(Object.entries(assessment.reach.dimensions ?? {}).map(([name, value]: [string, any]) => [name, {
+            observed: Boolean(value?.observed),
+            count: Number(value?.count ?? 0),
+          }])),
+        }
+      : null,
+  };
+}
+
+export async function projectOverview(project: string, ref?: string | undefined, graphId?: string | undefined, subjects: string[] = []): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
   const [status, diff, sources] = await Promise.all([
-    projectStatus(project, false),
+    graphId ? Promise.resolve(null) : projectStatus(project, false),
     graphId ? Promise.resolve(null) : diffAcceptedToWorking(project, ref),
     listTechnicalSources(project),
   ]);
@@ -126,12 +194,14 @@ export async function projectOverview(project: string, ref?: string | undefined,
       conflicts: graph.explicitValueConflicts.length,
       relationships: relations,
     },
-    currentness: (status as any).graph?.currentness ?? null,
-    coverage: graph.coverage ?? null,
+    currentness: status ? (status as any).graph?.currentness ?? null : null,
+    coverage: compactCoverage(graph),
+    coverageDetailTool: 'check_graph_coverage',
     highlights: semanticHighlights(graph).map(node => ({ id: node.id, kind: node.kind, name: displayName(node), locator: node.locator })),
     areas: topAreas(graph),
     changes: diff ? { ...diffCounts, detail: diff } : null,
     findings: findings.slice(0, 20),
+    subjects: subjects.slice(0, 10).map(subject => projectSubjectBrief(graph, subject.trim())).filter(item => Boolean(item.query)),
     sources,
   };
 }
