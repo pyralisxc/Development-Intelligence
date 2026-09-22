@@ -1,5 +1,6 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
+import { deriveMotifs } from './motifs.js';
 
 export type SourceScope =
   | 'implementation'
@@ -137,6 +138,7 @@ export function projectOrientation(
   const supportedClaims = claims.filter(item => item.status === 'supported').map(item => item.statement);
   const missingClaims = claims.filter(item => item.status === 'contradicted').map(item => item.statement);
   const unknownClaims = claims.filter(item => item.status === 'unproven' || item.status === 'indeterminate').map(item => item.statement);
+  const derived = selected ? deriveMotifs(graph, selected) : [];
 
   const disambiguatingEvidence: string[] = [];
   if (ambiguous) disambiguatingEvidence.push('Use an exact stable graph entity ID or a more specific subject to select one observed entity.');
@@ -145,6 +147,7 @@ export function projectOrientation(
   if (depth === 'serialized') disambiguatingEvidence.push('Resolve serialized GUID targets or provide runtime/scene evidence before asserting runtime behavior.');
   if (possible.length) disambiguatingEvidence.push('Strengthen candidate relationships with deterministic binding evidence before using them as proof.');
   if (unresolved.length) disambiguatingEvidence.push('Resolve the reported relationship targets or supply the missing source/runtime evidence identified by those edges.');
+  for (const item of derived) disambiguatingEvidence.push(...item.disambiguatingEvidence);
   if (graph.coverage && (graph.coverage.partialFiles || graph.coverage.failedFiles || graph.coverage.skippedFiles || graph.coverage.unsupportedFiles)) {
     disambiguatingEvidence.push('Complete relevant partial, skipped, failed, or unsupported source coverage before making repository-wide absence claims.');
   }
@@ -171,13 +174,17 @@ export function projectOrientation(
         ...(resolved.length ? [`${resolved.length} incident relationship(s) are deterministically resolved for the selected entity.`] : []),
         ...supportedClaims,
       ]),
-      derived: [],
+      derived,
       possible,
       unresolved,
       missing: unique(missingClaims),
       ruledOut: [],
       unknown: unique(unknownClaims),
       disambiguatingEvidence: unique(disambiguatingEvidence),
+    },
+    motifSummary: {
+      total: derived.length,
+      kinds: derived.map(item => item.kind),
     },
     relationshipSummary: {
       resolved: resolved.length,
