@@ -144,6 +144,38 @@ function sourceOwner(node: SgNode): boolean {
   return ['file_scoped_namespace_declaration', 'package_declaration'].includes(String(node.kind()));
 }
 
+function csharpBaseTypes(node: SgNode): string[] {
+  const baseList = childOfKind(node, ['base_list']);
+  if (!baseList) return [];
+  return baseList.namedChildren()
+    .map(child => child.text().trim())
+    .filter(Boolean);
+}
+
+function argumentCount(node: SgNode): number | null {
+  const argumentsNode = childOfKind(node, ['argument_list']);
+  return argumentsNode ? argumentsNode.namedChildren().length : null;
+}
+
+function csharpInvocationTarget(node: SgNode): { name: string; qualifier: string | null; arity: number | null } | null {
+  if (String(node.kind()) !== 'invocation_expression') return null;
+  const text = node.text().trim();
+  const match = /^([A-Za-z_][A-Za-z0-9_.]*)\s*(?:<[^()]+>)?\s*\(/u.exec(text);
+  if (!match) return null;
+  const parts = match[1]!.split('.');
+  const name = parts.at(-1)!;
+  const qualifier = parts.length > 1 ? parts.slice(0, -1).join('.') : null;
+  if (qualifier && qualifier !== 'this' && qualifier !== 'base' && !/^[A-Z]/u.test(qualifier.split('.').at(-1) ?? '')) return null;
+  return { name, qualifier, arity: argumentCount(node) };
+}
+
+function csharpConstructorTarget(node: SgNode): { typeName: string; arity: number | null } | null {
+  if (String(node.kind()) !== 'object_creation_expression') return null;
+  const match = /^new\s+([A-Za-z_][A-Za-z0-9_.]*(?:<[^()]+>)?)\s*\(/u.exec(node.text().trim());
+  if (!match) return null;
+  return { typeName: match[1]!.replace(/<.*>$/u, ''), arity: argumentCount(node) };
+}
+
 function importBindingsFor(language: Language, node: SgNode): ImportBinding[] {
   const syntaxKind = String(node.kind());
   const text = node.text().trim();
@@ -203,6 +235,7 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
   const resolutions: Resolution[] = [];
   const identities = new Map<string, number>();
   const importIdentities = new Map<string, number>();
+  const referenceIdentities = new Map<string, number>();
   let parseErrors = 0;
 
   const lineOf = (node: SgNode) => node.range().start.line + 1;
@@ -231,6 +264,9 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
         qualifiedName,
         ...(signature ? { signature } : {}),
         ...(memberScope ? { memberScope } : {}),
+        ...(language === 'csharp' && ['class', 'interface', 'struct', 'record'].includes(declaration.kind) && csharpBaseTypes(node).length
+          ? { baseTypes: csharpBaseTypes(node) }
+          : {}),
       },
       tags: [language, 'tree-sitter'],
       layer: 'structural',
@@ -255,6 +291,46 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
 
   const visit = (node: SgNode, scope: string[], owner: Observation | null): void => {
     if (node.kind() === 'ERROR') parseErrors += 1;
+    if (language === 'csharp' && owner) {
+      const ownerValue = owner.value && typeof owner.value === 'object' ? owner.value as Record<string, unknown> : null;
+      const ownerQualifiedName = typeof ownerValue?.qualifiedName === 'string' ? ownerValue.qualifiedName : null;
+      const call = csharpInvocationTarget(node);
+      const constructor = csharpConstructorTarget(node);
+      const reference = call
+        ? { kind: 'call-reference', name: call.name, field: 'call', value: { language, referenceKind: 'call', targetName: call.name, qualifier: call.qualifier, arity: call.arity, ownerQualifiedName } }
+        : constructor
+          ? { kind: 'constructor-reference', name: constructor.typeName, field: 'constructor', value: { language, referenceKind: 'constructor', targetName: constructor.typeName, arity: constructor.arity, ownerQualifiedName } }
+          : null;
+      if (reference) {
+        const baseId = `reference:${context.locatorBase}#csharp:${reference.kind}:${safeIdentityPart(owner.id)}:${safeIdentityPart(reference.name)}`;
+        const ordinal = (referenceIdentities.get(baseId) ?? 0) + 1;
+        referenceIdentities.set(baseId, ordinal);
+        const observed = observation({
+          id: ordinal === 1 ? baseId : `${baseId}~${ordinal}`,
+          sourceId: context.source.id,
+          kind: reference.kind,
+          locator: `${context.locatorBase}:${lineOf(node)}`,
+          name: reference.name,
+          field: reference.field,
+          value: reference.value,
+          tags: [language, 'tree-sitter', 'reference'],
+          layer: 'structural',
+          checkpoint: false,
+        });
+        observations.push(observed);
+        resolutions.push(resolution({
+          from: owner.id,
+          to: observed.id,
+          kind: 'invokes',
+          strategy: 'syntax',
+          confidence: 1,
+          status: 'resolved',
+          evidence: [`${context.locatorBase}:${lineOf(node)}`],
+          layer: 'structural',
+          checkpoint: false,
+        }));
+      }
+    }
     for (const binding of importBindingsFor(language, node)) {
       const baseId = `import:${context.locatorBase}#${language}:${safeIdentityPart(binding.module)}:${safeIdentityPart(binding.local)}`;
       const ordinal = (importIdentities.get(baseId) ?? 0) + 1;

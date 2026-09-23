@@ -319,7 +319,7 @@ function resolveUnityGraph(input: {
     const reference = record.value;
     const targets = (guidTargets.get(reference.guid) ?? []).filter(target => target.node);
     const target = targets.length === 1 ? targets[0]! : null;
-    input.edges.push(resolution({
+    const resolvedEdge = resolution({
       from: reference.from,
       to: target?.node?.id ?? null,
       kind: reference.relationship,
@@ -333,13 +333,59 @@ function resolveUnityGraph(input: {
       evidenceIds: [record.id, ...(target ? [target.record.id] : [])],
       layer: 'structural',
       checkpoint: false,
-    }));
+    });
+    input.edges.push(resolvedEdge);
+    if (target?.node && reference.relationship === 'uses-script') {
+      const sourceNode = input.nodes.find(node => node.id === reference.from);
+      const assetPath = sourceNode?.sourceId.startsWith('repo:') ? sourceNode.sourceId.slice('repo:'.length) : null;
+      const assetFile = assetPath ? input.fileNodes.get(assetPath) : null;
+      if (assetFile) {
+        input.edges.push(resolution({
+          from: target.node.id,
+          to: assetFile.id,
+          kind: 'used-by-unity-asset',
+          strategy: 'unity-guid-reverse',
+          confidence: 1,
+          status: 'resolved',
+          evidence: resolvedEdge.evidence,
+          evidenceIds: resolvedEdge.evidenceIds ?? [],
+          layer: 'structural',
+          checkpoint: false,
+        }));
+        const sourcePath = target.assetPath;
+        const stem = path.basename(sourcePath, path.extname(sourcePath));
+        const primaryTypes = input.nodes.filter(node => node.sourceId === `repo:${sourcePath}` && node.kind === 'class' && node.name === stem);
+        if (primaryTypes.length === 1) input.edges.push(resolution({
+          from: primaryTypes[0]!.id,
+          to: assetFile.id,
+          kind: 'used-by-unity-asset',
+          strategy: 'unity-guid-reverse',
+          confidence: 1,
+          status: 'resolved',
+          evidence: resolvedEdge.evidence,
+          evidenceIds: resolvedEdge.evidenceIds ?? [],
+          layer: 'structural',
+          checkpoint: false,
+        }));
+      }
+    }
   }
 }
 
 interface PolyglotSymbolValue {
   language: 'csharp' | 'java' | 'python';
   qualifiedName?: string;
+  signature?: string;
+  baseTypes?: string[];
+}
+
+interface CSharpReferenceValue {
+  language: 'csharp';
+  referenceKind: 'call' | 'constructor';
+  targetName: string;
+  qualifier?: string | null;
+  arity?: number | null;
+  ownerQualifiedName?: string | null;
 }
 
 interface PolyglotImportValue {
@@ -356,6 +402,14 @@ function polyglotSymbolValue(value: unknown): value is PolyglotSymbolValue {
   const candidate = value as Record<string, unknown>;
   return ['csharp', 'java', 'python'].includes(String(candidate.language))
     && (candidate.qualifiedName === undefined || typeof candidate.qualifiedName === 'string');
+}
+
+function csharpReferenceValue(value: unknown): value is CSharpReferenceValue {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.language === 'csharp'
+    && ['call', 'constructor'].includes(String(candidate.referenceKind))
+    && typeof candidate.targetName === 'string';
 }
 
 function polyglotImportValue(value: unknown): value is PolyglotImportValue {
@@ -585,6 +639,153 @@ function resolvePolyglotModules(input: {
       confidence: null,
       status: 'unresolved',
       evidence: [binding.locator, exactCandidates.length > 1 ? `ambiguous import has ${exactCandidates.length} declarations` : 'imported symbol is unavailable in resolved local module'],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  }
+
+  const csharpTypesByShortName = new Map<string, GraphNode[]>();
+  const csharpTypesByQualifiedName = new Map<string, GraphNode[]>();
+  const csharpMembersByOwner = new Map<string, GraphNode[]>();
+  const csharpNamespaceImportsByFile = new Map<string, string[]>();
+  const csharpAliasTargetsByFile = new Map<string, Map<string, GraphNode>>();
+  for (const node of input.nodes) {
+    if (!node.sourceId.startsWith('repo:') || !polyglotSymbolValue(node.value) || node.value.language !== 'csharp') continue;
+    const value = node.value as PolyglotSymbolValue;
+    if (!value.qualifiedName) continue;
+    if (['class', 'interface', 'struct', 'record'].includes(node.kind) && node.name) {
+      const short = csharpTypesByShortName.get(node.name) ?? [];
+      short.push(node); csharpTypesByShortName.set(node.name, short);
+      const exact = csharpTypesByQualifiedName.get(value.qualifiedName) ?? [];
+      exact.push(node); csharpTypesByQualifiedName.set(value.qualifiedName, exact);
+    }
+    if (['method', 'constructor', 'property', 'field'].includes(node.kind)) {
+      const ownerQualified = value.qualifiedName.split('.').slice(0, -1).join('.');
+      const members = csharpMembersByOwner.get(ownerQualified) ?? [];
+      members.push(node); csharpMembersByOwner.set(ownerQualified, members);
+    }
+  }
+  for (const binding of input.nodes.filter(node => node.kind === 'import-binding' && polyglotImportValue(node.value))) {
+    const value = binding.value as PolyglotImportValue;
+    if (value.language !== 'csharp' || !binding.sourceId.startsWith('repo:')) continue;
+    const file = binding.sourceId.slice('repo:'.length);
+    if (value.mode === 'namespace') {
+      const namespaces = csharpNamespaceImportsByFile.get(file) ?? [];
+      namespaces.push(value.module);
+      csharpNamespaceImportsByFile.set(file, [...new Set(namespaces)].sort());
+    }
+    if (value.mode === 'symbol') {
+      const resolved = input.edges.find(edge => edge.from === binding.id && edge.kind === 'resolves_to' && edge.status === 'resolved' && edge.to);
+      const target = resolved?.to ? input.nodes.find(node => node.id === resolved.to) : null;
+      if (target) {
+        const aliases = csharpAliasTargetsByFile.get(file) ?? new Map<string, GraphNode>();
+        aliases.set(value.local, target);
+        csharpAliasTargetsByFile.set(file, aliases);
+      }
+    }
+  }
+
+  const normalizeType = (value: string): string => value.replace(/^global::/u, '').replace(/<.*>$/u, '').trim();
+  const typeCandidates = (file: string, raw: string, ownerQualifiedName?: string | null): GraphNode[] => {
+    const normalized = normalizeType(raw);
+    const alias = csharpAliasTargetsByFile.get(file)?.get(normalized);
+    if (alias) return [alias];
+    const exact = csharpTypesByQualifiedName.get(normalized) ?? [];
+    if (exact.length) return exact;
+    if (!normalized.includes('.')) {
+      const ownerNamespace = ownerQualifiedName?.split('.').slice(0, -2).join('.') ?? '';
+      const local = ownerNamespace ? csharpTypesByQualifiedName.get(`${ownerNamespace}.${normalized}`) ?? [] : [];
+      if (local.length) return local;
+      const imported = (csharpNamespaceImportsByFile.get(file) ?? []).flatMap(namespace => csharpTypesByQualifiedName.get(`${namespace}.${normalized}`) ?? []);
+      if (imported.length) return imported;
+      return csharpTypesByShortName.get(normalized) ?? [];
+    }
+    return [];
+  };
+  const arityOf = (node: GraphNode): number | null => {
+    const value = node.value as PolyglotSymbolValue;
+    if (!value.signature) return null;
+    const inside = /^\((.*)\)$/u.exec(value.signature)?.[1] ?? '';
+    if (!inside) return 0;
+    return inside.split(',').length;
+  };
+
+  for (const type of input.nodes.filter(node => node.sourceId.startsWith('repo:') && ['class', 'struct', 'record'].includes(node.kind) && polyglotSymbolValue(node.value) && node.value.language === 'csharp')) {
+    const value = type.value as PolyglotSymbolValue;
+    const file = type.sourceId.slice('repo:'.length);
+    for (const base of value.baseTypes ?? []) {
+      const candidates = typeCandidates(file, base, value.qualifiedName).filter(candidate => candidate.kind === 'interface');
+      if (candidates.length === 1) input.edges.push(resolution({
+        from: candidates[0]!.id,
+        to: type.id,
+        kind: 'implemented-by',
+        strategy: 'csharp-base-type',
+        confidence: 1,
+        status: 'resolved',
+        evidence: [type.locator, `base type ${base}`],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+    }
+  }
+
+  for (const reference of input.nodes.filter(node => ['call-reference', 'constructor-reference'].includes(node.kind) && csharpReferenceValue(node.value))) {
+    if (!reference.sourceId.startsWith('repo:')) continue;
+    const file = reference.sourceId.slice('repo:'.length);
+    const value = reference.value as CSharpReferenceValue;
+    const owner = input.edges.find(edge => edge.to === reference.id && edge.kind === 'invokes' && edge.status === 'resolved' && edge.from)?.from ?? null;
+    let candidates: GraphNode[] = [];
+    if (value.referenceKind === 'constructor') {
+      const types = typeCandidates(file, value.targetName, value.ownerQualifiedName);
+      if (types.length === 1) {
+        const type = types[0]!;
+        const typeValue = type.value as PolyglotSymbolValue;
+        const constructors = csharpMembersByOwner.get(typeValue.qualifiedName ?? '')?.filter(member => member.kind === 'constructor') ?? [];
+        const arityMatched = value.arity === null || value.arity === undefined ? constructors : constructors.filter(member => arityOf(member) === value.arity);
+        candidates = arityMatched.length ? arityMatched : constructors.length ? constructors : [type];
+      }
+    } else {
+      const qualifier = value.qualifier && !['this', 'base'].includes(value.qualifier) ? value.qualifier : null;
+      const ownerType = value.ownerQualifiedName?.split('.').slice(0, -1).join('.') ?? null;
+      const types = qualifier ? typeCandidates(file, qualifier, value.ownerQualifiedName) : ownerType ? csharpTypesByQualifiedName.get(ownerType) ?? [] : [];
+      if (types.length === 1) {
+        const typeValue = types[0]!.value as PolyglotSymbolValue;
+        const members = csharpMembersByOwner.get(typeValue.qualifiedName ?? '')?.filter(member => member.kind === 'method' && member.name === value.targetName) ?? [];
+        candidates = value.arity === null || value.arity === undefined ? members : members.filter(member => arityOf(member) === value.arity);
+      }
+    }
+
+    if (candidates.length === 1) {
+      input.edges.push(resolution({
+        from: reference.id,
+        to: candidates[0]!.id,
+        kind: 'resolves_to',
+        strategy: 'csharp-static-binding',
+        confidence: 1,
+        status: 'resolved',
+        evidence: [reference.locator],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+      if (owner && owner !== candidates[0]!.id) input.edges.push(resolution({
+        from: owner,
+        to: candidates[0]!.id,
+        kind: value.referenceKind === 'constructor' ? 'constructs' : 'calls',
+        strategy: 'csharp-static-binding',
+        confidence: 1,
+        status: 'resolved',
+        evidence: [reference.locator],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+    } else if (candidates.length > 1) input.edges.push(resolution({
+      from: reference.id,
+      to: null,
+      kind: 'resolves_to',
+      strategy: 'csharp-static-binding',
+      confidence: null,
+      status: 'unresolved',
+      evidence: [reference.locator, `ambiguous C# reference has ${candidates.length} matching declarations`],
       layer: 'structural',
       checkpoint: false,
     }));
@@ -998,176 +1199,3 @@ function ensureSemanticTargets(nodes: GraphNode[], edges: GraphEdge[]): GraphNod
 
 export async function buildRepositoryGraph(input: {
   project: string;
-  repository: string;
-  revision: string;
-  root: string;
-  role?: 'A' | 'W' | 'B';
-}): Promise<IntelligenceGraph> {
-  const createdAt = new Date().toISOString();
-  const tracked = await trackedFiles(input.root);
-  const eligible = tracked.filter(file => TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()));
-  const selected = [...eligible]
-    .sort((left, right) => {
-      const leftMeta = path.extname(left.path).toLowerCase() === '.meta' ? 1 : 0;
-      const rightMeta = path.extname(right.path).toLowerCase() === '.meta' ? 1 : 0;
-      return leftMeta - rightMeta || left.path.localeCompare(right.path);
-    })
-    .slice(0, MAX_FILES);
-  const selectedPaths = new Set(selected.map(file => file.path));
-  const warnings: string[] = [];
-  const coverageFiles: GraphCoverageFile[] = tracked
-    .filter(file => !TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()))
-    .map(file => ({ path: file.path, status: 'unsupported', reason: `unsupported extension ${path.extname(file.path).toLowerCase() || '(none)'}` }));
-  for (const file of eligible) if (!selectedPaths.has(file.path)) coverageFiles.push({ path: file.path, status: 'skipped', reason: `file limit ${MAX_FILES}` });
-  if (selected.length < eligible.length) warnings.push(`Graph file limit reached: analyzed at most ${selected.length} of ${eligible.length} eligible tracked files.`);
-
-  let skippedOversizedFiles = 0;
-  let skippedNonRegularFiles = 0;
-  let completeFiles = 0;
-  let partialFiles = 0;
-  let failedFiles = 0;
-  let nodes: GraphNode[] = [];
-  let edges: GraphEdge[] = [];
-  let evidence: EvidenceRecord[] = [];
-  const fileNodes = new Map<string, GraphNode>();
-  const sourceTexts = new Map<string, string>();
-  const trackedPaths = new Set(tracked.map(file => file.path));
-
-  for (const trackedFile of selected) {
-    const root = path.resolve(input.root);
-    const absolute = path.resolve(root, trackedFile.path);
-    if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
-      warnings.push(`Skipped tracked path outside repository root: ${trackedFile.path}`);
-      skippedNonRegularFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: 'path escapes repository root' });
-      continue;
-    }
-    let stat;
-    try {
-      stat = await fs.lstat(absolute);
-    } catch (error) {
-      failedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
-      continue;
-    }
-    if (!stat.isFile() || stat.isSymbolicLink()) {
-      warnings.push(`Skipped non-regular tracked file: ${trackedFile.path}`);
-      skippedNonRegularFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: 'non-regular file or symlink' });
-      continue;
-    }
-    if (stat.size > MAX_FILE_BYTES) {
-      skippedOversizedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: `file exceeds ${MAX_FILE_BYTES} bytes` });
-      continue;
-    }
-    const fileSource: SourceDescriptor = {
-      id: `repo:${trackedFile.path}`,
-      kind: 'repository-file',
-      locator: trackedFile.path,
-      revision: input.revision,
-      observedAt: createdAt,
-      available: true,
-    };
-    const file = fileNode(fileSource, trackedFile.path);
-    fileNodes.set(trackedFile.path, file);
-    let text: string;
-    try {
-      text = await fs.readFile(absolute, 'utf8');
-    } catch (error) {
-      failedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
-      continue;
-    }
-    if (CODE_EXTENSIONS.has(path.extname(trackedFile.path).toLowerCase())) sourceTexts.set(trackedFile.path, text);
-    const result = analyzeByTechnology({ source: fileSource, text, locatorBase: trackedFile.path });
-    nodes.push(file, ...result.observations);
-    edges.push(...result.resolutions, ...result.observations.filter(node => node.layer !== 'semantic').map(node => containsEdge(file, node, trackedFile.path)));
-    evidence.push(...(result.evidence ?? []));
-    const analyzerFailure = result.resolutions.find(edge => edge.kind === 'analysis' && edge.status === 'unresolved' && !edge.from && !edge.to);
-    if (analyzerFailure) {
-      failedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure' });
-    } else if (result.coverage?.status === 'partial') {
-      partialFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'partial', reason: result.coverage.reason ?? 'analyzer reported partial coverage' });
-    } else {
-      completeFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'complete' });
-    }
-  }
-
-  if (skippedOversizedFiles > 0) warnings.push(`Skipped ${skippedOversizedFiles} tracked files larger than ${MAX_FILE_BYTES} bytes.`);
-  if (failedFiles > 0) warnings.push(`${failedFiles} eligible tracked files failed analysis; negative/exhaustive claims must be qualified.`);
-  const repositorySource: SourceDescriptor = {
-    id: 'repository',
-    kind: 'repository',
-    locator: input.repository,
-    revision: input.revision,
-    observedAt: createdAt,
-    available: true,
-    ...(warnings.length ? { warnings } : {}),
-  };
-
-  resolveUnityGraph({
-    revision: input.revision,
-    createdAt,
-    trackedPaths,
-    nodes,
-    edges,
-    evidence,
-    fileNodes,
-  });
-  resolvePolyglotModules({ nodes, edges, fileNodes });
-
-  const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
-  nodes.push(...crossFile.nodes);
-  edges.push(...crossFile.edges);
-  addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
-  nodes.push(...ensureSemanticTargets(nodes, edges));
-  const merged = mergeNodes(nodes);
-  nodes = merged.nodes;
-  evidence = mergeEvidence(evidence);
-  edges = resolveFrameworkSpine(nodes, edges);
-  edges = dedupeEdges(resolveEvidenceSpine(nodes, resolveCrossSource(nodes, edges)));
-
-  const fingerprint = await sourceFingerprint(input.root);
-  const fingerprints = graphFingerprints(nodes, edges, evidence);
-  const skippedFileLimitFiles = Math.max(0, eligible.length - selected.length);
-  const skippedFiles = skippedOversizedFiles + skippedNonRegularFiles + skippedFileLimitFiles;
-  const coverage: GraphCoverage = {
-    trackedFiles: tracked.length,
-    eligibleFiles: eligible.length,
-    analyzedFiles: completeFiles + partialFiles,
-    completeFiles,
-    partialFiles,
-    unsupportedFiles: tracked.length - eligible.length,
-    skippedFiles,
-    failedFiles,
-    skippedOversizedFiles,
-    skippedNonRegularFiles,
-    skippedFileLimitFiles,
-    files: coverageFiles.sort((a, b) => a.path.localeCompare(b.path)),
-  };
-  return {
-    schemaVersion: 2,
-    analyzerVersion: ANALYZER_VERSION,
-    graphId: `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
-    project: input.project,
-    role: input.role ?? 'W',
-    createdAt,
-    repositoryRevision: input.revision,
-    sourceFingerprint: fingerprint,
-    topologyFingerprint: fingerprints.topologyFingerprint,
-    evidenceFingerprint: fingerprints.evidenceFingerprint,
-    sources: [repositorySource],
-    evidence,
-    nodes,
-    edges,
-    namingDivergences: deriveNamingDivergences(nodes, edges),
-    explicitValueConflicts: merged.conflicts,
-    unmatchedNodeIds: deriveUnmatched(nodes, edges),
-    unavailableSourceIds: [],
-    coverage,
-  };
-}

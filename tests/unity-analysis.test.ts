@@ -91,6 +91,10 @@ MonoBehaviour:
     assert.ok(behaviour);
     assert.ok(graph.nodes.some(node => node.id === 'file:Assets/icon.png'), 'referenced binary asset is represented without claiming it was analyzed');
     assert.ok(graph.edges.some(edge => edge.from === behaviour!.id && edge.to === 'file:Assets/Player.cs' && edge.kind === 'uses-script' && edge.status === 'resolved'));
+    const playerType = graph.nodes.find(node => node.kind === 'class' && node.name === 'Player' && node.sourceId === 'repo:Assets/Player.cs');
+    assert.ok(playerType);
+    assert.ok(graph.edges.some(edge => edge.from === 'file:Assets/Player.cs' && edge.to === 'file:Assets/Player.prefab' && edge.kind === 'used-by-unity-asset' && edge.status === 'resolved'));
+    assert.ok(graph.edges.some(edge => edge.from === playerType!.id && edge.to === 'file:Assets/Player.prefab' && edge.kind === 'used-by-unity-asset' && edge.status === 'resolved'));
     assert.ok(graph.edges.some(edge => edge.from === behaviour!.id && edge.to === 'file:Assets/icon.png' && edge.kind === 'references' && edge.status === 'resolved'));
     assert.ok(graph.edges.some(edge => edge.from === 'file:Assets/Player.cs.meta' && edge.to === 'file:Assets/Player.cs' && edge.kind === 'describes'));
     assert.ok(graph.nodes.some(node => node.sourceId === 'repo:Assets/Game.asmdef' && node.kind === 'structured-value'));
