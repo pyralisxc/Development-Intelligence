@@ -9,6 +9,74 @@ export interface RuntimeHeaderConfig {
 }
 
 export type TechnicalSourceCapability = 'query' | 'logs' | 'metrics';
+export type TechnicalSourceAdapterKind = 'generic-json' | 'deployment-state' | 'database-schema';
+
+export interface TechnicalEvidenceObservation {
+  id: string;
+  kind: string;
+  locator: string;
+  name?: string;
+  value: unknown;
+  observedAt: string;
+  sourceRevision?: string;
+}
+
+export interface TechnicalEvidenceRelationship {
+  id: string;
+  from: string;
+  to: string;
+  kind: string;
+  status: 'resolved' | 'candidate';
+  confidence: number;
+  evidence: string[];
+}
+
+export interface TechnicalEvidenceCorrelation {
+  externalId: string;
+  repositoryTarget: string;
+  kind: 'matches-revision' | 'matches-entity' | 'matches-provider';
+  status: 'resolved';
+  evidence: string[];
+}
+
+export interface TechnicalEvidenceEnvelope {
+  source: {
+    id: string;
+    label: string;
+    type: 'read-only-http';
+    adapter: TechnicalSourceAdapterKind;
+    capability: TechnicalSourceCapability;
+    endpoint: string;
+    providerId?: string;
+  };
+  snapshot: {
+    id: string | null;
+    sourceRevision: string | null;
+    observedAt: string;
+    sourceObservedAt: string | null;
+    freshness: 'fresh' | 'stale' | 'unknown';
+    ageMs: number | null;
+  };
+  availability: {
+    available: boolean;
+    httpStatus: number;
+  };
+  coverage: {
+    status: 'complete' | 'partial' | 'unavailable' | 'unknown';
+    observed: number;
+    expected: number | null;
+    reason?: string;
+  };
+  observations: TechnicalEvidenceObservation[];
+  relationships: TechnicalEvidenceRelationship[];
+  correlations: TechnicalEvidenceCorrelation[];
+  correlationStatus: {
+    attempted: boolean;
+    available: boolean;
+    error?: string;
+  };
+  raw: unknown;
+}
 
 export interface TechnicalSourceConfig {
   id: string;
@@ -16,6 +84,9 @@ export interface TechnicalSourceConfig {
   type: 'read-only-http';
   endpoint: string;
   capabilities: TechnicalSourceCapability[];
+  adapter?: TechnicalSourceAdapterKind;
+  providerId?: string;
+  freshnessMs?: number;
   headers?: RuntimeHeaderConfig[];
   timeoutMs?: number;
 }

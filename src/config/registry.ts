@@ -75,6 +75,9 @@ function validateProject(name: string, config: ProjectConfig): ProjectConfig {
       if (endpoint.username || endpoint.password) throw new Error(`${name}: technical source endpoint must not embed credentials`);
       if (!Array.isArray(source.capabilities) || !source.capabilities.length) throw new Error(`${name}: technical source ${source.id} must declare at least one capability`);
       for (const capability of source.capabilities) if (!['query', 'logs', 'metrics'].includes(capability)) throw new Error(`${name}: unsupported technical source capability: ${capability}`);
+      if (source.adapter !== undefined && !['generic-json', 'deployment-state', 'database-schema'].includes(source.adapter)) throw new Error(`${name}: unsupported technical source adapter: ${String(source.adapter)}`);
+      if (source.providerId !== undefined && (!source.providerId.trim() || !/^[A-Za-z0-9._-]+$/u.test(source.providerId))) throw new Error(`${name}: technical source providerId must use letters, numbers, dot, underscore, or dash`);
+      if (source.freshnessMs !== undefined && (!Number.isFinite(source.freshnessMs) || source.freshnessMs < 1000 || source.freshnessMs > 604_800_000)) throw new Error(`${name}: technical source ${source.id} freshnessMs must be between 1000 and 604800000`);
       validateHeaders(name, source.headers, `technical source ${source.id}`);
       if (source.timeoutMs !== undefined && (!Number.isFinite(source.timeoutMs) || source.timeoutMs < 250 || source.timeoutMs > 60_000)) {
         throw new Error(`${name}: technical source ${source.id} timeoutMs must be between 250 and 60000`);
