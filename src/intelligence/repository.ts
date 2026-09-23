@@ -998,3 +998,176 @@ function ensureSemanticTargets(nodes: GraphNode[], edges: GraphEdge[]): GraphNod
 
 export async function buildRepositoryGraph(input: {
   project: string;
+  repository: string;
+  revision: string;
+  root: string;
+  role?: 'A' | 'W' | 'B';
+}): Promise<IntelligenceGraph> {
+  const createdAt = new Date().toISOString();
+  const tracked = await trackedFiles(input.root);
+  const eligible = tracked.filter(file => TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()));
+  const selected = [...eligible]
+    .sort((left, right) => {
+      const leftMeta = path.extname(left.path).toLowerCase() === '.meta' ? 1 : 0;
+      const rightMeta = path.extname(right.path).toLowerCase() === '.meta' ? 1 : 0;
+      return leftMeta - rightMeta || left.path.localeCompare(right.path);
+    })
+    .slice(0, MAX_FILES);
+  const selectedPaths = new Set(selected.map(file => file.path));
+  const warnings: string[] = [];
+  const coverageFiles: GraphCoverageFile[] = tracked
+    .filter(file => !TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()))
+    .map(file => ({ path: file.path, status: 'unsupported', reason: `unsupported extension ${path.extname(file.path).toLowerCase() || '(none)'}` }));
+  for (const file of eligible) if (!selectedPaths.has(file.path)) coverageFiles.push({ path: file.path, status: 'skipped', reason: `file limit ${MAX_FILES}` });
+  if (selected.length < eligible.length) warnings.push(`Graph file limit reached: analyzed at most ${selected.length} of ${eligible.length} eligible tracked files.`);
+
+  let skippedOversizedFiles = 0;
+  let skippedNonRegularFiles = 0;
+  let completeFiles = 0;
+  let partialFiles = 0;
+  let failedFiles = 0;
+  let nodes: GraphNode[] = [];
+  let edges: GraphEdge[] = [];
+  let evidence: EvidenceRecord[] = [];
+  const fileNodes = new Map<string, GraphNode>();
+  const sourceTexts = new Map<string, string>();
+  const trackedPaths = new Set(tracked.map(file => file.path));
+
+  for (const trackedFile of selected) {
+    const root = path.resolve(input.root);
+    const absolute = path.resolve(root, trackedFile.path);
+    if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
+      warnings.push(`Skipped tracked path outside repository root: ${trackedFile.path}`);
+      skippedNonRegularFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: 'path escapes repository root' });
+      continue;
+    }
+    let stat;
+    try {
+      stat = await fs.lstat(absolute);
+    } catch (error) {
+      failedFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      warnings.push(`Skipped non-regular tracked file: ${trackedFile.path}`);
+      skippedNonRegularFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: 'non-regular file or symlink' });
+      continue;
+    }
+    if (stat.size > MAX_FILE_BYTES) {
+      skippedOversizedFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: `file exceeds ${MAX_FILE_BYTES} bytes` });
+      continue;
+    }
+    const fileSource: SourceDescriptor = {
+      id: `repo:${trackedFile.path}`,
+      kind: 'repository-file',
+      locator: trackedFile.path,
+      revision: input.revision,
+      observedAt: createdAt,
+      available: true,
+    };
+    const file = fileNode(fileSource, trackedFile.path);
+    fileNodes.set(trackedFile.path, file);
+    let text: string;
+    try {
+      text = await fs.readFile(absolute, 'utf8');
+    } catch (error) {
+      failedFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    if (CODE_EXTENSIONS.has(path.extname(trackedFile.path).toLowerCase())) sourceTexts.set(trackedFile.path, text);
+    const result = analyzeByTechnology({ source: fileSource, text, locatorBase: trackedFile.path });
+    nodes.push(file, ...result.observations);
+    edges.push(...result.resolutions, ...result.observations.filter(node => node.layer !== 'semantic').map(node => containsEdge(file, node, trackedFile.path)));
+    evidence.push(...(result.evidence ?? []));
+    const analyzerFailure = result.resolutions.find(edge => edge.kind === 'analysis' && edge.status === 'unresolved' && !edge.from && !edge.to);
+    if (analyzerFailure) {
+      failedFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure' });
+    } else if (result.coverage?.status === 'partial') {
+      partialFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'partial', reason: result.coverage.reason ?? 'analyzer reported partial coverage' });
+    } else {
+      completeFiles += 1;
+      coverageFiles.push({ path: trackedFile.path, status: 'complete' });
+    }
+  }
+
+  if (skippedOversizedFiles > 0) warnings.push(`Skipped ${skippedOversizedFiles} tracked files larger than ${MAX_FILE_BYTES} bytes.`);
+  if (failedFiles > 0) warnings.push(`${failedFiles} eligible tracked files failed analysis; negative/exhaustive claims must be qualified.`);
+  const repositorySource: SourceDescriptor = {
+    id: 'repository',
+    kind: 'repository',
+    locator: input.repository,
+    revision: input.revision,
+    observedAt: createdAt,
+    available: true,
+    ...(warnings.length ? { warnings } : {}),
+  };
+
+  resolveUnityGraph({
+    revision: input.revision,
+    createdAt,
+    trackedPaths,
+    nodes,
+    edges,
+    evidence,
+    fileNodes,
+  });
+  resolvePolyglotModules({ nodes, edges, fileNodes });
+
+  const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
+  nodes.push(...crossFile.nodes);
+  edges.push(...crossFile.edges);
+  addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
+  nodes.push(...ensureSemanticTargets(nodes, edges));
+  const merged = mergeNodes(nodes);
+  nodes = merged.nodes;
+  evidence = mergeEvidence(evidence);
+  edges = resolveFrameworkSpine(nodes, edges);
+  edges = dedupeEdges(resolveEvidenceSpine(nodes, resolveCrossSource(nodes, edges)));
+
+  const fingerprint = await sourceFingerprint(input.root);
+  const fingerprints = graphFingerprints(nodes, edges, evidence);
+  const skippedFileLimitFiles = Math.max(0, eligible.length - selected.length);
+  const skippedFiles = skippedOversizedFiles + skippedNonRegularFiles + skippedFileLimitFiles;
+  const coverage: GraphCoverage = {
+    trackedFiles: tracked.length,
+    eligibleFiles: eligible.length,
+    analyzedFiles: completeFiles + partialFiles,
+    completeFiles,
+    partialFiles,
+    unsupportedFiles: tracked.length - eligible.length,
+    skippedFiles,
+    failedFiles,
+    skippedOversizedFiles,
+    skippedNonRegularFiles,
+    skippedFileLimitFiles,
+    files: coverageFiles.sort((a, b) => a.path.localeCompare(b.path)),
+  };
+  return {
+    schemaVersion: 2,
+    analyzerVersion: ANALYZER_VERSION,
+    graphId: `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
+    project: input.project,
+    role: input.role ?? 'W',
+    createdAt,
+    repositoryRevision: input.revision,
+    sourceFingerprint: fingerprint,
+    topologyFingerprint: fingerprints.topologyFingerprint,
+    evidenceFingerprint: fingerprints.evidenceFingerprint,
+    sources: [repositorySource],
+    evidence,
+    nodes,
+    edges,
+    namingDivergences: deriveNamingDivergences(nodes, edges),
+    explicitValueConflicts: merged.conflicts,
+    unmatchedNodeIds: deriveUnmatched(nodes, edges),
+    unavailableSourceIds: [],
+    coverage,
+  };
+}
