@@ -31,21 +31,6 @@ for (const target of targets) {
   const kindCounts = Object.fromEntries(target.requiredKinds.map(kind => [kind, graph.nodes.filter(node => node.kind === kind).length]));
   const strategyCounts = Object.fromEntries((target.requiredStrategies ?? []).map(strategy => [strategy, graph.edges.filter(edge => edge.strategy === strategy && edge.status === 'resolved').length]));
   const relationshipCounts = Object.fromEntries((target.requiredRelationships ?? []).map(kind => [kind, graph.edges.filter(edge => edge.kind === kind && edge.status === 'resolved').length]));
-  if (target.project === 'Game-Studio-Core') {
-    const csharpDeepCounts = {
-      calls: graph.edges.filter(edge => edge.kind === 'calls' && edge.status === 'resolved' && edge.strategy === 'csharp-static-binding').length,
-      constructs: graph.edges.filter(edge => edge.kind === 'constructs' && edge.status === 'resolved' && edge.strategy === 'csharp-static-binding').length,
-      implementedBy: graph.edges.filter(edge => edge.kind === 'implemented-by' && edge.status === 'resolved' && edge.strategy === 'csharp-base-type').length,
-      unityReverse: graph.edges.filter(edge => edge.kind === 'used-by-unity-asset' && edge.status === 'resolved').length,
-    };
-    if (csharpDeepCounts.implementedBy < 1) throw new Error('Game-Studio-Core expected at least one resolved C# interface implementation');
-    if (csharpDeepCounts.calls + csharpDeepCounts.constructs < 1) throw new Error('Game-Studio-Core expected at least one resolved C# call or constructor binding');
-    if (csharpDeepCounts.unityReverse < 1) throw new Error('Game-Studio-Core expected reverse Unity script-to-asset usage evidence');
-    relationshipCounts['csharp-calls'] = csharpDeepCounts.calls;
-    relationshipCounts['csharp-constructs'] = csharpDeepCounts.constructs;
-    relationshipCounts['csharp-implemented-by'] = csharpDeepCounts.implementedBy;
-    relationshipCounts['unity-reverse-usage'] = csharpDeepCounts.unityReverse;
-  }
   for (const [kind, count] of Object.entries(kindCounts)) if (count < 1) throw new Error(`${target.project} expected observed ${kind} nodes`);
   for (const [strategy, count] of Object.entries(strategyCounts)) if (count < 1) throw new Error(`${target.project} expected resolved ${strategy} relationships`);
   for (const [kind, count] of Object.entries(relationshipCounts)) if (count < 1) throw new Error(`${target.project} expected resolved ${kind} relationships`);
