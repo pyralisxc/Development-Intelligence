@@ -2,16 +2,60 @@
   "ExampleProject": {
     "repository": "https://github.com/example/example-project.git",
     "defaultRef": "refs/heads/main",
-    "allowedRefs": ["refs/heads/main"],
+    "allowedRefs": [
+      "refs/heads/main"
+    ],
     "revisionPolicy": "allowlisted",
     "credential": {
       "type": "token-env",
       "tokenEnv": "EXAMPLE_GITHUB_TOKEN",
       "username": "x-access-token"
     },
-    "runtimeOrigins": ["https://example.com"],
+    "runtimeOrigins": [
+      "https://example.com"
+    ],
     "runtimeHeaders": [
-      { "name": "Authorization", "valueEnv": "EXAMPLE_RUNTIME_AUTHORIZATION" }
+      {
+        "name": "Authorization",
+        "valueEnv": "EXAMPLE_RUNTIME_AUTHORIZATION"
+      }
+    ],
+    "technicalSources": [
+      {
+        "id": "deployment",
+        "label": "Deployment state",
+        "type": "read-only-http",
+        "adapter": "deployment-state",
+        "providerId": "vercel",
+        "endpoint": "https://provider.example.com/deployments",
+        "capabilities": [
+          "query"
+        ],
+        "freshnessMs": 60000,
+        "headers": [
+          {
+            "name": "Authorization",
+            "valueEnv": "EXAMPLE_PROVIDER_AUTHORIZATION"
+          }
+        ]
+      },
+      {
+        "id": "database",
+        "label": "Database schema",
+        "type": "read-only-http",
+        "adapter": "database-schema",
+        "endpoint": "https://database.example.com/schema",
+        "capabilities": [
+          "query"
+        ],
+        "freshnessMs": 300000,
+        "headers": [
+          {
+            "name": "Authorization",
+            "valueEnv": "EXAMPLE_DATABASE_AUTHORIZATION"
+          }
+        ]
+      }
     ]
   }
 }
