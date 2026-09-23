@@ -85,7 +85,7 @@ As of release **v2.9.0**, the production service at `https://devint.cardforges.c
 - shared Claim/Proof, Capability Realization, and audit-finding projections through `query_intelligence` and the Workbench, without creating a second graph authority;
 - TypeScript/JavaScript, C#, Java, Python, CSS, structured-text, and Unity serialized/configuration analysis at the precision disclosed by `get_graph_schema`;
 - optional source-adjacent generic semantic declarations;
-- allowlisted runtime observations and generic bounded read-only HTTP technical sources;
+- allowlisted runtime observations and generic bounded read-only HTTP technical sources, with provider-neutral normalized external evidence for generic JSON, deployment state, and database schema responses;
 - dynamic inspection of authorized GitHub-owner repositories plus explicitly configured projects;
 - private owner access, machine bearer access, and hosted OAuth with shared one-time authorization-code state where horizontal scaling requires it;
 - stateless reconstruction of canonical source graphs from full immutable Git SHAs, while runtime-overlay snapshots remain ephemeral;

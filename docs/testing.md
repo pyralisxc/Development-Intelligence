@@ -119,6 +119,11 @@ Generic technical sources are operational access only, not semantic configuratio
 - queries are GET-only, bounded by timeout/response-size/result-limit rules;
 - redirects are rejected;
 - query results remain observations/evidence and are not automatically sealed into accepted topology.
+- normalized evidence preserves the raw bounded source response alongside typed source/snapshot/freshness/availability/coverage metadata;
+- deployment-state and database-schema fixtures prove materially different source shapes through the same contract;
+- repository correlations require exact identifiers: revision equality, one unique SQL table, or one exact provider id;
+- stale/unknown freshness and unavailable correlation remain visible rather than becoming false negatives;
+- adapters remain projections over provider-owned facts and never become graph lifecycle authorities.
 
 ### Native private access
 

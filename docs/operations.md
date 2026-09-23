@@ -80,10 +80,17 @@ Each source declares:
 - `type`: `read-only-http`;
 - HTTPS `endpoint`;
 - one or more capabilities: `query`, `logs`, or `metrics`;
+- optional evidence adapter: `generic-json`, `deployment-state`, or `database-schema`;
+- optional exact technical `providerId` used only for exact provider-node correlation;
+- optional `freshnessMs` expectation for classifying source-reported timestamps;
 - optional environment-backed request headers;
 - optional timeout.
 
-DI issues bounded GET requests using query/capability/limit parameters. Credentials remain server-side. Source results are read-only observations/evidence and do not automatically become accepted semantic topology.
+DI issues bounded GET requests using query/capability/limit parameters. Credentials remain server-side. The raw bounded provider payload is preserved, while the adapter additionally projects a provider-neutral evidence envelope containing source identity, snapshot/revision identity when observed, freshness, availability, coverage, typed observations, typed external relationships, and exact repository correlations.
+
+The deployment adapter may correlate an externally reported Git SHA only when it exactly equals the inspected repository revision. The database-schema adapter may correlate a table only when it uniquely matches one observed repository `sql-table`. A configured provider id may correlate only to the exact `provider:<id>` node. Ambiguous or unavailable evidence is not promoted to resolved correlation.
+
+These normalized results are read-only investigation evidence. Provider state remains authoritative for provider facts, raw provider data remains inspectable, and neither raw nor normalized external evidence automatically changes accepted semantic topology or graph lifecycle.
 
 Technical-source configuration is operational access, not semantic project configuration.
 
