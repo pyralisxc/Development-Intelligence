@@ -1,9 +1,12 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { assessGraph } from '../dist/src/intelligence/assessment.js';
 import { synthesizeRepositoryAudit } from '../dist/src/intelligence/repositoryAudit.js';
+import { verifyTransition } from '../dist/src/intelligence/temporalVerification.js';
 
 const targets = [
   {
@@ -21,6 +24,28 @@ const targets = [
     requiredRelationships: ['imports', 'resolves_to'],
   },
 ];
+
+function ensureParentSha(root, sha) {
+  try {
+    return execFileSync('git', ['-C', root, 'rev-parse', `${sha}^`], { encoding: 'utf8' }).trim();
+  } catch {
+    execFileSync('git', ['-C', root, 'fetch', '--no-tags', '--depth=2', 'origin', sha], { stdio: 'inherit' });
+    return execFileSync('git', ['-C', root, 'rev-parse', `${sha}^`], { encoding: 'utf8' }).trim();
+  }
+}
+
+const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-polyglot-temporal-'));
+const configPath = path.join(temp, 'projects.json');
+for (const target of targets) execFileSync('git', ['-C', target.root, 'update-ref', 'refs/heads/devint-benchmark', target.expectedSha]);
+await fs.writeFile(configPath, JSON.stringify(Object.fromEntries(targets.map(target => [target.project, {
+  repository: pathToFileURL(path.join(target.root, '.git')).href,
+  defaultRef: 'refs/heads/devint-benchmark',
+  allowedRefs: ['refs/heads/devint-benchmark'],
+  revisionPolicy: 'repository-history',
+  credential: { type: 'none' },
+}])), null, 2));
+process.env.DEVINT_PROJECTS_FILE = configPath;
+process.env.DEVINT_SCRATCH_DIR = path.join(temp, 'scratch');
 
 const reports = [];
 for (const target of targets) {
@@ -62,6 +87,31 @@ for (const target of targets) {
     const unresolvedScript = repositoryAudit.relationshipConcentrations.find(item => item.status === 'unresolved' && item.kind === 'uses-script');
     if (!unresolvedScript?.fixSurface?.paths?.length) throw new Error('Game-Studio-Core unresolved uses-script audit target must expose a source fix surface');
   }
+  let temporalVerification = null;
+  if (target.project === 'Game-Studio-Core') {
+    const parentSha = ensureParentSha(target.root, actualSha);
+    const temporalStarted = process.hrtime.bigint();
+    const temporal = await verifyTransition({
+      project: target.project,
+      baseRef: `commit:${parentSha}`,
+      ref: `commit:${actualSha}`,
+      limit: 20,
+      depth: 2,
+    });
+    const temporalElapsedMs = Number(process.hrtime.bigint() - temporalStarted) / 1_000_000;
+    if (temporal.base?.identity?.sha !== parentSha || temporal.head?.identity?.sha !== actualSha) throw new Error('Game-Studio-Core temporal verification lost exact endpoint identity');
+    if (Number(temporal.delta?.changedFileCount ?? 0) < 1) throw new Error('Game-Studio-Core parent→pinned temporal verification expected changed files');
+    if (!Array.isArray(temporal.reviewSurface?.changedFiles) || temporal.reviewSurface.changedFiles.length > 20) throw new Error('Game-Studio-Core temporal review surface must remain bounded');
+    if (temporal.policy?.persisted !== false || temporal.policy?.approvesMerge !== false) throw new Error('Game-Studio-Core temporal verification must remain ephemeral and non-approving');
+    temporalVerification = {
+      elapsedMs: Number(temporalElapsedMs.toFixed(3)),
+      baseSha: parentSha,
+      headSha: actualSha,
+      changedFileCount: temporal.delta.changedFileCount,
+      unexpectedTotal: temporal.unexpectedChanges.total,
+    };
+  }
+
   let orientationProbe = null;
   if (target.project === 'Game-Studio-Core') {
     const bootstrap = graph.nodes.find(node => node.kind === 'class' && node.name === 'GameplaySessionBootstrap');
@@ -174,6 +224,7 @@ for (const target of targets) {
     kindCounts,
     strategyCounts,
     relationshipCounts,
+    temporalVerification,
     repositoryAudit: { elapsedMs: Number(auditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers, architectureBoundaryCount: repositoryAudit.architectureBoundaries.length },
     orientationProbe,
   });
@@ -192,6 +243,7 @@ const summary = [
     `## ${item.project} evidence`,
     '',
     ...Object.entries({ ...item.kindCounts, ...item.strategyCounts, ...item.relationshipCounts }).map(([name, count]) => `- ${name}: **${count}**`),
+    ...(item.temporalVerification ? [`- parent→pinned temporal verification: **${item.temporalVerification.elapsedMs} ms — ${item.temporalVerification.changedFileCount} changed files / ${item.temporalVerification.unexpectedTotal} unexpected graph changes**`] : []),
     `- repository audit: **${item.repositoryAudit.elapsedMs} ms** — ${item.repositoryAudit.findingTotal} deterministic findings / ${item.repositoryAudit.targetCount} bounded investigation target(s)`,
     ...(item.orientationProbe ? [
       `- orientation known query: **${item.orientationProbe.known.elapsedMs} ms** — ${item.orientationProbe.known.answerStatus}, ${item.orientationProbe.known.analyzerTechnology}/${item.orientationProbe.known.analyzerDepth}, ${item.orientationProbe.known.disambiguatingEvidenceCount} disambiguating-evidence hint(s)`,
@@ -207,3 +259,5 @@ const summary = [
 const markdownPath = process.env.DEVINT_PORTFOLIO_MARKDOWN ?? path.resolve('benchmark-polyglot-portfolio.md');
 await fs.writeFile(markdownPath, `${summary}\n`);
 console.log(summary);
+
+await fs.rm(temp, { recursive: true, force: true });

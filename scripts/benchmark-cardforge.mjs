@@ -9,6 +9,16 @@ const expectedSha = process.env.CARDFORGE_BENCHMARK_SHA ?? '6d6788cf87dd37d7685d
 const actualSha = execFileSync('git', ['-C', cardForgeRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 if (actualSha !== expectedSha) throw new Error(`CardForge benchmark SHA mismatch: expected ${expectedSha}, got ${actualSha}`);
 
+function ensureParentSha(root, sha) {
+  try {
+    return execFileSync('git', ['-C', root, 'rev-parse', `${sha}^`], { encoding: 'utf8' }).trim();
+  } catch {
+    execFileSync('git', ['-C', root, 'fetch', '--no-tags', '--depth=2', 'origin', sha], { stdio: 'inherit' });
+    return execFileSync('git', ['-C', root, 'rev-parse', `${sha}^`], { encoding: 'utf8' }).trim();
+  }
+}
+const temporalParentSha = ensureParentSha(cardForgeRoot, actualSha);
+
 execFileSync('git', ['-C', cardForgeRoot, 'update-ref', 'refs/heads/devint-benchmark', actualSha]);
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-cardforge-benchmark-'));
 const configPath = path.join(temp, 'projects.json');
@@ -18,6 +28,7 @@ await fs.writeFile(configPath, JSON.stringify({
     repository: localRepository,
     defaultRef: 'refs/heads/devint-benchmark',
     allowedRefs: ['refs/heads/devint-benchmark'],
+    revisionPolicy: 'repository-history',
     credential: { type: 'none' },
   },
 }, null, 2));
@@ -38,6 +49,19 @@ const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
 const started = Date.now();
 const scan = await callTool('scan_graph', { project, ref });
+const temporalStarted = process.hrtime.bigint();
+const temporalVerification = await callTool('verify_transition', {
+  project,
+  baseRef: `commit:${temporalParentSha}`,
+  ref: `commit:${actualSha}`,
+  limit: 20,
+  depth: 2,
+});
+const temporalElapsedMs = Number(process.hrtime.bigint() - temporalStarted) / 1_000_000;
+if (temporalVerification.base?.identity?.sha !== temporalParentSha || temporalVerification.head?.identity?.sha !== actualSha) throw new Error('CardForge temporal verification lost exact endpoint identity');
+if (Number(temporalVerification.delta?.changedFileCount ?? 0) < 1) throw new Error('CardForge parent→pinned temporal verification expected changed files');
+if (!Array.isArray(temporalVerification.reviewSurface?.changedFiles) || temporalVerification.reviewSurface.changedFiles.length > 20) throw new Error('CardForge temporal review surface must remain bounded');
+if (temporalVerification.policy?.persisted !== false || temporalVerification.policy?.approvesMerge !== false) throw new Error('CardForge temporal verification must remain ephemeral and non-approving');
 const architecture = await callTool('get_architecture', { project, ref });
 const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
@@ -235,6 +259,13 @@ const report = {
     candidateRelationships: semanticEdges.filter(edge => edge.status === 'candidate').length,
     unresolvedRelationships: semanticEdges.filter(edge => edge.status === 'unresolved').length,
   },
+  temporalVerification: {
+    elapsedMs: Number(temporalElapsedMs.toFixed(3)),
+    baseSha: temporalParentSha,
+    headSha: actualSha,
+    changedFileCount: temporalVerification.delta.changedFileCount,
+    unexpectedTotal: temporalVerification.unexpectedChanges.total,
+  },
   portfolio: {
     elapsedMs: Number(portfolioElapsedMs.toFixed(3)),
     portfolioId: portfolio.portfolioId,
@@ -287,6 +318,7 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
+  `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Warm exact-graph project overview: **${warmOverviewMaxMs.toFixed(3)} ms max across 3 reads / 1000 ms budget**`,
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
