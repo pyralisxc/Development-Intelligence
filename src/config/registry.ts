@@ -71,7 +71,7 @@ function validateProject(name: string, config: ProjectConfig): ProjectConfig {
       ids.add(source.id);
       if (source.type !== 'read-only-http') throw new Error(`${name}: unsupported technical source type: ${String((source as any).type)}`);
       const endpoint = new URL(source.endpoint);
-      if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error(`${name}: technical source endpoint must be HTTP(S)`);
+      if (endpoint.protocol !== 'https:') throw new Error(`${name}: technical source endpoint must use HTTPS`);
       if (endpoint.username || endpoint.password) throw new Error(`${name}: technical source endpoint must not embed credentials`);
       if (!Array.isArray(source.capabilities) || !source.capabilities.length) throw new Error(`${name}: technical source ${source.id} must declare at least one capability`);
       for (const capability of source.capabilities) if (!['query', 'logs', 'metrics'].includes(capability)) throw new Error(`${name}: unsupported technical source capability: ${capability}`);
