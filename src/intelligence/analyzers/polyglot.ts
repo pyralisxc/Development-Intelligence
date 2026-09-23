@@ -239,9 +239,6 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
         qualifiedName,
         ...(signature ? { signature } : {}),
         ...(memberScope ? { memberScope } : {}),
-        ...(language === 'csharp' && ['class', 'interface', 'struct', 'record'].includes(declaration.kind) && csharpBaseTypes(node).length
-          ? { baseTypes: csharpBaseTypes(node) }
-          : {}),
       },
       tags: [language, 'tree-sitter'],
       layer: 'structural',
