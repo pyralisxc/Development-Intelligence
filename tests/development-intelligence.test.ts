@@ -356,6 +356,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'get_evidence',
     'diff_graph',
     'analyze_impact',
+    'verify_transition',
     'query_parity',
     'evaluate_parity',
   ]);
@@ -375,6 +376,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('inspect_portfolio')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('trace_portfolio')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('trace_portfolio')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('verify_transition')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
 });
 
