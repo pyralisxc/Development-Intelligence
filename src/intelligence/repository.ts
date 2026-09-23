@@ -340,6 +340,17 @@ function resolveUnityGraph(input: {
 interface PolyglotSymbolValue {
   language: 'csharp' | 'java' | 'python';
   qualifiedName?: string;
+  signature?: string;
+  baseTypes?: string[];
+}
+
+interface CSharpReferenceValue {
+  language: 'csharp';
+  referenceKind: 'call' | 'constructor';
+  targetName: string;
+  qualifier?: string | null;
+  arity?: number | null;
+  ownerQualifiedName?: string | null;
 }
 
 interface PolyglotImportValue {
@@ -356,6 +367,14 @@ function polyglotSymbolValue(value: unknown): value is PolyglotSymbolValue {
   const candidate = value as Record<string, unknown>;
   return ['csharp', 'java', 'python'].includes(String(candidate.language))
     && (candidate.qualifiedName === undefined || typeof candidate.qualifiedName === 'string');
+}
+
+function csharpReferenceValue(value: unknown): value is CSharpReferenceValue {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.language === 'csharp'
+    && ['call', 'constructor'].includes(String(candidate.referenceKind))
+    && typeof candidate.targetName === 'string';
 }
 
 function polyglotImportValue(value: unknown): value is PolyglotImportValue {
@@ -589,6 +608,273 @@ function resolvePolyglotModules(input: {
       checkpoint: false,
     }));
   }
+}
+
+function resolveCSharpReferences(input: {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}): void {
+  const typesByShort = new Map<string, GraphNode[]>();
+  const typesByQualified = new Map<string, GraphNode[]>();
+  const membersByOwner = new Map<string, GraphNode[]>();
+  const namespaceImportsByFile = new Map<string, string[]>();
+  const aliasesByFile = new Map<string, Map<string, GraphNode>>();
+
+  for (const node of input.nodes) {
+    if (!node.sourceId.startsWith('repo:') || !polyglotSymbolValue(node.value) || node.value.language !== 'csharp') continue;
+    const value = node.value as PolyglotSymbolValue;
+    if (!value.qualifiedName) continue;
+
+    if (node.name && ['class', 'interface', 'struct', 'record'].includes(node.kind)) {
+      const short = typesByShort.get(node.name) ?? [];
+      short.push(node);
+      typesByShort.set(node.name, short);
+
+      const exact = typesByQualified.get(value.qualifiedName) ?? [];
+      exact.push(node);
+      typesByQualified.set(value.qualifiedName, exact);
+    }
+
+    if (['method', 'constructor', 'property', 'field'].includes(node.kind)) {
+      const owner = value.qualifiedName.split('.').slice(0, -1).join('.');
+      const members = membersByOwner.get(owner) ?? [];
+      members.push(node);
+      membersByOwner.set(owner, members);
+    }
+  }
+
+  for (const binding of input.nodes.filter(node => node.kind === 'import-binding' && polyglotImportValue(node.value))) {
+    const value = binding.value as PolyglotImportValue;
+    if (value.language !== 'csharp' || !binding.sourceId.startsWith('repo:')) continue;
+    const file = binding.sourceId.slice('repo:'.length);
+
+    if (value.mode === 'namespace') {
+      const namespaces = namespaceImportsByFile.get(file) ?? [];
+      namespaces.push(value.module);
+      namespaceImportsByFile.set(file, [...new Set(namespaces)].sort());
+    } else if (value.mode === 'symbol') {
+      const resolved = input.edges.find(edge => edge.from === binding.id && edge.kind === 'resolves_to' && edge.status === 'resolved' && edge.to);
+      const target = resolved?.to ? input.nodes.find(node => node.id === resolved.to) : null;
+      if (target) {
+        const aliases = aliasesByFile.get(file) ?? new Map<string, GraphNode>();
+        aliases.set(value.local, target);
+        aliasesByFile.set(file, aliases);
+      }
+    }
+  }
+
+  const normalizeType = (raw: string): string => raw.replace(/^global::/u, '').replace(/<.*>$/u, '').trim();
+
+  const typeCandidates = (file: string, raw: string, ownerQualifiedName?: string | null): GraphNode[] => {
+    const normalized = normalizeType(raw);
+
+    const alias = aliasesByFile.get(file)?.get(normalized);
+    if (alias) return [alias];
+
+    const exact = typesByQualified.get(normalized) ?? [];
+    if (exact.length) return exact;
+    if (normalized.includes('.')) return [];
+
+    const ownerType = ownerQualifiedName?.split('.').slice(0, -1).join('.') ?? '';
+    const ownerNamespace = ownerType ? ownerType.split('.').slice(0, -1).join('.') : '';
+    const local = ownerNamespace ? typesByQualified.get(`${ownerNamespace}.${normalized}`) ?? [] : [];
+    if (local.length) return local;
+
+    const imported = (namespaceImportsByFile.get(file) ?? [])
+      .flatMap(namespace => typesByQualified.get(`${namespace}.${normalized}`) ?? []);
+    if (imported.length) return imported;
+
+    return typesByShort.get(normalized) ?? [];
+  };
+
+  const arityOf = (node: GraphNode): number | null => {
+    const value = node.value as PolyglotSymbolValue;
+    if (!value.signature) return null;
+    const body = /^\((.*)\)$/u.exec(value.signature)?.[1] ?? '';
+    return body ? body.split(',').length : 0;
+  };
+
+  for (const type of input.nodes.filter(node =>
+    node.sourceId.startsWith('repo:')
+    && ['class', 'struct', 'record'].includes(node.kind)
+    && polyglotSymbolValue(node.value)
+    && node.value.language === 'csharp'
+  )) {
+    const value = type.value as PolyglotSymbolValue;
+    const file = type.sourceId.slice('repo:'.length);
+
+    for (const base of value.baseTypes ?? []) {
+      const candidates = typeCandidates(file, base, value.qualifiedName)
+        .filter(candidate => candidate.kind === 'interface');
+
+      if (candidates.length === 1) {
+        input.edges.push(resolution({
+          from: candidates[0]!.id,
+          to: type.id,
+          kind: 'implemented-by',
+          strategy: 'csharp-base-type',
+          confidence: 1,
+          status: 'resolved',
+          evidence: [type.locator, `base type ${base}`],
+          layer: 'structural',
+          checkpoint: false,
+        }));
+      }
+    }
+  }
+
+  for (const reference of input.nodes.filter(node =>
+    ['call-reference', 'constructor-reference'].includes(node.kind)
+    && csharpReferenceValue(node.value)
+  )) {
+    if (!reference.sourceId.startsWith('repo:')) continue;
+
+    const file = reference.sourceId.slice('repo:'.length);
+    const value = reference.value as CSharpReferenceValue;
+    const owner = input.edges.find(edge =>
+      edge.to === reference.id
+      && edge.kind === 'invokes'
+      && edge.status === 'resolved'
+      && edge.from
+    )?.from ?? null;
+
+    let candidates: GraphNode[] = [];
+
+    if (value.referenceKind === 'constructor') {
+      const types = typeCandidates(file, value.targetName, value.ownerQualifiedName);
+      if (types.length === 1) {
+        const typeValue = types[0]!.value as PolyglotSymbolValue;
+        const constructors = (membersByOwner.get(typeValue.qualifiedName ?? '') ?? [])
+          .filter(member => member.kind === 'constructor');
+        const arityMatched = value.arity == null
+          ? constructors
+          : constructors.filter(member => arityOf(member) === value.arity);
+
+        candidates = arityMatched.length
+          ? arityMatched
+          : constructors.length
+            ? constructors
+            : [types[0]!];
+      }
+    } else if (value.qualifier !== 'base') {
+      const ownerType = value.ownerQualifiedName?.split('.').slice(0, -1).join('.') ?? null;
+      const qualifier = value.qualifier && value.qualifier !== 'this' ? value.qualifier : null;
+      const types = qualifier
+        ? typeCandidates(file, qualifier, value.ownerQualifiedName)
+        : ownerType
+          ? typesByQualified.get(ownerType) ?? []
+          : [];
+
+      if (types.length === 1) {
+        const typeValue = types[0]!.value as PolyglotSymbolValue;
+        const members = (membersByOwner.get(typeValue.qualifiedName ?? '') ?? [])
+          .filter(member => member.kind === 'method' && member.name === value.targetName);
+
+        candidates = value.arity == null
+          ? members
+          : members.filter(member => arityOf(member) === value.arity);
+      }
+    }
+
+    if (candidates.length === 1) {
+      input.edges.push(resolution({
+        from: reference.id,
+        to: candidates[0]!.id,
+        kind: 'resolves_to',
+        strategy: 'csharp-static-binding',
+        confidence: 1,
+        status: 'resolved',
+        evidence: [reference.locator],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+
+      if (owner && owner !== candidates[0]!.id) {
+        input.edges.push(resolution({
+          from: owner,
+          to: candidates[0]!.id,
+          kind: value.referenceKind === 'constructor' ? 'constructs' : 'calls',
+          strategy: 'csharp-static-binding',
+          confidence: 1,
+          status: 'resolved',
+          evidence: [reference.locator],
+          layer: 'structural',
+          checkpoint: false,
+        }));
+      }
+    } else if (candidates.length > 1) {
+      input.edges.push(resolution({
+        from: reference.id,
+        to: null,
+        kind: 'resolves_to',
+        strategy: 'csharp-static-binding',
+        confidence: null,
+        status: 'unresolved',
+        evidence: [reference.locator, `ambiguous C# reference has ${candidates.length} matching declarations`],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+    }
+  }
+}
+
+function resolveUnityReverseUsage(input: {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  fileNodes: Map<string, GraphNode>;
+}): void {
+  const additions: GraphEdge[] = [];
+
+  for (const edge of input.edges) {
+    if (edge.kind !== 'uses-script' || edge.status !== 'resolved' || !edge.from || !edge.to || !edge.to.startsWith('file:')) continue;
+
+    const scriptPath = edge.to.slice('file:'.length);
+    const source = input.nodes.find(node => node.id === edge.from);
+    const assetPath = source?.sourceId.startsWith('repo:')
+      ? source.sourceId.slice('repo:'.length)
+      : null;
+
+    const assetFile = assetPath ? input.fileNodes.get(assetPath) : null;
+    const scriptFile = input.fileNodes.get(scriptPath);
+    if (!assetFile || !scriptFile || assetFile.id === scriptFile.id) continue;
+
+    additions.push(resolution({
+      from: scriptFile.id,
+      to: assetFile.id,
+      kind: 'used-by-unity-asset',
+      strategy: 'unity-guid-reverse',
+      confidence: 1,
+      status: 'resolved',
+      evidence: edge.evidence,
+      evidenceIds: edge.evidenceIds ?? [],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+
+    const stem = path.basename(scriptPath, path.extname(scriptPath));
+    const primaryTypes = input.nodes.filter(node =>
+      node.sourceId === `repo:${scriptPath}`
+      && node.kind === 'class'
+      && node.name === stem
+    );
+
+    if (primaryTypes.length === 1) {
+      additions.push(resolution({
+        from: primaryTypes[0]!.id,
+        to: assetFile.id,
+        kind: 'used-by-unity-asset',
+        strategy: 'unity-guid-reverse',
+        confidence: 1,
+        status: 'resolved',
+        evidence: edge.evidence,
+        evidenceIds: edge.evidenceIds ?? [],
+        layer: 'structural',
+        checkpoint: false,
+      }));
+    }
+  }
+
+  input.edges.push(...additions);
 }
 
 function featureForFile(relative: string): string | null {
@@ -1119,6 +1405,8 @@ export async function buildRepositoryGraph(input: {
     fileNodes,
   });
   resolvePolyglotModules({ nodes, edges, fileNodes });
+  resolveCSharpReferences({ nodes, edges });
+  resolveUnityReverseUsage({ nodes, edges, fileNodes });
 
   const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
   nodes.push(...crossFile.nodes);
