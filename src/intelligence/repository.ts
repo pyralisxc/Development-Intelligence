@@ -319,7 +319,7 @@ function resolveUnityGraph(input: {
     const reference = record.value;
     const targets = (guidTargets.get(reference.guid) ?? []).filter(target => target.node);
     const target = targets.length === 1 ? targets[0]! : null;
-    const resolvedEdge = resolution({
+    input.edges.push(resolution({
       from: reference.from,
       to: target?.node?.id ?? null,
       kind: reference.relationship,
@@ -333,59 +333,13 @@ function resolveUnityGraph(input: {
       evidenceIds: [record.id, ...(target ? [target.record.id] : [])],
       layer: 'structural',
       checkpoint: false,
-    });
-    input.edges.push(resolvedEdge);
-    if (target?.node && reference.relationship === 'uses-script') {
-      const sourceNode = input.nodes.find(node => node.id === reference.from);
-      const assetPath = sourceNode?.sourceId.startsWith('repo:') ? sourceNode.sourceId.slice('repo:'.length) : null;
-      const assetFile = assetPath ? input.fileNodes.get(assetPath) : null;
-      if (assetFile) {
-        input.edges.push(resolution({
-          from: target.node.id,
-          to: assetFile.id,
-          kind: 'used-by-unity-asset',
-          strategy: 'unity-guid-reverse',
-          confidence: 1,
-          status: 'resolved',
-          evidence: resolvedEdge.evidence,
-          evidenceIds: resolvedEdge.evidenceIds ?? [],
-          layer: 'structural',
-          checkpoint: false,
-        }));
-        const sourcePath = target.assetPath;
-        const stem = path.basename(sourcePath, path.extname(sourcePath));
-        const primaryTypes = input.nodes.filter(node => node.sourceId === `repo:${sourcePath}` && node.kind === 'class' && node.name === stem);
-        if (primaryTypes.length === 1) input.edges.push(resolution({
-          from: primaryTypes[0]!.id,
-          to: assetFile.id,
-          kind: 'used-by-unity-asset',
-          strategy: 'unity-guid-reverse',
-          confidence: 1,
-          status: 'resolved',
-          evidence: resolvedEdge.evidence,
-          evidenceIds: resolvedEdge.evidenceIds ?? [],
-          layer: 'structural',
-          checkpoint: false,
-        }));
-      }
-    }
+    }));
   }
 }
 
 interface PolyglotSymbolValue {
   language: 'csharp' | 'java' | 'python';
   qualifiedName?: string;
-  signature?: string;
-  baseTypes?: string[];
-}
-
-interface CSharpReferenceValue {
-  language: 'csharp';
-  referenceKind: 'call' | 'constructor';
-  targetName: string;
-  qualifier?: string | null;
-  arity?: number | null;
-  ownerQualifiedName?: string | null;
 }
 
 interface PolyglotImportValue {
@@ -402,14 +356,6 @@ function polyglotSymbolValue(value: unknown): value is PolyglotSymbolValue {
   const candidate = value as Record<string, unknown>;
   return ['csharp', 'java', 'python'].includes(String(candidate.language))
     && (candidate.qualifiedName === undefined || typeof candidate.qualifiedName === 'string');
-}
-
-function csharpReferenceValue(value: unknown): value is CSharpReferenceValue {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Record<string, unknown>;
-  return candidate.language === 'csharp'
-    && ['call', 'constructor'].includes(String(candidate.referenceKind))
-    && typeof candidate.targetName === 'string';
 }
 
 function polyglotImportValue(value: unknown): value is PolyglotImportValue {
@@ -639,153 +585,6 @@ function resolvePolyglotModules(input: {
       confidence: null,
       status: 'unresolved',
       evidence: [binding.locator, exactCandidates.length > 1 ? `ambiguous import has ${exactCandidates.length} declarations` : 'imported symbol is unavailable in resolved local module'],
-      layer: 'structural',
-      checkpoint: false,
-    }));
-  }
-
-  const csharpTypesByShortName = new Map<string, GraphNode[]>();
-  const csharpTypesByQualifiedName = new Map<string, GraphNode[]>();
-  const csharpMembersByOwner = new Map<string, GraphNode[]>();
-  const csharpNamespaceImportsByFile = new Map<string, string[]>();
-  const csharpAliasTargetsByFile = new Map<string, Map<string, GraphNode>>();
-  for (const node of input.nodes) {
-    if (!node.sourceId.startsWith('repo:') || !polyglotSymbolValue(node.value) || node.value.language !== 'csharp') continue;
-    const value = node.value as PolyglotSymbolValue;
-    if (!value.qualifiedName) continue;
-    if (['class', 'interface', 'struct', 'record'].includes(node.kind) && node.name) {
-      const short = csharpTypesByShortName.get(node.name) ?? [];
-      short.push(node); csharpTypesByShortName.set(node.name, short);
-      const exact = csharpTypesByQualifiedName.get(value.qualifiedName) ?? [];
-      exact.push(node); csharpTypesByQualifiedName.set(value.qualifiedName, exact);
-    }
-    if (['method', 'constructor', 'property', 'field'].includes(node.kind)) {
-      const ownerQualified = value.qualifiedName.split('.').slice(0, -1).join('.');
-      const members = csharpMembersByOwner.get(ownerQualified) ?? [];
-      members.push(node); csharpMembersByOwner.set(ownerQualified, members);
-    }
-  }
-  for (const binding of input.nodes.filter(node => node.kind === 'import-binding' && polyglotImportValue(node.value))) {
-    const value = binding.value as PolyglotImportValue;
-    if (value.language !== 'csharp' || !binding.sourceId.startsWith('repo:')) continue;
-    const file = binding.sourceId.slice('repo:'.length);
-    if (value.mode === 'namespace') {
-      const namespaces = csharpNamespaceImportsByFile.get(file) ?? [];
-      namespaces.push(value.module);
-      csharpNamespaceImportsByFile.set(file, [...new Set(namespaces)].sort());
-    }
-    if (value.mode === 'symbol') {
-      const resolved = input.edges.find(edge => edge.from === binding.id && edge.kind === 'resolves_to' && edge.status === 'resolved' && edge.to);
-      const target = resolved?.to ? input.nodes.find(node => node.id === resolved.to) : null;
-      if (target) {
-        const aliases = csharpAliasTargetsByFile.get(file) ?? new Map<string, GraphNode>();
-        aliases.set(value.local, target);
-        csharpAliasTargetsByFile.set(file, aliases);
-      }
-    }
-  }
-
-  const normalizeType = (value: string): string => value.replace(/^global::/u, '').replace(/<.*>$/u, '').trim();
-  const typeCandidates = (file: string, raw: string, ownerQualifiedName?: string | null): GraphNode[] => {
-    const normalized = normalizeType(raw);
-    const alias = csharpAliasTargetsByFile.get(file)?.get(normalized);
-    if (alias) return [alias];
-    const exact = csharpTypesByQualifiedName.get(normalized) ?? [];
-    if (exact.length) return exact;
-    if (!normalized.includes('.')) {
-      const ownerNamespace = ownerQualifiedName?.split('.').slice(0, -2).join('.') ?? '';
-      const local = ownerNamespace ? csharpTypesByQualifiedName.get(`${ownerNamespace}.${normalized}`) ?? [] : [];
-      if (local.length) return local;
-      const imported = (csharpNamespaceImportsByFile.get(file) ?? []).flatMap(namespace => csharpTypesByQualifiedName.get(`${namespace}.${normalized}`) ?? []);
-      if (imported.length) return imported;
-      return csharpTypesByShortName.get(normalized) ?? [];
-    }
-    return [];
-  };
-  const arityOf = (node: GraphNode): number | null => {
-    const value = node.value as PolyglotSymbolValue;
-    if (!value.signature) return null;
-    const inside = /^\((.*)\)$/u.exec(value.signature)?.[1] ?? '';
-    if (!inside) return 0;
-    return inside.split(',').length;
-  };
-
-  for (const type of input.nodes.filter(node => node.sourceId.startsWith('repo:') && ['class', 'struct', 'record'].includes(node.kind) && polyglotSymbolValue(node.value) && node.value.language === 'csharp')) {
-    const value = type.value as PolyglotSymbolValue;
-    const file = type.sourceId.slice('repo:'.length);
-    for (const base of value.baseTypes ?? []) {
-      const candidates = typeCandidates(file, base, value.qualifiedName).filter(candidate => candidate.kind === 'interface');
-      if (candidates.length === 1) input.edges.push(resolution({
-        from: candidates[0]!.id,
-        to: type.id,
-        kind: 'implemented-by',
-        strategy: 'csharp-base-type',
-        confidence: 1,
-        status: 'resolved',
-        evidence: [type.locator, `base type ${base}`],
-        layer: 'structural',
-        checkpoint: false,
-      }));
-    }
-  }
-
-  for (const reference of input.nodes.filter(node => ['call-reference', 'constructor-reference'].includes(node.kind) && csharpReferenceValue(node.value))) {
-    if (!reference.sourceId.startsWith('repo:')) continue;
-    const file = reference.sourceId.slice('repo:'.length);
-    const value = reference.value as CSharpReferenceValue;
-    const owner = input.edges.find(edge => edge.to === reference.id && edge.kind === 'invokes' && edge.status === 'resolved' && edge.from)?.from ?? null;
-    let candidates: GraphNode[] = [];
-    if (value.referenceKind === 'constructor') {
-      const types = typeCandidates(file, value.targetName, value.ownerQualifiedName);
-      if (types.length === 1) {
-        const type = types[0]!;
-        const typeValue = type.value as PolyglotSymbolValue;
-        const constructors = csharpMembersByOwner.get(typeValue.qualifiedName ?? '')?.filter(member => member.kind === 'constructor') ?? [];
-        const arityMatched = value.arity === null || value.arity === undefined ? constructors : constructors.filter(member => arityOf(member) === value.arity);
-        candidates = arityMatched.length ? arityMatched : constructors.length ? constructors : [type];
-      }
-    } else {
-      const qualifier = value.qualifier && !['this', 'base'].includes(value.qualifier) ? value.qualifier : null;
-      const ownerType = value.ownerQualifiedName?.split('.').slice(0, -1).join('.') ?? null;
-      const types = qualifier ? typeCandidates(file, qualifier, value.ownerQualifiedName) : ownerType ? csharpTypesByQualifiedName.get(ownerType) ?? [] : [];
-      if (types.length === 1) {
-        const typeValue = types[0]!.value as PolyglotSymbolValue;
-        const members = csharpMembersByOwner.get(typeValue.qualifiedName ?? '')?.filter(member => member.kind === 'method' && member.name === value.targetName) ?? [];
-        candidates = value.arity === null || value.arity === undefined ? members : members.filter(member => arityOf(member) === value.arity);
-      }
-    }
-
-    if (candidates.length === 1) {
-      input.edges.push(resolution({
-        from: reference.id,
-        to: candidates[0]!.id,
-        kind: 'resolves_to',
-        strategy: 'csharp-static-binding',
-        confidence: 1,
-        status: 'resolved',
-        evidence: [reference.locator],
-        layer: 'structural',
-        checkpoint: false,
-      }));
-      if (owner && owner !== candidates[0]!.id) input.edges.push(resolution({
-        from: owner,
-        to: candidates[0]!.id,
-        kind: value.referenceKind === 'constructor' ? 'constructs' : 'calls',
-        strategy: 'csharp-static-binding',
-        confidence: 1,
-        status: 'resolved',
-        evidence: [reference.locator],
-        layer: 'structural',
-        checkpoint: false,
-      }));
-    } else if (candidates.length > 1) input.edges.push(resolution({
-      from: reference.id,
-      to: null,
-      kind: 'resolves_to',
-      strategy: 'csharp-static-binding',
-      confidence: null,
-      status: 'unresolved',
-      evidence: [reference.locator, `ambiguous C# reference has ${candidates.length} matching declarations`],
       layer: 'structural',
       checkpoint: false,
     }));
