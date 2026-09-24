@@ -18,6 +18,14 @@ export function positiveIntegerSetting(value: string | undefined, fallback: numb
   return parsed;
 }
 
+export function cacheEntryLimitSetting(value: string | undefined, fallback: number, name: string): number {
+  const parsed = value === undefined ? fallback : Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name} must be an integer`);
+  // Preserve the original cache-bound contract: zero and negative values mean
+  // the smallest supported warm cache, not an unbounded or disabled cache.
+  return Math.max(1, parsed);
+}
+
 export function graphRecordWeight(graph: IntelligenceGraph | null): number {
   if (!graph) return 0;
   return graph.sources.length
