@@ -3,7 +3,7 @@ import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceG
 import { stableHash } from '../util/hash.js';
 import { revisionIdentity, withResolvedProjectCheckout, resolveProjectRevision, type ProjectRevision } from '../source/git.js';
 import { analyzeHtml, analyzeJson } from './analyzers/index.js';
-import { AsyncGate, graphRecordWeight, positiveIntegerSetting, retentionEvictions, type RetentionItem } from './capacity.js';
+import { AsyncGate, cacheEntryLimitSetting, graphRecordWeight, positiveIntegerSetting, retentionEvictions, type RetentionItem } from './capacity.js';
 import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
 import { assertGraphIntegrity } from './integrity.js';
 import { buildRepositoryGraph } from './repository.js';
@@ -73,8 +73,8 @@ function deleteRetentionItem(id: string): void {
 }
 
 function pruneGraphCaches(protectedId?: string): void {
-  const repositoryMax = positiveIntegerSetting(process.env.DEVINT_GRAPH_CACHE_SIZE, 6, 'DEVINT_GRAPH_CACHE_SIZE');
-  const snapshotMax = positiveIntegerSetting(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE, 12, 'DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE');
+  const repositoryMax = cacheEntryLimitSetting(process.env.DEVINT_GRAPH_CACHE_SIZE, 6, 'DEVINT_GRAPH_CACHE_SIZE');
+  const snapshotMax = cacheEntryLimitSetting(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE, 12, 'DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE');
   const maxRecords = positiveIntegerSetting(process.env.DEVINT_GRAPH_CACHE_MAX_RECORDS, 150_000, 'DEVINT_GRAPH_CACHE_MAX_RECORDS');
 
   for (const id of retentionEvictions(repositoryRetentionItems(protectedId), { maxEntries: repositoryMax, maxRecords: Number.MAX_SAFE_INTEGER })) deleteRetentionItem(id);
@@ -335,12 +335,12 @@ export function graphCacheDiagnostics(): Record<string, unknown> {
       entries: repositoryCache.size,
       building: [...repositoryCache.values()].filter(entry => !entry.value).length,
       retainedRecords: repository.reduce((total, item) => total + item.records, 0),
-      maxEntries: positiveIntegerSetting(process.env.DEVINT_GRAPH_CACHE_SIZE, 6, 'DEVINT_GRAPH_CACHE_SIZE'),
+      maxEntries: cacheEntryLimitSetting(process.env.DEVINT_GRAPH_CACHE_SIZE, 6, 'DEVINT_GRAPH_CACHE_SIZE'),
     },
     snapshots: {
       entries: snapshotCache.size,
       retainedRecords: snapshots.reduce((total, item) => total + item.records, 0),
-      maxEntries: positiveIntegerSetting(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE, 12, 'DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE'),
+      maxEntries: cacheEntryLimitSetting(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE, 12, 'DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE'),
     },
     coldBuilds: repositoryBuildGate.status(),
   };
