@@ -3,6 +3,7 @@ import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceG
 import { stableHash } from '../util/hash.js';
 import { revisionIdentity, withResolvedProjectCheckout, resolveProjectRevision, type ProjectRevision } from '../source/git.js';
 import { analyzeHtml, analyzeJson } from './analyzers/index.js';
+import { AsyncGate, graphRecordWeight, positiveIntegerSetting, retentionEvictions, type RetentionItem } from './capacity.js';
 import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
 import { assertGraphIntegrity } from './integrity.js';
 import { buildRepositoryGraph } from './repository.js';
@@ -35,25 +36,51 @@ interface SnapshotGraph {
   touchedAt: number;
 }
 
-const repositoryCache = new Map<string, Promise<CachedRepositoryGraph>>();
-const snapshotCache = new Map<string, SnapshotGraph>();
-
-function cacheKey(project: string, sha: string): string { return `${project}:${sha}`; }
-
-async function pruneRepositoryCache(): Promise<void> {
-  const max = Math.max(1, Number(process.env.DEVINT_GRAPH_CACHE_SIZE ?? 6));
-  if (repositoryCache.size <= max) return;
-  const entries = [...repositoryCache.entries()];
-  const hydrated = await Promise.all(entries.map(async ([key, promise]) => [key, await promise] as const));
-  hydrated.sort((a, b) => a[1].touchedAt - b[1].touchedAt);
-  while (repositoryCache.size > max && hydrated.length) repositoryCache.delete(hydrated.shift()![0]);
+interface RepositoryCacheEntry {
+  promise: Promise<CachedRepositoryGraph>;
+  value?: CachedRepositoryGraph;
 }
 
-function pruneSnapshotCache(): void {
-  const max = Math.max(1, Number(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE ?? 12));
-  if (snapshotCache.size <= max) return;
-  const entries = [...snapshotCache.entries()].sort((a, b) => a[1].touchedAt - b[1].touchedAt);
-  while (snapshotCache.size > max && entries.length) snapshotCache.delete(entries.shift()![0]);
+const repositoryCache = new Map<string, RepositoryCacheEntry>();
+const snapshotCache = new Map<string, SnapshotGraph>();
+const repositoryBuildGate = new AsyncGate(() => positiveIntegerSetting(process.env.DEVINT_GRAPH_BUILD_CONCURRENCY, 1, 'DEVINT_GRAPH_BUILD_CONCURRENCY'));
+
+function cacheKey(project: string, sha: string): string { return `${project}:${sha}`; }
+function repositoryRetentionId(key: string): string { return `repository:${key}`; }
+function snapshotRetentionId(key: string): string { return `snapshot:${key}`; }
+
+function repositoryRetentionItems(protectedId?: string): RetentionItem[] {
+  return [...repositoryCache.entries()].flatMap(([key, entry]) => entry.value ? [{
+    id: repositoryRetentionId(key),
+    records: graphRecordWeight(entry.value.graph) + graphRecordWeight(entry.value.accepted),
+    touchedAt: entry.value.touchedAt,
+    protected: repositoryRetentionId(key) === protectedId,
+  }] : []);
+}
+
+function snapshotRetentionItems(protectedId?: string): RetentionItem[] {
+  return [...snapshotCache.entries()].map(([key, entry]) => ({
+    id: snapshotRetentionId(key),
+    records: graphRecordWeight(entry.graph),
+    touchedAt: entry.touchedAt,
+    protected: snapshotRetentionId(key) === protectedId,
+  }));
+}
+
+function deleteRetentionItem(id: string): void {
+  if (id.startsWith('repository:')) repositoryCache.delete(id.slice('repository:'.length));
+  if (id.startsWith('snapshot:')) snapshotCache.delete(id.slice('snapshot:'.length));
+}
+
+function pruneGraphCaches(protectedId?: string): void {
+  const repositoryMax = positiveIntegerSetting(process.env.DEVINT_GRAPH_CACHE_SIZE, 6, 'DEVINT_GRAPH_CACHE_SIZE');
+  const snapshotMax = positiveIntegerSetting(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE, 12, 'DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE');
+  const maxRecords = positiveIntegerSetting(process.env.DEVINT_GRAPH_CACHE_MAX_RECORDS, 150_000, 'DEVINT_GRAPH_CACHE_MAX_RECORDS');
+
+  for (const id of retentionEvictions(repositoryRetentionItems(protectedId), { maxEntries: repositoryMax, maxRecords: Number.MAX_SAFE_INTEGER })) deleteRetentionItem(id);
+  for (const id of retentionEvictions(snapshotRetentionItems(protectedId), { maxEntries: snapshotMax, maxRecords: Number.MAX_SAFE_INTEGER })) deleteRetentionItem(id);
+  const combined = [...repositoryRetentionItems(protectedId), ...snapshotRetentionItems(protectedId)];
+  for (const id of retentionEvictions(combined, { maxEntries: Number.MAX_SAFE_INTEGER, maxRecords })) deleteRetentionItem(id);
 }
 
 function emptyCurrentness(checkpointError: string | null = null): GraphCurrentness {
@@ -78,9 +105,10 @@ function compactCoverage(coverage: GraphCoverage | undefined): Omit<GraphCoverag
 async function buildCachedRepositoryGraph(project: string, ref?: string): Promise<CachedRepositoryGraph> {
   const revision = await resolveProjectRevision(project, ref);
   const key = cacheKey(project, revision.sha);
-  let promise = repositoryCache.get(key);
-  if (!promise) {
-    promise = withResolvedProjectCheckout(revision, async checkout => {
+  let entry = repositoryCache.get(key);
+  if (!entry) {
+    const created = {} as RepositoryCacheEntry;
+    created.promise = repositoryBuildGate.run(() => withResolvedProjectCheckout(revision, async checkout => {
       const graph = await buildRepositoryGraph({
         project,
         repository: checkout.repository,
@@ -125,13 +153,17 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         revision,
         touchedAt: Date.now(),
       };
+    })).then(value => {
+      created.value = value;
+      return value;
     });
-    repositoryCache.set(key, promise);
-    promise.catch(() => { if (repositoryCache.get(key) === promise) repositoryCache.delete(key); });
+    entry = created;
+    repositoryCache.set(key, entry);
+    entry.promise.catch(() => { if (repositoryCache.get(key) === created) repositoryCache.delete(key); });
   }
-  const value = await promise;
+  const value = await entry.promise;
   value.touchedAt = Date.now();
-  await pruneRepositoryCache();
+  pruneGraphCaches(repositoryRetentionId(key));
   // Graph computation is shared by immutable SHA, but caller-visible revision
   // identity belongs to this request. Do not let the first selector that warmed
   // the cache relabel later branch/tag/PR selectors resolving to the same SHA.
@@ -242,7 +274,7 @@ export async function scanGraph(project: string, options: { ref?: string | undef
   };
   assertGraphIntegrity(graph);
   snapshotCache.set(graph.graphId, { graph, revision: repository.revision, touchedAt: Date.now() });
-  pruneSnapshotCache();
+  pruneGraphCaches(snapshotRetentionId(graph.graphId));
   return graph;
 }
 
@@ -292,6 +324,28 @@ export function clearGraphCache(project?: string): void {
   for (const [key, snapshot] of [...snapshotCache.entries()]) if (snapshot.graph.project === project) snapshotCache.delete(key);
 }
 
+export function graphCacheDiagnostics(): Record<string, unknown> {
+  const repository = repositoryRetentionItems();
+  const snapshots = snapshotRetentionItems();
+  return {
+    scope: 'process',
+    maxRetainedRecords: positiveIntegerSetting(process.env.DEVINT_GRAPH_CACHE_MAX_RECORDS, 150_000, 'DEVINT_GRAPH_CACHE_MAX_RECORDS'),
+    retainedRecords: [...repository, ...snapshots].reduce((total, item) => total + item.records, 0),
+    repository: {
+      entries: repositoryCache.size,
+      building: [...repositoryCache.values()].filter(entry => !entry.value).length,
+      retainedRecords: repository.reduce((total, item) => total + item.records, 0),
+      maxEntries: positiveIntegerSetting(process.env.DEVINT_GRAPH_CACHE_SIZE, 6, 'DEVINT_GRAPH_CACHE_SIZE'),
+    },
+    snapshots: {
+      entries: snapshotCache.size,
+      retainedRecords: snapshots.reduce((total, item) => total + item.records, 0),
+      maxEntries: positiveIntegerSetting(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE, 12, 'DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE'),
+    },
+    coldBuilds: repositoryBuildGate.status(),
+  };
+}
+
 export async function graphStatus(project: string, ref?: string): Promise<Record<string, unknown>> {
   const repository = await buildCachedRepositoryGraph(project, ref);
   const graphs = { accepted: repository.accepted, working: repository.graph };
@@ -328,5 +382,6 @@ export async function graphStatus(project: string, ref?: string): Promise<Record
       explicitValueConflicts: graphs.working.explicitValueConflicts.length,
       coverage: compactCoverage(graphs.working.coverage),
     },
+    cache: graphCacheDiagnostics(),
   };
 }
