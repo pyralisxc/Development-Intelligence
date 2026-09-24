@@ -23,6 +23,14 @@ Do not copy volatile URLs, SHAs, secrets, deployment IDs, issue state, or provid
 
 A clean `main` must pass the repository's normal verification and accepted-checkpoint checks. Provider/runtime state is separate and must be read from the provider when current deployment fact matters.
 
+### Preview integration
+
+`preview` is the persistent non-production integration branch. It is the normal target for coherent `work/*` pull requests while a development tranche is accumulating.
+
+Preview must remain disposable relative to accepted `main`: it may contain multiple sealed, fully verified improvements, but it is not accepted product truth and must never become a second graph authority. GitHub CI runs the same correctness, packaged-action, capacity, CardForge, and polyglot gates on Preview. Vercel deploys the branch as a provider-hosted Preview candidate. When using that deployment to inspect Development Intelligence itself, request the explicit `branch:preview` revision selector so the candidate analyzes Preview rather than the configured production default.
+
+Use Preview as the continuing proof surface when changes benefit from combined testing or owner review. Promote the accumulated exact Preview head through one `preview` → `main` pull request only after the tranche is coherent, sealed, and fully green. Main promotion remains owner-controlled. After promotion, reconcile accepted Main ancestry back into Preview before beginning the next tranche.
+
 ### Work branch and pull request
 
 Development changes belong on bounded `work/*` branches and PRs created from an exact accepted base revision.
@@ -49,6 +57,8 @@ The preview is disposable review evidence:
 - temporary preview credentials and access records remain CI artifacts, not repository truth;
 - preview implementation details belong in the workflow, not here.
 
+This temporary tunnel complements the persistent `preview` integration branch. Use it when a specific work PR needs interactive review before integration; use the persistent Vercel Preview deployment to exercise the accumulated integration state.
+
 Use the preview only when the PR intentionally requests the workflow's preview marker/path. Do not treat an ephemeral preview as a substitute for production-provider or OAuth acceptance.
 
 ### Hosted production runtime
@@ -62,14 +72,15 @@ Production acceptance that depends on OAuth, final hostname behavior, ChatGPT co
 For a material change:
 
 1. Read `AGENTS.md` and the owning product/architecture/operations docs for the change.
-2. Start from the exact current `main` revision and create a bounded `work/*` branch.
+2. Start from the exact current `preview` revision (or `main` only when Preview has no accumulated delta) and create a bounded `work/*` branch.
 3. Make the smallest coherent change; do not embed project-management state or provider secrets in source.
 4. Run `npm run verify` and preserve any relevant permanent regression evidence.
-5. Let PR CI run the repository's packaged action and permanent benchmark gates.
+5. Open the bounded PR against `preview` and let CI run the repository's packaged action and permanent benchmark gates.
 6. When a source-changing candidate is otherwise acceptable, request `seal-b`; then verify the exact sealed head again.
-7. Use the ephemeral preview only when interactive hosted review is materially useful.
-8. Promote to `main` only after the owner-approved merge gate is satisfied for the exact candidate.
-9. When the change affects hosted behavior, complete the applicable Vercel/OAuth/ChatGPT acceptance after or around promotion as required by the owning release docs; do not infer provider success from GitHub alone.
+7. Integrate the exact green candidate into `preview`; use the ephemeral PR preview only when pre-integration interactive review is materially useful.
+8. Exercise the accumulated Preview deployment and exact `branch:preview` intelligence surface until the tranche is coherent.
+9. Promote the exact accumulated Preview head to `main` only after its owner-approved promotion gate is satisfied, then reconcile Main back into Preview.
+10. When the change affects hosted behavior, complete the applicable Vercel/OAuth/ChatGPT acceptance after or around promotion as required by the owning release docs; do not infer provider success from GitHub alone.
 
 ## Ownership and issue routing
 
