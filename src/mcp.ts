@@ -11,6 +11,7 @@ import { evaluateParityContract } from './intelligence/parityContract.js';
 import { verifyTransition } from './intelligence/temporalVerification.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import { inspectPortfolio, tracePortfolio, type PortfolioParticipantInput } from './intelligence/portfolio.js';
+import { stableHash } from './util/hash.js';
 import type { GraphNodeLayer, GraphCoverageStatus, RelationshipStatus, TechnicalSourceCapability } from './types.js';
 
 export interface ToolDefinition {
@@ -173,10 +174,13 @@ function annotationsFor(name: string): Record<string, boolean> {
 }
 
 export function listTools() { return tools.map(({ handler: _handler, ...tool }) => ({ ...tool, annotations: tool.annotations ?? annotationsFor(tool.name) })); }
+export function toolContract(): { toolCount: number; contractFingerprint: string } {
+  const definitions = listTools();
+  return { toolCount: definitions.length, contractFingerprint: stableHash(definitions) };
+}
 export async function callTool(name: string, args: Record<string, unknown> = {}) {
   const tool = tools.find(item => item.name === name);
   if (!tool) throw new Error(`Unknown tool: ${name}`);
   validateAgainstSchema(tool.inputSchema, args);
   return await tool.handler(args);
 }
-

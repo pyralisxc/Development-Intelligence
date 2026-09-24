@@ -10,7 +10,8 @@ import { sealLocalGraph } from '../src/intelligence/local.js';
 import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
 import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
-import { callTool, listTools } from '../src/mcp.js';
+import { callTool, listTools, toolContract } from '../src/mcp.js';
+import { runtimeIdentity } from '../src/runtimeIdentity.js';
 import { projectOverview } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
@@ -379,6 +380,33 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
+  const contract = toolContract();
+  assert.deepEqual(contract, { toolCount: 25, contractFingerprint: contract.contractFingerprint });
+  assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
+  assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
+});
+
+test('runtime identity only exposes exact deployment metadata and the MCP contract', () => {
+  const identity = runtimeIdentity({
+    DEVINT_BUILD_SHA: 'ABCDEF0123456789ABCDEF0123456789ABCDEF01',
+    VERCEL_GIT_COMMIT_SHA: '1111111111111111111111111111111111111111',
+    VERCEL_GIT_COMMIT_REF: 'work/production-check',
+    VERCEL_TARGET_ENV: 'Production',
+    UNRELATED_SECRET: 'must-not-escape',
+  });
+  assert.deepEqual(identity.deployment, {
+    revision: 'abcdef0123456789abcdef0123456789abcdef01',
+    gitRef: 'work/production-check',
+    environment: 'production',
+  });
+  assert.equal(identity.mcp.toolCount, 25);
+  assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
+
+  assert.deepEqual(runtimeIdentity({
+    DEVINT_BUILD_SHA: 'not-a-sha',
+    VERCEL_GIT_COMMIT_REF: 'bad ref with spaces',
+    VERCEL_TARGET_ENV: 'secret-environment-name',
+  }).deployment, { revision: null, gitRef: null, environment: null });
 });
 
 test('registry rejects project identities that collide in derived keys', async () => {
@@ -399,6 +427,9 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
   const fixture = await makeFixture();
   process.env.DEVINT_AUTH_MODE = 'none';
   process.env.DEVINT_ALLOW_UNAUTHENTICATED = '1';
+  process.env.VERCEL_GIT_COMMIT_SHA = '0123456789abcdef0123456789abcdef01234567';
+  process.env.VERCEL_GIT_COMMIT_REF = 'work/health-contract';
+  process.env.VERCEL_TARGET_ENV = 'preview';
   const { createDevelopmentIntelligenceServer } = await import('../src/http.js');
   const server = createDevelopmentIntelligenceServer();
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -411,6 +442,16 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     'io.modelcontextprotocol/clientCapabilities': {},
   };
   try {
+    const health = await fetch(`${origin}/health`);
+    assert.equal(health.status, 200);
+    const healthBody = await health.json() as any;
+    assert.deepEqual(healthBody.deployment, {
+      revision: '0123456789abcdef0123456789abcdef01234567',
+      gitRef: 'work/health-contract',
+      environment: 'preview',
+    });
+    assert.deepEqual(healthBody.mcp, toolContract());
+
     const discover = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'server/discover' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: meta } }) });
     assert.equal(discover.status, 200);
     const discoverBody = await discover.json() as any;
@@ -493,7 +534,9 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     await close(server);
     delete process.env.DEVINT_AUTH_MODE;
     delete process.env.DEVINT_ALLOW_UNAUTHENTICATED;
+    delete process.env.VERCEL_GIT_COMMIT_SHA;
+    delete process.env.VERCEL_GIT_COMMIT_REF;
+    delete process.env.VERCEL_TARGET_ENV;
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
-

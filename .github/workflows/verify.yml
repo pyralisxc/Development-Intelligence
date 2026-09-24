@@ -37,6 +37,26 @@ jobs:
             npm run graph:check -- --repo-path "$GITHUB_WORKSPACE" --project Development-Intelligence
           fi
 
+  production-parity:
+    if: github.event_name == 'push'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Wait for production to match the exact main revision and MCP contract
+        run: >-
+          node scripts/verify-hosted-production.mjs
+          --base-url https://devint.cardforges.com
+          --expected-sha "$GITHUB_SHA"
+          --retries 36
+          --retry-delay-ms 10000
+
   self-seal:
     if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'seal-b')
     needs: verify
