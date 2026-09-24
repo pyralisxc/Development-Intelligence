@@ -32,8 +32,8 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_GITHUB_APP_PRIVATE_KEY` | Private key for the dedicated DI GitHub App; used only to mint short-lived single-repository read-only installation tokens |
 | `DEVINT_GITHUB_TOKEN_ENV` | Token fallback environment-variable name for dynamic GitHub repositories; defaults to `DEVINT_GITHUB_TOKEN` |
 | `DEVINT_SCRATCH_DIR` | Optional disposable checkout root (defaults to OS temp) |
-| `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound |
-| `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots |
+| `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound; zero or a negative integer preserves the legacy minimum of one entry |
+| `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots; zero or a negative integer preserves the legacy minimum of one entry |
 | `DEVINT_GRAPH_CACHE_MAX_RECORDS` | Combined process-local retention budget across canonical graphs and runtime snapshots; defaults to 150,000 graph records |
 | `DEVINT_GRAPH_BUILD_CONCURRENCY` | Maximum unrelated cold graph builds allowed concurrently in one process; defaults to 1 |
 | `DEVINT_GRAPH_MAX_FILES` | Maximum eligible tracked files considered in one graph build |

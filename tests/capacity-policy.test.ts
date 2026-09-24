@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import type { IntelligenceGraph } from '../src/types.js';
-import { AsyncGate, graphRecordWeight, positiveIntegerSetting, retentionEvictions } from '../src/intelligence/capacity.js';
+import { AsyncGate, cacheEntryLimitSetting, graphRecordWeight, positiveIntegerSetting, retentionEvictions } from '../src/intelligence/capacity.js';
 import { clearGraphCache, graphCacheDiagnostics, scanGraph } from '../src/intelligence/service.js';
 import { runChecked } from '../src/util/process.js';
 
@@ -50,6 +50,33 @@ test('graph capacity uses record weight instead of pretending every graph costs 
   assert.equal(graphRecordWeight(graph()), 6);
   assert.equal(positiveIntegerSetting(undefined, 3, 'limit'), 3);
   assert.throws(() => positiveIntegerSetting('0', 3, 'limit'), /positive integer/);
+});
+
+test('cache entry limits preserve the legacy minimum of one', () => {
+  assert.equal(cacheEntryLimitSetting(undefined, 3, 'limit'), 3);
+  assert.equal(cacheEntryLimitSetting('0', 3, 'limit'), 1);
+  assert.equal(cacheEntryLimitSetting('-5', 3, 'limit'), 1);
+  assert.throws(() => cacheEntryLimitSetting('unbounded', 3, 'limit'), /must be an integer/);
+});
+
+test('cache diagnostics accept zero-sized legacy deployment settings', () => {
+  const previousRepository = process.env.DEVINT_GRAPH_CACHE_SIZE;
+  const previousSnapshot = process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE;
+  process.env.DEVINT_GRAPH_CACHE_SIZE = '0';
+  process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE = '0';
+  try {
+    const diagnostics = graphCacheDiagnostics() as {
+      repository: { maxEntries: number };
+      snapshots: { maxEntries: number };
+    };
+    assert.equal(diagnostics.repository.maxEntries, 1);
+    assert.equal(diagnostics.snapshots.maxEntries, 1);
+  } finally {
+    if (previousRepository === undefined) delete process.env.DEVINT_GRAPH_CACHE_SIZE;
+    else process.env.DEVINT_GRAPH_CACHE_SIZE = previousRepository;
+    if (previousSnapshot === undefined) delete process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE;
+    else process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE = previousSnapshot;
+  }
 });
 
 test('retention evicts least-recently-used graphs by count and record budget while preserving the active graph', () => {
