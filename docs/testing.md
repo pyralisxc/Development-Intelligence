@@ -159,6 +159,10 @@ Interpret capacity using the first boundary reached: configured file/byte limits
 
 ## Preview acceptance
 
+The persistent `preview` branch is the normal accumulated integration surface. A push to Preview runs the same deterministic correctness, packaged-action, capacity, CardForge, and polyglot evidence as a Main candidate and produces a non-production Vercel deployment. Provider acceptance must bind the READY deployment to the exact Preview SHA. When testing Development Intelligence against its own candidate source, use the explicit `branch:preview` selector; the production registry default remains `main` by design.
+
+Preview evidence may support multiple coherent work PRs before one owner-approved `preview` → `main` promotion. It does not make Preview accepted truth, replace the final sealed-head check, or prove production OAuth/custom-host behavior.
+
 A PR-scoped Preview is a physical acceptance surface after verify + CardForge are green. It runs the exact PR head, then proves through the public HTTPS tunnel that:
 
 - the native private owner sign-in page is reachable;

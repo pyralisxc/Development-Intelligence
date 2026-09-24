@@ -23,7 +23,7 @@ Local development and long-running single-instance hosts continue to use the in-
 
 ## Current deployment shape
 
-The production service is deployed from `pyralisxc/Development-Intelligence` through the Vercel project owned by `Pyralis' projects` (`pyralis-projects`). Production follows `main`; feature branches are validated through preview deployments rather than being added to the production project registry.
+The production service is deployed from `pyralisxc/Development-Intelligence` through the Vercel project owned by `Pyralis' projects` (`pyralis-projects`). Production follows `main`; accumulated integration follows the persistent `preview` branch, and bounded work branches may produce shorter-lived preview deployments. None of those non-production branches are added to the production project registry.
 
 For a clean replacement deployment, keep the currently reachable production environment intact until the replacement is deployed, reachable, and independently verified.
 
@@ -34,7 +34,7 @@ If the existing project must be recreated:
 1. Import `pyralisxc/Development-Intelligence` from GitHub.
 2. Use the `development-intelligence` project identity unless intentionally replacing it.
 3. Keep the production branch on `main`.
-4. Deploy feature branches as preview candidates.
+4. Deploy `preview` and bounded work branches as preview candidates.
 5. Use `Dockerfile.vercel`; do not select an unrelated frontend framework preset.
 6. Preserve the stable production/custom hostname during replacement and cut over only after hosted verification.
 
@@ -96,6 +96,8 @@ Use `DEVINT_PROJECTS_JSON` so Vercel does not need a mounted `/config/projects.j
 ```
 
 Store the compact JSON as the `DEVINT_PROJECTS_JSON` environment value.
+
+The shared hosted registry intentionally keeps `main` as the configured default. On the persistent Preview deployment, inspect the accumulated candidate with the explicit `branch:preview` revision selector. This avoids duplicating provider configuration or weakening production's default identity while still proving the Preview branch against its own exact source.
 
 Also add:
 
