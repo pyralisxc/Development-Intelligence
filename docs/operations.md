@@ -34,6 +34,8 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_SCRATCH_DIR` | Optional disposable checkout root (defaults to OS temp) |
 | `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound |
 | `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots |
+| `DEVINT_GRAPH_CACHE_MAX_RECORDS` | Combined process-local retention budget across canonical graphs and runtime snapshots; defaults to 150,000 graph records |
+| `DEVINT_GRAPH_BUILD_CONCURRENCY` | Maximum unrelated cold graph builds allowed concurrently in one process; defaults to 1 |
 | `DEVINT_GRAPH_MAX_FILES` | Maximum eligible tracked files considered in one graph build |
 | `DEVINT_GRAPH_MAX_FILE_BYTES` | Maximum individual text file size analyzed |
 | `DEVINT_GRAPH_MAX_RUNTIME_BYTES` | Runtime response body cap |
@@ -51,6 +53,8 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_REQUIRE_SHARED_OAUTH_STATE` | Set to `1` to fail OAuth configuration closed unless the shared code store is available |
 
 There is no required durable `DEVINT_DATA_DIR` or graph database. Local/single-instance OAuth can use process-memory authorization codes. Vercel and other horizontally scaled deployments require a small shared Redis authorization-code store so separate authorization and token requests remain reliable and one-time.
+
+Process memory is an accelerator rather than authority. Cache entry counts remain hard upper bounds, while `DEVINT_GRAPH_CACHE_MAX_RECORDS` adds one shared weight budget across canonical graphs and runtime snapshots so a handful of large graphs cannot be treated like a handful of tiny graphs. Record weight counts the graph's retained source, evidence, node, edge, conflict, divergence, coverage, and unresolved-reference records; it is a deterministic retention proxy, not a byte estimate. The currently requested graph survives pruning even when it alone exceeds the budget. Unrelated cold builds pass through a bounded process-local gate, while requests for the same immutable project/SHA continue sharing one in-flight build promise.
 
 ## Project access registry
 
