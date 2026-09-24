@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { authMode, authorize, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
 import { callTool, listTools } from './mcp.js';
+import { runtimeIdentity } from './runtimeIdentity.js';
 import { currentGraph } from './intelligence/service.js';
 import { diffAcceptedToWorking, diffRevisions, viewerProjection } from './intelligence/query.js';
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbench, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
@@ -163,7 +164,7 @@ export function createDevelopmentIntelligenceServer() {
     if (!validateHost(req, res)) return;
     const requestUrl = new URL(req.url ?? '/', 'http://development-intelligence.local');
     if (requestUrl.pathname === '/health' && req.method === 'GET') {
-      json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN });
+      json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;
     }
     if (await handleOAuthHttpRequest(req, res, requestUrl)) return;

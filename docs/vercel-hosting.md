@@ -141,6 +141,17 @@ GET https://<host>/.well-known/oauth-protected-resource/mcp
 GET https://<host>/.well-known/oauth-authorization-server
 ```
 
+`/health` reports the exact deployed Git revision when the platform supplies it, plus the MCP tool count and deterministic contract fingerprint. Vercel supplies `VERCEL_GIT_COMMIT_SHA`; custom deployment systems can set `DEVINT_BUILD_SHA` to an exact 40-character SHA. Values that do not match the allowlisted formats are reported as `null`.
+
+Compare a hosted candidate with the built checkout:
+
+```bash
+npm run build
+npm run verify:hosted -- --base-url https://<host> --expected-sha <40-character-sha>
+```
+
+For full authenticated MCP discovery, provide a short-lived bearer access token through `DEVINT_HOSTED_ACCESS_TOKEN` and add `--require-authenticated-tools`. Keep the token out of command history and logs. The `main` workflow polls the stable production host and fails if the deployed revision or public MCP contract remains stale.
+
 The protected resource must identify exactly `https://<host>/mcp` and the authorization server must be exactly `https://<host>`.
 
 An unauthenticated `POST /mcp` must fail with `401` and advertise the OAuth protected-resource metadata.
@@ -172,3 +183,34 @@ After preview and ChatGPT acceptance:
 4. run one exact historical selector resolution and one distant revision comparison;
 5. verify a mixed Development Intelligence + GitHub prompt against production;
 6. create the intended Git tag/GitHub Release only after the deployed revision matches `main`.
+
+## 8. Container registry retention
+
+Deployment retention and Vercel Container Registry inventory are separate provider surfaces. Use the VCR image API to measure and clean registry headroom even when deployment retention is already configured.
+
+The repository policy keeps:
+
+- the current READY production deployment and one useful READY production rollback;
+- production references for seven days;
+- preview and other nonproduction references for one day;
+- images with protected production tags;
+- old images with unknown tags in manual review rather than deleting them automatically.
+
+Run the supported inventory and cleanup planner with a scoped Vercel token:
+
+```bash
+export VERCEL_TOKEN=<scoped-token>
+export VERCEL_PROJECT_ID=<project-id>
+export VERCEL_TEAM_ID=<team-id>
+npm run vcr:plan -- --repository dockerfile
+```
+
+The default is a dry run. It prints every image ID, digest, tag, age, decision, reason, and registry headroom before and after planned deletions. Review all `delete` and `review` entries before applying.
+
+Apply the exact printed plan only by repeating the project ID as the confirmation value:
+
+```bash
+npm run vcr:plan -- --repository dockerfile --apply "$VERCEL_PROJECT_ID"
+```
+
+The apply path deletes only entries classified `delete`, one at a time, through Vercel's VCR image endpoint. Re-run the dry run after cleanup and confirm enough headroom exists before triggering another container deployment.
