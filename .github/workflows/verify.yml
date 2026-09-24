@@ -177,6 +177,31 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  capacity-benchmark:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Measure deterministic scale and file-ceiling behavior
+        run: |
+          npm run benchmark:capacity
+          cat benchmark-capacity.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload capacity evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-capacity-benchmark
+          path: |
+            benchmark-capacity.json
+            benchmark-capacity.md
+          if-no-files-found: error
+          retention-days: 1
+
   preview:
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.body, '<!-- devint-preview -->')
     needs: [verify, cardforge-benchmark]
