@@ -230,10 +230,21 @@ for (const target of targets) {
   });
 }
 
+const processMemory = process.memoryUsage();
+const processResources = process.resourceUsage();
+const resourceReport = {
+  rssMiB: Number((processMemory.rss / 1_048_576).toFixed(1)),
+  heapUsedMiB: Number((processMemory.heapUsed / 1_048_576).toFixed(1)),
+  peakRssMiB: Number((processResources.maxRSS / 1024).toFixed(1)),
+  userCpuMs: Number((processResources.userCPUTime / 1000).toFixed(1)),
+  systemCpuMs: Number((processResources.systemCPUTime / 1000).toFixed(1)),
+};
 const jsonPath = process.env.DEVINT_PORTFOLIO_JSON ?? path.resolve('benchmark-polyglot-portfolio.json');
-await fs.writeFile(jsonPath, `${JSON.stringify({ benchmark: 'Development Intelligence pinned C#/Unity + Java portfolio', reports }, null, 2)}\n`);
+await fs.writeFile(jsonPath, `${JSON.stringify({ benchmark: 'Development Intelligence pinned C#/Unity + Java portfolio', processResources: resourceReport, reports }, null, 2)}\n`);
 const summary = [
   '# Development Intelligence polyglot portfolio benchmark',
+  '',
+  `- Process resources: **${resourceReport.peakRssMiB} MiB peak RSS / ${resourceReport.userCpuMs} ms user CPU / ${resourceReport.systemCpuMs} ms system CPU**`,
   '',
   '| Repository | Exact SHA | Graph | Coverage | Partial | Skipped | Failed | Elapsed |',
   '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',

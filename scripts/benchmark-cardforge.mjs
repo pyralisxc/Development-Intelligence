@@ -237,10 +237,19 @@ if (Number(scan.coverage?.eligibleFiles ?? 0) < 1 || Number(scan.coverage?.analy
 
 const semanticNodes = graph.nodes.filter(node => node.layer === 'semantic');
 const semanticEdges = graph.edges.filter(edge => edge.layer === 'semantic');
+const processMemory = process.memoryUsage();
+const processResources = process.resourceUsage();
 const report = {
   benchmark: 'CardForge Development Intelligence generic structural + semantic evidence',
   targetSha: actualSha,
   elapsedMs: Date.now() - started,
+  processResources: {
+    rssMiB: Number((processMemory.rss / 1_048_576).toFixed(1)),
+    heapUsedMiB: Number((processMemory.heapUsed / 1_048_576).toFixed(1)),
+    peakRssMiB: Number((processResources.maxRSS / 1024).toFixed(1)),
+    userCpuMs: Number((processResources.userCPUTime / 1000).toFixed(1)),
+    systemCpuMs: Number((processResources.systemCPUTime / 1000).toFixed(1)),
+  },
   scan,
   architecture: architecture.summary ?? architecture,
   parity: {
@@ -312,6 +321,7 @@ const summary = [
   `- Skipped eligible files: **${coverageSummary.skippedFiles ?? 0}**`,
   `- Semantic conflicts: **${graph.explicitValueConflicts.length}**`,
   `- Elapsed: **${report.elapsedMs} ms**`,
+  `- Process resources: **${report.processResources.peakRssMiB} MiB peak RSS / ${report.processResources.userCpuMs} ms user CPU / ${report.processResources.systemCpuMs} ms system CPU**`,
   `- Resolved imports: **${relationshipCounts.imports ?? 0}**`,
   `- Import-to-definition resolutions: **${relationshipCounts.resolves_to ?? 0}**`,
   `- Call relationships: **${relationshipCounts.calls ?? 0}**`,

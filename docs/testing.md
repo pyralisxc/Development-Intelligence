@@ -146,6 +146,17 @@ Acceptance covers modern `2026-07-28` discovery, routing headers, complete resul
 
 The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It also protects three agent-workflow concerns observed in real CardForge tasks: one-call grouped exploration, stateless reconstruction of canonical graph IDs, and searchable CSS structure for camera/responsive/layout evidence. Assessment calibration additionally proves natural feature phrasing, present-symbol existence questions, and subject-scoped audits without manufacturing undeclared capability semantics. Scoped audits declare their resolved relationship radius, group findings by observed cause, and retain the underlying evidence rather than treating a raw count as an intrinsic quality judgment. It does not depend on the retired Product Reality oracle, interpret Product Reality metadata as DI semantics, or write a DI checkpoint into CardForge.
 
+## Capacity evidence strategy
+
+Capacity is measured in layers because no single number describes graph construction, warm-query latency, serverless cache locality, and agent usefulness:
+
+1. `npm run verify` protects deterministic correctness and safety boundaries.
+2. `npm run benchmark:capacity` builds deterministic TypeScript repositories at 100, 1,000, 5,000, and 10,000 generated source files. Each scale runs in three fresh worker processes and reports the median/range for graph-build wall time, peak resident memory, CPU time, graph size, and coverage. The largest case has 10,001 eligible files after `package.json`; it must analyze exactly the configured 10,000-file ceiling and report the remainder as skipped.
+3. The SHA-pinned CardForge and polyglot portfolio replays measure real language/framework complexity, exact coverage, query usefulness, and end-to-end workflow latency. Synthetic throughput must never be presented as real-repository capacity without these controls.
+4. Hosted testing measures routing and cache behavior separately. Use an exact immutable revision, warm it once, then collect at least 30 samples for grouped queries and concurrency levels 1, 4, and 8. Report p50, p95, p99, error rate, and whether each sample was a cache hit or exact-revision reconstruction when observable. Do not run a saturation test against production from CI; use an isolated deployment with the same runtime and memory configuration.
+
+Interpret capacity using the first boundary reached: configured file/byte limits, runtime timeout, memory pressure from retained graphs, or unacceptable tail latency. The repository cache is bounded by graph count rather than bytes, so the six-graph default is not a promise that every mix of six repositories fits a particular runtime memory limit. A capacity claim must state the repository revision, analyzed/eligible files, node/edge counts, process memory, cold-build latency, warm-query latency, concurrency, deployment shape, and observed error rate.
+
 ## Preview acceptance
 
 A PR-scoped Preview is a physical acceptance surface after verify + CardForge are green. It runs the exact PR head, then proves through the public HTTPS tunnel that:
