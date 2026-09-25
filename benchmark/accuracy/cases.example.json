@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "version": 1,
+      "id": "example-typescript-route-realization",
+      "capability": "api-route-realization",
+      "language": "typescript",
+      "project": "pyralisxc/Example",
+      "ref": "commit:1111111111111111111111111111111111111111",
+      "question": "Which implementation realizes /api/health?",
+      "groundTruth": {
+        "entities": {
+          "required": [
+            "api:/api/health"
+          ],
+          "forbidden": [],
+          "complete": false
+        },
+        "relationships": {
+          "required": [
+            {
+              "from": "api:/api/health",
+              "kind": "implemented-by",
+              "to": "symbol:handler"
+            }
+          ],
+          "forbidden": [],
+          "complete": false
+        },
+        "answerStatuses": [
+          "supported"
+        ]
+      },
+      "provenance": [
+        {
+          "kind": "source",
+          "locator": "src/app/api/health/route.ts"
+        }
+      ]
+    }
+  ]
+}

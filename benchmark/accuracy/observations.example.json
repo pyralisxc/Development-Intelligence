@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "observations": [
+    {
+      "caseId": "example-typescript-route-realization",
+      "entities": [
+        "api:/api/health",
+        "symbol:handler"
+      ],
+      "relationships": [
+        {
+          "from": "api:/api/health",
+          "kind": "implemented-by",
+          "to": "symbol:handler"
+        }
+      ],
+      "answerStatus": "supported"
+    }
+  ]
+}

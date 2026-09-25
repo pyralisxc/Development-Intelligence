@@ -15,6 +15,7 @@
     "verify": "npm run build && node --test dist/tests/*.test.js scripts/*.test.mjs && node scripts/check-generic-boundary.mjs",
     "verify:hosted": "node scripts/verify-hosted-production.mjs",
     "benchmark:capacity": "node scripts/benchmark-capacity.mjs",
+    "benchmark:accuracy": "node scripts/benchmark-accuracy.mjs",
     "vcr:plan": "node scripts/vcr-image-maintenance.mjs",
     "graph:seal": "node dist/src/graphCli.js seal",
     "graph:check": "node dist/src/graphCli.js check",
