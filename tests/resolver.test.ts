@@ -18,10 +18,10 @@ function node(id: string, sourceId: string, kind: string, name: string, tags: st
 }
 
 test('cross-source candidate generation suppresses reference-to-reference identity chatter', () => {
-  const leftReference = node('ref:left', 'repo:a.cs', 'call-reference', 'Run', ['reference']);
-  const rightReference = node('ref:right', 'repo:b.cs', 'call-reference', 'Run', ['reference']);
-  const method = node('method:right', 'repo:c.cs', 'method', 'Run');
-  const otherMethod = node('method:other', 'repo:d.cs', 'method', 'Run');
+  const leftReference = node('ref:left', 'repo:a.cs', 'call-reference', 'Execute', ['reference']);
+  const rightReference = node('ref:right', 'repo:b.cs', 'call-reference', 'Execute', ['reference']);
+  const method = node('method:right', 'repo:c.cs', 'method', 'Execute');
+  const otherMethod = node('method:other', 'repo:d.cs', 'method', 'Execute');
 
   const edges = resolveCrossSource([leftReference, rightReference, method, otherMethod], []);
 
@@ -41,8 +41,8 @@ test('cross-source candidate generation suppresses reference-to-reference identi
 });
 
 test('candidate pruning never removes pre-existing resolved or unresolved relationships', () => {
-  const leftReference = node('ref:left', 'repo:a.cs', 'call-reference', 'Run', ['reference']);
-  const rightReference = node('ref:right', 'repo:b.cs', 'call-reference', 'Run', ['reference']);
+  const leftReference = node('ref:left', 'repo:a.cs', 'call-reference', 'Execute', ['reference']);
+  const rightReference = node('ref:right', 'repo:b.cs', 'call-reference', 'Execute', ['reference']);
   const resolved = resolution({
     id: 'resolved',
     from: leftReference.id,
