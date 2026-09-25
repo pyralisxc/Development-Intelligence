@@ -12,7 +12,7 @@ import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, se
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools, toolContract } from '../src/mcp.js';
 import { runtimeIdentity } from '../src/runtimeIdentity.js';
-import { projectOverview, queryWorkbench, queryWorkbenchRequest } from '../src/intelligence/workbench.js';
+import { projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -403,6 +403,55 @@ test('multi-question investigation keeps one graph context and isolates question
   }
 });
 
+test('scope orientation surfaces explainable local graph structure without an opaque importance score', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const orientation = await scopeOrientation({
+      project: fixture.project,
+      scope: 'src/panel.tsx',
+      rankBy: 'cross-file',
+      limit: 10,
+    }) as any;
+    assert.equal(orientation.scope.kind, 'file');
+    assert.equal(orientation.rankBy, 'cross-file');
+    assert.equal(orientation.policy.subjectiveImportanceScore, false);
+    assert.ok(orientation.keyEntities.some((item: any) => item.name === 'Panel'));
+    assert.ok(orientation.keyEntities.every((item: any) => typeof item.id === 'string' && typeof item.reason === 'string'));
+    assert.ok(orientation.boundaries.some((item: any) => item.external?.locator === 'src/helper.ts'), 'file orientation should expose the helper boundary');
+
+    const area = await callTool('orient_scope', {
+      project: fixture.project,
+      scope: 'src',
+      rankBy: 'fan-in',
+      limit: 10,
+    }) as any;
+    assert.equal(area.scope.kind, 'path');
+    assert.equal(area.policy.rankFacet, 'fan-in');
+    assert.ok(area.keyEntities.length > 0);
+
+    const natural = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What are the main functions this page uses?',
+      scope: 'src/panel.tsx',
+      rankBy: 'relationship-diversity',
+    }) as any;
+    assert.equal(natural.intent, 'orientation');
+    assert.equal(natural.routing.tool, 'orient_scope');
+    assert.equal(natural.result.scope.kind, 'file');
+    assert.equal(natural.result.rankBy, 'relationship-diversity');
+
+    const missingScope = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What are the main functions this page uses?',
+    }) as any;
+    assert.equal(missingScope.intent, 'orientation');
+    assert.equal(missingScope.result.scopeRequired, true, 'deictic scope should remain explicit instead of guessing');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
@@ -412,6 +461,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'project_status',
     'project_overview',
     'investigate',
+    'orient_scope',
     'query_intelligence',
     'audit_repository',
     'inspect_portfolio',
@@ -454,7 +504,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 26, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 27, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -472,7 +522,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 26);
+  assert.equal(identity.mcp.toolCount, 27);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
@@ -538,6 +588,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(listBody.result.cacheScope, 'private');
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'project_overview'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'investigate'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'orient_scope'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_entity'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'query_source'));
     assert.equal(listBody.result.tools.some((tool: any) => tool.name === 'clear_cache'), false);
