@@ -162,6 +162,37 @@ test('polyglot imports resolve modules and exact local symbols without inventing
 });
 
 
+test('Java repository binding resolves constructors and safe cross-file calls without guessing instance dispatch', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-java-binding-'));
+  await runChecked('git', ['init', '--initial-branch=main', root]);
+  try {
+    await fs.mkdir(path.join(root, 'core', 'demo', 'core'), { recursive: true });
+    await fs.mkdir(path.join(root, 'app', 'demo', 'app'), { recursive: true });
+    await fs.writeFile(path.join(root, 'core', 'demo', 'core', 'Service.java'), 'package demo.core;\npublic final class Service {\n  public Service(int seed) { }\n  public static void start() { }\n  public void run() { }\n}\n');
+    await fs.writeFile(path.join(root, 'app', 'demo', 'app', 'Program.java'), 'package demo.app;\nimport demo.core.Service;\npublic final class Program {\n  public void execute() {\n    Service service = new Service(1);\n    Service.start();\n    service.run();\n  }\n}\n');
+    await runChecked('git', ['-C', root, 'add', '.']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
+    const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+    const graph = await buildRepositoryGraph({ project: 'JavaBindingFixture', repository: root, revision, root, role: 'W' });
+
+    const constructor = graph.nodes.find(node => node.kind === 'constructor' && node.name === 'Service');
+    const start = graph.nodes.find(node => node.kind === 'method' && node.name === 'start');
+    const run = graph.nodes.find(node => node.kind === 'method' && node.name === 'run');
+    const execute = graph.nodes.find(node => node.kind === 'method' && node.name === 'execute');
+
+    assert.ok(constructor && start && run && execute);
+    assert.ok(graph.edges.some(edge => edge.from === execute.id && edge.to === constructor.id && edge.kind === 'constructs' && edge.status === 'resolved' && edge.strategy === 'java-static-binding'));
+    assert.ok(graph.edges.some(edge => edge.from === execute.id && edge.to === start.id && edge.kind === 'calls' && edge.status === 'resolved' && edge.strategy === 'java-static-binding'));
+    assert.equal(
+      graph.edges.some(edge => edge.from === execute.id && edge.to === run.id && edge.kind === 'calls' && edge.status === 'resolved'),
+      false,
+      'instance dispatch through a local variable must remain unresolved without type evidence',
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('C# repository binding resolves interfaces, constructors, and safe cross-file calls without guessing instance dispatch', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-csharp-binding-'));
   await runChecked('git', ['init', '--initial-branch=main', root]);
