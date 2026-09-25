@@ -491,6 +491,151 @@ export async function queryWorkbench(input: {
   return { intent: 'search', subject: subjectDescriptor(null, query), routing: { tool: 'search_graph' }, answer: `${result.nodeTotal ?? result.nodes?.length ?? 0} entities match “${query}”.`, result };
 }
 
+
+function decomposeQuestionText(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  const pieces: string[] = [];
+  let start = 0;
+  for (let index = 0; index < trimmed.length; index += 1) {
+    if (trimmed[index] !== '?') continue;
+    const piece = trimmed.slice(start, index + 1).trim();
+    if (piece) pieces.push(piece);
+    start = index + 1;
+  }
+  const remainder = trimmed.slice(start).trim();
+  if (pieces.length > 1 && !remainder) return pieces;
+  return [trimmed];
+}
+
+function inheritedQuestion(question: string, subjectId: string | null): { text: string; inherited: boolean } {
+  if (!subjectId) return { text: question, inherited: false };
+  let resolved = question;
+  const patterns = [
+    /\bthose answers\b/giu,
+    /\bthat answer\b/giu,
+    /\bthis (?:entity|feature|function|class|page|route|api|subject)\b/giu,
+    /\bit\b/giu,
+  ];
+  let inherited = false;
+  for (const pattern of patterns) {
+    if (!pattern.test(resolved)) continue;
+    pattern.lastIndex = 0;
+    resolved = resolved.replace(pattern, subjectId);
+    inherited = true;
+  }
+  return { text: resolved, inherited };
+}
+
+export async function queryWorkbenchRequest(input: {
+  project: string;
+  text?: string | undefined;
+  questions?: string[] | undefined;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  sourceId?: string | undefined;
+  capability?: TechnicalSourceCapability | undefined;
+}): Promise<Record<string, unknown>> {
+  const explicit = (input.questions ?? []).map(question => question.trim()).filter(Boolean);
+  if (explicit.length > 10) throw new Error('questions supports at most 10 items');
+  const originalText = input.text?.trim() ?? '';
+  if (explicit.length && originalText) throw new Error('provide text or questions, not both');
+
+  const questions = explicit.length ? explicit : decomposeQuestionText(originalText);
+  if (!questions.length) throw new Error('text or questions must contain at least one question');
+  if (questions.length > 10) throw new Error('investigation supports at most 10 questions');
+
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const mode = explicit.length ? 'explicit' : questions.length > 1 ? 'decomposed' : 'single';
+
+  if (questions.length === 1) {
+    const result = await queryWorkbench({
+      project: input.project,
+      text: questions[0]!,
+      graphId: graph.graphId,
+      sourceId: input.sourceId,
+      capability: input.capability,
+    });
+    return {
+      ...result,
+      request: {
+        mode,
+        graphId: graph.graphId,
+        revision: graph.repositoryRevision,
+        questionCount: 1,
+        originalText: originalText || null,
+      },
+    };
+  }
+
+  const items: Array<Record<string, unknown>> = [];
+  let inheritedSubjectId: string | null = null;
+  for (const [index, originalQuestion] of questions.entries()) {
+    const inherited = inheritedQuestion(originalQuestion, inheritedSubjectId);
+    try {
+      const result = await queryWorkbench({
+        project: input.project,
+        text: inherited.text,
+        graphId: graph.graphId,
+        sourceId: input.sourceId,
+        capability: input.capability,
+      }) as any;
+      const subjectId = result?.subject && result.subject.ambiguous !== true && typeof result.subject.id === 'string'
+        ? result.subject.id
+        : null;
+      if (subjectId) inheritedSubjectId = subjectId;
+      items.push({
+        index,
+        question: originalQuestion,
+        resolvedQuestion: inherited.text,
+        inheritedSubject: inherited.inherited ? inheritedSubjectId : null,
+        status: 'ok',
+        intent: result.intent ?? null,
+        subject: result.subject ?? null,
+        routing: result.routing ?? null,
+        answer: result.answer ?? null,
+        result: result.result ?? null,
+      });
+    } catch (error) {
+      items.push({
+        index,
+        question: originalQuestion,
+        resolvedQuestion: inherited.text,
+        inheritedSubject: inherited.inherited ? inheritedSubjectId : null,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    project: input.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    intent: 'batch',
+    request: {
+      mode,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      questionCount: questions.length,
+      originalText: originalText || null,
+      explicitQuestions: explicit.length > 0,
+    },
+    items,
+    counts: {
+      ok: items.filter(item => item.status === 'ok').length,
+      error: items.filter(item => item.status === 'error').length,
+    },
+    policy: {
+      deterministicDecomposition: true,
+      inheritedSubjectOnlyFromExactPriorResult: true,
+      failureIsolation: true,
+      persisted: false,
+      note: 'Each question is routed independently over one pinned graph context. Prior exact subjects may resolve simple pronouns; ambiguous or failed questions never become graph authority.',
+    },
+  };
+}
+
 export async function workbenchSources(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {
   const [configured, graph] = await Promise.all([listTechnicalSources(project), currentGraph(project, ref, graphId)]);
   return {

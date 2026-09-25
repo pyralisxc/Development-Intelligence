@@ -12,7 +12,7 @@ import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, se
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools, toolContract } from '../src/mcp.js';
 import { runtimeIdentity } from '../src/runtimeIdentity.js';
-import { projectOverview, queryWorkbench } from '../src/intelligence/workbench.js';
+import { projectOverview, queryWorkbench, queryWorkbenchRequest } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -366,6 +366,43 @@ test('shared investigation router maps ordinary questions to existing DI primiti
   }
 });
 
+test('multi-question investigation keeps one graph context and isolates questions', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const paragraph = 'What is Panel? What does it depend on? Where is it implemented? What evidence supports those answers?';
+    const batch = await queryWorkbenchRequest({ project: fixture.project, text: paragraph }) as any;
+    assert.equal(batch.intent, 'batch');
+    assert.equal(batch.request.mode, 'decomposed');
+    assert.equal(batch.request.questionCount, 4);
+    assert.equal(batch.counts.error, 0);
+    assert.deepEqual(batch.items.map((item: any) => item.intent), ['inspect', 'trace', 'code', 'evidence']);
+    assert.ok(batch.items.slice(1).every((item: any) => item.resolvedQuestion.includes(batch.items[0].subject.id)), 'follow-up pronouns should inherit only the exact first subject');
+    assert.ok(batch.items.every((item: any) => item.status === 'ok'));
+
+    const explicit = await callTool('investigate', {
+      project: fixture.project,
+      questions: ['What is Panel?', 'What does it depend on?', 'Where is it implemented?'],
+    }) as any;
+    assert.equal(explicit.intent, 'batch');
+    assert.equal(explicit.request.mode, 'explicit');
+    assert.equal(explicit.request.questionCount, 3);
+    assert.equal(explicit.graphId, batch.graphId);
+    assert.deepEqual(explicit.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
+
+    const isolated = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', 'What does definitely-not-real depend on?', 'What evidence supports it?'],
+    }) as any;
+    assert.equal(isolated.items[0].status, 'ok');
+    assert.equal(isolated.items[1].status, 'error');
+    assert.equal(isolated.items[2].status, 'ok', 'one failed question must not poison later questions');
+    assert.equal(isolated.counts.error, 1);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
@@ -543,6 +580,17 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(typeof intelligenceBody.result.answerStatus, 'string');
     assert.equal(typeof intelligenceBody.result.revision, 'string');
     assert.ok('reach' in intelligenceBody.result, 'Workbench query must preserve the shared assessment reach field even when no entity is unambiguously selected');
+
+    const batchQuery = await fetch(`${origin}/workbench/query`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: fixture.project, text: 'What is Panel? What does it depend on? Where is it implemented?' }),
+    });
+    assert.equal(batchQuery.status, 200);
+    const batchBody = await batchQuery.json() as any;
+    assert.equal(batchBody.intent, 'batch');
+    assert.equal(batchBody.request.questionCount, 3);
+    assert.deepEqual(batchBody.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
 
     const historicalBase = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD~1'])).stdout.trim();
     const historicalParams = new URLSearchParams({ project: fixture.project, action: 'changes', baseRef: `commit:${historicalBase}`, headRef: 'branch:main' });
