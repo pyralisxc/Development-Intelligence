@@ -175,6 +175,24 @@ function csharpConstructorTarget(node: SgNode): { typeName: string; arity: numbe
   return { typeName: match[1]!.replace(/<.*>$/u, ''), arity: argumentCount(node) };
 }
 
+function javaInvocationTarget(node: SgNode): { name: string; qualifier: string | null; arity: number | null } | null {
+  if (String(node.kind()) !== 'method_invocation') return null;
+  const match = /^([A-Za-z_][A-Za-z0-9_.]*)\s*(?:<[^()]+>)?\s*\(/u.exec(node.text().trim());
+  if (!match) return null;
+  const parts = match[1]!.split('.');
+  const name = parts.at(-1)!;
+  const qualifier = parts.length > 1 ? parts.slice(0, -1).join('.') : null;
+  if (qualifier && !/^[A-Z]/u.test(qualifier.split('.').at(-1) ?? '') && !qualifier.includes('.')) return null;
+  return { name, qualifier, arity: argumentCount(node) };
+}
+
+function javaConstructorTarget(node: SgNode): { typeName: string; arity: number | null } | null {
+  if (String(node.kind()) !== 'object_creation_expression') return null;
+  const match = /^new\s+([A-Za-z_][A-Za-z0-9_.]*(?:<[^()]+>)?)\s*\(/u.exec(node.text().trim());
+  if (!match) return null;
+  return { typeName: match[1]!.replace(/<.*>$/u, ''), arity: argumentCount(node) };
+}
+
 function importBindingsFor(language: Language, node: SgNode): ImportBinding[] {
   const syntaxKind = String(node.kind());
   const text = node.text().trim();
@@ -290,18 +308,18 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
 
   const visit = (node: SgNode, scope: string[], owner: Observation | null): void => {
     if (node.kind() === 'ERROR') parseErrors += 1;
-    if (language === 'csharp' && owner) {
+    if ((language === 'csharp' || language === 'java') && owner) {
       const ownerValue = owner.value && typeof owner.value === 'object' ? owner.value as Record<string, unknown> : null;
       const ownerQualifiedName = typeof ownerValue?.qualifiedName === 'string' ? ownerValue.qualifiedName : null;
-      const call = csharpInvocationTarget(node);
-      const constructor = csharpConstructorTarget(node);
+      const call = language === 'csharp' ? csharpInvocationTarget(node) : javaInvocationTarget(node);
+      const constructor = language === 'csharp' ? csharpConstructorTarget(node) : javaConstructorTarget(node);
       const reference = call
         ? { kind: 'call-reference', name: call.name, field: 'call', value: { language, referenceKind: 'call', targetName: call.name, qualifier: call.qualifier, arity: call.arity, ownerQualifiedName } }
         : constructor
           ? { kind: 'constructor-reference', name: constructor.typeName, field: 'constructor', value: { language, referenceKind: 'constructor', targetName: constructor.typeName, arity: constructor.arity, ownerQualifiedName } }
           : null;
       if (reference) {
-        const baseId = `reference:${context.locatorBase}#csharp:${reference.kind}:${safeIdentityPart(owner.id)}:${safeIdentityPart(reference.name)}`;
+        const baseId = `reference:${context.locatorBase}#${language}:${reference.kind}:${safeIdentityPart(owner.id)}:${safeIdentityPart(reference.name)}`;
         const ordinal = (referenceIdentities.get(baseId) ?? 0) + 1;
         referenceIdentities.set(baseId, ordinal);
         const observed = observation({
