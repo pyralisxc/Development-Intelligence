@@ -71,6 +71,16 @@ for (const target of targets) {
     relationshipCounts['csharp-implemented-by'] = csharpDeepCounts.implementedBy;
     relationshipCounts['unity-reverse-usage'] = csharpDeepCounts.unityReverse;
   }
+  if (target.project === 'Medieval-Sim') {
+    const javaDeepCounts = {
+      calls: graph.edges.filter(edge => edge.kind === 'calls' && edge.status === 'resolved' && edge.strategy === 'java-static-binding').length,
+      constructs: graph.edges.filter(edge => edge.kind === 'constructs' && edge.status === 'resolved' && edge.strategy === 'java-static-binding').length,
+    };
+    if (javaDeepCounts.calls + javaDeepCounts.constructs < 1) throw new Error('Medieval-Sim expected at least one resolved Java call or constructor binding');
+    relationshipCounts['java-calls'] = javaDeepCounts.calls;
+    relationshipCounts['java-constructs'] = javaDeepCounts.constructs;
+  }
+
   for (const [kind, count] of Object.entries(kindCounts)) if (count < 1) throw new Error(`${target.project} expected observed ${kind} nodes`);
   for (const [strategy, count] of Object.entries(strategyCounts)) if (count < 1) throw new Error(`${target.project} expected resolved ${strategy} relationships`);
   for (const [kind, count] of Object.entries(relationshipCounts)) if (count < 1) throw new Error(`${target.project} expected resolved ${kind} relationships`);
