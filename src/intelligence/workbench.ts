@@ -320,6 +320,58 @@ function querySubject(text: string, markers: RegExp[]): string {
   return value.replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
 }
 
+function normalizedMention(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}_./:@-]+/gu, ' ').replace(/\s+/gu, ' ').trim();
+}
+
+function subjectDescriptor(node: GraphNode | null, fallback: string | null, ambiguous = false, candidates: GraphNode[] = []): Record<string, unknown> | null {
+  if (!node && !fallback && !ambiguous) return null;
+  return {
+    query: fallback,
+    ambiguous,
+    ...(node ? { id: node.id, name: displayName(node), kind: node.kind, layer: node.layer ?? 'structural', locator: node.locator } : {}),
+    ...(candidates.length ? { candidates: candidates.slice(0, 10).map(item => ({ id: item.id, name: displayName(item), kind: item.kind, layer: item.layer ?? 'structural', locator: item.locator })) } : {}),
+  };
+}
+
+async function resolveInvestigationSubject(
+  input: { project: string; ref?: string | undefined; graphId?: string | undefined },
+  text: string,
+  markers: RegExp[],
+): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[] }> {
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const cleaned = querySubject(text, markers);
+  if (cleaned) {
+    const direct = findGraphNodeCandidates(graph, cleaned, 20);
+    const exact = direct.find(node => node.id === cleaned || normalizedMention(node.name ?? '') === normalizedMention(cleaned));
+    if (exact) return { query: cleaned, node: exact, ambiguous: false, candidates: [exact] };
+    if (direct.length === 1) return { query: cleaned, node: direct[0]!, ambiguous: false, candidates: direct };
+  }
+
+  const haystack = normalizedMention(text);
+  const mentions = graph.nodes
+    .map(node => {
+      const values = [node.id, node.name ?? '']
+        .map(value => ({ raw: value, normalized: normalizedMention(value) }))
+        .filter(value => value.normalized.length >= 3 && haystack.includes(value.normalized));
+      const score = values.reduce((max, value) => Math.max(max, value.normalized.length), 0);
+      return { node, score };
+    })
+    .filter(item => item.score > 0)
+    .sort((a, b) =>
+      b.score - a.score
+      || Number(b.node.layer === 'semantic') - Number(a.node.layer === 'semantic')
+      || a.node.id.localeCompare(b.node.id));
+
+  if (!mentions.length) return { query: cleaned || null, node: null, ambiguous: false, candidates: [] };
+  const best = mentions[0]!;
+  const tied = mentions.filter(item => item.score === best.score);
+  const semanticBest = tied.filter(item => item.node.layer === 'semantic');
+  if (semanticBest.length === 1) return { query: cleaned || displayName(semanticBest[0]!.node), node: semanticBest[0]!.node, ambiguous: false, candidates: tied.map(item => item.node) };
+  if (tied.length === 1) return { query: cleaned || displayName(best.node), node: best.node, ambiguous: false, candidates: [best.node] };
+  return { query: cleaned || null, node: null, ambiguous: true, candidates: tied.map(item => item.node) };
+}
+
 export async function queryWorkbench(input: {
   project: string;
   text: string;
@@ -331,55 +383,112 @@ export async function queryWorkbench(input: {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
   const lower = text.toLowerCase();
+
   if (input.sourceId) {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
-    return { intent: 'source-query', answer: `Read-only query sent to ${input.sourceId}.`, result: external };
+    return { intent: 'source-query', subject: null, routing: { tool: 'query_source', sourceId: input.sourceId }, answer: `Read-only query sent to ${input.sourceId}.`, result: external };
   }
-  if (/\b(audit|finding|problem|risk|realiz\w*|implement\w*|capability|proof|prove)\b/.test(lower)) {
-    const result = await queryIntelligence({ project: input.project, question: text, ...(input.ref ? { ref: input.ref } : {}), ...(input.graphId ? { graphId: input.graphId } : {}) });
-    return { intent: 'intelligence', answer: `Evidence-backed assessment: ${String((result as any).answerStatus ?? 'indeterminate')}.`, result };
-  }
+
   if (/\b(what changed|changes?|diff|delta)\b/.test(lower)) {
     const result = await diffAcceptedToWorking(input.project, input.ref);
     const counts = semanticDiffCounts(result);
-    return { intent: 'change', answer: `Accepted → working semantic change: ${counts.added} added, ${counts.removed} removed, ${counts.changed} changed records.`, result };
+    return { intent: 'change', subject: null, routing: { tool: 'diff_graph' }, answer: `Accepted → working semantic change: ${counts.added} added, ${counts.removed} removed, ${counts.changed} changed records.`, result };
   }
+
   if (/\bcoverage\b/.test(lower)) {
     const result = await graphCoverage(input.project, input.ref, input.graphId);
     const coverage = result as any;
-    return { intent: 'coverage', answer: `Coverage: ${coverage.completeFiles ?? '?'} complete, ${coverage.partialFiles ?? '?'} partial, ${coverage.failedFiles ?? '?'} failed, ${coverage.skippedFiles ?? '?'} skipped files.`, result };
+    return { intent: 'coverage', subject: null, routing: { tool: 'check_graph_coverage' }, answer: `Coverage: ${coverage.completeFiles ?? '?'} complete, ${coverage.partialFiles ?? '?'} partial, ${coverage.failedFiles ?? '?'} failed, ${coverage.skippedFiles ?? '?'} skipped files.`, result };
   }
+
   if (/\bparity\b/.test(lower)) {
-    const subject = querySubject(text, [/\b(show|find|inspect|query|parity|for|of)\b/gi]);
-    const result = await parityLens({ project: input.project, ref: input.ref, graphId: input.graphId, query: subject || undefined, limit: 100 }) as any;
-    return { intent: 'parity', answer: `${result.items?.length ?? result.nodes?.length ?? 0} parity result(s) found${subject ? ` for “${subject}”` : ''}.`, result };
+    const resolved = await resolveInvestigationSubject(input, text, [/\b(show|find|inspect|query|parity|for|of|what|is|the)\b/gi]);
+    const subject = resolved.node?.id ?? resolved.query ?? undefined;
+    const result = await parityLens({ project: input.project, ref: input.ref, graphId: input.graphId, query: subject, limit: 100 }) as any;
+    return {
+      intent: 'parity',
+      subject: subjectDescriptor(resolved.node, resolved.query, resolved.ambiguous, resolved.candidates),
+      routing: { tool: 'query_parity' },
+      answer: `${result.items?.length ?? result.nodes?.length ?? 0} parity result(s) found${subject ? ` for “${subject}”` : ''}.`,
+      result,
+    };
   }
-  if (/\b(code|source|implementation)\b/.test(lower)) {
-    const pattern = querySubject(text, [/\b(show|find|search|code|source|implementation|for|of|where|is)\b/gi]);
+
+  if (/\b(code|source|implementation|implemented)\b/.test(lower)) {
+    const resolved = await resolveInvestigationSubject(input, text, [/\b(show|show me|find|search|code|source|implementation|implemented|for|of|where|is|the)\b/gi]);
+    if (resolved.ambiguous) {
+      return { intent: 'code', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'get_code_snippet' }, answer: 'The requested implementation subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
+    }
+    if (resolved.node) {
+      try {
+        const result = await getCodeSnippet({ project: input.project, ref: input.ref, graphId: input.graphId, node: resolved.node.id, context: 8 }) as any;
+        return { intent: 'code', subject: subjectDescriptor(resolved.node, resolved.query), routing: { tool: 'get_code_snippet' }, answer: `Exact source resolved for “${displayName(resolved.node)}”.`, result };
+      } catch {
+        // Some semantic/runtime entities do not have one exact source snippet; fall back to bounded source search.
+      }
+    }
+    const pattern = resolved.node?.name ?? resolved.query;
     if (pattern) {
       const result = await searchCode({ project: input.project, ref: input.ref, graphId: input.graphId, pattern, limit: 100 }) as any;
-      return { intent: 'code', answer: `${result.matches?.length ?? 0} source match(es) found for “${pattern}”.`, result };
+      return { intent: 'code', subject: subjectDescriptor(resolved.node, resolved.query), routing: { tool: 'search_code' }, answer: `${result.matches?.length ?? 0} source match(es) found for “${pattern}”.`, result };
     }
   }
-  if (/\b(depends on|dependency|dependencies|used by|uses|callers?|called by)\b/.test(lower)) {
-    const subject = querySubject(text, [/\b(what|which|show|find|depends on|dependency|dependencies|used by|uses|callers?|called by|of|for|does)\b/gi]);
+
+  if (/\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/.test(lower)) {
+    const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi]);
+    if (resolved.ambiguous) {
+      return { intent: 'trace', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'trace_path' }, answer: 'The relationship subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
+    }
+    const subject = resolved.node?.id ?? resolved.query;
     if (subject) {
-      const direction = /used by|callers?|called by/.test(lower) ? 'inbound' : /depends on|uses/.test(lower) ? 'outbound' : 'both';
+      const direction = /used by|callers?|called by/.test(lower) ? 'inbound' : /depend(?:s)? on|uses/.test(lower) ? 'outbound' : 'both';
       const result = await traceGraph({ project: input.project, ref: input.ref, graphId: input.graphId, node: subject, direction, depth: 2, statuses: ['resolved'], limit: 250 }) as any;
-      return { intent: 'trace', answer: result.ambiguous ? `“${subject}” is ambiguous; choose an exact entity.` : `${result.nodes?.length ?? 0} entities and ${result.edges?.length ?? 0} resolved relationships are in the traced neighborhood of “${subject}”.`, result };
+      return {
+        intent: 'trace',
+        subject: subjectDescriptor(resolved.node, resolved.query),
+        routing: { tool: 'trace_path', direction },
+        answer: result.ambiguous ? `“${subject}” is ambiguous; choose an exact entity.` : `${result.nodes?.length ?? 0} entities and ${result.edges?.length ?? 0} resolved relationships are in the traced neighborhood of “${displayName(resolved.node ?? undefined, subject)}”.`,
+        result,
+      };
     }
   }
+
+  if (/\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/.test(lower)) {
+    const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi]);
+    if (!resolved.ambiguous && resolved.node && /\b(evidence|supports?|supporting|proof|prove)\b/.test(lower)) {
+      const result = await inspectEntity({ project: input.project, node: resolved.node.id, ref: input.ref, graphId: input.graphId });
+      return { intent: 'evidence', subject: subjectDescriptor(resolved.node, resolved.query), routing: { tool: 'inspect_entity' }, answer: `Evidence and resolved context loaded for “${displayName(resolved.node)}”.`, result };
+    }
+    const result = await queryIntelligence({ project: input.project, question: text, ...(input.ref ? { ref: input.ref } : {}), ...(input.graphId ? { graphId: input.graphId } : {}) });
+    return {
+      intent: 'intelligence',
+      subject: subjectDescriptor(resolved.node, resolved.query, resolved.ambiguous, resolved.candidates),
+      routing: { tool: 'query_intelligence' },
+      answer: `Evidence-backed assessment: ${String((result as any).answerStatus ?? 'indeterminate')}.`,
+      result,
+    };
+  }
+
   if (/\b(overview|summary|summarize|project status|what is this project)\b/.test(lower)) {
     const result = await projectOverview(input.project, input.ref, input.graphId);
-    return { intent: 'overview', answer: String(result.summary ?? `${input.project} overview`), result };
+    return { intent: 'overview', subject: null, routing: { tool: 'project_overview' }, answer: String(result.summary ?? `${input.project} overview`), result };
   }
-  const subject = querySubject(text, [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i]);
-  const result = await searchGraph({ project: input.project, ref: input.ref, graphId: input.graphId, query: subject || text, limit: 100 }) as any;
+
+  const resolved = await resolveInvestigationSubject(input, text, [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i]);
+  if (resolved.ambiguous) {
+    return { intent: 'search', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'search_graph' }, answer: 'The requested subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
+  }
+  if (resolved.node) {
+    const inspected = await inspectEntity({ project: input.project, node: resolved.node.id, ref: input.ref, graphId: input.graphId });
+    return { intent: 'inspect', subject: subjectDescriptor(resolved.node, resolved.query), routing: { tool: 'inspect_entity' }, answer: String(inspected.summary ?? `Found ${displayName(resolved.node)}.`), result: inspected };
+  }
+  const query = resolved.query || text;
+  const result = await searchGraph({ project: input.project, ref: input.ref, graphId: input.graphId, query, limit: 100 }) as any;
   if ((result.nodes?.length ?? 0) === 1) {
     const inspected = await inspectEntity({ project: input.project, node: result.nodes[0].id, ref: input.ref, graphId: input.graphId });
-    return { intent: 'inspect', answer: String(inspected.summary ?? `Found ${subject || text}.`), result: inspected };
+    return { intent: 'inspect', subject: subjectDescriptor(result.nodes[0], query), routing: { tool: 'inspect_entity' }, answer: String(inspected.summary ?? `Found ${query}.`), result: inspected };
   }
-  return { intent: 'search', answer: `${result.nodeTotal ?? result.nodes?.length ?? 0} entities match “${subject || text}”.`, result };
+  return { intent: 'search', subject: subjectDescriptor(null, query), routing: { tool: 'search_graph' }, answer: `${result.nodeTotal ?? result.nodes?.length ?? 0} entities match “${query}”.`, result };
 }
 
 export async function workbenchSources(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {

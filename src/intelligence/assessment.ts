@@ -202,7 +202,7 @@ function candidates(graph: IntelligenceGraph, query: string): GraphNode[] {
 function subjectFromQuestion(question: string): string {
   return question
     .replace(/\b(?:can\s+(?:we|you)\s+)?(?:rule|ruled)\s+out\b/giu, ' ')
-    .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|show|inspect|what|where|the|for|of|in|exists?|existence|works?|working|whether|hypothesis|hypotheses)\b/giu, ' ')
+    .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|evidence|supports?|supporting|depends?|dependency|dependencies|used|uses|callers?|called|connect(?:ed|s|ion)?|relationships?|related|show|inspect|what|where|the|for|of|in|on|to|by|exists?|existence|works?|working|whether|hypothesis|hypotheses)\b/giu, ' ')
     .replace(/[^\p{L}\p{N}_./:@-]+/gu, ' ')
     .replace(/\s+/gu, ' ')
     .trim();
