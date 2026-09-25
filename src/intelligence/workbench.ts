@@ -314,6 +314,282 @@ export async function exploreWorkbench(input: { project: string; query?: string 
   };
 }
 
+
+export type ScopeRankBy = 'fan-in' | 'fan-out' | 'cross-file' | 'relationship-diversity' | 'uncertainty';
+
+function graphArea(node: GraphNode): string | null {
+  const file = sourceFile(node.locator);
+  if (!file) return null;
+  const clean = file.replace(/^\.\//, '');
+  const parts = clean.split('/');
+  return parts[0] === 'src' && parts[1] ? 'src/' + parts[1] : parts[0] ?? null;
+}
+
+function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
+  kind: 'repository' | 'path' | 'file' | 'entity' | 'ambiguous' | 'missing';
+  value: string | null;
+  ids: Set<string>;
+  entity: GraphNode | null;
+  candidates: GraphNode[];
+} {
+  const scope = requested?.trim() ?? '';
+  if (!scope || scope === 'repository' || scope === graph.project) {
+    return { kind: 'repository', value: scope || graph.project, ids: new Set(graph.nodes.map(node => node.id)), entity: null, candidates: [] };
+  }
+
+  const pathScope = scope.replace(/^file:/, '').replace(/^\.\//, '').replace(/\/+$/, '');
+  const fileIds = graph.nodes.filter(node => sourceFile(node.locator)?.replace(/^\.\//, '') === pathScope).map(node => node.id);
+  if (fileIds.length) return { kind: 'file', value: pathScope, ids: new Set(fileIds), entity: null, candidates: [] };
+
+  const pathIds = graph.nodes.filter(node => {
+    const file = sourceFile(node.locator)?.replace(/^\.\//, '');
+    return file === pathScope || file?.startsWith(pathScope + '/');
+  }).map(node => node.id);
+  if (pathIds.length) return { kind: 'path', value: pathScope, ids: new Set(pathIds), entity: null, candidates: [] };
+
+  const candidates = findGraphNodeCandidates(graph, scope, 20);
+  const exact = candidates.find(node => node.id === scope);
+  if (exact || candidates.length === 1) {
+    const entity = exact ?? candidates[0]!;
+    return { kind: 'entity', value: entity.id, ids: new Set([entity.id]), entity, candidates: [entity] };
+  }
+  if (candidates.length > 1) {
+    const named = candidates.filter(node => normalizedMention(node.name ?? '') === normalizedMention(scope));
+    if (named.length === 1) return { kind: 'entity', value: named[0]!.id, ids: new Set([named[0]!.id]), entity: named[0]!, candidates: named };
+  }
+
+  if (candidates.length > 1) return { kind: 'ambiguous', value: scope, ids: new Set(), entity: null, candidates };
+  return { kind: 'missing', value: scope, ids: new Set(), entity: null, candidates: [] };
+}
+
+function orientationMetric(
+  node: GraphNode,
+  graph: IntelligenceGraph,
+  incident: GraphEdge[],
+  rankBy: ScopeRankBy,
+): {
+  fanIn: number;
+  fanOut: number;
+  crossFileReach: number;
+  crossAreaReach: number;
+  relationshipDiversity: number;
+  candidate: number;
+  unresolved: number;
+  semanticLinks: number;
+  representationLinks: number;
+  callers: number;
+  callees: number;
+  rankValue: number;
+} {
+  const byId = new Map(graph.nodes.map(item => [item.id, item]));
+  const resolved = incident.filter(edge => edge.status === 'resolved');
+  const neighborFiles = new Set<string>();
+  const neighborAreas = new Set<string>();
+  let semanticLinks = 0;
+  let representationLinks = 0;
+  let callers = 0;
+  let callees = 0;
+
+  for (const edge of resolved) {
+    const neighborId = edge.from === node.id ? edge.to : edge.from;
+    const neighbor = neighborId ? byId.get(neighborId) : undefined;
+    if (neighbor) {
+      const file = sourceFile(neighbor.locator);
+      if (file) neighborFiles.add(file);
+      const area = graphArea(neighbor);
+      if (area) neighborAreas.add(area);
+      if (neighbor.layer === 'semantic') semanticLinks += 1;
+      if (neighbor.layer === 'representation') representationLinks += 1;
+    }
+    if (edge.kind === 'calls') {
+      if (edge.to === node.id) callers += 1;
+      if (edge.from === node.id) callees += 1;
+    }
+  }
+
+  const metrics = {
+    fanIn: resolved.filter(edge => edge.to === node.id).length,
+    fanOut: resolved.filter(edge => edge.from === node.id).length,
+    crossFileReach: neighborFiles.size,
+    crossAreaReach: neighborAreas.size,
+    relationshipDiversity: new Set(resolved.map(edge => edge.kind)).size,
+    candidate: incident.filter(edge => edge.status === 'candidate').length,
+    unresolved: incident.filter(edge => edge.status === 'unresolved').length,
+    semanticLinks,
+    representationLinks,
+    callers,
+    callees,
+  };
+  const rankValue = rankBy === 'fan-in' ? metrics.fanIn
+    : rankBy === 'fan-out' ? metrics.fanOut
+      : rankBy === 'relationship-diversity' ? metrics.relationshipDiversity
+        : rankBy === 'uncertainty' ? metrics.candidate + metrics.unresolved
+          : metrics.crossFileReach;
+  return { ...metrics, rankValue };
+}
+
+function orientationReason(metrics: ReturnType<typeof orientationMetric>, rankBy: ScopeRankBy): string {
+  if (rankBy === 'fan-in') return String(metrics.fanIn) + ' resolved inbound relationship(s); ' + String(metrics.callers) + ' resolved caller(s).';
+  if (rankBy === 'fan-out') return String(metrics.fanOut) + ' resolved outbound relationship(s); ' + String(metrics.callees) + ' resolved callee(s).';
+  if (rankBy === 'relationship-diversity') return String(metrics.relationshipDiversity) + ' resolved relationship kind(s) across ' + String(metrics.crossFileReach) + ' neighboring file(s).';
+  if (rankBy === 'uncertainty') return String(metrics.candidate) + ' candidate and ' + String(metrics.unresolved) + ' unresolved relationship(s).';
+  return String(metrics.crossFileReach) + ' neighboring file(s) and ' + String(metrics.crossAreaReach) + ' neighboring area(s) through resolved relationships.';
+}
+
+export async function scopeOrientation(input: {
+  project: string;
+  scope?: string | undefined;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  rankBy?: ScopeRankBy | undefined;
+  limit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const rankBy = input.rankBy ?? 'cross-file';
+  const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
+  const selected = scopeNodeIds(graph, input.scope);
+
+  if (selected.kind === 'ambiguous') {
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: true,
+      scope: { kind: selected.kind, value: selected.value },
+      candidates: selected.candidates.slice(0, 10).map(node => ({ id: node.id, name: displayName(node), kind: node.kind, layer: node.layer ?? 'structural', locator: node.locator })),
+      policy: { subjectiveImportanceScore: false, persisted: false },
+    };
+  }
+  if (selected.kind === 'missing') {
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: false,
+      scope: { kind: selected.kind, value: selected.value },
+      keyEntities: [],
+      summary: 'No graph scope matching "' + String(selected.value) + '" was observed.',
+      coverage: compactCoverage(graph),
+      policy: { subjectiveImportanceScore: false, persisted: false },
+    };
+  }
+
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  let scopedIds = selected.ids;
+  if (selected.kind === 'entity' && selected.entity) {
+    scopedIds = new Set([selected.entity.id]);
+    let frontier = [selected.entity.id];
+    for (let depth = 0; depth < 2 && frontier.length && scopedIds.size < 300; depth += 1) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const edge of graph.edges) {
+          if (edge.status !== 'resolved' || (edge.from !== id && edge.to !== id)) continue;
+          const neighbor = edge.from === id ? edge.to : edge.from;
+          if (neighbor && !scopedIds.has(neighbor) && scopedIds.size < 300) {
+            scopedIds.add(neighbor);
+            next.push(neighbor);
+          }
+        }
+      }
+      frontier = next;
+    }
+  }
+
+  const nodes = [...scopedIds].map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
+  const scopedSet = new Set(nodes.map(node => node.id));
+  const incidentByNode = new Map<string, GraphEdge[]>();
+  for (const edge of graph.edges) {
+    if (edge.from && scopedSet.has(edge.from)) {
+      const current = incidentByNode.get(edge.from) ?? [];
+      current.push(edge);
+      incidentByNode.set(edge.from, current);
+    }
+    if (edge.to && scopedSet.has(edge.to) && edge.to !== edge.from) {
+      const current = incidentByNode.get(edge.to) ?? [];
+      current.push(edge);
+      incidentByNode.set(edge.to, current);
+    }
+  }
+
+  const preferredKinds = new Set(['feature','capability','route','api','mcp','provider','file','function','method','class','interface','constructor']);
+  const ranked = nodes
+    .map(node => ({ node, metrics: orientationMetric(node, graph, incidentByNode.get(node.id) ?? [], rankBy) }))
+    .sort((a, b) =>
+      b.metrics.rankValue - a.metrics.rankValue
+      || Number(preferredKinds.has(b.node.kind)) - Number(preferredKinds.has(a.node.kind))
+      || b.metrics.relationshipDiversity - a.metrics.relationshipDiversity
+      || displayName(a.node).localeCompare(displayName(b.node)));
+
+  const meaningful = ranked.filter(item => preferredKinds.has(item.node.kind));
+  const keySource = meaningful.length >= Math.min(limit, 5) ? meaningful : ranked;
+  const keyEntities = keySource.slice(0, limit).map(({ node, metrics }) => ({
+    id: node.id,
+    name: displayName(node),
+    kind: node.kind,
+    layer: node.layer ?? 'structural',
+    locator: node.locator,
+    metrics,
+    reason: orientationReason(metrics, rankBy),
+  }));
+
+  const boundary = graph.edges
+    .filter(edge => edge.status === 'resolved' && edge.from && edge.to && scopedSet.has(edge.from) !== scopedSet.has(edge.to))
+    .slice(0, 200);
+  const boundarySummaries = boundary.map(edge => {
+    const outbound = scopedSet.has(edge.from!);
+    const externalId = outbound ? edge.to! : edge.from!;
+    const external = byId.get(externalId);
+    return {
+      edgeId: edge.id,
+      direction: outbound ? 'outbound' : 'inbound',
+      kind: edge.kind,
+      external: { id: externalId, name: displayName(external, externalId), kind: external?.kind ?? 'unknown', locator: external?.locator ?? null },
+    };
+  });
+
+  const nodeKinds: Record<string, number> = {};
+  for (const node of nodes) nodeKinds[node.kind] = (nodeKinds[node.kind] ?? 0) + 1;
+  const relationshipKinds: Record<string, number> = {};
+  for (const edge of graph.edges.filter(edge => edge.status === 'resolved' && ((edge.from && scopedSet.has(edge.from)) || (edge.to && scopedSet.has(edge.to))))) {
+    relationshipKinds[edge.kind] = (relationshipKinds[edge.kind] ?? 0) + 1;
+  }
+
+  const uncertainty = ranked
+    .filter(item => item.metrics.candidate + item.metrics.unresolved > 0)
+    .sort((a,b) => (b.metrics.candidate + b.metrics.unresolved) - (a.metrics.candidate + a.metrics.unresolved))
+    .slice(0, Math.min(limit, 10))
+    .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
+
+  return {
+    project: input.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    ambiguous: false,
+    scope: {
+      kind: selected.kind,
+      value: selected.value,
+      nodeCount: nodes.length,
+      resolvedBoundaryCount: boundary.length,
+    },
+    rankBy,
+    summary: String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; key entities are ordered by ' + rankBy + '.',
+    nodeKinds: Object.entries(nodeKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
+    relationshipKinds: Object.entries(relationshipKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
+    keyEntities,
+    boundaries: boundarySummaries.slice(0, limit * 2),
+    uncertainty,
+    nextInspections: keyEntities.slice(0, Math.min(5, keyEntities.length)).map(item => ({ id: item.id, name: item.name, locator: item.locator, reason: item.reason })),
+    coverage: compactCoverage(graph),
+    policy: {
+      subjectiveImportanceScore: false,
+      rankFacet: rankBy,
+      evidenceLinked: true,
+      persisted: false,
+      note: 'Orientation ranks observed graph facets only. It does not assign architectural quality, severity, or product priority.',
+    },
+  };
+}
+
 function querySubject(text: string, markers: RegExp[]): string {
   let value = text.trim();
   for (const marker of markers) value = value.replace(marker, ' ');
@@ -379,6 +655,8 @@ export async function queryWorkbench(input: {
   graphId?: string | undefined;
   sourceId?: string | undefined;
   capability?: TechnicalSourceCapability | undefined;
+  scope?: string | undefined;
+  rankBy?: ScopeRankBy | undefined;
 }): Promise<Record<string, unknown>> {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
@@ -432,6 +710,41 @@ export async function queryWorkbench(input: {
       const result = await searchCode({ project: input.project, ref: input.ref, graphId: input.graphId, pattern, limit: 100 }) as any;
       return { intent: 'code', subject: subjectDescriptor(resolved.node, resolved.query), routing: { tool: 'search_code' }, answer: `${result.matches?.length ?? 0} source match(es) found for “${pattern}”.`, result };
     }
+  }
+
+  if (/\b(main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|overview of|what does .+ do)\b/.test(lower)) {
+    let requestedScope = input.scope?.trim() || '';
+    if (!requestedScope) {
+      const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
+      if (pathMatch) requestedScope = pathMatch[0]!;
+    }
+    if (!requestedScope) {
+      const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi]);
+      if (!resolved.ambiguous && resolved.node) requestedScope = resolved.node.id;
+    }
+    if (!requestedScope && /\b(this page|this file|this module|this feature|this area)\b/i.test(text)) {
+      return {
+        intent: 'orientation',
+        subject: null,
+        routing: { tool: 'orient_scope', scopeRequired: true },
+        answer: 'A concrete file, path, entity, or feature scope is required for “this” orientation questions.',
+        result: { scopeRequired: true, supportedScopes: ['repository','path','file','entity','feature/route/api'] },
+      };
+    }
+    const result = await scopeOrientation({
+      project: input.project,
+      scope: requestedScope || undefined,
+      ref: input.ref,
+      graphId: input.graphId,
+      rankBy: input.rankBy,
+    });
+    return {
+      intent: 'orientation',
+      subject: requestedScope ? { query: requestedScope } : null,
+      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file' },
+      answer: String((result as any).summary ?? 'Scoped orientation complete.'),
+      result,
+    };
   }
 
   if (/\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/.test(lower)) {
@@ -535,6 +848,8 @@ export async function queryWorkbenchRequest(input: {
   graphId?: string | undefined;
   sourceId?: string | undefined;
   capability?: TechnicalSourceCapability | undefined;
+  scope?: string | undefined;
+  rankBy?: ScopeRankBy | undefined;
 }): Promise<Record<string, unknown>> {
   const explicit = (input.questions ?? []).map(question => question.trim()).filter(Boolean);
   if (explicit.length > 10) throw new Error('questions supports at most 10 items');
@@ -555,6 +870,8 @@ export async function queryWorkbenchRequest(input: {
       graphId: graph.graphId,
       sourceId: input.sourceId,
       capability: input.capability,
+      scope: input.scope,
+      rankBy: input.rankBy,
     });
     return {
       ...result,
@@ -579,6 +896,8 @@ export async function queryWorkbenchRequest(input: {
         graphId: graph.graphId,
         sourceId: input.sourceId,
         capability: input.capability,
+        scope: input.scope,
+        rankBy: input.rankBy,
       }) as any;
       const subjectId = result?.subject && result.subject.ambiguous !== true && typeof result.subject.id === 'string'
         ? result.subject.id

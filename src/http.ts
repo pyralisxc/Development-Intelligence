@@ -309,6 +309,8 @@ export function createDevelopmentIntelligenceServer() {
           graphId: typeof body.graphId === 'string' ? body.graphId : undefined,
           sourceId: typeof body.sourceId === 'string' ? body.sourceId : undefined,
           capability: typeof body.capability === 'string' ? body.capability as TechnicalSourceCapability : undefined,
+          scope: typeof body.scope === 'string' ? body.scope : undefined,
+          rankBy: typeof body.rankBy === 'string' ? body.rankBy as any : undefined,
         });
         json(res, 200, result);
       } catch (error) {
