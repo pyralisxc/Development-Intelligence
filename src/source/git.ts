@@ -231,7 +231,7 @@ export async function changedFilesBetweenRevisions(
     return { base, head, files };
   } finally {
     await auth.cleanup();
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
@@ -256,7 +256,7 @@ export async function withResolvedProjectCheckout<T>(
     return await fn({ ...revision, root });
   } finally {
     await auth.cleanup();
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
