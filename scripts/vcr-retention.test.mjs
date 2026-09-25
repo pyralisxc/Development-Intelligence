@@ -38,12 +38,41 @@ test('retention protects current production, one rollback, and recent previews',
   assert.deepEqual(actions.shared, ['keep', 'protected production tag']);
   assert.equal(plan.counts.delete, 3);
   assert.equal(plan.counts.headroomAfter, 46);
+  assert.equal(plan.retainedTargetReached, true);
 });
 
 test('unknown old tags require review instead of automatic deletion', () => {
   const plan = planVcrRetention({ now, images: [image('unknown', ['release-candidate'], 30)], deployments: [] });
   assert.deepEqual(plan.decisions[0], {
     id: 'unknown', digest: 'sha256:unknown', tags: ['release-candidate'],
-    createdAt: now - 30 * day, ageDays: 30, action: 'review', reason: 'old image has tags not correlated to a deployment',
+    createdAt: now - 30 * day, ageDays: 30, action: 'review', reason: 'old image has tags not correlated to a deployment', protected: false,
   });
+});
+
+test('retention protects the latest READY Preview deployment even when it is old', () => {
+  const previewSha = sha('6');
+  const plan = planVcrRetention({
+    now,
+    images: [image('preview', [previewSha.slice(0, 12)], 20)],
+    deployments: [{
+      ...deployment('preview-ready', previewSha, 20),
+      meta: { githubCommitSha: previewSha, githubCommitRef: 'preview' },
+    }],
+  });
+  assert.deepEqual(plan.decisions[0], {
+    id: 'preview', digest: 'sha256:preview', tags: [previewSha.slice(0, 12)],
+    createdAt: now - 20 * day, ageDays: 20, action: 'keep', reason: 'latest READY preview deployment', protected: true,
+  });
+});
+
+test('retention trims oldest nonprotected images to the configured target', () => {
+  const images = Array.from({ length: 12 }, (_, index) => image(`candidate-${index}`, [sha(String(index % 10)).slice(0, 12)], index / 24));
+  const plan = planVcrRetention({ now, images, deployments: [], retainedImageTarget: 10 });
+  assert.equal(plan.counts.delete, 2);
+  assert.equal(plan.counts.retained, 10);
+  assert.equal(plan.retainedTargetReached, true);
+  assert.deepEqual(
+    plan.decisions.filter(item => item.action === 'delete').map(item => item.id),
+    ['candidate-10', 'candidate-11'],
+  );
 });

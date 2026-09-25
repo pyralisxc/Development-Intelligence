@@ -6,7 +6,7 @@ import { callTool, listTools } from './mcp.js';
 import { runtimeIdentity } from './runtimeIdentity.js';
 import { currentGraph } from './intelligence/service.js';
 import { diffAcceptedToWorking, diffRevisions, viewerProjection } from './intelligence/query.js';
-import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbench, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
+import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbenchRequest, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
@@ -297,14 +297,20 @@ export function createDevelopmentIntelligenceServer() {
       try {
         const body = await readJson(req);
         if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
-        if (typeof body.text !== 'string' || !body.text.trim()) throw Object.assign(new Error('text must be non-empty'), { status: 400 });
-        const result = await queryWorkbench({
+        const text = typeof body.text === 'string' && body.text.trim() ? body.text : undefined;
+        const questions = Array.isArray(body.questions) ? body.questions.filter((value: unknown) => typeof value === 'string') as string[] : undefined;
+        if (!text && !questions?.length) throw Object.assign(new Error('text or questions must be non-empty'), { status: 400 });
+        if (text && questions?.length) throw Object.assign(new Error('provide text or questions, not both'), { status: 400 });
+        const result = await queryWorkbenchRequest({
           project: body.project,
-          text: body.text,
+          ...(text ? { text } : {}),
+          ...(questions?.length ? { questions } : {}),
           ref: typeof body.ref === 'string' ? body.ref : undefined,
           graphId: typeof body.graphId === 'string' ? body.graphId : undefined,
           sourceId: typeof body.sourceId === 'string' ? body.sourceId : undefined,
           capability: typeof body.capability === 'string' ? body.capability as TechnicalSourceCapability : undefined,
+          scope: typeof body.scope === 'string' ? body.scope : undefined,
+          rankBy: typeof body.rankBy === 'string' ? body.rankBy as any : undefined,
         });
         json(res, 200, result);
       } catch (error) {

@@ -12,9 +12,11 @@ const repository = argument('repository', process.env.VERCEL_VCR_REPOSITORY ?? '
 const applyConfirmation = argument('apply', null);
 const policy = {
   limit: Number(argument('limit', '50')),
+  retainedImageTarget: Number(argument('retained-images', '10')),
   nonProductionDays: Number(argument('nonproduction-days', '1')),
   productionDays: Number(argument('production-days', '7')),
   rollbackCount: Number(argument('rollback-count', '1')),
+  previewBranches: String(argument('preview-branch', 'preview')).split(',').map(value => value.trim()).filter(Boolean),
 };
 
 if (!token || !projectId || !teamId) {

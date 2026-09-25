@@ -12,7 +12,7 @@ import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, se
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools, toolContract } from '../src/mcp.js';
 import { runtimeIdentity } from '../src/runtimeIdentity.js';
-import { projectOverview } from '../src/intelligence/workbench.js';
+import { projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -331,6 +331,127 @@ export function helper() { return 'changed implementation'; }
   }
 });
 
+test('shared investigation router maps ordinary questions to existing DI primitives', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+
+    const code = await queryWorkbench({ project: fixture.project, text: 'Show me code for Panel' }) as any;
+    assert.equal(code.intent, 'code');
+    assert.equal(code.routing.tool, 'get_code_snippet');
+    assert.equal(code.subject?.name, 'Panel');
+    assert.equal(code.result.file, 'src/panel.tsx');
+
+    const trace = await queryWorkbench({ project: fixture.project, text: 'What does Panel depend on?' }) as any;
+    assert.equal(trace.intent, 'trace');
+    assert.equal(trace.routing.tool, 'trace_path');
+    assert.equal(trace.subject?.name, 'Panel');
+    assert.ok(trace.result.nodes.some((node: any) => node.name === 'helper'), 'dependency routing should reach the helper call');
+
+    const evidence = await queryWorkbench({ project: fixture.project, text: 'What evidence supports Panel?' }) as any;
+    assert.equal(evidence.intent, 'evidence');
+    assert.equal(evidence.routing.tool, 'inspect_entity');
+    assert.equal(evidence.subject?.name, 'Panel');
+
+    const throughMcp = await callTool('investigate', { project: fixture.project, question: 'What does Panel depend on?' }) as any;
+    assert.equal(throughMcp.intent, trace.intent);
+    assert.equal(throughMcp.routing.tool, trace.routing.tool);
+    assert.equal(throughMcp.subject?.id, trace.subject?.id);
+
+    const directAssessment = await callTool('query_intelligence', { project: fixture.project, question: 'What evidence supports Panel?' }) as any;
+    assert.equal(directAssessment.interpretedSubject, 'Panel');
+    assert.equal(directAssessment.answerStatus, 'supported');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('multi-question investigation keeps one graph context and isolates questions', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const paragraph = 'What is Panel? What does it depend on? Where is it implemented? What evidence supports those answers?';
+    const batch = await queryWorkbenchRequest({ project: fixture.project, text: paragraph }) as any;
+    assert.equal(batch.intent, 'batch');
+    assert.equal(batch.request.mode, 'decomposed');
+    assert.equal(batch.request.questionCount, 4);
+    assert.equal(batch.counts.error, 0);
+    assert.deepEqual(batch.items.map((item: any) => item.intent), ['inspect', 'trace', 'code', 'evidence']);
+    assert.ok(batch.items.slice(1).every((item: any) => item.resolvedQuestion.includes(batch.items[0].subject.id)), 'follow-up pronouns should inherit only the exact first subject');
+    assert.ok(batch.items.every((item: any) => item.status === 'ok'));
+
+    const explicit = await callTool('investigate', {
+      project: fixture.project,
+      questions: ['What is Panel?', 'What does it depend on?', 'Where is it implemented?'],
+    }) as any;
+    assert.equal(explicit.intent, 'batch');
+    assert.equal(explicit.request.mode, 'explicit');
+    assert.equal(explicit.request.questionCount, 3);
+    assert.equal(explicit.graphId, batch.graphId);
+    assert.deepEqual(explicit.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
+
+    const isolated = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', 'What does definitely-not-real depend on?', 'What evidence supports it?'],
+    }) as any;
+    assert.equal(isolated.items[0].status, 'ok');
+    assert.equal(isolated.items[1].status, 'error');
+    assert.equal(isolated.items[2].status, 'ok', 'one failed question must not poison later questions');
+    assert.equal(isolated.counts.error, 1);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('scope orientation surfaces explainable local graph structure without an opaque importance score', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const orientation = await scopeOrientation({
+      project: fixture.project,
+      scope: 'src/panel.tsx',
+      rankBy: 'cross-file',
+      limit: 10,
+    }) as any;
+    assert.equal(orientation.scope.kind, 'file');
+    assert.equal(orientation.rankBy, 'cross-file');
+    assert.equal(orientation.policy.subjectiveImportanceScore, false);
+    assert.ok(orientation.keyEntities.some((item: any) => item.name === 'Panel'));
+    assert.ok(orientation.keyEntities.every((item: any) => typeof item.id === 'string' && typeof item.reason === 'string'));
+    assert.ok(orientation.boundaries.some((item: any) => item.external?.locator === 'src/helper.ts'), 'file orientation should expose the helper boundary');
+
+    const area = await callTool('orient_scope', {
+      project: fixture.project,
+      scope: 'src',
+      rankBy: 'fan-in',
+      limit: 10,
+    }) as any;
+    assert.equal(area.scope.kind, 'path');
+    assert.equal(area.policy.rankFacet, 'fan-in');
+    assert.ok(area.keyEntities.length > 0);
+
+    const natural = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What are the main functions this page uses?',
+      scope: 'src/panel.tsx',
+      rankBy: 'relationship-diversity',
+    }) as any;
+    assert.equal(natural.intent, 'orientation');
+    assert.equal(natural.routing.tool, 'orient_scope');
+    assert.equal(natural.result.scope.kind, 'file');
+    assert.equal(natural.result.rankBy, 'relationship-diversity');
+
+    const missingScope = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What are the main functions this page uses?',
+    }) as any;
+    assert.equal(missingScope.intent, 'orientation');
+    assert.equal(missingScope.result.scopeRequired, true, 'deictic scope should remain explicit instead of guessing');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
@@ -339,6 +460,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'resolve_revision',
     'project_status',
     'project_overview',
+    'investigate',
+    'orient_scope',
     'query_intelligence',
     'audit_repository',
     'inspect_portfolio',
@@ -381,7 +504,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 25, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 27, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -399,7 +522,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 25);
+  assert.equal(identity.mcp.toolCount, 27);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
@@ -464,6 +587,8 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     const listBody = await list.json() as any;
     assert.equal(listBody.result.cacheScope, 'private');
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'project_overview'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'investigate'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'orient_scope'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_entity'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'query_source'));
     assert.equal(listBody.result.tools.some((tool: any) => tool.name === 'clear_cache'), false);
@@ -506,6 +631,17 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(typeof intelligenceBody.result.answerStatus, 'string');
     assert.equal(typeof intelligenceBody.result.revision, 'string');
     assert.ok('reach' in intelligenceBody.result, 'Workbench query must preserve the shared assessment reach field even when no entity is unambiguously selected');
+
+    const batchQuery = await fetch(`${origin}/workbench/query`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: fixture.project, text: 'What is Panel? What does it depend on? Where is it implemented?' }),
+    });
+    assert.equal(batchQuery.status, 200);
+    const batchBody = await batchQuery.json() as any;
+    assert.equal(batchBody.intent, 'batch');
+    assert.equal(batchBody.request.questionCount, 3);
+    assert.deepEqual(batchBody.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
 
     const historicalBase = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD~1'])).stdout.trim();
     const historicalParams = new URLSearchParams({ project: fixture.project, action: 'changes', baseRef: `commit:${historicalBase}`, headRef: 'branch:main' });
