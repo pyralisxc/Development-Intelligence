@@ -351,7 +351,6 @@ interface PolyglotReferenceValue {
   qualifier?: string | null;
   arity?: number | null;
   ownerQualifiedName?: string | null;
-  ownerId?: string;
 }
 
 interface LocalTypeBindingValue {
@@ -359,7 +358,6 @@ interface LocalTypeBindingValue {
   variableName: string;
   typeName: string;
   ownerQualifiedName?: string | null;
-  ownerId?: string;
 }
 
 interface PolyglotImportValue {
@@ -750,7 +748,7 @@ function resolveCSharpReferences(input: {
 
     const file = reference.sourceId.slice('repo:'.length);
     const value = reference.value as PolyglotReferenceValue;
-    const owner = value.ownerId ?? input.edges.find(edge =>
+    const owner = input.edges.find(edge =>
       edge.to === reference.id
       && edge.kind === 'invokes'
       && edge.status === 'resolved'
@@ -897,7 +895,7 @@ function resolveJavaReferences(input: {
   for (const binding of input.nodes.filter(node => node.kind === 'local-type-binding' && localTypeBindingValue(node.value) && node.value.language === 'java')) {
     if (!binding.sourceId.startsWith('repo:')) continue;
     const value = binding.value as LocalTypeBindingValue;
-    const owner = value.ownerId ?? input.edges.find(edge => edge.to === binding.id && edge.kind === 'contains' && edge.status === 'resolved' && edge.from)?.from ?? null;
+    const owner = input.edges.find(edge => edge.to === binding.id && edge.kind === 'contains' && edge.status === 'resolved' && edge.from)?.from ?? null;
     if (!owner) continue;
     const file = binding.sourceId.slice('repo:'.length);
     const candidates = typeCandidates(file, value.typeName, value.ownerQualifiedName);
@@ -933,7 +931,7 @@ function resolveJavaReferences(input: {
     if (!reference.sourceId.startsWith('repo:')) continue;
     const file = reference.sourceId.slice('repo:'.length);
     const value = reference.value as PolyglotReferenceValue;
-    const owner = value.ownerId ?? input.edges.find(edge =>
+    const owner = input.edges.find(edge =>
       edge.to === reference.id && edge.kind === 'invokes' && edge.status === 'resolved' && edge.from
     )?.from ?? null;
     let candidates: GraphNode[] = [];
