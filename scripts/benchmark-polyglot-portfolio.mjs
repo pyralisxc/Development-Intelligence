@@ -70,6 +70,20 @@ for (const target of targets) {
     relationshipCounts['csharp-constructs'] = csharpDeepCounts.constructs;
     relationshipCounts['csharp-implemented-by'] = csharpDeepCounts.implementedBy;
     relationshipCounts['unity-reverse-usage'] = csharpDeepCounts.unityReverse;
+    const candidateTotal = graph.edges.filter(edge => edge.status === 'candidate').length;
+    const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
+    const referencePairCandidates = graph.edges.filter(edge => {
+      if (edge.status !== 'candidate' || !['exact-name', 'identifier-match'].includes(edge.strategy) || !edge.from || !edge.to) return false;
+      const left = nodeById.get(edge.from);
+      const right = nodeById.get(edge.to);
+      const leftReference = Boolean(left && (left.kind.endsWith('-reference') || left.tags?.includes('reference')));
+      const rightReference = Boolean(right && (right.kind.endsWith('-reference') || right.tags?.includes('reference')));
+      return leftReference && rightReference;
+    }).length;
+    if (candidateTotal >= 9000) throw new Error(`Game-Studio-Core candidate calibration expected <9000 candidates, got ${candidateTotal}`);
+    if (referencePairCandidates !== 0) throw new Error(`Game-Studio-Core expected zero exact-name/identifier reference↔reference candidates, got ${referencePairCandidates}`);
+    relationshipCounts['candidate-total'] = candidateTotal;
+    relationshipCounts['candidate-reference-pairs'] = referencePairCandidates;
   }
   for (const [kind, count] of Object.entries(kindCounts)) if (count < 1) throw new Error(`${target.project} expected observed ${kind} nodes`);
   for (const [strategy, count] of Object.entries(strategyCounts)) if (count < 1) throw new Error(`${target.project} expected resolved ${strategy} relationships`);
