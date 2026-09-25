@@ -83,7 +83,6 @@ for (const target of targets) {
     if (candidateTotal >= 9000) throw new Error(`Game-Studio-Core candidate calibration expected <9000 candidates, got ${candidateTotal}`);
     if (referencePairCandidates !== 0) throw new Error(`Game-Studio-Core expected zero exact-name/identifier reference↔reference candidates, got ${referencePairCandidates}`);
     relationshipCounts['candidate-total'] = candidateTotal;
-    relationshipCounts['candidate-reference-pairs'] = referencePairCandidates;
   }
   for (const [kind, count] of Object.entries(kindCounts)) if (count < 1) throw new Error(`${target.project} expected observed ${kind} nodes`);
   for (const [strategy, count] of Object.entries(strategyCounts)) if (count < 1) throw new Error(`${target.project} expected resolved ${strategy} relationships`);
