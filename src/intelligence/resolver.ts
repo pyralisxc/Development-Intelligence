@@ -4,6 +4,16 @@ import { normalizeName, resolution } from './model.js';
 const GENERIC_VALUES = new Set(['true', 'false', 'null', 'undefined', 'open', 'close', 'save', 'delete', 'edit', 'cancel', 'ok', 'yes', 'no']);
 const DEDICATED_IDENTITY_KINDS = new Set(['import-binding', 'module', 'unity-asset-guid']);
 
+function isReferenceObservation(observation: Observation): boolean {
+  return observation.kind.endsWith('-reference') || observation.tags?.includes('reference') === true;
+}
+
+function candidatePairAllowed(left: Observation, right: Observation): boolean {
+  if (left.sourceId === right.sourceId) return false;
+  if (isReferenceObservation(left) && isReferenceObservation(right)) return false;
+  return true;
+}
+
 export function resolveCrossSource(observations: Observation[], existing: Resolution[]): Resolution[] {
   const output = [...existing];
   const seen = new Set(existing.map(item => item.id));
@@ -35,7 +45,7 @@ export function resolveCrossSource(observations: Observation[], existing: Resolu
       for (let j = i + 1; j < group.length; j += 1) {
         const left = group[i]!;
         const right = group[j]!;
-        if (left.sourceId === right.sourceId) continue;
+        if (!candidatePairAllowed(left, right)) continue;
         const candidate = resolution({
           from: left.id,
           to: right.id,
@@ -56,7 +66,7 @@ export function resolveCrossSource(observations: Observation[], existing: Resolu
       for (let j = i + 1; j < group.length; j += 1) {
         const left = group[i]!;
         const right = group[j]!;
-        if (left.sourceId === right.sourceId) continue;
+        if (!candidatePairAllowed(left, right)) continue;
         const sameExactName = left.name === right.name;
         const candidate = resolution({
           from: left.id,
