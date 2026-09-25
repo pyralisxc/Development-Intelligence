@@ -94,6 +94,32 @@ test('same semantic identity preserves contradictory evidence as an explicit con
   }
 });
 
+test('coverage roles distinguish source, generated, media, archive, configuration, and resources generically', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-coverage-roles-'));
+  await runChecked('git', ['init', '--initial-branch=main', root]);
+  try {
+    await write(root, 'src/App.java', 'class App {}');
+    await write(root, 'build/App.class', 'compiled');
+    await write(root, 'assets/icon.png', 'binary-ish');
+    await write(root, 'libs/runtime.jar', 'archive');
+    await write(root, 'config/app.yml', 'enabled: true');
+    await write(root, 'locale/en.lang', 'hello=Hello');
+    await runChecked('git', ['-C', root, 'add', '.']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
+    const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+    const graph = await buildRepositoryGraph({ project: 'CoverageRoleFixture', repository: root, revision, root, role: 'W' });
+    const role = (suffix: string) => graph.coverage?.files.find(file => file.path.endsWith(suffix))?.role;
+    assert.equal(role('src/App.java'), 'source');
+    assert.equal(role('build/App.class'), 'generated');
+    assert.equal(role('assets/icon.png'), 'media');
+    assert.equal(role('libs/runtime.jar'), 'archive');
+    assert.equal(role('config/app.yml'), 'configuration');
+    assert.equal(role('locale/en.lang'), 'resource');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('coverage distinguishes failed analysis from complete inspection', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-coverage-'));
   await runChecked('git', ['init', '--initial-branch=main', root]);

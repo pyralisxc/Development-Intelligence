@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
-import type { EvidenceRecord, ExplicitValueConflict, GraphCoverage, GraphCoverageFile, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
+import type { EvidenceRecord, ExplicitValueConflict, GraphCoverage, GraphCoverageFile, GraphCoverageRole, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
 import { analyzeByTechnology } from './analyzers/index.js';
@@ -22,6 +22,27 @@ const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py']);
 const UNITY_SERIALIZED_EXTENSIONS = new Set(['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer']);
 const UNITY_JSON_EXTENSIONS = new Set(['.asmdef', '.asmref', '.inputactions']);
 const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, ...UNITY_SERIALIZED_EXTENSIONS, ...UNITY_JSON_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm', '.css', '.sql']);
+const CONFIG_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.properties', '.gradle', '.kts']);
+const DOCUMENT_EXTENSIONS = new Set(['.md', '.mdx', '.txt', '.rst', '.adoc']);
+const MEDIA_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg', '.woff', '.woff2', '.ttf', '.otf', '.mp3', '.wav', '.ogg', '.mp4', '.mov', '.webm']);
+const ARCHIVE_EXTENSIONS = new Set(['.zip', '.jar', '.tar', '.gz', '.tgz', '.7z', '.rar']);
+const GENERATED_EXTENSIONS = new Set(['.class', '.pyc', '.pyo', '.dll', '.exe', '.o', '.obj', '.a', '.so', '.dylib', '.wasm', '.map']);
+const RESOURCE_EXTENSIONS = new Set(['.lang', '.shader', '.shadergraph', '.cginc', '.hlsl', '.glsl', '.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer', '.asmdef', '.asmref', '.inputactions']);
+
+export function coverageRoleForPath(filePath: string): GraphCoverageRole {
+  const normalized = filePath.replace(/\\/gu, '/');
+  const lower = normalized.toLowerCase();
+  const extension = path.extname(lower);
+  const basename = path.basename(lower);
+  if (GENERATED_EXTENSIONS.has(extension) || /(^|\/)(dist|build|target|bin|obj|coverage|generated)(\/|$)/u.test(lower)) return 'generated';
+  if (MEDIA_EXTENSIONS.has(extension)) return 'media';
+  if (ARCHIVE_EXTENSIONS.has(extension)) return 'archive';
+  if (CODE_EXTENSIONS.has(extension) || POLYGLOT_EXTENSIONS.has(extension) || ['.sql', '.css', '.html', '.htm'].includes(extension)) return 'source';
+  if (DOCUMENT_EXTENSIONS.has(extension)) return 'documentation';
+  if (RESOURCE_EXTENSIONS.has(extension)) return 'resource';
+  if (CONFIG_EXTENSIONS.has(extension) || ['dockerfile', 'makefile', 'procfile'].includes(basename) || basename.startsWith('.env')) return 'configuration';
+  return 'unknown';
+}
 const SYMBOL_KINDS = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);
 const SEMANTIC_PREFIXES = new Set(['surface', 'capability', 'action', 'feature', 'route', 'api', 'mcp', 'provider', 'tool', 'workflow']);
 
@@ -1303,8 +1324,8 @@ export async function buildRepositoryGraph(input: {
   const warnings: string[] = [];
   const coverageFiles: GraphCoverageFile[] = tracked
     .filter(file => !TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()))
-    .map(file => ({ path: file.path, status: 'unsupported', reason: `unsupported extension ${path.extname(file.path).toLowerCase() || '(none)'}` }));
-  for (const file of eligible) if (!selectedPaths.has(file.path)) coverageFiles.push({ path: file.path, status: 'skipped', reason: `file limit ${MAX_FILES}` });
+    .map(file => ({ path: file.path, status: 'unsupported', role: coverageRoleForPath(file.path), reason: `unsupported extension ${path.extname(file.path).toLowerCase() || '(none)'}` }));
+  for (const file of eligible) if (!selectedPaths.has(file.path)) coverageFiles.push({ path: file.path, status: 'skipped', role: coverageRoleForPath(file.path), reason: `file limit ${MAX_FILES}` });
   if (selected.length < eligible.length) warnings.push(`Graph file limit reached: analyzed at most ${selected.length} of ${eligible.length} eligible tracked files.`);
 
   let skippedOversizedFiles = 0;
@@ -1325,7 +1346,7 @@ export async function buildRepositoryGraph(input: {
     if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
       warnings.push(`Skipped tracked path outside repository root: ${trackedFile.path}`);
       skippedNonRegularFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: 'path escapes repository root' });
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', role: coverageRoleForPath(trackedFile.path), reason: 'path escapes repository root' });
       continue;
     }
     let stat;
@@ -1333,18 +1354,18 @@ export async function buildRepositoryGraph(input: {
       stat = await fs.lstat(absolute);
     } catch (error) {
       failedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', role: coverageRoleForPath(trackedFile.path), reason: error instanceof Error ? error.message : String(error) });
       continue;
     }
     if (!stat.isFile() || stat.isSymbolicLink()) {
       warnings.push(`Skipped non-regular tracked file: ${trackedFile.path}`);
       skippedNonRegularFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: 'non-regular file or symlink' });
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', role: coverageRoleForPath(trackedFile.path), reason: 'non-regular file or symlink' });
       continue;
     }
     if (stat.size > MAX_FILE_BYTES) {
       skippedOversizedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'skipped', reason: `file exceeds ${MAX_FILE_BYTES} bytes` });
+      coverageFiles.push({ path: trackedFile.path, status: 'skipped', role: coverageRoleForPath(trackedFile.path), reason: `file exceeds ${MAX_FILE_BYTES} bytes` });
       continue;
     }
     const fileSource: SourceDescriptor = {
@@ -1362,7 +1383,7 @@ export async function buildRepositoryGraph(input: {
       text = await fs.readFile(absolute, 'utf8');
     } catch (error) {
       failedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', role: coverageRoleForPath(trackedFile.path), reason: error instanceof Error ? error.message : String(error) });
       continue;
     }
     if (CODE_EXTENSIONS.has(path.extname(trackedFile.path).toLowerCase())) sourceTexts.set(trackedFile.path, text);
@@ -1373,13 +1394,13 @@ export async function buildRepositoryGraph(input: {
     const analyzerFailure = result.resolutions.find(edge => edge.kind === 'analysis' && edge.status === 'unresolved' && !edge.from && !edge.to);
     if (analyzerFailure) {
       failedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure' });
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', role: coverageRoleForPath(trackedFile.path), reason: analyzerFailure.evidence.join('; ') || 'analyzer failure' });
     } else if (result.coverage?.status === 'partial') {
       partialFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'partial', reason: result.coverage.reason ?? 'analyzer reported partial coverage' });
+      coverageFiles.push({ path: trackedFile.path, status: 'partial', role: coverageRoleForPath(trackedFile.path), reason: result.coverage.reason ?? 'analyzer reported partial coverage' });
     } else {
       completeFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'complete' });
+      coverageFiles.push({ path: trackedFile.path, status: 'complete', role: coverageRoleForPath(trackedFile.path) });
     }
   }
 

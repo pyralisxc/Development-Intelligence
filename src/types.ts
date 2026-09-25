@@ -178,10 +178,12 @@ export interface ExplicitValueConflict {
 }
 
 export type GraphCoverageStatus = 'complete' | 'partial' | 'unsupported' | 'skipped' | 'failed';
+export type GraphCoverageRole = 'source' | 'configuration' | 'documentation' | 'resource' | 'generated' | 'media' | 'archive' | 'unknown';
 
 export interface GraphCoverageFile {
   path: string;
   status: GraphCoverageStatus;
+  role: GraphCoverageRole;
   reason?: string;
 }
 
