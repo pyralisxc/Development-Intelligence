@@ -340,9 +340,9 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
       const call = language === 'csharp' ? csharpInvocationTarget(node) : javaInvocationTarget(node);
       const constructor = language === 'csharp' ? csharpConstructorTarget(node) : javaConstructorTarget(node);
       const reference = call
-        ? { kind: 'call-reference', name: call.name, field: 'call', value: { language, referenceKind: 'call', targetName: call.name, qualifier: call.qualifier, arity: call.arity, ownerQualifiedName } }
+        ? { kind: 'call-reference', name: call.name, field: 'call', value: { language, referenceKind: 'call', targetName: call.name, qualifier: call.qualifier, arity: call.arity, ownerQualifiedName, ownerId: owner.id } }
         : constructor
-          ? { kind: 'constructor-reference', name: constructor.typeName, field: 'constructor', value: { language, referenceKind: 'constructor', targetName: constructor.typeName, arity: constructor.arity, ownerQualifiedName } }
+          ? { kind: 'constructor-reference', name: constructor.typeName, field: 'constructor', value: { language, referenceKind: 'constructor', targetName: constructor.typeName, arity: constructor.arity, ownerQualifiedName, ownerId: owner.id } }
           : null;
       if (reference) {
         const baseId = `reference:${context.locatorBase}#${language}:${reference.kind}:${safeIdentityPart(owner.id)}:${safeIdentityPart(reference.name)}`;
@@ -389,7 +389,7 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
           locator: `${context.locatorBase}:${lineOf(node)}`,
           name: localBinding.variableName,
           field: 'local-type',
-          value: { language, variableName: localBinding.variableName, typeName: localBinding.typeName, ownerQualifiedName },
+          value: { language, variableName: localBinding.variableName, typeName: localBinding.typeName, ownerQualifiedName, ownerId: owner.id },
           tags: [language, 'tree-sitter', 'type-binding', 'local-construction'],
           layer: 'structural',
           checkpoint: false,
