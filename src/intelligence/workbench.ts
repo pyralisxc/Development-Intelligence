@@ -337,6 +337,16 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
     return { kind: 'repository', value: scope || graph.project, ids: new Set(graph.nodes.map(node => node.id)), entity: null, candidates: [] };
   }
 
+  const pathScope = scope.replace(/^file:/, '').replace(/^\.\//, '').replace(/\/+$/, '');
+  const fileIds = graph.nodes.filter(node => sourceFile(node.locator)?.replace(/^\.\//, '') === pathScope).map(node => node.id);
+  if (fileIds.length) return { kind: 'file', value: pathScope, ids: new Set(fileIds), entity: null, candidates: [] };
+
+  const pathIds = graph.nodes.filter(node => {
+    const file = sourceFile(node.locator)?.replace(/^\.\//, '');
+    return file === pathScope || file?.startsWith(pathScope + '/');
+  }).map(node => node.id);
+  if (pathIds.length) return { kind: 'path', value: pathScope, ids: new Set(pathIds), entity: null, candidates: [] };
+
   const candidates = findGraphNodeCandidates(graph, scope, 20);
   const exact = candidates.find(node => node.id === scope);
   if (exact || candidates.length === 1) {
@@ -347,16 +357,6 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
     const named = candidates.filter(node => normalizedMention(node.name ?? '') === normalizedMention(scope));
     if (named.length === 1) return { kind: 'entity', value: named[0]!.id, ids: new Set([named[0]!.id]), entity: named[0]!, candidates: named };
   }
-
-  const pathScope = scope.replace(/^file:/, '').replace(/^\.\//, '').replace(/\/+$/, '');
-  const fileIds = graph.nodes.filter(node => sourceFile(node.locator)?.replace(/^\.\//, '') === pathScope).map(node => node.id);
-  if (fileIds.length) return { kind: 'file', value: pathScope, ids: new Set(fileIds), entity: null, candidates: [] };
-
-  const pathIds = graph.nodes.filter(node => {
-    const file = sourceFile(node.locator)?.replace(/^\.\//, '');
-    return file === pathScope || file?.startsWith(pathScope + '/');
-  }).map(node => node.id);
-  if (pathIds.length) return { kind: 'path', value: pathScope, ids: new Set(pathIds), entity: null, candidates: [] };
 
   if (candidates.length > 1) return { kind: 'ambiguous', value: scope, ids: new Set(), entity: null, candidates };
   return { kind: 'missing', value: scope, ids: new Set(), entity: null, candidates: [] };
