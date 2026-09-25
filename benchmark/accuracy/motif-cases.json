@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "version": 1,
+      "id": "gsc-composition-root",
+      "capability": "architecture-motif",
+      "language": "csharp",
+      "project": "Game-Studio-Core",
+      "ref": "commit:55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d",
+      "subject": "symbol:Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Glue/Bootstrap/GameplaySessionBootstrap.cs#class:NeonBlack.Gameplay.Glue.Bootstrap.GameplaySessionBootstrap",
+      "groundTruth": {
+        "motifs": {
+          "required": [
+            "composition-root"
+          ],
+          "forbidden": [
+            "state-machine",
+            "adapter"
+          ],
+          "complete": true
+        },
+        "answerStatuses": [
+          "supported"
+        ]
+      },
+      "provenance": [
+        {
+          "kind": "source",
+          "locator": "Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Glue/Bootstrap/GameplaySessionBootstrap.cs"
+        },
+        {
+          "kind": "repository-doc",
+          "locator": "Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Docs/ARCHITECTURE_BLUEPRINT.md"
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "id": "gsc-state-machine",
+      "capability": "architecture-motif",
+      "language": "csharp",
+      "project": "Game-Studio-Core",
+      "ref": "commit:55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d",
+      "subject": "symbol:Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Glue/Session/SessionStateMachine.cs#class:NeonBlack.Gameplay.Glue.Session.SessionStateMachine",
+      "groundTruth": {
+        "motifs": {
+          "required": [
+            "state-machine"
+          ],
+          "forbidden": [
+            "composition-root",
+            "adapter"
+          ],
+          "complete": true
+        },
+        "answerStatuses": [
+          "supported"
+        ]
+      },
+      "provenance": [
+        {
+          "kind": "source",
+          "locator": "Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Glue/Session/SessionStateMachine.cs"
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "id": "gsc-adapter",
+      "capability": "architecture-motif",
+      "language": "csharp",
+      "project": "Game-Studio-Core",
+      "ref": "commit:55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d",
+      "subject": "symbol:Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Character/Runtime/Sprite2D/InteractionInputAdapter2D.cs#class:NeonBlack.Gameplay.Modules.Character.InteractionInputAdapter2D",
+      "groundTruth": {
+        "motifs": {
+          "required": [
+            "adapter"
+          ],
+          "forbidden": [
+            "state-machine",
+            "composition-root"
+          ],
+          "complete": true
+        },
+        "answerStatuses": [
+          "supported"
+        ]
+      },
+      "provenance": [
+        {
+          "kind": "source",
+          "locator": "Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Character/Runtime/Sprite2D/InteractionInputAdapter2D.cs"
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "id": "gsc-adapter-negative-control",
+      "capability": "architecture-motif",
+      "language": "csharp",
+      "project": "Game-Studio-Core",
+      "ref": "commit:55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d",
+      "subject": "symbol:Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Input/Runtime/Sprite2D/Motor2DInputAdapter.cs#class:NeonBlack.Gameplay.Modules.Input.Motor2DInputAdapter",
+      "groundTruth": {
+        "motifs": {
+          "required": [],
+          "forbidden": [
+            "adapter"
+          ],
+          "complete": false
+        },
+        "answerStatuses": [
+          "supported"
+        ]
+      },
+      "provenance": [
+        {
+          "kind": "source",
+          "locator": "Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Input/Runtime/Sprite2D/Motor2DInputAdapter.cs"
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "id": "cardforge-pipeline",
+      "capability": "architecture-motif",
+      "language": "typescript",
+      "project": "CardForge",
+      "ref": "commit:d7437ffe7acbbeccabdba112ba57eec719796779",
+      "subject": "file:src/features/pipeline/lib/pipelineLibraryStore.ts",
+      "groundTruth": {
+        "motifs": {
+          "required": [
+            "pipeline"
+          ],
+          "forbidden": [
+            "state-machine",
+            "adapter"
+          ],
+          "complete": true
+        },
+        "answerStatuses": [
+          "supported"
+        ]
+      },
+      "provenance": [
+        {
+          "kind": "source",
+          "locator": "src/features/pipeline/lib/pipelineLibraryStore.ts"
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "id": "cardforge-persistence-owner",
+      "capability": "architecture-motif",
+      "language": "typescript",
+      "project": "CardForge",
+      "ref": "commit:d7437ffe7acbbeccabdba112ba57eec719796779",
+      "subject": "file:src/features/contributor-access/server/profileStore.ts",
+      "groundTruth": {
+        "motifs": {
+          "required": [
+            "persistence-owner"
+          ],
+          "forbidden": [
+            "state-machine",
+            "adapter"
+          ],
+          "complete": true
+        },
+        "answerStatuses": [
+          "supported"
+        ]
+      },
+      "provenance": [
+        {
+          "kind": "source",
+          "locator": "src/features/contributor-access/server/profileStore.ts"
+        }
+      ]
+    }
+  ]
+}

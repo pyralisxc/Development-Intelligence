@@ -45,6 +45,7 @@ const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
 const { clearGraphCache } = await import('../dist/src/intelligence/service.js');
+const { scoreMotifCases } = await import('./motif-benchmark-lib.mjs');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
 const started = Date.now();
@@ -67,6 +68,10 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+const motifCasesDocument = JSON.parse(await fs.readFile(path.resolve('benchmark/accuracy/motif-cases.json'), 'utf8'));
+const cardForgeMotifCases = motifCasesDocument.cases.filter(item => item.project === project);
+const motifScorecard = scoreMotifCases(cardForgeMotifCases, graph, assessGraph);
+if (motifScorecard.failed) throw new Error('CardForge motif accuracy failed for ' + String(motifScorecard.failed) + ' case(s)');
 const devintGraph = await buildLocalGraph(path.resolve('.'), 'Development-Intelligence');
 const portfolioStarted = process.hrtime.bigint();
 const portfolio = synthesizePortfolio([
@@ -239,6 +244,7 @@ const semanticNodes = graph.nodes.filter(node => node.layer === 'semantic');
 const semanticEdges = graph.edges.filter(edge => edge.layer === 'semantic');
 const processMemory = process.memoryUsage();
 const processResources = process.resourceUsage();
+const motifAccuracy = { cases: motifScorecard.cases, passed: motifScorecard.passed, motifRecall: motifScorecard.motifRecall, motifPrecision: motifScorecard.motifPrecision };
 const report = {
   benchmark: 'CardForge Development Intelligence generic structural + semantic evidence',
   targetSha: actualSha,
@@ -275,6 +281,7 @@ const report = {
     changedFileCount: temporalVerification.delta.changedFileCount,
     unexpectedTotal: temporalVerification.unexpectedChanges.total,
   },
+  motifAccuracy,
   portfolio: {
     elapsedMs: Number(portfolioElapsedMs.toFixed(3)),
     portfolioId: portfolio.portfolioId,

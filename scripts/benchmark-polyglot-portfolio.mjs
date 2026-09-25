@@ -7,6 +7,7 @@ import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { assessGraph } from '../dist/src/intelligence/assessment.js';
 import { synthesizeRepositoryAudit } from '../dist/src/intelligence/repositoryAudit.js';
 import { verifyTransition } from '../dist/src/intelligence/temporalVerification.js';
+import { scoreMotifCases } from './motif-benchmark-lib.mjs';
 
 const targets = [
   {
@@ -46,6 +47,7 @@ await fs.writeFile(configPath, JSON.stringify(Object.fromEntries(targets.map(tar
 }])), null, 2));
 process.env.DEVINT_PROJECTS_FILE = configPath;
 process.env.DEVINT_SCRATCH_DIR = path.join(temp, 'scratch');
+const motifCasesDocument = JSON.parse(await fs.readFile(path.resolve('benchmark/accuracy/motif-cases.json'), 'utf8'));
 
 const reports = [];
 for (const target of targets) {
@@ -53,6 +55,9 @@ for (const target of targets) {
   if (actualSha !== target.expectedSha) throw new Error(`${target.project} benchmark SHA mismatch: expected ${target.expectedSha}, got ${actualSha}`);
   const started = Date.now();
   const graph = await buildLocalGraph(target.root, target.project);
+  const motifCases = motifCasesDocument.cases.filter(item => item.project === target.project);
+  const motifScorecard = motifCases.length ? scoreMotifCases(motifCases, graph, assessGraph) : null;
+  if (motifScorecard?.failed) throw new Error(target.project + ' motif accuracy failed for ' + String(motifScorecard.failed) + ' case(s)');
   const kindCounts = Object.fromEntries(target.requiredKinds.map(kind => [kind, graph.nodes.filter(node => node.kind === kind).length]));
   const strategyCounts = Object.fromEntries((target.requiredStrategies ?? []).map(strategy => [strategy, graph.edges.filter(edge => edge.strategy === strategy && edge.status === 'resolved').length]));
   const relationshipCounts = Object.fromEntries((target.requiredRelationships ?? []).map(kind => [kind, graph.edges.filter(edge => edge.kind === kind && edge.status === 'resolved').length]));
@@ -227,6 +232,7 @@ for (const target of targets) {
     temporalVerification,
     repositoryAudit: { elapsedMs: Number(auditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers, architectureBoundaryCount: repositoryAudit.architectureBoundaries.length },
     orientationProbe,
+    motifAccuracy: motifScorecard ? { cases: motifScorecard.cases, passed: motifScorecard.passed, motifRecall: motifScorecard.motifRecall, motifPrecision: motifScorecard.motifPrecision } : null,
   });
 }
 

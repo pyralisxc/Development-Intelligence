@@ -68,6 +68,41 @@ test('forbidden and false complete-ground-truth relationships fail deterministic
   assert.equal(score.relationshipScore.precision, 0.5);
 });
 
+test('accuracy scorecard includes derived motif precision and forbidden motif controls', () => {
+  const challenge = {
+    version: 1,
+    id: 'motif-adapter',
+    capability: 'architecture-motif',
+    language: 'csharp',
+    project: 'Fixture',
+    ref: 'commit:1111111111111111111111111111111111111111',
+    groundTruth: {
+      motifs: { required: ['adapter'], forbidden: ['state-machine'], complete: true },
+      answerStatuses: ['supported'],
+    },
+  };
+  const score = scoreAccuracyCase(challenge, {
+    caseId: challenge.id,
+    entities: [],
+    relationships: [],
+    motifs: ['adapter'],
+    answerStatus: 'supported',
+  });
+  assert.equal(score.pass, true);
+  assert.equal(score.motifScore.recall, 1);
+  assert.equal(score.motifScore.precision, 1);
+
+  const bad = scoreAccuracyCase(challenge, {
+    caseId: challenge.id,
+    entities: [],
+    relationships: [],
+    motifs: ['adapter', 'state-machine'],
+    answerStatus: 'supported',
+  });
+  assert.equal(bad.pass, false);
+  assert.deepEqual(bad.motifScore.forbiddenPresent, ['state-machine']);
+});
+
 test('suite scorecard aggregates durable correctness metrics', () => {
   const second = structuredClone(baseCase);
   second.id = 'typescript-route-absence';

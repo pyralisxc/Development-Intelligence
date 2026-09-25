@@ -61,6 +61,7 @@ export function normalizeAccuracyCase(value) {
     groundTruth: {
       entities: truthSet(groundTruth.entities, 'case.groundTruth.entities'),
       relationships: truthSet(groundTruth.relationships, 'case.groundTruth.relationships', true),
+      motifs: truthSet(groundTruth.motifs, 'case.groundTruth.motifs'),
       answerStatuses,
     },
     provenance: Array.isArray(value.provenance) ? value.provenance : [],
@@ -74,6 +75,7 @@ export function normalizeAccuracyObservation(value) {
     caseId: value.caseId.trim(),
     entities: stringList(value.entities, 'observation.entities'),
     relationships: relationshipList(value.relationships, 'observation.relationships'),
+    motifs: stringList(value.motifs, 'observation.motifs'),
     answerStatus: typeof value.answerStatus === 'string' ? value.answerStatus : null,
   };
 }
@@ -107,6 +109,7 @@ export function scoreAccuracyCase(caseInput, observationInput) {
 
   const entityScore = scoreSet(challenge.groundTruth.entities, observation.entities);
   const relationshipScore = scoreSet(challenge.groundTruth.relationships, observation.relationships);
+  const motifScore = scoreSet(challenge.groundTruth.motifs, observation.motifs);
   const allowedStatuses = challenge.groundTruth.answerStatuses;
   const answerStatusPass = allowedStatuses.length === 0 || (observation.answerStatus !== null && allowedStatuses.includes(observation.answerStatus));
   const pass = entityScore.missingRequired.length === 0
@@ -115,6 +118,9 @@ export function scoreAccuracyCase(caseInput, observationInput) {
     && relationshipScore.forbiddenPresent.length === 0
     && entityScore.falseObserved.length === 0
     && relationshipScore.falseObserved.length === 0
+    && motifScore.missingRequired.length === 0
+    && motifScore.forbiddenPresent.length === 0
+    && motifScore.falseObserved.length === 0
     && answerStatusPass;
 
   return {
@@ -124,6 +130,7 @@ export function scoreAccuracyCase(caseInput, observationInput) {
     pass,
     entityScore,
     relationshipScore,
+    motifScore,
     answerStatus: {
       observed: observation.answerStatus,
       allowed: allowedStatuses,
@@ -147,6 +154,7 @@ export function scoreAccuracySuite(cases, observations) {
   });
   const completeEntityPrecision = results.map(item => item.entityScore.precision).filter(value => value !== null);
   const completeRelationshipPrecision = results.map(item => item.relationshipScore.precision).filter(value => value !== null);
+  const completeMotifPrecision = results.map(item => item.motifScore.precision).filter(value => value !== null);
   return {
     cases: results.length,
     passed: results.filter(item => item.pass).length,
@@ -155,6 +163,8 @@ export function scoreAccuracySuite(cases, observations) {
     entityPrecision: average(completeEntityPrecision),
     relationshipRecall: average(results.map(item => item.relationshipScore.recall)),
     relationshipPrecision: average(completeRelationshipPrecision),
+    motifRecall: average(results.map(item => item.motifScore.recall)),
+    motifPrecision: average(completeMotifPrecision),
     results,
   };
 }
