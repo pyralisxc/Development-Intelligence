@@ -23,7 +23,9 @@ Local development and long-running single-instance hosts continue to use the in-
 
 ## Current deployment shape
 
-The production service is deployed from `pyralisxc/Development-Intelligence` through the Vercel project owned by `Pyralis' projects` (`pyralis-projects`). Production follows `main`; accumulated integration follows the persistent `preview` branch, and bounded work branches may produce shorter-lived preview deployments. None of those non-production branches are added to the production project registry.
+The production service is deployed from `pyralisxc/Development-Intelligence` through the Vercel project owned by `Pyralis' projects` (`pyralis-projects`). Production follows `main`; accumulated integration follows the persistent `preview` branch. Automatic Vercel deployments are disabled for bounded `work/*` branches in `vercel.json`: their normal proof surface is GitHub CI, while the integrated `preview` branch remains the hosted candidate. None of those non-production branches are added to the production project registry.
+
+A graph or Workbench query does not create a container image. Queries run inside the image already deployed for that revision. A new image is created when Vercel builds a Git revision, so suppressing automatic `work/*` builds removes the high-volume source of registry growth without changing query behavior.
 
 For a clean replacement deployment, keep the currently reachable production environment intact until the replacement is deployed, reachable, and independently verified.
 
@@ -193,10 +195,13 @@ Deployment retention and Vercel Container Registry inventory are separate provid
 The repository policy keeps:
 
 - the current READY production deployment and one useful READY production rollback;
+- the latest READY deployment for the persistent `preview` branch;
 - production references for seven days;
 - preview and other nonproduction references for one day;
 - images with protected production tags;
 - old images with unknown tags in manual review rather than deleting them automatically.
+
+After applying those protections, the planner trims the oldest other images toward a default retained inventory of 10. This leaves 40 image slots of headroom under the current 50-image project limit while preserving Main, rollback, Preview, and a small safety/history pool. Use `--retained-images <count>` only when an intentional operational need changes that target, and use `--preview-branch <name>` when the persistent integration branch is renamed.
 
 Run the supported inventory and cleanup planner with a scoped Vercel token:
 
