@@ -49,9 +49,9 @@ test('repository audit stays bounded, evidence-linked, and non-authoritative', (
       trackedFiles: 3, eligibleFiles: 3, analyzedFiles: 2, completeFiles: 1, partialFiles: 1, unsupportedFiles: 1,
       skippedFiles: 0, failedFiles: 0, skippedOversizedFiles: 0, skippedNonRegularFiles: 0, skippedFileLimitFiles: 0,
       files: [
-        { path: 'src/caller.ts', status: 'complete' },
-        { path: 'src/target.ts', status: 'partial', reason: 'parser recovered' },
-        { path: 'image.png', status: 'unsupported', reason: 'unsupported extension .png' },
+        { path: 'src/caller.ts', status: 'complete', role: 'source' },
+        { path: 'src/target.ts', status: 'partial', role: 'source', reason: 'parser recovered' },
+        { path: 'image.png', status: 'unsupported', role: 'media', reason: 'unsupported extension .png' },
       ],
     },
   };
