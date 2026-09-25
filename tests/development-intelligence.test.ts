@@ -12,7 +12,7 @@ import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, se
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools, toolContract } from '../src/mcp.js';
 import { runtimeIdentity } from '../src/runtimeIdentity.js';
-import { projectOverview } from '../src/intelligence/workbench.js';
+import { projectOverview, queryWorkbench } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -331,6 +331,41 @@ export function helper() { return 'changed implementation'; }
   }
 });
 
+test('shared investigation router maps ordinary questions to existing DI primitives', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+
+    const code = await queryWorkbench({ project: fixture.project, text: 'Show me code for Panel' }) as any;
+    assert.equal(code.intent, 'code');
+    assert.equal(code.routing.tool, 'get_code_snippet');
+    assert.equal(code.subject?.name, 'Panel');
+    assert.equal(code.result.file, 'src/panel.tsx');
+
+    const trace = await queryWorkbench({ project: fixture.project, text: 'What does Panel depend on?' }) as any;
+    assert.equal(trace.intent, 'trace');
+    assert.equal(trace.routing.tool, 'trace_path');
+    assert.equal(trace.subject?.name, 'Panel');
+    assert.ok(trace.result.nodes.some((node: any) => node.name === 'helper'), 'dependency routing should reach the helper call');
+
+    const evidence = await queryWorkbench({ project: fixture.project, text: 'What evidence supports Panel?' }) as any;
+    assert.equal(evidence.intent, 'evidence');
+    assert.equal(evidence.routing.tool, 'inspect_entity');
+    assert.equal(evidence.subject?.name, 'Panel');
+
+    const throughMcp = await callTool('investigate', { project: fixture.project, question: 'What does Panel depend on?' }) as any;
+    assert.equal(throughMcp.intent, trace.intent);
+    assert.equal(throughMcp.routing.tool, trace.routing.tool);
+    assert.equal(throughMcp.subject?.id, trace.subject?.id);
+
+    const directAssessment = await callTool('query_intelligence', { project: fixture.project, question: 'What evidence supports Panel?' }) as any;
+    assert.equal(directAssessment.interpretedSubject, 'Panel');
+    assert.equal(directAssessment.answerStatus, 'supported');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
@@ -339,6 +374,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'resolve_revision',
     'project_status',
     'project_overview',
+    'investigate',
     'query_intelligence',
     'audit_repository',
     'inspect_portfolio',
@@ -381,7 +417,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 25, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 26, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -399,7 +435,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 25);
+  assert.equal(identity.mcp.toolCount, 26);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
@@ -464,6 +500,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     const listBody = await list.json() as any;
     assert.equal(listBody.result.cacheScope, 'private');
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'project_overview'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'investigate'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_entity'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'query_source'));
     assert.equal(listBody.result.tools.some((tool: any) => tool.name === 'clear_cache'), false);
