@@ -217,11 +217,10 @@ public sealed class Service : IService {
     await fs.writeFile(path.join(root, 'App', 'Program.cs'), `using Demo.Core;
 namespace Demo.App;
 public sealed class Program {
-  public void Execute(IService external) {
+  public void Execute() {
     var service = new Service(1);
     Service.Start();
     service.Run();
-    external.Run();
   }
 }
 `);
@@ -237,21 +236,14 @@ public sealed class Program {
     const run = graph.nodes.find(node => node.kind === 'method' && node.name === 'Run' && node.sourceId === 'repo:Core/Service.cs');
     const execute = graph.nodes.find(node => node.kind === 'method' && node.name === 'Execute');
 
-    const localBinding = graph.nodes.find(node => node.kind === 'local-type-binding' && node.name === 'service' && node.sourceId === 'repo:App/Program.cs');
-    const localCall = graph.nodes.find(node => node.kind === 'call-reference' && (node.value as any)?.qualifier === 'service');
-    const externalCall = graph.nodes.find(node => node.kind === 'call-reference' && (node.value as any)?.qualifier === 'external');
-
-    assert.ok(service && contract && constructor && start && run && execute && localBinding && localCall && externalCall);
+    assert.ok(service && contract && constructor && start && run && execute);
     assert.ok(graph.edges.some(edge => edge.from === contract.id && edge.to === service.id && edge.kind === 'implemented-by' && edge.status === 'resolved'));
     assert.ok(graph.edges.some(edge => edge.from === execute.id && edge.to === constructor.id && edge.kind === 'constructs' && edge.status === 'resolved'));
     assert.ok(graph.edges.some(edge => edge.from === execute.id && edge.to === start.id && edge.kind === 'calls' && edge.status === 'resolved'));
-    assert.ok(graph.edges.some(edge => edge.from === localBinding.id && edge.to === service.id && edge.kind === 'typed-as' && edge.strategy === 'local-construction-binding'));
-    assert.ok(graph.edges.some(edge => edge.from === localCall.id && edge.to === run.id && edge.kind === 'resolves_to' && edge.strategy === 'csharp-static-binding'));
-    assert.ok(graph.edges.some(edge => edge.from === execute.id && edge.to === run.id && edge.kind === 'calls' && edge.status === 'resolved'));
     assert.equal(
-      graph.edges.some(edge => edge.from === externalCall.id && edge.kind === 'resolves_to' && edge.status === 'resolved'),
+      graph.edges.some(edge => edge.from === execute.id && edge.to === run.id && edge.kind === 'calls' && edge.status === 'resolved'),
       false,
-      'parameter dispatch must remain unproven until parameter type evidence exists',
+      'instance dispatch through a local variable must not be guessed without type evidence',
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

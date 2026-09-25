@@ -164,6 +164,7 @@ function csharpInvocationTarget(node: SgNode): { name: string; qualifier: string
   const parts = match[1]!.split('.');
   const name = parts.at(-1)!;
   const qualifier = parts.length > 1 ? parts.slice(0, -1).join('.') : null;
+  if (qualifier && qualifier !== 'this' && qualifier !== 'base' && !/^[A-Z]/u.test(qualifier.split('.').at(-1) ?? '')) return null;
   return { name, qualifier, arity: argumentCount(node) };
 }
 
@@ -199,15 +200,6 @@ interface LocalTypeBinding {
 function localConstructionBinding(language: Language, node: SgNode): LocalTypeBinding | null {
   const syntaxKind = String(node.kind());
   const text = node.text().trim().replace(/;$/u, '').trim();
-  if (language === 'csharp' && syntaxKind === 'local_declaration_statement') {
-    const match = /^(var|[A-Za-z_][A-Za-z0-9_.<>]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.<>]*)\s*\(/u.exec(text);
-    if (!match) return null;
-    const declared = match[1]!;
-    const variableName = match[2]!;
-    const typeName = match[3]!.replace(/<.*>$/u, '');
-    if (declared !== 'var' && declared.replace(/<.*>$/u, '') !== typeName) return null;
-    return { variableName, typeName };
-  }
   if (language === 'java' && syntaxKind === 'local_variable_declaration') {
     const match = /^([A-Za-z_][A-Za-z0-9_.<>]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.<>]*)\s*\(/u.exec(text);
     if (!match) return null;

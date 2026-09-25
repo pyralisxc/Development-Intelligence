@@ -636,7 +636,6 @@ function resolveCSharpReferences(input: {
   const membersByOwner = new Map<string, GraphNode[]>();
   const namespaceImportsByFile = new Map<string, string[]>();
   const aliasesByFile = new Map<string, Map<string, GraphNode>>();
-  const localTypesByOwner = new Map<string, Map<string, GraphNode>>();
 
   for (const node of input.nodes) {
     if (!node.sourceId.startsWith('repo:') || !polyglotSymbolValue(node.value) || node.value.language !== 'csharp') continue;
@@ -705,29 +704,6 @@ function resolveCSharpReferences(input: {
     return typesByShort.get(normalized) ?? [];
   };
 
-  for (const binding of input.nodes.filter(node => node.kind === 'local-type-binding' && localTypeBindingValue(node.value) && node.value.language === 'csharp')) {
-    if (!binding.sourceId.startsWith('repo:')) continue;
-    const value = binding.value as LocalTypeBindingValue;
-    const owner = value.ownerId ?? input.edges.find(edge => edge.to === binding.id && edge.kind === 'contains' && edge.status === 'resolved' && edge.from)?.from ?? null;
-    if (!owner) continue;
-    const file = binding.sourceId.slice('repo:'.length);
-    const candidates = typeCandidates(file, value.typeName, value.ownerQualifiedName);
-    if (candidates.length !== 1) continue;
-    const locals = localTypesByOwner.get(owner) ?? new Map<string, GraphNode>();
-    locals.set(value.variableName, candidates[0]!);
-    localTypesByOwner.set(owner, locals);
-    input.edges.push(resolution({
-      from: binding.id,
-      to: candidates[0]!.id,
-      kind: 'typed-as',
-      strategy: 'local-construction-binding',
-      confidence: 1,
-      status: 'resolved',
-      evidence: [binding.locator],
-      layer: 'structural',
-      checkpoint: false,
-    }));
-  }
 
   const arityOf = (node: GraphNode): number | null => {
     const value = node.value as PolyglotSymbolValue;
@@ -802,14 +778,11 @@ function resolveCSharpReferences(input: {
     } else if (value.qualifier !== 'base') {
       const ownerType = value.ownerQualifiedName?.split('.').slice(0, -1).join('.') ?? null;
       const qualifier = value.qualifier && value.qualifier !== 'this' ? value.qualifier : null;
-      const localType = owner && qualifier ? localTypesByOwner.get(owner)?.get(qualifier) ?? null : null;
-      const types = localType
-        ? [localType]
-        : qualifier
-          ? typeCandidates(file, qualifier, value.ownerQualifiedName)
-          : ownerType
-            ? typesByQualified.get(ownerType) ?? []
-            : [];
+      const types = qualifier
+        ? typeCandidates(file, qualifier, value.ownerQualifiedName)
+        : ownerType
+          ? typesByQualified.get(ownerType) ?? []
+          : [];
 
       if (types.length === 1) {
         const typeValue = types[0]!.value as PolyglotSymbolValue;
