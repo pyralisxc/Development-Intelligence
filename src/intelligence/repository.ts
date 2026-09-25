@@ -353,13 +353,6 @@ interface PolyglotReferenceValue {
   ownerQualifiedName?: string | null;
 }
 
-interface LocalTypeBindingValue {
-  language: 'csharp' | 'java';
-  variableName: string;
-  typeName: string;
-  ownerQualifiedName?: string | null;
-}
-
 interface PolyglotImportValue {
   language: 'csharp' | 'java' | 'python';
   module: string;
@@ -382,14 +375,6 @@ function polyglotReferenceValue(value: unknown): value is PolyglotReferenceValue
   return ['csharp', 'java'].includes(String(candidate.language))
     && ['call', 'constructor'].includes(String(candidate.referenceKind))
     && typeof candidate.targetName === 'string';
-}
-
-function localTypeBindingValue(value: unknown): value is LocalTypeBindingValue {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Record<string, unknown>;
-  return ['csharp', 'java'].includes(String(candidate.language))
-    && typeof candidate.variableName === 'string'
-    && typeof candidate.typeName === 'string';
 }
 
 function polyglotImportValue(value: unknown): value is PolyglotImportValue {
@@ -702,7 +687,6 @@ function resolveCSharpReferences(input: {
     return typesByShort.get(normalized) ?? [];
   };
 
-
   const arityOf = (node: GraphNode): number | null => {
     const value = node.value as PolyglotSymbolValue;
     if (!value.signature) return null;
@@ -843,7 +827,6 @@ function resolveJavaReferences(input: {
   const typesByQualified = new Map<string, GraphNode[]>();
   const membersByOwner = new Map<string, GraphNode[]>();
   const importedTypesByFile = new Map<string, Map<string, GraphNode>>();
-  const localTypesByOwner = new Map<string, Map<string, GraphNode>>();
 
   for (const node of input.nodes) {
     if (!node.sourceId.startsWith('repo:') || !polyglotSymbolValue(node.value) || node.value.language !== 'java') continue;
@@ -892,30 +875,6 @@ function resolveJavaReferences(input: {
     return typesByShort.get(normalized) ?? [];
   };
 
-  for (const binding of input.nodes.filter(node => node.kind === 'local-type-binding' && localTypeBindingValue(node.value) && node.value.language === 'java')) {
-    if (!binding.sourceId.startsWith('repo:')) continue;
-    const value = binding.value as LocalTypeBindingValue;
-    const owner = input.edges.find(edge => edge.to === binding.id && edge.kind === 'contains' && edge.status === 'resolved' && edge.from)?.from ?? null;
-    if (!owner) continue;
-    const file = binding.sourceId.slice('repo:'.length);
-    const candidates = typeCandidates(file, value.typeName, value.ownerQualifiedName);
-    if (candidates.length !== 1) continue;
-    const locals = localTypesByOwner.get(owner) ?? new Map<string, GraphNode>();
-    locals.set(value.variableName, candidates[0]!);
-    localTypesByOwner.set(owner, locals);
-    input.edges.push(resolution({
-      from: binding.id,
-      to: candidates[0]!.id,
-      kind: 'typed-as',
-      strategy: 'local-construction-binding',
-      confidence: 1,
-      status: 'resolved',
-      evidence: [binding.locator],
-      layer: 'structural',
-      checkpoint: false,
-    }));
-  }
-
   const arityOf = (node: GraphNode): number | null => {
     const value = node.value as PolyglotSymbolValue;
     if (!value.signature) return null;
@@ -949,8 +908,7 @@ function resolveJavaReferences(input: {
       if (!value.qualifier && ownerType) {
         candidates = (membersByOwner.get(ownerType) ?? []).filter(member => member.kind === 'method' && member.name === value.targetName);
       } else if (value.qualifier) {
-        const localType = owner ? localTypesByOwner.get(owner)?.get(value.qualifier) ?? null : null;
-        const types = localType ? [localType] : typeCandidates(file, value.qualifier, value.ownerQualifiedName);
+        const types = typeCandidates(file, value.qualifier, value.ownerQualifiedName);
         if (types.length === 1) {
           const typeValue = types[0]!.value as PolyglotSymbolValue;
           candidates = (membersByOwner.get(typeValue.qualifiedName ?? '') ?? []).filter(member => member.kind === 'method' && member.name === value.targetName);
