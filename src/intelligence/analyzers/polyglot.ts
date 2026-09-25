@@ -164,7 +164,6 @@ function csharpInvocationTarget(node: SgNode): { name: string; qualifier: string
   const parts = match[1]!.split('.');
   const name = parts.at(-1)!;
   const qualifier = parts.length > 1 ? parts.slice(0, -1).join('.') : null;
-  if (qualifier && qualifier !== 'this' && qualifier !== 'base' && !/^[A-Z]/u.test(qualifier.split('.').at(-1) ?? '')) return null;
   return { name, qualifier, arity: argumentCount(node) };
 }
 
@@ -182,7 +181,6 @@ function javaInvocationTarget(node: SgNode): { name: string; qualifier: string |
   const parts = match[1]!.split('.');
   const name = parts.at(-1)!;
   const qualifier = parts.length > 1 ? parts.slice(0, -1).join('.') : null;
-  if (qualifier && !/^[A-Z]/u.test(qualifier.split('.').at(-1) ?? '') && !qualifier.includes('.')) return null;
   return { name, qualifier, arity: argumentCount(node) };
 }
 
@@ -193,6 +191,34 @@ function javaConstructorTarget(node: SgNode): { typeName: string; arity: number 
   return { typeName: match[1]!.replace(/<.*>$/u, ''), arity: argumentCount(node) };
 }
 
+interface LocalTypeBinding {
+  variableName: string;
+  typeName: string;
+}
+
+function localConstructionBinding(language: Language, node: SgNode): LocalTypeBinding | null {
+  const syntaxKind = String(node.kind());
+  const text = node.text().trim().replace(/;$/u, '').trim();
+  if (language === 'csharp' && syntaxKind === 'local_declaration_statement') {
+    const match = /^(var|[A-Za-z_][A-Za-z0-9_.<>]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.<>]*)\s*\(/u.exec(text);
+    if (!match) return null;
+    const declared = match[1]!;
+    const variableName = match[2]!;
+    const typeName = match[3]!.replace(/<.*>$/u, '');
+    if (declared !== 'var' && declared.replace(/<.*>$/u, '') !== typeName) return null;
+    return { variableName, typeName };
+  }
+  if (language === 'java' && syntaxKind === 'local_variable_declaration') {
+    const match = /^([A-Za-z_][A-Za-z0-9_.<>]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.<>]*)\s*\(/u.exec(text);
+    if (!match) return null;
+    const declared = match[1]!.replace(/<.*>$/u, '');
+    const variableName = match[2]!;
+    const typeName = match[3]!.replace(/<.*>$/u, '');
+    if (declared !== typeName) return null;
+    return { variableName, typeName };
+  }
+  return null;
+}
 function importBindingsFor(language: Language, node: SgNode): ImportBinding[] {
   const syntaxKind = String(node.kind());
   const text = node.text().trim();
@@ -339,6 +365,40 @@ export function analyzePolyglot(context: AnalyzeContext, extension: string): Ana
           from: owner.id,
           to: observed.id,
           kind: 'invokes',
+          strategy: 'syntax',
+          confidence: 1,
+          status: 'resolved',
+          evidence: [`${context.locatorBase}:${lineOf(node)}`],
+          layer: 'structural',
+          checkpoint: false,
+        }));
+      }
+    }
+    if (owner) {
+      const localBinding = localConstructionBinding(language, node);
+      if (localBinding) {
+        const ownerValue = owner.value && typeof owner.value === 'object' ? owner.value as Record<string, unknown> : null;
+        const ownerQualifiedName = typeof ownerValue?.qualifiedName === 'string' ? ownerValue.qualifiedName : null;
+        const baseId = `binding:${context.locatorBase}#${language}:local-type:${safeIdentityPart(owner.id)}:${safeIdentityPart(localBinding.variableName)}`;
+        const ordinal = (referenceIdentities.get(baseId) ?? 0) + 1;
+        referenceIdentities.set(baseId, ordinal);
+        const observed = observation({
+          id: ordinal === 1 ? baseId : `${baseId}~${ordinal}`,
+          sourceId: context.source.id,
+          kind: 'local-type-binding',
+          locator: `${context.locatorBase}:${lineOf(node)}`,
+          name: localBinding.variableName,
+          field: 'local-type',
+          value: { language, variableName: localBinding.variableName, typeName: localBinding.typeName, ownerQualifiedName },
+          tags: [language, 'tree-sitter', 'type-binding', 'local-construction'],
+          layer: 'structural',
+          checkpoint: false,
+        });
+        observations.push(observed);
+        resolutions.push(resolution({
+          from: owner.id,
+          to: observed.id,
+          kind: 'contains',
           strategy: 'syntax',
           confidence: 1,
           status: 'resolved',
