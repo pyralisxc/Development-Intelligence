@@ -89,8 +89,8 @@ test('Parity Contracts keep negatives unproven when unsupported tracked sources 
     completeFiles: 1,
     unsupportedFiles: 1,
     files: [
-      { path: 'src/manage.ts', status: 'complete' },
-      { path: 'workflow.yml', status: 'unsupported', reason: 'unsupported extension .yml' },
+      { path: 'src/manage.ts', status: 'complete', role: 'source' },
+      { path: 'workflow.yml', status: 'unsupported', role: 'configuration', reason: 'unsupported extension .yml' },
     ],
   };
   const result = evaluateParityContractGraph(fixture, {

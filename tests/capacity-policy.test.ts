@@ -41,7 +41,7 @@ function graph(): IntelligenceGraph {
       skippedOversizedFiles: 0,
       skippedNonRegularFiles: 0,
       skippedFileLimitFiles: 0,
-      files: [{ path: 'a.ts', status: 'complete' }],
+      files: [{ path: 'a.ts', status: 'complete', role: 'source' }],
     },
   };
 }
