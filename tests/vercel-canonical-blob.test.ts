@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
 import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
 import { runChecked } from '../src/util/process.js';
+import { currentVercelOidcToken, withVercelRequestContext } from '../src/vercelRequestContext.js';
 
 async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, 'add', '.']);
@@ -177,4 +178,56 @@ test('explicit historical revisions never read or write canonical Blob state', a
   } finally {
     cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
   }
+});
+
+
+test('request-scoped Vercel OIDC authenticates canonical Blob without a runtime env token', async () => {
+  const item = await fixture();
+  delete process.env.VERCEL_OIDC_TOKEN;
+  try {
+    const first = await withVercelRequestContext(
+      { 'x-vercel-oidc-token': 'test-oidc' },
+      async () => await graphStatus(item.project) as any,
+    );
+    assert.equal(first.observability.persistence.mode, 'vercel-private-blob');
+    assert.equal(first.observability.persistence.durable, true);
+    assert.equal(first.observability.persistence.loadState, 'miss');
+    assert.equal(first.observability.persistence.saveState, 'stored');
+
+    clearGraphCache(item.project);
+    const second = await withVercelRequestContext(
+      { 'x-vercel-oidc-token': 'test-oidc' },
+      async () => await graphStatus(item.project) as any,
+    );
+    assert.equal(second.observability.persistence.loadState, 'hit');
+    assert.equal(second.observability.persistence.saveState, 'skipped');
+    assert.equal(second.observability.coldBuild, null);
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('request-scoped Vercel OIDC contexts remain isolated across concurrent async work', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+
+  const first = withVercelRequestContext(
+    { 'x-vercel-oidc-token': 'first-token' },
+    async () => {
+      await gate;
+      return currentVercelOidcToken();
+    },
+  );
+  const second = withVercelRequestContext(
+    { 'x-vercel-oidc-token': 'second-token' },
+    async () => {
+      assert.equal(currentVercelOidcToken(), 'second-token');
+      release();
+      await Promise.resolve();
+      return currentVercelOidcToken();
+    },
+  );
+
+  assert.deepEqual(await Promise.all([first, second]), ['first-token', 'second-token']);
+  assert.equal(currentVercelOidcToken(), null);
 });
