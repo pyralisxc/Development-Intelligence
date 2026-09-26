@@ -539,6 +539,38 @@ test('Development Intelligence semantic self-model covers every live MCP tool', 
   assert.deepEqual(modeled, live);
 });
 
+test('headless rich projections stay compact and preserve explicit detail escape hatches', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const search = await callTool('search_graph', { project: fixture.project, query: 'Panel', limit: 10 }) as any;
+    const panel = search.nodes.find((node: any) => node.name === 'Panel');
+    assert.ok(panel);
+
+    const inspected = await callTool('inspect_entity', { project: fixture.project, node: panel.id }) as any;
+    assert.equal(inspected.coverage?.files, undefined);
+    assert.ok(inspected.detailTools.includes('check_graph_coverage'));
+
+    const assessed = await callTool('query_intelligence', { project: fixture.project, question: 'Panel' }) as any;
+    assert.equal(assessed.realization?.resolvedPaths?.nodes, undefined);
+    assert.equal(typeof assessed.realization?.resolvedPaths?.nodeCount, 'number');
+    assert.ok(assessed.realization?.resolvedPaths?.detailTools.includes('get_evidence'));
+
+    const overview = await callTool('project_overview', { project: fixture.project, subjects: ['Panel'] }) as any;
+    assert.equal(overview.changes?.detail, undefined);
+    assert.equal(overview.changes?.detailTool, 'diff_graph');
+
+    const batch = await callTool('investigate', {
+      project: fixture.project,
+      questions: ['What is Panel?', 'What evidence supports Panel?', 'Where is Panel implemented?'],
+    }) as any;
+    assert.equal(batch.items.length, 3);
+    assert.ok(JSON.stringify(batch).length < 250_000, 'small-fixture batch response should remain bounded instead of duplicating full graph proof');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
