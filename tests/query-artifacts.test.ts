@@ -92,11 +92,11 @@ function assertEnvelopeContained(value: IntelligenceGraph, query: string): void 
   const nodeIds = new Set(detail.nodes.map(item => item.id));
   const edgeIds = new Set(detail.edges.map(item => item.id));
   const oracle = fullSearchEnvelope(value, query);
-  for (const id of oracle.nodes) assert.ok(nodeIds.has(id), `Trigram shard selection lost oracle node ${id} for ${query}`);
-  for (const id of oracle.edges) assert.ok(edgeIds.has(id), `Trigram shard selection lost oracle edge ${id} for ${query}`);
+  for (const id of oracle.nodes) assert.ok(nodeIds.has(id), `Search corpus shard selection lost oracle node ${id} for ${query}`);
+  for (const id of oracle.edges) assert.ok(edgeIds.has(id), `Search corpus shard selection lost oracle edge ${id} for ${query}`);
 }
 
-test('global trigram routing preserves disconnected outlier and incident-edge search recall', () => {
+test('compact global search corpus preserves disconnected outlier and incident-edge search recall', () => {
   const value = graph();
   assertEnvelopeContained(value, 'panel');
   const artifacts = buildCanonicalQueryArtifacts(value);
@@ -109,12 +109,6 @@ test('direct edge-text matches with no bound endpoint remain globally discoverab
   assertEnvelopeContained(graph(), 'dangerous remote marker');
 });
 
-test('short or broad substring queries conservatively load every fixed shard', () => {
-  const artifacts = buildCanonicalQueryArtifacts(graph());
-  assert.equal(candidateQueryBuckets(artifacts.index, 'pa').length, 16);
-  assert.equal(candidateQueryBuckets(artifacts.index, '').length, 16);
-});
-
 test('source bucket assignment remains stable as unrelated sources are added', () => {
   const value = graph();
   const before = queryBucketForSource('repo:src/a.ts');
@@ -124,12 +118,27 @@ test('source bucket assignment remains stable as unrelated sources are added', (
 });
 
 
-test('exact identifier and camelCase component routing stays narrow while retaining all matching sources', () => {
-  const artifacts = buildCanonicalQueryArtifacts(graph());
-  const fullName = candidateQueryBuckets(artifacts.index, 'PanelOutlier');
-  assert.deepEqual(fullName, [queryBucketForSource('repo:src/outlier.ts')]);
-  const componentBuckets = candidateQueryBuckets(artifacts.index, 'panel');
-  assert.ok(componentBuckets.includes(queryBucketForSource('repo:src/a.ts')));
-  assert.ok(componentBuckets.includes(queryBucketForSource('repo:src/b.ts')));
-  assert.ok(componentBuckets.includes(queryBucketForSource('repo:src/outlier.ts')));
+
+
+test('global search corpus routes arbitrary substrings, not only exact lexical atoms', () => {
+  const value = graph();
+  value.nodes.push(node(
+    'node:import-context',
+    'repo:src/context.ts',
+    'zoneAction',
+    'src/context.ts:1 createLibraryZoneAction call-site',
+  ));
+  const artifacts = buildCanonicalQueryArtifacts(value);
+  const buckets = candidateQueryBuckets(artifacts.index, 'createLibraryZoneAction');
+  assert.ok(buckets.includes(queryBucketForSource('repo:src/context.ts')));
+  const detail = materializeQueryBuckets(artifacts, buckets);
+  assert.ok(detail.nodes.some(item => item.id === 'node:import-context'));
+});
+
+test('source bucket assignment remains stable as unrelated sources are added', () => {
+  const value = graph();
+  const before = queryBucketForSource('repo:src/a.ts');
+  value.nodes.push(node('node:new', 'repo:src/new.ts', 'New', 'src/new.ts:1'));
+  buildCanonicalQueryArtifacts(value);
+  assert.equal(queryBucketForSource('repo:src/a.ts'), before);
 });

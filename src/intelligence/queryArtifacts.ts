@@ -2,12 +2,32 @@ import type {
   EvidenceRecord,
   GraphEdge,
   GraphNode,
+  GraphNodeLayer,
   IntelligenceGraph,
+  RelationshipStatus,
 } from '../types.js';
 
 export const QUERY_DETAIL_BUCKETS = 16;
 const BUCKET_KEYS = '0123456789abcdef'.split('');
 const HASH_SEED = 0x811c9dc5;
+
+export type CanonicalNodeSearchRecord = [
+  bucket: string,
+  id: string,
+  kind: string,
+  layer: GraphNodeLayer,
+  text: string,
+];
+
+export type CanonicalEdgeSearchRecord = [
+  bucketMask: number,
+  id: string,
+  kind: string,
+  strategy: string,
+  status: RelationshipStatus,
+  layer: GraphNodeLayer,
+  text: string,
+];
 
 export interface CanonicalQuerySemanticNode {
   id: string;
@@ -24,7 +44,7 @@ export interface CanonicalQuerySemanticEdge {
   to: string | null;
   kind: string;
   strategy: string;
-  status: 'resolved' | 'candidate' | 'unresolved';
+  status: RelationshipStatus;
   layer: 'semantic';
 }
 
@@ -35,7 +55,7 @@ export interface CanonicalQueryBucketSummary {
 }
 
 export interface CanonicalQueryIndexArtifact {
-  formatVersion: 3;
+  formatVersion: 4;
   graphSchemaVersion: 2;
   project: string;
   revision: string;
@@ -45,8 +65,8 @@ export interface CanonicalQueryIndexArtifact {
   topologyFingerprint: string | null;
   evidenceFingerprint: string | null;
   bucketCount: 16;
-  exactBuckets: Record<string, number>;
-  trigramBuckets: Record<string, number>;
+  nodeSearch: CanonicalNodeSearchRecord[];
+  edgeSearch: CanonicalEdgeSearchRecord[];
   buckets: Record<string, CanonicalQueryBucketSummary>;
   semanticNodes: CanonicalQuerySemanticNode[];
   semanticEdges: CanonicalQuerySemanticEdge[];
@@ -72,7 +92,7 @@ export interface CanonicalQueryIndexArtifact {
 }
 
 export interface CanonicalQueryDetailShard {
-  formatVersion: 3;
+  formatVersion: 4;
   graphSchemaVersion: 2;
   project: string;
   revision: string;
@@ -119,85 +139,26 @@ export function queryBucketForSource(sourceId: string): string {
   return BUCKET_KEYS[hash32(sourceId) & 0x0f]!;
 }
 
-function nodeSearchText(node: GraphNode): string {
-  return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)]
+function nodeTailText(node: GraphNode): string {
+  return [node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
 }
 
-function edgeSearchText(edge: GraphEdge): string {
-  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...edge.evidence]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
+function edgeTailText(edge: GraphEdge): string {
+  return edge.evidence.join(' ').toLowerCase();
 }
 
-function trigrams(value: string): string[] {
-  if (value.length < 3) return [];
-  const out = new Set<string>();
-  for (let index = 0; index <= value.length - 3; index += 1) out.add(value.slice(index, index + 3));
-  return [...out];
+function layerOf(value: { layer?: GraphNodeLayer }): GraphNodeLayer {
+  return value.layer ?? 'structural';
 }
 
-function lexicalAtoms(value: unknown): string[] {
-  if (value === null || value === undefined) return [];
-  const original = typeof value === 'string' ? value : JSON.stringify(value);
-  if (!original) return [];
-  const normalized = original.trim().toLowerCase();
-  const atoms = new Set<string>();
-  if (normalized) atoms.add(normalized);
-  for (const token of original
-    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
-    .split(/[^A-Za-z0-9_./:@#-]+/u)
-    .flatMap(part => part.split(/[\\/]/u))
-    .map(part => part.trim().toLowerCase())
-    .filter(Boolean)) {
-    atoms.add(token);
-    const dotted = token.split(/[.:@#_-]+/u).filter(Boolean);
-    for (const part of dotted) atoms.add(part);
-  }
-  return [...atoms].filter(atom => atom.length >= 2 && atom.length <= 512);
-}
-
-function nodeAtoms(node: GraphNode): string[] {
-  return [...new Set([
-    ...lexicalAtoms(node.id),
-    ...lexicalAtoms(node.kind),
-    ...lexicalAtoms(node.layer),
-    ...lexicalAtoms(node.locator),
-    ...lexicalAtoms(node.field),
-    ...lexicalAtoms(node.name),
-    ...lexicalAtoms(node.raw),
-    ...lexicalAtoms(node.value),
-  ])];
-}
-
-function edgeAtoms(edge: GraphEdge): string[] {
-  return [...new Set([
-    ...lexicalAtoms(edge.id),
-    ...lexicalAtoms(edge.kind),
-    ...lexicalAtoms(edge.layer),
-    ...lexicalAtoms(edge.strategy),
-    ...lexicalAtoms(edge.status),
-    ...edge.evidence.flatMap(lexicalAtoms),
-  ])];
-}
-
-function addMask(masks: Map<string, number>, value: string, bit: number): void {
-  masks.set(value, (masks.get(value) ?? 0) | bit);
-}
-
-function addSearchMasks(
-  exactMasks: Map<string, number>,
-  trigramMasks: Map<string, number>,
-  text: string,
-  atoms: string[],
-  bucket: string,
-): void {
-  const bit = 1 << Number.parseInt(bucket, 16);
-  for (const atom of atoms) addMask(exactMasks, atom, bit);
-  for (const gram of trigrams(text)) addMask(trigramMasks, gram, bit);
+function recordIncludes(
+  needle: string,
+  fields: Array<string | null | undefined>,
+): boolean {
+  return fields.some(value => typeof value === 'string' && value.toLowerCase().includes(needle));
 }
 
 function coverageSummary(graph: IntelligenceGraph): CanonicalQueryIndexArtifact['coverage'] {
@@ -255,8 +216,6 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
   const revision = requireRevision(graph);
   const nodeSource = new Map(graph.nodes.map(node => [node.id, node.sourceId]));
   const evidenceById = new Map(graph.evidence.map(item => [item.id, item]));
-  const exactMasks = new Map<string, number>();
-  const trigramMasks = new Map<string, number>();
 
   const shardNodes = new Map<string, Map<string, GraphNode>>();
   const shardEdges = new Map<string, Map<string, GraphEdge>>();
@@ -271,6 +230,9 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
     boundaryBuckets.set(bucket, {});
   }
 
+  const nodeSearch: CanonicalNodeSearchRecord[] = [];
+  const edgeSearch: CanonicalEdgeSearchRecord[] = [];
+
   const addEvidence = (bucket: string, id: string): void => {
     const item = evidenceById.get(id);
     if (!item) return;
@@ -282,7 +244,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
     const bucket = queryBucketForSource(node.sourceId);
     shardNodes.get(bucket)!.set(node.id, node);
     shardSources.get(bucket)!.add(node.sourceId);
-    addSearchMasks(exactMasks, trigramMasks, nodeSearchText(node), nodeAtoms(node), bucket);
+    nodeSearch.push([bucket, node.id, node.kind, layerOf(node), nodeTailText(node)]);
     for (const id of node.evidenceIds ?? []) addEvidence(bucket, id);
   }
 
@@ -306,18 +268,20 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
     }
     if (!buckets.size) buckets.add(BUCKET_KEYS[hash32(edge.id) & 0x0f]!);
 
+    let bucketMask = 0;
     for (const bucket of buckets) {
+      bucketMask |= 1 << Number.parseInt(bucket, 16);
       shardEdges.get(bucket)!.set(edge.id, edge);
       boundaryBuckets.get(bucket)![edge.id] = { from: fromBucket, to: toBucket };
-      addSearchMasks(exactMasks, trigramMasks, edgeSearchText(edge), edgeAtoms(edge), bucket);
       for (const evidenceId of edge.evidenceIds ?? []) addEvidence(bucket, evidenceId);
       if (fromSource) shardSources.get(bucket)!.add(fromSource);
       if (toSource) shardSources.get(bucket)!.add(toSource);
     }
+    edgeSearch.push([bucketMask, edge.id, edge.kind, edge.strategy, edge.status, layerOf(edge), edgeTailText(edge)]);
   }
 
   const common = {
-    formatVersion: 3 as const,
+    formatVersion: 4 as const,
     graphSchemaVersion: 2 as const,
     project: graph.project,
     revision,
@@ -345,8 +309,8 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
       topologyFingerprint: graph.topologyFingerprint,
       evidenceFingerprint: graph.evidenceFingerprint,
       bucketCount: QUERY_DETAIL_BUCKETS,
-      exactBuckets: Object.fromEntries([...exactMasks.entries()].sort(([a], [b]) => a.localeCompare(b))),
-      trigramBuckets: Object.fromEntries([...trigramMasks.entries()].sort(([a], [b]) => a.localeCompare(b))),
+      nodeSearch,
+      edgeSearch,
       buckets: Object.fromEntries(BUCKET_KEYS.map(bucket => [bucket, {
         nodeCount: shardNodes.get(bucket)!.size,
         edgeCount: shardEdges.get(bucket)!.size,
@@ -377,17 +341,13 @@ function bucketsFromMask(mask: number): string[] {
 
 export function candidateQueryBuckets(index: CanonicalQueryIndexArtifact, query: string): string[] {
   const needle = query.trim().toLowerCase();
-  if (needle.length < 3) return [...BUCKET_KEYS];
-
-  const exactMask = index.exactBuckets[needle];
-  if (exactMask !== undefined) return bucketsFromMask(exactMask);
-
-  const grams = trigrams(needle);
-  let mask = 0xffff;
-  for (const gram of grams) {
-    const gramMask = index.trigramBuckets[gram] ?? 0;
-    mask &= gramMask;
-    if (mask === 0) return [];
+  if (!needle) return [...BUCKET_KEYS];
+  let mask = 0;
+  for (const [bucket, id, kind, layer, text] of index.nodeSearch) {
+    if (recordIncludes(needle, [id, kind, layer, text])) mask |= 1 << Number.parseInt(bucket, 16);
+  }
+  for (const [bucketMask, id, kind, strategy, status, layer, text] of index.edgeSearch) {
+    if (recordIncludes(needle, [id, kind, strategy, status, layer, text])) mask |= bucketMask;
   }
   return bucketsFromMask(mask);
 }
@@ -427,8 +387,7 @@ export function serializedQueryArtifactBytes(artifacts: CanonicalQueryArtifacts)
   shardBytes: Record<string, number>;
   totalShardBytes: number;
   maxShardBytes: number;
-  exactAtomCount: number;
-  trigramCount: number;
+  searchRecords: number;
 } {
   const encoder = new TextEncoder();
   const size = (value: unknown) => encoder.encode(JSON.stringify(value)).byteLength;
@@ -439,7 +398,6 @@ export function serializedQueryArtifactBytes(artifacts: CanonicalQueryArtifacts)
     shardBytes,
     totalShardBytes: values.reduce((sum, value) => sum + value, 0),
     maxShardBytes: Math.max(0, ...values),
-    exactAtomCount: Object.keys(artifacts.index.exactBuckets).length,
-    trigramCount: Object.keys(artifacts.index.trigramBuckets).length,
+    searchRecords: artifacts.index.nodeSearch.length + artifacts.index.edgeSearch.length,
   };
 }
