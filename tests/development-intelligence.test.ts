@@ -64,7 +64,9 @@ export const privateServiceConfig = { authorization: 'must-not-be-persisted' };
 server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: true }));
 `);
   await fs.writeFile(path.join(source, 'README.md'), '# Sample Project\n\nManage item from the application.\n');
-  await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', access_token: 'must-not-be-persisted' }, null, 2));
+  await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', module: 'NodeNext', access_token: 'must-not-be-persisted' }, null, 2));
+  await fs.mkdir(path.join(source, '.github', 'workflows'), { recursive: true });
+  await fs.writeFile(path.join(source, '.github', 'workflows', 'verify.yml'), 'name: verify\non:\n  push:\n    branches: [main, preview]\njobs:\n  verify:\n    steps:\n      - uses: actions/setup-node@v7\n        with:\n          node-version: 22\n');
   await fs.writeFile(path.join(source, 'src', 'panel.css'), `
 :root { --action-gap: 0.5rem; --api-token: css-secret-value; }
 .action-rail, .manage-button { display: flex; overflow-x: auto; gap: var(--action-gap); }
@@ -361,6 +363,35 @@ test('shared investigation router maps ordinary questions to existing DI primiti
     const directAssessment = await callTool('query_intelligence', { project: fixture.project, question: 'What evidence supports Panel?' }) as any;
     assert.equal(directAssessment.interpretedSubject, 'Panel');
     assert.equal(directAssessment.answerStatus, 'supported');
+
+
+    const scopedGeneric = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which module owns behavior in this file?',
+      scope: 'src/panel.tsx',
+    }) as any;
+    assert.notEqual(scopedGeneric.subject?.name, 'module', 'generic nouns outside an explicit scope must not outrank the scoped file');
+
+    const workflowSource = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which Node.js version does .github/workflows/verify.yml configure?',
+    }) as any;
+    assert.equal(workflowSource.intent, 'source-search');
+    assert.equal(workflowSource.routing.tool, 'search_code');
+    assert.ok(workflowSource.result.matches.some((match: any) => /node-version:\s*22/.test(match.text)));
+
+    const premise = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Where does Panel write accepted graph state?',
+    }) as any;
+    assert.equal(premise.intent, 'implementation-claim');
+    assert.equal(premise.routing.premiseAssumed, false);
+
+    const negativeProof = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Prove Panel is the only composition root.',
+    }) as any;
+    assert.equal(negativeProof.routing.tool, 'query_intelligence', 'uniqueness/negative proof must remain an assessment rather than simple entity inspection');
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -447,6 +478,14 @@ test('scope orientation surfaces explainable local graph structure without an op
     }) as any;
     assert.equal(missingScope.intent, 'orientation');
     assert.equal(missingScope.result.scopeRequired, true, 'deictic scope should remain explicit instead of guessing');
+
+
+    const scopedSpecific = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which file owns this module behavior?',
+      scope: 'src/panel.tsx',
+    }) as any;
+    assert.equal(scopedSpecific.subject?.locator, 'src/panel.tsx', 'explicit file scope must constrain specific subject resolution as well as orientation');
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }

@@ -610,27 +610,103 @@ function subjectDescriptor(node: GraphNode | null, fallback: string | null, ambi
   };
 }
 
-async function resolveInvestigationSubject(
+const GENERIC_SUBJECT_NAMES = new Set([
+  'api', 'class', 'code', 'config', 'configuration', 'dependency', 'dependencies', 'entity', 'feature',
+  'file', 'function', 'implementation', 'module', 'object', 'project', 'provider', 'relationship',
+  'relationships', 'route', 'signal', 'source', 'subject', 'system', 'tool', 'unsupported',
+]);
+
+function plainMention(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/gu, ' ').trim();
+}
+
+function explicitPathMention(text: string): string | null {
+  const tokens = text.match(/`[^`]+`|[^\s]+/gu) ?? [];
+  for (const token of tokens) {
+    const cleaned = token.replace(/^[("'\`]+/u, '').replace(/[)"'\`,?;:]+$/u, '').replace(/^\.\//u, '');
+    if (!cleaned) continue;
+    if (cleaned.includes('/') || /^Dockerfile(?:\.|$)/u.test(cleaned) || /^\.env(?:\.|$)/u.test(cleaned)) return cleaned;
+  }
+  return null;
+}
+
+function sourceFallbackPattern(text: string, file: string): string {
+  const lower = text.toLowerCase();
+  if (/^\.env(?:\.|$)/u.test(file)) return '^[A-Z][A-Z0-9_]*=';
+  if (/\bbase image\b/u.test(lower) && /^Dockerfile/u.test(file)) return '^FROM\\s';
+  if (/\bbranches?\b.*\btrigger/u.test(lower)) return 'branches\\s*:';
+  const stop = new Set(['and','are','configure','configured','declared','does','file','from','into','its','that','the','this','use','uses','what','which','with','workflow']);
+  const tokens = (text.replace(file, ' ').match(/[A-Za-z0-9_@-]{3,}/gu) ?? [])
+    .map(value => value.toLowerCase())
+    .filter(value => !stop.has(value));
+  const unique = [...new Set(tokens)].slice(0, 8);
+  return unique.length ? unique.map(value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|') : '.+';
+}
+
+async function unsupportedPathSourceFallback(
   input: { project: string; ref?: string | undefined; graphId?: string | undefined },
+  text: string,
+): Promise<Record<string, unknown> | null> {
+  const file = explicitPathMention(text);
+  if (!file) return null;
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const coverage = graph.coverage?.files.find(item => item.path.replace(/^\.\//u, '') === file);
+  if (!coverage || !['unsupported', 'skipped', 'partial'].includes(coverage.status)) return null;
+  const result = await searchCode({
+    project: input.project,
+    ref: input.ref,
+    graphId: input.graphId,
+    pattern: sourceFallbackPattern(text, file),
+    filePattern: file,
+    filePatternMode: 'literal',
+    regex: true,
+    context: 2,
+    limit: 100,
+  }) as any;
+  return {
+    intent: 'source-search',
+    subject: { query: file, ambiguous: false },
+    routing: { tool: 'search_code', file, coverageStatus: coverage.status },
+    answer: `${result.matches?.length ?? 0} exact Git source match(es) found in “${file}”; graph-analysis status is ${coverage.status}.`,
+    result,
+  };
+}
+
+async function resolveInvestigationSubject(
+  input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
   text: string,
   markers: RegExp[],
 ): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[] }> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const selectedScope = input.scope ? scopeNodeIds(graph, input.scope) : null;
+  const scopeIds = selectedScope && ['file', 'path', 'entity'].includes(selectedScope.kind) ? selectedScope.ids : null;
+  const restrict = (nodes: GraphNode[]) => scopeIds ? nodes.filter(node => scopeIds.has(node.id)) : nodes;
+
+  if (selectedScope?.kind === 'file' && /\b(file|module|owner|owns|ownership|persistence owner)\b/iu.test(text)) {
+    const fileNode = graph.nodes.find(node => scopeIds?.has(node.id) && node.kind === 'file');
+    if (fileNode) return { query: selectedScope.value, node: fileNode, ambiguous: false, candidates: [fileNode] };
+  }
+
   const cleaned = querySubject(text, markers);
   if (cleaned) {
-    const direct = findGraphNodeCandidates(graph, cleaned, 20);
+    const direct = restrict(findGraphNodeCandidates(graph, cleaned, 20)).filter(node => {
+      const plain = plainMention(node.name ?? '');
+      return !GENERIC_SUBJECT_NAMES.has(plain) || plainMention(cleaned) === plain;
+    });
     const exact = direct.find(node => node.id === cleaned || normalizedMention(node.name ?? '') === normalizedMention(cleaned));
     if (exact) return { query: cleaned, node: exact, ambiguous: false, candidates: [exact] };
     if (direct.length === 1) return { query: cleaned, node: direct[0]!, ambiguous: false, candidates: direct };
   }
 
   const haystack = normalizedMention(text);
-  const mentions = graph.nodes
+  const mentions = restrict(graph.nodes)
     .map(node => {
       const values = [node.id, node.name ?? '']
-        .map(value => ({ raw: value, normalized: normalizedMention(value) }))
-        .filter(value => value.normalized.length >= 3 && haystack.includes(value.normalized));
-      const score = values.reduce((max, value) => Math.max(max, value.normalized.length), 0);
+        .map(value => ({ raw: value, normalized: normalizedMention(value), plain: plainMention(value) }))
+        .filter(value => value.normalized.length >= 3
+          && haystack.includes(value.normalized)
+          && (!GENERIC_SUBJECT_NAMES.has(value.plain) || plainMention(cleaned) === value.plain));
+      const score = values.reduce((max, value) => Math.max(max, value.normalized.length + (/[_.:/@-]/u.test(value.raw) ? 20 : 0)), 0);
       return { node, score };
     })
     .filter(item => item.score > 0)
@@ -666,6 +742,9 @@ export async function queryWorkbench(input: {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
     return { intent: 'source-query', subject: null, routing: { tool: 'query_source', sourceId: input.sourceId }, answer: `Read-only query sent to ${input.sourceId}.`, result: external };
   }
+
+  const sourceFallback = await unsupportedPathSourceFallback(input, text);
+  if (sourceFallback) return sourceFallback;
 
   if (/\b(what changed|changes?|diff|delta)\b/.test(lower)) {
     const result = await diffAcceptedToWorking(input.project, input.ref);
@@ -712,6 +791,24 @@ export async function queryWorkbench(input: {
     }
   }
 
+  if (/\b(write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|write back|accepted graph|accepted checkpoint)\b/.test(lower)) {
+    const resolved = await resolveInvestigationSubject(input, text, [/\b(where|what|which|how|does|do|is|are|write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|back|into|accepted|graph|checkpoint|state|the|an|a)\b/gi]);
+    if (!resolved.ambiguous && resolved.node) {
+      const terms = [resolved.node.name ?? '', 'writeCheckpoint', 'sealLocalGraph', 'accepted', 'checkpoint']
+        .filter(Boolean)
+        .map(value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+        .join('|');
+      const result = await searchCode({ project: input.project, ref: input.ref, graphId: input.graphId, pattern: terms, regex: true, context: 3, limit: 100 }) as any;
+      return {
+        intent: 'implementation-claim',
+        subject: subjectDescriptor(resolved.node, resolved.query),
+        routing: { tool: 'search_code', premiseAssumed: false },
+        answer: `Source evidence loaded for the mutation/persistence claim about “${displayName(resolved.node)}” without assuming the premise is true.`,
+        result,
+      };
+    }
+  }
+
   if (/\b(main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|overview of|what does .+ do)\b/.test(lower)) {
     let requestedScope = input.scope?.trim() || '';
     if (!requestedScope) {
@@ -747,14 +844,16 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (/\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/.test(lower)) {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi]);
+  if (/\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/.test(lower)) {
+    const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi]);
     if (resolved.ambiguous) {
       return { intent: 'trace', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'trace_path' }, answer: 'The relationship subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
     }
     const subject = resolved.node?.id ?? resolved.query;
     if (subject) {
-      const direction = /used by|callers?|called by/.test(lower) ? 'inbound' : /depend(?:s)? on|uses/.test(lower) ? 'outbound' : 'both';
+      const direction = /used by|callers?|called by|consumers?|\bwhich\b.*\buses?\b|\bwhat\b.*\b(?:calls?|constructs?)\b/.test(lower)
+        ? 'inbound'
+        : /depend(?:s)? on|uses/.test(lower) ? 'outbound' : 'both';
       const result = await traceGraph({ project: input.project, ref: input.ref, graphId: input.graphId, node: subject, direction, depth: 2, statuses: ['resolved'], limit: 250 }) as any;
       return {
         intent: 'trace',
@@ -768,7 +867,8 @@ export async function queryWorkbench(input: {
 
   if (/\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/.test(lower)) {
     const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi]);
-    if (!resolved.ambiguous && resolved.node && /\b(evidence|supports?|supporting|proof|prove)\b/.test(lower)) {
+    const claimNeedsAssessment = /\b(no|none|not|only|second|absent|missing|without|actually|whether|cannot|can't)\b/.test(lower);
+    if (!claimNeedsAssessment && !resolved.ambiguous && resolved.node && /\b(evidence|supports?|supporting|proof|prove)\b/.test(lower)) {
       const result = await inspectEntity({ project: input.project, node: resolved.node.id, ref: input.ref, graphId: input.graphId });
       return { intent: 'evidence', subject: subjectDescriptor(resolved.node, resolved.query), routing: { tool: 'inspect_entity' }, answer: `Evidence and resolved context loaded for “${displayName(resolved.node)}”.`, result };
     }
