@@ -452,6 +452,43 @@ test('scope orientation surfaces explainable local graph structure without an op
   }
 });
 
+test('search_code path filtering is explicit, safe, and supports literal/prefix/glob modes', async () => {
+  const fixture = await makeFixture();
+  try {
+    const literal = await callTool('search_code', {
+      project: fixture.project,
+      pattern: 'helper',
+      filePattern: 'src/panel.tsx',
+      filePatternMode: 'literal',
+    }) as any;
+    assert.ok(literal.matches.length > 0);
+    assert.ok(literal.matches.every((match: any) => match.file === 'src/panel.tsx'));
+
+    const prefix = await callTool('search_code', {
+      project: fixture.project,
+      pattern: 'helper',
+      filePattern: 'src/',
+      filePatternMode: 'prefix',
+    }) as any;
+    assert.ok(prefix.matches.some((match: any) => match.file === 'src/panel.tsx'));
+
+    const glob = await callTool('search_code', {
+      project: fixture.project,
+      pattern: 'helper',
+      filePattern: 'src/**/*.tsx',
+      filePatternMode: 'glob',
+    }) as any;
+    assert.ok(glob.matches.some((match: any) => match.file === 'src/panel.tsx'));
+
+    await assert.rejects(
+      () => callTool('search_code', { project: fixture.project, pattern: 'helper', filePattern: 'src/**/*.ts' }),
+      /filePattern is an invalid regular expression.*filePatternMode/s,
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
   const listed = listTools();
   const names = listed.map(tool => tool.name);
