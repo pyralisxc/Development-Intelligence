@@ -9,7 +9,8 @@ import { diffAcceptedToWorking, diffRevisions, viewerProjection } from './intell
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbenchRequest, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
-import { renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
+import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
+import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import type { TechnicalSourceCapability } from './types.js';
 
 const MODERN_VERSION = '2026-07-28';
@@ -248,6 +249,28 @@ export function createDevelopmentIntelligenceServer() {
       query.set('display', 'graph');
       res.writeHead(303, { location: `/workbench?${query.toString()}`, 'cache-control': 'no-store' });
       res.end();
+      return;
+    }
+    if (requestUrl.pathname === '/workbench/reconcile-canonical' && req.method === 'POST') {
+      if (!authorize(req, res, { interactive: true })) return;
+      try {
+        const form = await readForm(req);
+        if (form.get('confirm') !== 'reconcile-current') {
+          throw Object.assign(new Error('Canonical reconcile requires explicit owner confirmation'), { status: 400 });
+        }
+        const limitRaw = Number(form.get('limit') ?? '12');
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 25) : 12;
+        const result = await reconcileCanonicalPortfolio({ limit });
+        res.writeHead(200, htmlHeaders());
+        res.end(renderCanonicalPortfolioResult(result));
+      } catch (error) {
+        res.writeHead((error as any)?.status ?? 500, htmlHeaders());
+        res.end(renderCanonicalPortfolioResult({
+          error: error instanceof Error ? error.message : String(error),
+          counts: { error: 1 },
+          items: [],
+        }));
+      }
       return;
     }
     if (requestUrl.pathname === '/workbench/data' && req.method === 'GET') {
