@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
-import { planAdaptiveQuery } from '../src/intelligence/adaptiveQueryPlanner.js';
 import {
   buildCanonicalQueryArtifacts,
-  hydrateGlobalQueryIndex,
-  materializeQueryDetail,
+  candidateQueryBuckets,
+  materializeQueryBuckets,
   queryBucketForSource,
 } from '../src/intelligence/queryArtifacts.js';
 
@@ -18,12 +17,6 @@ function edge(id: string, from: string | null, to: string | null, evidence: stri
 }
 
 function graph(): IntelligenceGraph {
-  const nodes = [
-    node('node:panel', 'repo:src/a.ts', 'Panel', 'src/a.ts:1'),
-    node('node:panel-controller', 'repo:src/b.ts', 'PanelController', 'src/b.ts:1'),
-    node('node:outlier', 'repo:src/outlier.ts', 'PanelOutlier', 'src/outlier.ts:1'),
-    node('node:other', 'repo:src/other.ts', 'Other', 'src/other.ts:1'),
-  ];
   return {
     schemaVersion: 2,
     analyzerVersion: 'fixture',
@@ -37,10 +30,16 @@ function graph(): IntelligenceGraph {
     evidenceFingerprint: 'evidence',
     sources: [],
     evidence: [],
-    nodes,
+    nodes: [
+      node('node:panel', 'repo:src/a.ts', 'Panel', 'src/a.ts:1'),
+      node('node:panel-controller', 'repo:src/b.ts', 'PanelController', 'src/b.ts:1'),
+      node('node:outlier', 'repo:src/outlier.ts', 'PanelOutlier', 'src/outlier.ts:1'),
+      node('node:other', 'repo:src/other.ts', 'Other', 'src/other.ts:1'),
+    ],
     edges: [
       edge('edge:panel-other', 'node:panel', 'node:other', ['relationship without panel in its text']),
-      edge('edge:unrelated', 'node:other', null, ['unrelated']),
+      edge('edge:outlier-other', 'node:outlier', 'node:other', ['unrelated']),
+      edge('edge:direct', null, null, ['dangerous remote marker']),
     ],
     namingDivergences: [],
     explicitValueConflicts: [],
@@ -68,12 +67,17 @@ function graph(): IntelligenceGraph {
   };
 }
 
+function text(value: GraphNode): string {
+  return [value.id, value.kind, value.layer, value.locator, value.field, value.name, value.raw, JSON.stringify(value.value)]
+    .filter(Boolean).join(' ').toLowerCase();
+}
+function edgeText(value: GraphEdge): string {
+  return [value.id, value.kind, value.layer, value.strategy, value.status, ...value.evidence].join(' ').toLowerCase();
+}
+
 function fullSearchEnvelope(value: IntelligenceGraph, query: string): { nodes: string[]; edges: string[] } {
   const needle = query.trim().toLowerCase();
-  const nodeText = (item: GraphNode) => [item.id, item.kind, item.layer, item.locator, item.field, item.name, item.raw, JSON.stringify(item.value)]
-    .filter(Boolean).join(' ').toLowerCase();
-  const edgeText = (item: GraphEdge) => [item.id, item.kind, item.layer, item.strategy, item.status, ...item.evidence].join(' ').toLowerCase();
-  const nodes = value.nodes.filter(item => nodeText(item).includes(needle));
+  const nodes = value.nodes.filter(item => text(item).includes(needle));
   const ids = new Set(nodes.map(item => item.id));
   const edges = value.edges.filter(item => edgeText(item).includes(needle)
     || Boolean(item.from && ids.has(item.from))
@@ -81,37 +85,40 @@ function fullSearchEnvelope(value: IntelligenceGraph, query: string): { nodes: s
   return { nodes: nodes.map(item => item.id), edges: edges.map(item => item.id) };
 }
 
-test('query artifact global index preserves the full search answer envelope including incident edges', () => {
-  const value = graph();
+function assertEnvelopeContained(value: IntelligenceGraph, query: string): void {
   const artifacts = buildCanonicalQueryArtifacts(value);
-  const plan = planAdaptiveQuery(hydrateGlobalQueryIndex(artifacts.index), { mode: 'search', query: 'panel' });
-  const oracle = fullSearchEnvelope(value, 'panel');
-  assert.deepEqual(plan.candidateNodeIds, oracle.nodes);
-  assert.deepEqual(plan.candidateEdgeIds, oracle.edges);
-  assert.ok(plan.candidateNodeIds.includes('node:panel-controller'), 'exact-name match must not hide substring matches');
-  assert.ok(plan.candidateNodeIds.includes('node:outlier'), 'disconnected outlier must remain globally discoverable');
-  assert.ok(plan.candidateEdgeIds.includes('edge:panel-other'), 'incident edge must remain in search envelope even when edge text does not match');
-});
-
-test('fixed source buckets remain stable and selected detail materializes every globally selected candidate', () => {
-  const value = graph();
-  const artifacts = buildCanonicalQueryArtifacts(value);
-  assert.equal(Object.keys(artifacts.shards).length, 16);
-  assert.equal(artifacts.index.sourceBuckets['repo:src/a.ts'], queryBucketForSource('repo:src/a.ts'));
-
-  const plan = planAdaptiveQuery(hydrateGlobalQueryIndex(artifacts.index), { mode: 'search', query: 'panel' });
-  const detail = materializeQueryDetail(artifacts, plan.selectedSourceIds);
+  const buckets = candidateQueryBuckets(artifacts.index, query);
+  const detail = materializeQueryBuckets(artifacts, buckets);
   const nodeIds = new Set(detail.nodes.map(item => item.id));
   const edgeIds = new Set(detail.edges.map(item => item.id));
-  for (const id of plan.candidateNodeIds) assert.ok(nodeIds.has(id), `selected shards lost candidate node ${id}`);
-  for (const id of plan.candidateEdgeIds) assert.ok(edgeIds.has(id), `selected shards lost candidate edge ${id}`);
+  const oracle = fullSearchEnvelope(value, query);
+  for (const id of oracle.nodes) assert.ok(nodeIds.has(id), `Bloom shard selection lost oracle node ${id} for ${query}`);
+  for (const id of oracle.edges) assert.ok(edgeIds.has(id), `Bloom shard selection lost oracle edge ${id} for ${query}`);
+}
 
-  const changed = graph();
-  changed.nodes.push(node('node:new', 'repo:src/new.ts', 'New', 'src/new.ts:1'));
-  const changedArtifacts = buildCanonicalQueryArtifacts(changed);
-  assert.equal(
-    changedArtifacts.index.sourceBuckets['repo:src/a.ts'],
-    artifacts.index.sourceBuckets['repo:src/a.ts'],
-    'existing source shard assignment must not move when unrelated sources are added',
-  );
+test('global Bloom summaries preserve disconnected outlier and incident-edge search recall', () => {
+  const value = graph();
+  assertEnvelopeContained(value, 'panel');
+  const artifacts = buildCanonicalQueryArtifacts(value);
+  const buckets = candidateQueryBuckets(artifacts.index, 'panel');
+  assert.ok(buckets.includes(queryBucketForSource('repo:src/outlier.ts')), 'outlier source bucket must be globally discoverable');
+  assert.ok(buckets.includes(queryBucketForSource('repo:src/a.ts')), 'primary source bucket must be globally discoverable');
+});
+
+test('direct edge-text matches with no bound endpoint remain globally discoverable', () => {
+  assertEnvelopeContained(graph(), 'dangerous remote marker');
+});
+
+test('short or broad substring queries conservatively load every fixed shard', () => {
+  const artifacts = buildCanonicalQueryArtifacts(graph());
+  assert.equal(candidateQueryBuckets(artifacts.index, 'pa').length, 16);
+  assert.equal(candidateQueryBuckets(artifacts.index, '').length, 16);
+});
+
+test('source bucket assignment remains stable as unrelated sources are added', () => {
+  const value = graph();
+  const before = queryBucketForSource('repo:src/a.ts');
+  value.nodes.push(node('node:new', 'repo:src/new.ts', 'New', 'src/new.ts:1'));
+  buildCanonicalQueryArtifacts(value);
+  assert.equal(queryBucketForSource('repo:src/a.ts'), before);
 });

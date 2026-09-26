@@ -46,8 +46,7 @@ const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
 const { clearGraphCache, graphStatus } = await import('../dist/src/intelligence/service.js');
-const { buildCanonicalQueryArtifacts, hydrateGlobalQueryIndex, serializedQueryArtifactBytes } = await import('../dist/src/intelligence/queryArtifacts.js');
-const { planAdaptiveQuery } = await import('../dist/src/intelligence/adaptiveQueryPlanner.js');
+const { buildCanonicalQueryArtifacts, candidateQueryBuckets, materializeQueryBuckets, serializedQueryArtifactBytes } = await import('../dist/src/intelligence/queryArtifacts.js');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
 
@@ -106,9 +105,7 @@ const graph = await buildLocalGraph(cardForgeRoot, project);
 const queryArtifacts = buildCanonicalQueryArtifacts(graph);
 const queryArtifactBytes = serializedQueryArtifactBytes(queryArtifacts);
 const fullGraphBytes = Buffer.byteLength(JSON.stringify(graph), 'utf8');
-const queryIndex = hydrateGlobalQueryIndex(queryArtifacts.index);
-const representativeAdaptivePlan = planAdaptiveQuery(queryIndex, { mode: 'search', query: 'createCreatorInteractionSession' });
-const representativeBucketIds = [...new Set(representativeAdaptivePlan.selectedSourceIds.map(sourceId => queryArtifacts.index.sourceBuckets[sourceId]).filter(Boolean))].sort();
+const representativeBucketIds = candidateQueryBuckets(queryArtifacts.index, 'createCreatorInteractionSession');
 const representativeShardBytes = representativeBucketIds.reduce((sum, bucket) => sum + Number(queryArtifactBytes.shardBytes[bucket] ?? 0), 0);
 const representativeAdaptiveBytes = queryArtifactBytes.indexBytes + representativeShardBytes;
 const queryIndexRatio = queryArtifactBytes.indexBytes / Math.max(fullGraphBytes, 1);
@@ -215,6 +212,12 @@ for (const probe of probes) {
   const search = await callTool('search_graph', { project, ref, query: probe.query, limit: 40 });
   const searchNodes = Array.isArray(search.nodes) ? search.nodes : [];
   if (Number(search.nodeTotal ?? 0) < 1) throw new Error(`Graph benchmark failed to find known CardForge symbol: ${probe.query}`);
+  const adaptiveBuckets = candidateQueryBuckets(queryArtifacts.index, probe.query);
+  const adaptiveDetail = materializeQueryBuckets(queryArtifacts, adaptiveBuckets);
+  const adaptiveNodeIds = new Set(adaptiveDetail.nodes.map(node => node.id));
+  const adaptiveEdgeIds = new Set(adaptiveDetail.edges.map(edge => edge.id));
+  for (const node of searchNodes) if (node?.id && !adaptiveNodeIds.has(node.id)) throw new Error(`Adaptive query artifacts lost CardForge search node ${node.id} for ${probe.query}`);
+  for (const edge of Array.isArray(search.edges) ? search.edges : []) if (edge?.id && !adaptiveEdgeIds.has(edge.id)) throw new Error(`Adaptive query artifacts lost CardForge search edge ${edge.id} for ${probe.query}`);
   const candidates = searchNodes.filter(node => String(node?.name ?? '').toLowerCase() === probe.query.toLowerCase());
   const ids = [...new Set((candidates.length ? candidates : searchNodes).map(node => node.id).filter(Boolean))].slice(0, 16);
   let trace = null;
@@ -368,13 +371,11 @@ const report = {
     totalShardBytes: queryArtifactBytes.totalShardBytes,
     maxShardBytes: queryArtifactBytes.maxShardBytes,
     representativeQuery: 'createCreatorInteractionSession',
-    representativeSelectedSources: representativeAdaptivePlan.selectedSourceIds.length,
     representativeBucketIds,
     representativeShardBytes,
     representativeAdaptiveBytes,
     representativeAdaptiveRatio: Number(representativeAdaptiveRatio.toFixed(4)),
-    requiresFullGraph: representativeAdaptivePlan.requiresFullGraph,
-    globallyDisjoint: representativeAdaptivePlan.globallyDisjoint,
+    maxFilterSaturation: Number(queryArtifactBytes.maxFilterSaturation.toFixed(4)),
   },
 };
 
