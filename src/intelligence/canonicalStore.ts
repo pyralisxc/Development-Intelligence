@@ -59,7 +59,7 @@ function configuredRoot(): string | null {
 
 function projectStorageKey(project: string): string {
   const readable = project.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 72) || 'project';
-  return `${readable}-${stableHash(project).slice(0, 12)}`;
+  return `${readable}-${stableHash([project]).slice(0, 12)}`;
 }
 
 export function canonicalGraphFilePath(project: string, revision: string): string | null {
