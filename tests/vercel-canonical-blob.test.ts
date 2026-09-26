@@ -73,6 +73,7 @@ async function fixture() {
   await runChecked('git', ['init', '--initial-branch=main', source]);
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
   await fs.writeFile(path.join(source, 'src', 'value.ts'), "export const value = 1;\n");
+  await fs.writeFile(path.join(source, 'src', 'use.ts'), "import { value } from './value.js';\nexport const doubled = value * 2;\n");
   const firstSha = await commit(source, 'initial');
   await runChecked('git', ['-C', source, 'remote', 'add', 'origin', pathToFileURL(remote).href]);
   await runChecked('git', ['-C', source, 'push', '-u', 'origin', 'main']);
@@ -124,7 +125,7 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
   }
 });
 
-test('Main advancement overwrites one canonical Blob object and stale revision is a normal miss', async () => {
+test('Main A->B advancement reuses a bounded dependency frontier and matches a forced full rebuild', async () => {
   const item = await fixture();
   try {
     const first = await graphStatus(item.project) as any;
@@ -132,19 +133,32 @@ test('Main advancement overwrites one canonical Blob object and stale revision i
     assert.equal(item.blob.blobs.size, 1);
     const firstStored = JSON.parse(item.blob.blobs.get(pathname)!);
     assert.equal(firstStored.revision, first.revision);
+
     await fs.writeFile(path.join(item.source, 'src', 'value.ts'), "export const value = 2;\n");
     const nextSha = await commit(item.source, 'advance main');
     await runChecked('git', ['-C', item.source, 'push', 'origin', 'main']);
     clearGraphCache(item.project);
+
     const next = await graphStatus(item.project) as any;
     assert.equal(next.revision, nextSha);
-    assert.equal(next.observability.persistence.loadState, 'miss');
+    assert.equal(next.observability.persistence.loadState, 'stale');
     assert.equal(next.observability.persistence.saveState, 'stored');
-    assert.ok(next.observability.coldBuild);
+    assert.equal(next.observability.coldBuild.strategy, 'incremental');
+    assert.equal(next.observability.coldBuild.changedFiles, 1);
+    assert.equal(next.observability.coldBuild.affectedFiles, 2, 'value.ts and its importing use.ts should form the bounded frontier');
     assert.equal(item.blob.blobs.size, 1);
     const nextStored = JSON.parse(item.blob.blobs.get(pathname)!);
     assert.equal(nextStored.revision, nextSha);
     assert.notEqual(nextStored.revision, firstStored.revision);
+
+    clearGraphCache(item.project);
+    const full = await graphStatus(item.project, `commit:${nextSha}`) as any;
+    assert.equal(full.observability.persistence.mode, 'process-only');
+    assert.equal(next.working.sourceFingerprint, full.working.sourceFingerprint);
+    assert.equal(next.working.topologyFingerprint, full.working.topologyFingerprint);
+    assert.equal(next.working.evidenceFingerprint, full.working.evidenceFingerprint);
+    assert.equal(next.working.nodes, full.working.nodes);
+    assert.equal(next.working.edges, full.working.edges);
   } finally {
     cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
   }
