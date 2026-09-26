@@ -7,8 +7,8 @@ import type {
   RelationshipStatus,
 } from '../types.js';
 
-export const QUERY_DETAIL_BUCKETS = 16;
-const BUCKET_KEYS = '0123456789abcdef'.split('');
+export const QUERY_DETAIL_BUCKETS = 64;
+const BUCKET_KEYS = Array.from({ length: QUERY_DETAIL_BUCKETS }, (_, index) => index.toString(16).padStart(2, '0'));
 const HASH_SEED = 0x811c9dc5;
 
 export type CanonicalNodeSearchRecord = [
@@ -20,7 +20,7 @@ export type CanonicalNodeSearchRecord = [
 ];
 
 export type CanonicalEdgeSearchRecord = [
-  bucketMask: number,
+  bucketIds: string,
   id: string,
   kind: string,
   strategy: string,
@@ -64,7 +64,7 @@ export interface CanonicalQueryIndexArtifact {
   sourceFingerprint: string | null;
   topologyFingerprint: string | null;
   evidenceFingerprint: string | null;
-  bucketCount: 16;
+  bucketCount: 64;
   nodeSearch: CanonicalNodeSearchRecord[];
   edgeSearch: CanonicalEdgeSearchRecord[];
   buckets: Record<string, CanonicalQueryBucketSummary>;
@@ -136,7 +136,7 @@ function hash32(value: string): number {
 }
 
 export function queryBucketForSource(sourceId: string): string {
-  return BUCKET_KEYS[hash32(sourceId) & 0x0f]!;
+  return BUCKET_KEYS[hash32(sourceId) & (QUERY_DETAIL_BUCKETS - 1)]!;
 }
 
 function nodeTailText(node: GraphNode): string {
@@ -266,18 +266,16 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
       const sourceId = evidenceById.get(evidenceId)?.sourceId;
       if (sourceId) buckets.add(queryBucketForSource(sourceId));
     }
-    if (!buckets.size) buckets.add(BUCKET_KEYS[hash32(edge.id) & 0x0f]!);
+    if (!buckets.size) buckets.add(BUCKET_KEYS[hash32(edge.id) & (QUERY_DETAIL_BUCKETS - 1)]!);
 
-    let bucketMask = 0;
     for (const bucket of buckets) {
-      bucketMask |= 1 << Number.parseInt(bucket, 16);
       shardEdges.get(bucket)!.set(edge.id, edge);
       boundaryBuckets.get(bucket)![edge.id] = { from: fromBucket, to: toBucket };
       for (const evidenceId of edge.evidenceIds ?? []) addEvidence(bucket, evidenceId);
       if (fromSource) shardSources.get(bucket)!.add(fromSource);
       if (toSource) shardSources.get(bucket)!.add(toSource);
     }
-    edgeSearch.push([bucketMask, edge.id, edge.kind, edge.strategy, edge.status, layerOf(edge), edgeTailText(edge)]);
+    edgeSearch.push([[...buckets].sort().join(''), edge.id, edge.kind, edge.strategy, edge.status, layerOf(edge), edgeTailText(edge)]);
   }
 
   const common = {
@@ -335,21 +333,18 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
   };
 }
 
-function bucketsFromMask(mask: number): string[] {
-  return BUCKET_KEYS.filter((_, index) => Boolean(mask & (1 << index)));
-}
-
 export function candidateQueryBuckets(index: CanonicalQueryIndexArtifact, query: string): string[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [...BUCKET_KEYS];
-  let mask = 0;
+  const buckets = new Set<string>();
   for (const [bucket, id, kind, layer, text] of index.nodeSearch) {
-    if (recordIncludes(needle, [id, kind, layer, text])) mask |= 1 << Number.parseInt(bucket, 16);
+    if (recordIncludes(needle, [id, kind, layer, text])) buckets.add(bucket);
   }
-  for (const [bucketMask, id, kind, strategy, status, layer, text] of index.edgeSearch) {
-    if (recordIncludes(needle, [id, kind, strategy, status, layer, text])) mask |= bucketMask;
+  for (const [bucketIds, id, kind, strategy, status, layer, text] of index.edgeSearch) {
+    if (!recordIncludes(needle, [id, kind, strategy, status, layer, text])) continue;
+    for (let offset = 0; offset < bucketIds.length; offset += 2) buckets.add(bucketIds.slice(offset, offset + 2));
   }
-  return bucketsFromMask(mask);
+  return [...buckets].sort();
 }
 
 export function materializeQueryBuckets(

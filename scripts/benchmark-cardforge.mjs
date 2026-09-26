@@ -47,6 +47,7 @@ const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/rep
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
 const { clearGraphCache, graphStatus } = await import('../dist/src/intelligence/service.js');
 const { buildCanonicalQueryArtifacts, candidateQueryBuckets, materializeQueryBuckets, serializedQueryArtifactBytes } = await import('../dist/src/intelligence/queryArtifacts.js');
+const { gzipSync } = await import('node:zlib');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
 
@@ -110,6 +111,15 @@ const representativeShardBytes = representativeBucketIds.reduce((sum, bucket) =>
 const representativeAdaptiveBytes = queryArtifactBytes.indexBytes + representativeShardBytes;
 const queryIndexRatio = queryArtifactBytes.indexBytes / Math.max(fullGraphBytes, 1);
 const representativeAdaptiveRatio = representativeAdaptiveBytes / Math.max(fullGraphBytes, 1);
+const compressedIndexBytes = gzipSync(Buffer.from(JSON.stringify(queryArtifacts.index), 'utf8'), { level: 6 }).byteLength;
+const compressedShardBytes = Object.fromEntries(Object.entries(queryArtifacts.shards).map(([bucket, shard]) => [
+  bucket,
+  gzipSync(Buffer.from(JSON.stringify(shard), 'utf8'), { level: 6 }).byteLength,
+]));
+const compressedRepresentativeShardBytes = representativeBucketIds.reduce((sum, bucket) => sum + Number(compressedShardBytes[bucket] ?? 0), 0);
+const compressedRepresentativeAdaptiveBytes = compressedIndexBytes + compressedRepresentativeShardBytes;
+const compressedIndexRatio = compressedIndexBytes / Math.max(fullGraphBytes, 1);
+const compressedRepresentativeAdaptiveRatio = compressedRepresentativeAdaptiveBytes / Math.max(fullGraphBytes, 1);
 
 const devintGraph = await buildLocalGraph(path.resolve('.'), 'Development-Intelligence');
 const portfolioStarted = process.hrtime.bigint();
@@ -375,6 +385,11 @@ const report = {
     representativeShardBytes,
     representativeAdaptiveBytes,
     representativeAdaptiveRatio: Number(representativeAdaptiveRatio.toFixed(4)),
+    compressedIndexBytes,
+    compressedIndexRatio: Number(compressedIndexRatio.toFixed(4)),
+    compressedRepresentativeShardBytes,
+    compressedRepresentativeAdaptiveBytes,
+    compressedRepresentativeAdaptiveRatio: Number(compressedRepresentativeAdaptiveRatio.toFixed(4)),
     searchRecords: queryArtifactBytes.searchRecords,
   },
 };
@@ -403,7 +418,7 @@ const summary = [
   `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Canonical current-graph hot path: **cold ${canonicalColdWallMs.toFixed(3)} ms → p50 ${canonicalHotP50Ms.toFixed(3)} ms / p95 ${canonicalHotP95Ms.toFixed(3)} ms across 12 process-cache-evicted reads (${canonicalSpeedupVsP50.toFixed(2)}× vs p50)**`,
-  `- Query artifact sizing: **global index ${(queryArtifactBytes.indexBytes / 1024 / 1024).toFixed(2)} MiB (${(queryIndexRatio * 100).toFixed(1)}% of full graph); representative adaptive read ${(representativeAdaptiveBytes / 1024 / 1024).toFixed(2)} MiB across ${representativeBucketIds.length} shard(s) (${(representativeAdaptiveRatio * 100).toFixed(1)}% of full graph)**`,
+  `- Query artifact sizing: **raw index ${(queryArtifactBytes.indexBytes / 1024 / 1024).toFixed(2)} MiB; raw adaptive ${(representativeAdaptiveBytes / 1024 / 1024).toFixed(2)} MiB across ${representativeBucketIds.length}/64 shards; gzip index ${(compressedIndexBytes / 1024 / 1024).toFixed(2)} MiB (${(compressedIndexRatio * 100).toFixed(1)}% of full graph); gzip adaptive ${(compressedRepresentativeAdaptiveBytes / 1024 / 1024).toFixed(2)} MiB (${(compressedRepresentativeAdaptiveRatio * 100).toFixed(1)}% of full graph)**`,
   `- Warm exact-graph project overview: **${warmOverviewMaxMs.toFixed(3)} ms max across 3 reads / 1000 ms budget**`,
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
