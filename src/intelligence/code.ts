@@ -8,6 +8,46 @@ import { GRAPH_DIRECTORY } from './repository.js';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? 1_000_000);
 
+export type FilePatternMode = 'regex' | 'literal' | 'prefix' | 'glob';
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^{}()|[\]\\]/gu, '\\$&');
+}
+
+function globMatcher(pattern: string): RegExp {
+  let source = '^';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]!;
+    if (char === '*' && pattern[index + 1] === '*') {
+      if (pattern[index + 2] === '/') {
+        source += '(?:.*/)?';
+        index += 2;
+      } else {
+        source += '.*';
+        index += 1;
+      }
+    } else if (char === '*') source += '[^/]*';
+    else if (char === '?') source += '[^/]';
+    else source += escapeRegex(char);
+  }
+  return new RegExp(source + '$', 'i');
+}
+
+function fileMatcher(pattern: string | undefined, mode: FilePatternMode): RegExp | null {
+  if (!pattern) return null;
+  try {
+    if (mode === 'literal') return new RegExp('^' + escapeRegex(pattern) + '$', 'i');
+    if (mode === 'prefix') return new RegExp('^' + escapeRegex(pattern), 'i');
+    if (mode === 'glob') return globMatcher(pattern);
+    return new RegExp(pattern, 'i');
+  } catch (error) {
+    if (mode === 'regex') {
+      throw new Error(`filePattern is an invalid regular expression. Use filePatternMode "literal", "prefix", or "glob" when regex syntax is not intended: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    throw error;
+  }
+}
+
 async function trackedTextFiles(root: string): Promise<string[]> {
   const result = await runChecked('git', ['-C', root, 'ls-files', '-z']);
   return result.stdout.split('\0').filter(Boolean).filter(file => !file.startsWith(`${GRAPH_DIRECTORY}/`));
@@ -19,6 +59,7 @@ export async function searchCode(input: {
   graphId?: string | undefined;
   pattern: string;
   filePattern?: string | undefined;
+  filePatternMode?: FilePatternMode | undefined;
   regex?: boolean | undefined;
   context?: number | undefined;
   limit?: number | undefined;
@@ -31,12 +72,12 @@ export async function searchCode(input: {
   return await withResolvedProjectCheckout(revision, async checkout => {
     const files = await trackedTextFiles(checkout.root);
     const matcher = input.regex ? new RegExp(input.pattern, 'i') : null;
-    const fileMatcher = input.filePattern ? new RegExp(input.filePattern, 'i') : null;
+    const pathMatcher = fileMatcher(input.filePattern, input.filePatternMode ?? 'regex');
     const context = Math.min(Math.max(input.context ?? 2, 0), 20);
     const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
     const matches: Array<Record<string, unknown>> = [];
     for (const relative of files) {
-      if (fileMatcher && !fileMatcher.test(relative)) continue;
+      if (pathMatcher && !pathMatcher.test(relative)) continue;
       const absolute = path.join(checkout.root, relative);
       let stat;
       try { stat = await fs.lstat(absolute); } catch { continue; }
