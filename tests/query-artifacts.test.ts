@@ -92,11 +92,11 @@ function assertEnvelopeContained(value: IntelligenceGraph, query: string): void 
   const nodeIds = new Set(detail.nodes.map(item => item.id));
   const edgeIds = new Set(detail.edges.map(item => item.id));
   const oracle = fullSearchEnvelope(value, query);
-  for (const id of oracle.nodes) assert.ok(nodeIds.has(id), `Bloom shard selection lost oracle node ${id} for ${query}`);
-  for (const id of oracle.edges) assert.ok(edgeIds.has(id), `Bloom shard selection lost oracle edge ${id} for ${query}`);
+  for (const id of oracle.nodes) assert.ok(nodeIds.has(id), `Trigram shard selection lost oracle node ${id} for ${query}`);
+  for (const id of oracle.edges) assert.ok(edgeIds.has(id), `Trigram shard selection lost oracle edge ${id} for ${query}`);
 }
 
-test('global Bloom summaries preserve disconnected outlier and incident-edge search recall', () => {
+test('global trigram routing preserves disconnected outlier and incident-edge search recall', () => {
   const value = graph();
   assertEnvelopeContained(value, 'panel');
   const artifacts = buildCanonicalQueryArtifacts(value);

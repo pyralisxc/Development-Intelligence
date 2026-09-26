@@ -375,7 +375,7 @@ const report = {
     representativeShardBytes,
     representativeAdaptiveBytes,
     representativeAdaptiveRatio: Number(representativeAdaptiveRatio.toFixed(4)),
-    maxFilterSaturation: Number(queryArtifactBytes.maxFilterSaturation.toFixed(4)),
+    trigramCount: queryArtifactBytes.trigramCount,
   },
 };
 
