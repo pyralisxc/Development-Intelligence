@@ -276,7 +276,17 @@ export const tools: ToolDefinition[] = [
       access: 'read-only',
     })),
   }) },
-  { name: 'reconcile_canonical_portfolio', description: 'Enumerate repositories visible to the existing read-only GitHub App under authorized owners and reconcile each current default-branch graph into the configured canonical derived-state store. This may build missing/stale current graphs and write only reconstructable canonical cache state; it does not modify Git repositories or persist historical revisions.', inputSchema: objectSchema({ owners: strings, repositories: strings, includeArchived: boolean, limit: integer }), handler: async args => await reconcileCanonicalPortfolio({ owners: Array.isArray(args.owners) ? args.owners as string[] : undefined, repositories: Array.isArray(args.repositories) ? args.repositories as string[] : undefined, includeArchived: args.includeArchived === true, limit: typeof args.limit === 'number' ? args.limit : undefined }), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
+  { name: 'reconcile_canonical_portfolio', description: 'Enumerate repositories visible to the existing read-only GitHub App under authorized owners and reconcile each current default-branch graph into the configured canonical derived-state store. This may build missing/stale current graphs and write only reconstructable canonical cache state; it does not modify Git repositories or persist historical revisions.', inputSchema: objectSchema({ owners: strings, repositories: strings, includeArchived: boolean, limit: integer }), handler: async args => {
+    const owners = Array.isArray(args.owners) ? args.owners as string[] : undefined;
+    const repositories = Array.isArray(args.repositories) ? args.repositories as string[] : undefined;
+    const limit = typeof args.limit === 'number' ? args.limit : undefined;
+    return await reconcileCanonicalPortfolio({
+      ...(owners?.length ? { owners } : {}),
+      ...(repositories?.length ? { repositories } : {}),
+      includeArchived: args.includeArchived === true,
+      ...(limit !== undefined ? { limit } : {}),
+    });
+  }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'resolve_revision', description: 'Resolve a repository revision selector to one immutable Git object id without building a graph. Historical selectors are commit:<full-sha>, branch:<name>, tag:<name>, pr:<number>/head, pr:<number>/base, and pr:<number>/result. Pull-request result exists only for merged PRs.', inputSchema: objectSchema({ project: string, ref: string }, ['project']), handler: async args => {
     const revision = await resolveProjectRevision(s(args, 'project'), optString(args, 'ref'));
     return { project: revision.project, repository: revision.repository, identity: revisionIdentity(revision) };
