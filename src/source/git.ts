@@ -1,7 +1,6 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { getProjectConfig, loadRegistry } from '../config/registry.js';
 import type { ProjectConfig } from '../types.js';
 import { runChecked } from '../util/process.js';
@@ -246,15 +245,15 @@ export interface ProjectCheckoutTiming {
 }
 
 function elapsedMs(startedAt: number): number {
-  return Number((performance.now() - startedAt).toFixed(3));
+  return Math.max(0, Date.now() - startedAt);
 }
 
 export async function withResolvedProjectCheckoutObserved<T>(
   revision: ProjectRevision,
   fn: (input: ProjectRevision & { root: string }) => Promise<T>,
 ): Promise<{ value: T; timing: ProjectCheckoutTiming }> {
-  const totalStarted = performance.now();
-  const setupStarted = performance.now();
+  const totalStarted = Date.now();
+  const setupStarted = Date.now();
   const config = await getProjectConfig(revision.project);
   if (config.repository !== revision.repository) throw new Error(`Repository configuration changed while reading ${revision.project}`);
   assertAllowedRef(revision.project, config, parseRevisionSelector(revision.ref, config.defaultRef));
@@ -273,21 +272,21 @@ export async function withResolvedProjectCheckoutObserved<T>(
     await runChecked('git', ['-C', root, 'remote', 'add', 'origin', config.repository]);
     setupMs = elapsedMs(setupStarted);
 
-    const fetchStarted = performance.now();
+    const fetchStarted = Date.now();
     await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', revision.sha], { env: auth.env, timeoutMs: 5 * 60_000 });
     const fetched = (await runChecked('git', ['-C', root, 'rev-parse', 'FETCH_HEAD'])).stdout.trim();
     fetchMs = elapsedMs(fetchStarted);
     if (fetched !== revision.sha) throw new Error(`Repository revision changed while reading ${revision.project}: expected ${revision.sha}, fetched ${fetched}`);
 
-    const checkoutStarted = performance.now();
+    const checkoutStarted = Date.now();
     await runChecked('git', ['-C', root, 'checkout', '--detach', fetched], { timeoutMs: 2 * 60_000 });
     checkoutMs = elapsedMs(checkoutStarted);
 
-    const bodyStarted = performance.now();
+    const bodyStarted = Date.now();
     value = await fn({ ...revision, root });
     bodyMs = elapsedMs(bodyStarted);
   } finally {
-    const cleanupStarted = performance.now();
+    const cleanupStarted = Date.now();
     await auth.cleanup();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     cleanupMs = elapsedMs(cleanupStarted);

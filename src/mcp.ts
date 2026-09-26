@@ -330,13 +330,13 @@ export async function callTool(name: string, args: Record<string, unknown> = {})
   validateAgainstSchema(tool.inputSchema, args);
   const project = typeof args.project === 'string' && args.project ? args.project : null;
   const startedAt = new Date().toISOString();
-  const started = performance.now();
+  const started = Date.now();
   try {
     const result = await tool.handler(args);
-    if (project) recordToolExecution({ project, tool: name, startedAt, durationMs: Number((performance.now() - started).toFixed(3)), status: 'ok' });
+    if (project) recordToolExecution({ project, tool: name, startedAt, durationMs: Math.max(0, Date.now() - started), status: 'ok' });
     return result;
   } catch (error) {
-    if (project) recordToolExecution({ project, tool: name, startedAt, durationMs: Number((performance.now() - started).toFixed(3)), status: 'error' });
+    if (project) recordToolExecution({ project, tool: name, startedAt, durationMs: Number((Date.now() - started).toFixed(3)), status: 'error' });
     throw error;
   }
 }

@@ -1,4 +1,3 @@
-import { performance } from 'node:perf_hooks';
 import { getProjectConfig } from '../config/registry.js';
 import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
@@ -131,12 +130,12 @@ function compactCoverage(coverage: GraphCoverage | undefined): Omit<GraphCoverag
 }
 
 function elapsedMs(startedAt: number): number {
-  return Number((performance.now() - startedAt).toFixed(3));
+  return Math.max(0, Date.now() - startedAt);
 }
 
 async function buildCachedRepositoryGraph(project: string, ref?: string): Promise<RepositoryGraphAccess> {
-  const accessStarted = performance.now();
-  const resolutionStarted = performance.now();
+  const accessStarted = Date.now();
+  const resolutionStarted = Date.now();
   const revision = await resolveProjectRevision(project, ref);
   const revisionResolutionMs = elapsedMs(resolutionStarted);
   const key = cacheKey(project, revision.sha);
@@ -144,15 +143,15 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
   const cacheState: GraphAccessTiming['cacheState'] = entry ? (entry.value ? 'hit' : 'coalesced') : 'miss';
   if (!entry) {
     const created = {} as RepositoryCacheEntry;
-    const queuedAt = performance.now();
+    const queuedAt = Date.now();
     created.promise = repositoryBuildGate.run(async () => {
-      const gateStarted = performance.now();
-      const queueWaitMs = Number((gateStarted - queuedAt).toFixed(3));
+      const gateStarted = Date.now();
+      const queueWaitMs = Math.max(0, gateStarted - queuedAt);
       let graphBuildMs = 0;
       let checkpointReadMs = 0;
       let acceptedProjectionMs = 0;
       const observed = await withResolvedProjectCheckoutObserved(revision, async checkout => {
-        const graphBuildStarted = performance.now();
+        const graphBuildStarted = Date.now();
         const graph = await buildRepositoryGraph({
           project,
           repository: checkout.repository,
@@ -165,7 +164,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
 
         let checkpoint = null;
         let checkpointError: string | null = null;
-        const checkpointReadStarted = performance.now();
+        const checkpointReadStarted = Date.now();
         try {
           checkpoint = await readCheckpoint(checkout.root);
         } catch (error) {
@@ -173,7 +172,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         }
         checkpointReadMs = elapsedMs(checkpointReadStarted);
 
-        const acceptedProjectionStarted = performance.now();
+        const acceptedProjectionStarted = Date.now();
         const accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
         if (accepted) assertGraphIntegrity(accepted);
         let currentness = emptyCurrentness(checkpointError);
@@ -224,7 +223,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
     repositoryCache.set(key, entry);
     entry.promise.catch(() => { if (repositoryCache.get(key) === created) repositoryCache.delete(key); });
   }
-  const graphLoadStarted = performance.now();
+  const graphLoadStarted = Date.now();
   const value = await entry.promise;
   const graphLoadMs = elapsedMs(graphLoadStarted);
   value.touchedAt = Date.now();
