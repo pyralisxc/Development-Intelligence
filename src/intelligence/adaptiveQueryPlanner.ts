@@ -48,6 +48,8 @@ export interface AdaptiveQueryPlanInput {
   depth?: number;
   statuses?: RelationshipStatus[];
   layers?: GraphNodeLayer[];
+  kinds?: string[];
+  sourceIds?: string[];
   maxSelectedSources?: number;
 }
 
@@ -212,7 +214,11 @@ export function planAdaptiveQuery(index: GlobalQueryIndex, input: AdaptiveQueryP
   const needle = query.toLowerCase();
   const maxSelectedSources = Math.min(Math.max(input.maxSelectedSources ?? 32, 1), 256);
   const layers = new Set(input.layers ?? []);
-  const statuses = new Set<RelationshipStatus>(input.statuses ?? ['resolved']);
+  const kinds = new Set(input.kinds ?? []);
+  const sourceIds = new Set(input.sourceIds ?? []);
+  const statuses = new Set<RelationshipStatus>(
+    input.statuses ?? (input.mode === 'trace' ? ['resolved'] : ['resolved', 'candidate', 'unresolved']),
+  );
   const reasons: string[] = [];
   let requiresFullGraph = false;
   let indexOnly = false;
@@ -234,20 +240,35 @@ export function planAdaptiveQuery(index: GlobalQueryIndex, input: AdaptiveQueryP
   }
 
   const exactId = index.nodeById.get(query);
-  const exactNames = exactId ? [] : index.nodes.filter(node => allowedLayer(node.layer, layers) && node.name?.toLowerCase() === needle);
-  const matchingNodes = exactId
-    ? [exactId]
-    : exactNames.length
-      ? exactNames
-      : index.nodes.filter(node => allowedLayer(node.layer, layers) && node.searchable.includes(needle));
-  const matchingEdges = index.edges.filter(edge =>
-    statuses.has(edge.status)
-    && allowedLayer(edge.layer, layers)
-    && edge.searchable.includes(needle));
+  const traceExactNames = input.mode === 'trace' && !exactId
+    ? index.nodes.filter(node => node.name?.toLowerCase() === needle)
+    : [];
+  const matchingNodes = input.mode === 'trace'
+    ? exactId
+      ? [exactId]
+      : traceExactNames.length
+        ? traceExactNames.slice(0, 20)
+        : index.nodes.filter(node => node.searchable.includes(needle)).slice(0, 20)
+    : index.nodes.filter(node => {
+      if (kinds.size && !kinds.has(node.kind)) return false;
+      if (sourceIds.size && !sourceIds.has(node.sourceId)) return false;
+      if (!allowedLayer(node.layer, layers)) return false;
+      return node.searchable.includes(needle);
+    });
+  const candidateNodeIdSet = new Set(matchingNodes.map(node => node.id));
+  const matchingEdges = index.edges.filter(edge => {
+    if (!statuses.has(edge.status) || !allowedLayer(edge.layer, layers)) return false;
+    if (input.mode === 'search') {
+      return edge.searchable.includes(needle)
+        || Boolean(edge.from && candidateNodeIdSet.has(edge.from))
+        || Boolean(edge.to && candidateNodeIdSet.has(edge.to));
+    }
+    return edge.searchable.includes(needle);
+  });
 
   const candidateNodeIds = matchingNodes.map(node => node.id);
   const candidateEdgeIds = matchingEdges.map(edge => edge.id);
-  const ambiguous = input.mode === 'trace' && !exactId && exactNames.length > 1;
+  const ambiguous = input.mode === 'trace' && !exactId && traceExactNames.length > 1;
 
   let selected = candidateSources(index, candidateNodeIds, candidateEdgeIds);
 
