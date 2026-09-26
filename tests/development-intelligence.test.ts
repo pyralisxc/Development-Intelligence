@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
-import { sealLocalGraph } from '../src/intelligence/local.js';
+import { buildLocalGraph, sealLocalGraph } from '../src/intelligence/local.js';
 import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
 import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
@@ -526,6 +526,17 @@ test('search_code path filtering is explicit, safe, and supports literal/prefix/
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test('Development Intelligence semantic self-model covers every live MCP tool', async () => {
+  const graph = await buildLocalGraph(process.cwd(), 'Development-Intelligence');
+  const modeled = graph.nodes
+    .filter(node => node.kind === 'mcp' && node.layer === 'semantic')
+    .map(node => node.name)
+    .filter((name): name is string => Boolean(name))
+    .sort();
+  const live = listTools().map(tool => tool.name).sort();
+  assert.deepEqual(modeled, live);
 });
 
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
