@@ -4,6 +4,7 @@ import type { IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { assertGraphIntegrity } from './integrity.js';
 import { ANALYZER_VERSION } from './repository.js';
+import { currentVercelOidcToken } from '../vercelRequestContext.js';
 
 export interface CanonicalGraphCurrentness {
   acceptedSemanticCurrent: boolean;
@@ -82,7 +83,7 @@ function configuredBlobBackend(): BlobBackend | null {
   const explicitStoreId = process.env.DEVINT_CANONICAL_BLOB_STORE_ID?.trim();
   const oidcStoreId = process.env.BLOB_STORE_ID?.trim();
   const explicitToken = process.env.DEVINT_CANONICAL_BLOB_TOKEN?.trim();
-  const oidcToken = process.env.VERCEL_OIDC_TOKEN?.trim();
+  const oidcToken = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim();
   const readWriteToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
 
   let storeId = explicitStoreId || oidcStoreId || '';

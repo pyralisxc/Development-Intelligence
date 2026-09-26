@@ -20,3 +20,9 @@ declare module 'node:url' { export const fileURLToPath: any; export const pathTo
 declare module 'node:assert/strict' { const value: { ok(value: unknown, message?: string): asserts value; [key: string]: any }; export default value; }
 declare module 'node:test' { const value: any; export default value; }
 declare module 'node:readline' { const value: any; export default value; }
+declare module 'node:async_hooks' {
+  export class AsyncLocalStorage<T> {
+    run<R>(store: T, callback: (...args: any[]) => R, ...args: any[]): R;
+    getStore(): T | undefined;
+  }
+}

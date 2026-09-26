@@ -12,6 +12,7 @@ import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import type { TechnicalSourceCapability } from './types.js';
+import { withVercelRequestContext } from './vercelRequestContext.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
@@ -161,7 +162,7 @@ function changeCounts(diff: any): { added: number; removed: number; changed: num
 }
 
 export function createDevelopmentIntelligenceServer() {
-  return http.createServer(async (req: any, res: any) => {
+  return http.createServer((req: any, res: any) => withVercelRequestContext(req.headers ?? {}, async () => {
     if (!validateHost(req, res)) return;
     const requestUrl = new URL(req.url ?? '/', 'http://development-intelligence.local');
     if (requestUrl.pathname === '/health' && req.method === 'GET') {
@@ -402,7 +403,7 @@ export function createDevelopmentIntelligenceServer() {
       const code = (error as any)?.rpcCode ?? -32603;
       json(res, statusCode, rpcError(null, code, error instanceof Error ? error.message : String(error)));
     }
-  });
+  }));
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
