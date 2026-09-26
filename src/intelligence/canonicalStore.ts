@@ -32,7 +32,7 @@ export interface CanonicalGraphRecord {
   currentness: CanonicalGraphCurrentness;
 }
 
-export type CanonicalLoadState = 'not-configured' | 'hit' | 'miss' | 'invalid' | 'error';
+export type CanonicalLoadState = 'not-configured' | 'hit' | 'stale' | 'miss' | 'invalid' | 'error';
 export type CanonicalSaveState = 'not-configured' | 'stored' | 'error' | 'skipped';
 
 export interface CanonicalPersistenceDiagnostics {
@@ -48,6 +48,7 @@ export interface CanonicalPersistenceDiagnostics {
 export interface CanonicalLoadResult {
   diagnostics: CanonicalPersistenceDiagnostics;
   record?: CanonicalGraphRecord;
+  staleRecord?: CanonicalGraphRecord;
 }
 
 interface FileBackend { kind: 'file'; root: string; }
@@ -185,7 +186,7 @@ function validateRecord(record: unknown, expected: { project: string; repository
 
 function classifyRecordForBlob(parsed: unknown, expected: { project: string; repository: string; revision: string }):
   | { state: 'hit'; record: CanonicalGraphRecord }
-  | { state: 'miss' } {
+  | { state: 'stale'; record: CanonicalGraphRecord } {
   const identity = recordIdentity(parsed);
   if (
     identity?.formatVersion === 1
@@ -193,7 +194,13 @@ function classifyRecordForBlob(parsed: unknown, expected: { project: string; rep
     && identity.repository === expected.repository
     && typeof identity.revision === 'string'
     && identity.revision !== expected.revision
-  ) return { state: 'miss' };
+  ) {
+    assertExactRevision(identity.revision);
+    return {
+      state: 'stale',
+      record: validateRecord(parsed, { project: expected.project, repository: expected.repository, revision: identity.revision }),
+    };
+  }
   return { state: 'hit', record: validateRecord(parsed, expected) };
 }
 
@@ -244,7 +251,9 @@ async function loadFromBlob(
   if (body.byteLength > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record exceeds the bounded storage size');
   const parsed = JSON.parse(new TextDecoder().decode(body));
   const classified = classifyRecordForBlob(parsed, expected);
-  if (classified.state === 'miss') return { diagnostics };
+  if (classified.state === 'stale') {
+    return { diagnostics: { ...diagnostics, loadState: 'stale' }, staleRecord: classified.record };
+  }
   return { diagnostics: { ...diagnostics, loadState: 'hit' }, record: classified.record };
 }
 
