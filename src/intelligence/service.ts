@@ -9,6 +9,7 @@ import { assertGraphIntegrity } from './integrity.js';
 import { buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { toolExecutionDiagnostics } from '../observability.js';
+import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph, type CanonicalPersistenceDiagnostics } from './canonicalStore.js';
 
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_GRAPH_MAX_RUNTIME_BYTES ?? process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
 
@@ -37,11 +38,7 @@ export interface GraphAccessTiming {
   revisionResolutionMs: number;
   graphLoadMs: number;
   totalMs: number;
-  persistence: {
-    mode: 'process-only';
-    durable: false;
-    state: 'not-configured';
-  };
+  persistence: CanonicalPersistenceDiagnostics;
 }
 
 interface CachedRepositoryGraph {
@@ -51,6 +48,7 @@ interface CachedRepositoryGraph {
   revision: ProjectRevision;
   touchedAt: number;
   buildTiming: GraphColdBuildTiming | null;
+  persistence: CanonicalPersistenceDiagnostics;
 }
 
 interface RepositoryGraphAccess extends CachedRepositoryGraph {
@@ -138,6 +136,8 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
   const resolutionStarted = Date.now();
   const revision = await resolveProjectRevision(project, ref);
   const revisionResolutionMs = elapsedMs(resolutionStarted);
+  const config = await getProjectConfig(project);
+  const canonicalEligible = ref === undefined || ref === config.defaultRef;
   const key = cacheKey(project, revision.sha);
   let entry = repositoryCache.get(key);
   const cacheState: GraphAccessTiming['cacheState'] = entry ? (entry.value ? 'hit' : 'coalesced') : 'miss';
@@ -147,6 +147,101 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
     created.promise = repositoryBuildGate.run(async () => {
       const gateStarted = Date.now();
       const queueWaitMs = Math.max(0, gateStarted - queuedAt);
+
+      if (canonicalEligible) {
+        const loaded = await loadCanonicalGraph({ project, repository: revision.repository, revision: revision.sha });
+        if (loaded.record) {
+          return {
+            graph: loaded.record.working,
+            accepted: loaded.record.accepted,
+            currentness: loaded.record.currentness,
+            revision,
+            touchedAt: Date.now(),
+            buildTiming: null,
+            persistence: loaded.diagnostics,
+          } satisfies CachedRepositoryGraph;
+        }
+
+        let graphBuildMs = 0;
+        let checkpointReadMs = 0;
+        let acceptedProjectionMs = 0;
+        const observed = await withResolvedProjectCheckoutObserved(revision, async checkout => {
+          const graphBuildStarted = Date.now();
+          const graph = await buildRepositoryGraph({
+            project,
+            repository: checkout.repository,
+            revision: checkout.sha,
+            root: checkout.root,
+            role: 'W',
+          });
+          assertGraphIntegrity(graph);
+          graphBuildMs = elapsedMs(graphBuildStarted);
+
+          let checkpoint = null;
+          let checkpointError: string | null = null;
+          const checkpointReadStarted = Date.now();
+          try {
+            checkpoint = await readCheckpoint(checkout.root);
+          } catch (error) {
+            checkpointError = error instanceof Error ? error.message : String(error);
+          }
+          checkpointReadMs = elapsedMs(checkpointReadStarted);
+
+          const acceptedProjectionStarted = Date.now();
+          const accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
+          if (accepted) assertGraphIntegrity(accepted);
+          let currentness = emptyCurrentness(checkpointError);
+          if (checkpoint) {
+            const sourceCurrent = checkpoint.meta.sourceFingerprint === graph.sourceFingerprint;
+            const analyzerCurrent = checkpointAnalyzerCurrent(checkpoint.meta);
+            const topologyCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.topologyFingerprint === graph.topologyFingerprint;
+            const evidenceCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.evidenceFingerprint === graph.evidenceFingerprint;
+            const schemaSupported = checkpoint.meta.schemaVersion === 2;
+            const integrityCurrent = checkpoint.integrity.countsValid && checkpoint.integrity.topologyValid !== false;
+            currentness = {
+              acceptedSemanticCurrent: sourceCurrent && topologyCurrent && schemaSupported && integrityCurrent,
+              sourceCurrent,
+              topologyCurrent,
+              evidenceCurrent,
+              analyzerCurrent,
+              schemaSupported,
+              integrityCurrent,
+              checkpointError,
+            };
+          }
+          acceptedProjectionMs = elapsedMs(acceptedProjectionStarted);
+          return { graph, accepted, currentness };
+        });
+        const record = makeCanonicalGraphRecord({
+          project,
+          repository: revision.repository,
+          revision: revision.sha,
+          working: observed.value.graph,
+          accepted: observed.value.accepted,
+          currentness: observed.value.currentness,
+        });
+        const saved = await saveCanonicalGraph(record);
+        return {
+          ...observed.value,
+          revision,
+          touchedAt: Date.now(),
+          buildTiming: {
+            queueWaitMs,
+            graphBuildMs,
+            checkpointReadMs,
+            acceptedProjectionMs,
+            checkout: observed.timing,
+            totalMs: elapsedMs(queuedAt),
+          },
+          persistence: {
+            ...loaded.diagnostics,
+            saveState: saved.saveState,
+            saveMs: saved.saveMs,
+            ...(saved.error ? { error: saved.error } : loaded.diagnostics.error ? { error: loaded.diagnostics.error } : {}),
+          },
+        } satisfies CachedRepositoryGraph;
+      }
+
       let graphBuildMs = 0;
       let checkpointReadMs = 0;
       let acceptedProjectionMs = 0;
@@ -195,17 +290,12 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           };
         }
         acceptedProjectionMs = elapsedMs(acceptedProjectionStarted);
-        return {
-          graph,
-          accepted,
-          currentness,
-          revision,
-          touchedAt: Date.now(),
-          buildTiming: null,
-        } satisfies CachedRepositoryGraph;
+        return { graph, accepted, currentness };
       });
       return {
         ...observed.value,
+        revision,
+        touchedAt: Date.now(),
         buildTiming: {
           queueWaitMs,
           graphBuildMs,
@@ -214,7 +304,15 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           checkout: observed.timing,
           totalMs: elapsedMs(queuedAt),
         },
-      };
+        persistence: {
+          mode: 'process-only',
+          durable: false,
+          loadState: 'not-configured',
+          saveState: 'not-configured',
+          loadMs: 0,
+          saveMs: 0,
+        },
+      } satisfies CachedRepositoryGraph;
     }).then(value => {
       created.value = value;
       return value;
@@ -236,11 +334,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
       revisionResolutionMs,
       graphLoadMs,
       totalMs: elapsedMs(accessStarted),
-      persistence: {
-        mode: 'process-only',
-        durable: false,
-        state: 'not-configured',
-      },
+      persistence: value.persistence,
     },
   };
 }
