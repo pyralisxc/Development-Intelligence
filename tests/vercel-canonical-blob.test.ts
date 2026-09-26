@@ -34,6 +34,13 @@ async function startBlobServer() {
       const pathname = url.searchParams.get('pathname');
       if (!pathname) { response.statusCode = 400; response.end('missing pathname'); return; }
       assert.equal(request.headers['x-api-version'], '12');
+      if (request.headers['x-vercel-blob-access'] !== 'private') {
+        response.statusCode = 400;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ error: { code: 'bad_request', message: 'Cannot use public access on a private store. The store is configured with private access.' } }));
+        return;
+      }
+      assert.equal(request.headers['x-vercel-blob-access'], 'private');
       assert.equal(request.headers['x-add-random-suffix'], '0');
       assert.equal(request.headers['x-allow-overwrite'], '1');
       assert.equal(request.headers['x-content-type'], 'application/json');

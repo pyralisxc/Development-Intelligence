@@ -300,6 +300,7 @@ async function saveToBlob(selected: BlobBackend, record: CanonicalGraphRecord, p
       'x-api-blob-request-id': requestId,
       'x-api-blob-request-attempt': '0',
       'x-api-version': BLOB_API_VERSION,
+      'x-vercel-blob-access': 'private',
       'x-add-random-suffix': '0',
       'x-allow-overwrite': '1',
       'x-content-type': 'application/json',
