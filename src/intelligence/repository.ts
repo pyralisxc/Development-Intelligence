@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import type { EvidenceRecord, ExplicitValueConflict, GraphCoverage, GraphCoverageFile, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
+import type { RepositoryChangedFile } from '../source/git.js';
 import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
 import { analyzeByTechnology } from './analyzers/index.js';
@@ -1280,6 +1281,332 @@ function ensureSemanticTargets(nodes: GraphNode[], edges: GraphEdge[]): GraphNod
     ids.add(edge.to);
   }
   return additions;
+}
+
+
+const INCREMENTAL_GLOBAL_STRATEGIES = new Set([
+  'exact-value',
+  'exact-name',
+  'identifier-match',
+  'framework-route',
+  'framework-route-method',
+  'sql-rpc-name',
+  'sql-qualified-name',
+  'sql-short-name',
+  'sql-name',
+  'component-prop',
+]);
+const LOCAL_INCREMENTAL_EXTENSIONS = new Set(['.json', '.md', '.mdx', '.html', '.htm', '.css', '.sql']);
+
+export interface RepositoryGraphAdvanceResult {
+  graph: IntelligenceGraph | null;
+  strategy: 'incremental' | 'fallback';
+  reason?: string;
+  changedFiles: number;
+  affectedFiles: number;
+}
+
+function graphPathFromFileNode(id: string | null): string | null {
+  return id?.startsWith('file:') ? id.slice('file:'.length) : null;
+}
+
+function isGraphMetadataPath(relative: string): boolean {
+  return relative === GRAPH_DIRECTORY || relative.startsWith(`${GRAPH_DIRECTORY}/`);
+}
+
+function incrementalFrontier(previous: IntelligenceGraph, changes: RepositoryChangedFile[], maxFiles: number): { paths: Set<string>; reason?: string } {
+  const paths = new Set<string>();
+  for (const change of changes) {
+    if (isGraphMetadataPath(change.path) && (!change.previousPath || isGraphMetadataPath(change.previousPath))) continue;
+    paths.add(change.path);
+    if (change.previousPath) paths.add(change.previousPath);
+  }
+  const codeSeeds = new Set([...paths].filter(relative => CODE_EXTENSIONS.has(path.extname(relative).toLowerCase())));
+  if (!codeSeeds.size) return { paths };
+
+  const adjacency = new Map<string, Set<string>>();
+  const connect = (left: string, right: string): void => {
+    const leftSet = adjacency.get(left) ?? new Set<string>();
+    leftSet.add(right);
+    adjacency.set(left, leftSet);
+    const rightSet = adjacency.get(right) ?? new Set<string>();
+    rightSet.add(left);
+    adjacency.set(right, rightSet);
+  };
+  for (const edge of previous.edges) {
+    if (edge.kind !== 'imports' || edge.status !== 'resolved') continue;
+    const from = graphPathFromFileNode(edge.from);
+    const to = graphPathFromFileNode(edge.to);
+    if (from && to) connect(from, to);
+  }
+
+  const queue = [...codeSeeds];
+  while (queue.length) {
+    const current = queue.shift()!;
+    for (const neighbor of adjacency.get(current) ?? []) {
+      if (paths.has(neighbor)) continue;
+      paths.add(neighbor);
+      queue.push(neighbor);
+      if (paths.size > maxFiles) return { paths, reason: `dependency frontier exceeded ${maxFiles} files` };
+    }
+  }
+  return { paths };
+}
+
+function coverageFromFiles(tracked: TrackedFile[], eligible: TrackedFile[], files: GraphCoverageFile[]): GraphCoverage {
+  const completeFiles = files.filter(file => file.status === 'complete').length;
+  const partialFiles = files.filter(file => file.status === 'partial').length;
+  const failedFiles = files.filter(file => file.status === 'failed').length;
+  const skippedFiles = files.filter(file => file.status === 'skipped').length;
+  const unsupportedFiles = files.filter(file => file.status === 'unsupported').length;
+  return {
+    trackedFiles: tracked.length,
+    eligibleFiles: eligible.length,
+    analyzedFiles: completeFiles + partialFiles,
+    completeFiles,
+    partialFiles,
+    unsupportedFiles,
+    skippedFiles,
+    failedFiles,
+    skippedOversizedFiles: files.filter(file => file.status === 'skipped' && /exceeds .* bytes/u.test(file.reason ?? '')).length,
+    skippedNonRegularFiles: files.filter(file => file.status === 'skipped' && /non-regular|escapes repository root/u.test(file.reason ?? '')).length,
+    skippedFileLimitFiles: files.filter(file => file.status === 'skipped' && /^file limit /u.test(file.reason ?? '')).length,
+    files: [...files].sort((a, b) => a.path.localeCompare(b.path)),
+  };
+}
+
+function pruneIncrementalGraph(previous: IntelligenceGraph, affectedPaths: Set<string>): {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  evidence: EvidenceRecord[];
+  fileNodes: Map<string, GraphNode>;
+} {
+  const affectedSources = new Set([...affectedPaths].map(relative => `repo:${relative}`));
+  const removedEvidenceIds = new Set(previous.evidence.filter(item => affectedSources.has(item.sourceId)).map(item => item.id));
+  const evidence = previous.evidence.filter(item => !removedEvidenceIds.has(item.id));
+  const evidenceById = new Map(evidence.map(item => [item.id, item]));
+  const removedNodeIds = new Set<string>();
+  const nodes: GraphNode[] = [];
+
+  for (const node of previous.nodes) {
+    if (node.sourceId === 'semantic-reference') {
+      removedNodeIds.add(node.id);
+      continue;
+    }
+    const remainingEvidenceIds = (node.evidenceIds ?? []).filter(id => !removedEvidenceIds.has(id));
+    if (affectedSources.has(node.sourceId)) {
+      if (!remainingEvidenceIds.length) {
+        removedNodeIds.add(node.id);
+        continue;
+      }
+      const replacementSource = evidenceById.get(remainingEvidenceIds[0]!)?.sourceId;
+      nodes.push({
+        ...node,
+        ...(replacementSource ? { sourceId: replacementSource } : {}),
+        evidenceIds: remainingEvidenceIds,
+      });
+      continue;
+    }
+    nodes.push(node.evidenceIds ? { ...node, evidenceIds: remainingEvidenceIds } : node);
+  }
+
+  const pathNeedles = [...affectedPaths];
+  const edges: GraphEdge[] = [];
+  for (const edge of previous.edges) {
+    if (INCREMENTAL_GLOBAL_STRATEGIES.has(edge.strategy)) continue;
+    if ((edge.from && removedNodeIds.has(edge.from)) || (edge.to && removedNodeIds.has(edge.to))) continue;
+    const originalEvidenceIds = edge.evidenceIds ?? [];
+    const remainingEvidenceIds = originalEvidenceIds.filter(id => !removedEvidenceIds.has(id));
+    if (originalEvidenceIds.length && !remainingEvidenceIds.length) continue;
+    if ((edge.evidence ?? []).some(value => pathNeedles.some(relative => value.includes(relative)))) continue;
+    edges.push(edge.evidenceIds ? { ...edge, evidenceIds: remainingEvidenceIds } : edge);
+  }
+
+  const fileNodes = new Map<string, GraphNode>();
+  for (const node of nodes) {
+    if (node.kind === 'file' && node.sourceId.startsWith('repo:')) fileNodes.set(node.sourceId.slice('repo:'.length), node);
+  }
+  return { nodes, edges, evidence, fileNodes };
+}
+
+export async function advanceRepositoryGraph(input: {
+  previous: IntelligenceGraph;
+  project: string;
+  repository: string;
+  revision: string;
+  root: string;
+  changedFiles: RepositoryChangedFile[];
+  role?: 'A' | 'W' | 'B';
+}): Promise<RepositoryGraphAdvanceResult> {
+  const maxChanged = Number(process.env.DEVINT_CANONICAL_INCREMENTAL_MAX_CHANGED_FILES ?? 32);
+  const maxFrontier = Number(process.env.DEVINT_CANONICAL_INCREMENTAL_MAX_FRONTIER_FILES ?? 64);
+  const sourceChanges = input.changedFiles.filter(change =>
+    !isGraphMetadataPath(change.path) || Boolean(change.previousPath && !isGraphMetadataPath(change.previousPath)));
+  if (sourceChanges.length > maxChanged) {
+    return { graph: null, strategy: 'fallback', reason: `changed-file count exceeded ${maxChanged}`, changedFiles: sourceChanges.length, affectedFiles: sourceChanges.length };
+  }
+  if (input.previous.schemaVersion !== 2 || input.previous.analyzerVersion !== ANALYZER_VERSION) {
+    return { graph: null, strategy: 'fallback', reason: 'previous canonical graph analyzer/schema is incompatible', changedFiles: sourceChanges.length, affectedFiles: sourceChanges.length };
+  }
+  if (!input.previous.coverage || input.previous.coverage.partialFiles || input.previous.coverage.failedFiles || input.previous.coverage.skippedFiles) {
+    return { graph: null, strategy: 'fallback', reason: 'previous canonical graph coverage is incomplete', changedFiles: sourceChanges.length, affectedFiles: sourceChanges.length };
+  }
+
+  const frontier = incrementalFrontier(input.previous, sourceChanges, maxFrontier);
+  if (frontier.reason) return { graph: null, strategy: 'fallback', reason: frontier.reason, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+
+  for (const relative of frontier.paths) {
+    const ext = path.extname(relative).toLowerCase();
+    if (POLYGLOT_EXTENSIONS.has(ext) || UNITY_SERIALIZED_EXTENSIONS.has(ext) || UNITY_JSON_EXTENSIONS.has(ext)) {
+      return { graph: null, strategy: 'fallback', reason: `incremental frontier contains globally coupled ${ext || '(none)'} source`, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+    }
+    if (ext && !CODE_EXTENSIONS.has(ext) && !LOCAL_INCREMENTAL_EXTENSIONS.has(ext) && TEXT_EXTENSIONS.has(ext)) {
+      return { graph: null, strategy: 'fallback', reason: `incremental frontier contains unsupported incremental extension ${ext}`, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+    }
+  }
+
+  const createdAt = new Date().toISOString();
+  const tracked = await trackedFiles(input.root);
+  const eligible = tracked.filter(file => TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()));
+  if (eligible.length > MAX_FILES) {
+    return { graph: null, strategy: 'fallback', reason: `current eligible file count exceeds graph limit ${MAX_FILES}`, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+  }
+  const trackedByPath = new Map(tracked.map(file => [file.path, file]));
+  const pruned = pruneIncrementalGraph(input.previous, frontier.paths);
+  let nodes = pruned.nodes;
+  let edges = pruned.edges;
+  let evidence = pruned.evidence;
+  const fileNodes = pruned.fileNodes;
+  const sourceTexts = new Map<string, string>();
+  const refreshedCoverage: GraphCoverageFile[] = [];
+  const warnings: string[] = [];
+
+  for (const relative of [...frontier.paths].sort()) {
+    const trackedFile = trackedByPath.get(relative);
+    if (!trackedFile) continue;
+    const ext = path.extname(relative).toLowerCase();
+    if (!TEXT_EXTENSIONS.has(ext)) {
+      refreshedCoverage.push({ path: relative, status: 'unsupported', reason: `unsupported extension ${ext || '(none)'}` });
+      continue;
+    }
+    const root = path.resolve(input.root);
+    const absolute = path.resolve(root, relative);
+    if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
+      refreshedCoverage.push({ path: relative, status: 'skipped', reason: 'path escapes repository root' });
+      continue;
+    }
+    let stat;
+    try {
+      stat = await fs.lstat(absolute);
+    } catch (error) {
+      refreshedCoverage.push({ path: relative, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      refreshedCoverage.push({ path: relative, status: 'skipped', reason: 'non-regular file or symlink' });
+      continue;
+    }
+    if (stat.size > MAX_FILE_BYTES) {
+      refreshedCoverage.push({ path: relative, status: 'skipped', reason: `file exceeds ${MAX_FILE_BYTES} bytes` });
+      continue;
+    }
+
+    const fileSource: SourceDescriptor = {
+      id: `repo:${relative}`,
+      kind: 'repository-file',
+      locator: relative,
+      revision: input.revision,
+      observedAt: createdAt,
+      available: true,
+    };
+    const file = fileNode(fileSource, relative);
+    fileNodes.set(relative, file);
+    let textValue: string;
+    try {
+      textValue = await fs.readFile(absolute, 'utf8');
+    } catch (error) {
+      refreshedCoverage.push({ path: relative, status: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    if (CODE_EXTENSIONS.has(ext)) sourceTexts.set(relative, textValue);
+    const result = analyzeByTechnology({ source: fileSource, text: textValue, locatorBase: relative });
+    nodes.push(file, ...result.observations);
+    edges.push(...result.resolutions, ...result.observations.filter(node => node.layer !== 'semantic').map(node => containsEdge(file, node, relative)));
+    evidence.push(...(result.evidence ?? []));
+    const analyzerFailure = result.resolutions.find(edge => edge.kind === 'analysis' && edge.status === 'unresolved' && !edge.from && !edge.to);
+    if (analyzerFailure) refreshedCoverage.push({ path: relative, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure' });
+    else if (result.coverage?.status === 'partial') refreshedCoverage.push({ path: relative, status: 'partial', reason: result.coverage.reason ?? 'analyzer reported partial coverage' });
+    else refreshedCoverage.push({ path: relative, status: 'complete' });
+  }
+
+  if (refreshedCoverage.some(file => ['failed', 'partial', 'skipped'].includes(file.status))) {
+    return { graph: null, strategy: 'fallback', reason: 'incremental frontier did not retain complete coverage', changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+  }
+
+  if (sourceTexts.size) {
+    const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
+    nodes.push(...crossFile.nodes);
+    edges.push(...crossFile.edges);
+    addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
+  }
+
+  nodes.push(...ensureSemanticTargets(nodes, edges));
+  const merged = mergeNodes(nodes);
+  nodes = merged.nodes;
+  evidence = mergeEvidence(evidence);
+  edges = edges.filter(edge => !INCREMENTAL_GLOBAL_STRATEGIES.has(edge.strategy));
+  edges = resolveFrameworkSpine(nodes, edges);
+  edges = dedupeEdges(resolveEvidenceSpine(nodes, resolveCrossSource(nodes, edges)));
+
+  const currentTrackedPaths = new Set(tracked.map(file => file.path));
+  const coverageFiles = [
+    ...(input.previous.coverage?.files ?? []).filter(file => currentTrackedPaths.has(file.path) && !frontier.paths.has(file.path)),
+    ...refreshedCoverage,
+  ];
+  for (const file of tracked) {
+    const ext = path.extname(file.path).toLowerCase();
+    if (!TEXT_EXTENSIONS.has(ext) && !coverageFiles.some(item => item.path === file.path)) {
+      coverageFiles.push({ path: file.path, status: 'unsupported', reason: `unsupported extension ${ext || '(none)'}` });
+    }
+  }
+  const coverage = coverageFromFiles(tracked, eligible, coverageFiles);
+  if (coverage.partialFiles || coverage.failedFiles || coverage.skippedFiles || coverage.analyzedFiles !== coverage.eligibleFiles) {
+    return { graph: null, strategy: 'fallback', reason: 'recomposed incremental coverage is incomplete', changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+  }
+
+  const fingerprint = await sourceFingerprint(input.root);
+  const fingerprints = graphFingerprints(nodes, edges, evidence);
+  const repositorySource: SourceDescriptor = {
+    id: 'repository',
+    kind: 'repository',
+    locator: input.repository,
+    revision: input.revision,
+    observedAt: createdAt,
+    available: true,
+    ...(warnings.length ? { warnings } : {}),
+  };
+  const graph: IntelligenceGraph = {
+    schemaVersion: 2,
+    analyzerVersion: ANALYZER_VERSION,
+    graphId: `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
+    project: input.project,
+    role: input.role ?? 'W',
+    createdAt,
+    repositoryRevision: input.revision,
+    sourceFingerprint: fingerprint,
+    topologyFingerprint: fingerprints.topologyFingerprint,
+    evidenceFingerprint: fingerprints.evidenceFingerprint,
+    sources: [repositorySource],
+    evidence,
+    nodes,
+    edges,
+    namingDivergences: deriveNamingDivergences(nodes, edges),
+    explicitValueConflicts: merged.conflicts,
+    unmatchedNodeIds: deriveUnmatched(nodes, edges),
+    unavailableSourceIds: [],
+    coverage,
+  };
+  return { graph, strategy: 'incremental', changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
 }
 
 export async function buildRepositoryGraph(input: {

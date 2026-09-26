@@ -1,12 +1,12 @@
 import { getProjectConfig } from '../config/registry.js';
 import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
-import { revisionIdentity, withResolvedProjectCheckoutObserved, resolveProjectRevision, type ProjectCheckoutTiming, type ProjectRevision } from '../source/git.js';
+import { changedFilesBetweenRevisions, revisionIdentity, withResolvedProjectCheckoutObserved, resolveProjectRevision, type ProjectCheckoutTiming, type ProjectRevision } from '../source/git.js';
 import { analyzeHtml, analyzeJson } from './analyzers/index.js';
 import { AsyncGate, cacheEntryLimitSetting, graphRecordWeight, positiveIntegerSetting, retentionEvictions, type RetentionItem } from './capacity.js';
 import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
 import { assertGraphIntegrity } from './integrity.js';
-import { buildRepositoryGraph } from './repository.js';
+import { advanceRepositoryGraph, buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { toolExecutionDiagnostics } from '../observability.js';
 import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph, type CanonicalPersistenceDiagnostics } from './canonicalStore.js';
@@ -31,6 +31,10 @@ export interface GraphColdBuildTiming {
   acceptedProjectionMs: number;
   checkout: ProjectCheckoutTiming;
   totalMs: number;
+  strategy?: 'full' | 'incremental';
+  changedFiles?: number;
+  affectedFiles?: number;
+  fallbackReason?: string;
 }
 
 export interface GraphAccessTiming {
@@ -165,15 +169,49 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         let graphBuildMs = 0;
         let checkpointReadMs = 0;
         let acceptedProjectionMs = 0;
+        let buildStrategy: 'full' | 'incremental' = 'full';
+        let changedFileCount: number | undefined;
+        let affectedFileCount: number | undefined;
+        let fallbackReason: string | undefined;
+        let changes: Awaited<ReturnType<typeof changedFilesBetweenRevisions>> | null = null;
+        if (loaded.staleRecord) {
+          try {
+            changes = await changedFilesBetweenRevisions(project, `commit:${loaded.staleRecord.revision}`, `commit:${revision.sha}`);
+          } catch (error) {
+            fallbackReason = `unable to resolve canonical A->B change set: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
         const observed = await withResolvedProjectCheckoutObserved(revision, async checkout => {
           const graphBuildStarted = Date.now();
-          const graph = await buildRepositoryGraph({
-            project,
-            repository: checkout.repository,
-            revision: checkout.sha,
-            root: checkout.root,
-            role: 'W',
-          });
+          let graph: IntelligenceGraph | null = null;
+          if (loaded.staleRecord && changes) {
+            const advanced = await advanceRepositoryGraph({
+              previous: loaded.staleRecord.working,
+              project,
+              repository: checkout.repository,
+              revision: checkout.sha,
+              root: checkout.root,
+              changedFiles: changes.files,
+              role: 'W',
+            });
+            changedFileCount = advanced.changedFiles;
+            affectedFileCount = advanced.affectedFiles;
+            if (advanced.graph) {
+              graph = advanced.graph;
+              buildStrategy = 'incremental';
+            } else {
+              fallbackReason = advanced.reason ?? 'incremental advancement declined';
+            }
+          }
+          if (!graph) {
+            graph = await buildRepositoryGraph({
+              project,
+              repository: checkout.repository,
+              revision: checkout.sha,
+              root: checkout.root,
+              role: 'W',
+            });
+          }
           assertGraphIntegrity(graph);
           graphBuildMs = elapsedMs(graphBuildStarted);
 
@@ -232,6 +270,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
             acceptedProjectionMs,
             checkout: observed.timing,
             totalMs: elapsedMs(queuedAt),
+            strategy: buildStrategy,
+            ...(changedFileCount !== undefined ? { changedFiles: changedFileCount } : {}),
+            ...(affectedFileCount !== undefined ? { affectedFiles: affectedFileCount } : {}),
+            ...(fallbackReason ? { fallbackReason } : {}),
           },
           persistence: {
             ...loaded.diagnostics,

@@ -205,7 +205,59 @@ export async function changedFilesBetweenRevisions(
     resolveProjectRevision(project, headRef),
   ]);
   if (base.repository !== head.repository) throw new Error(`Repository changed while comparing ${project}`);
+  if (base.sha === head.sha) return { base, head, files: [] };
   const config = await getProjectConfig(project);
+
+  const github = githubRepository(config.repository);
+  if (github) {
+    try {
+      const resolved = await resolveRepositoryCredential(config);
+      const response = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(github.owner)}/${encodeURIComponent(github.name)}/compare/${base.sha}...${head.sha}`,
+        {
+          headers: {
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28',
+            'user-agent': 'development-intelligence',
+            ...(resolved ? { authorization: `Bearer ${resolved.token}` } : {}),
+          },
+          redirect: 'error',
+        },
+      );
+      if (response.ok) {
+        const payload = await response.json() as {
+          files?: Array<{ status?: string; filename?: string; previous_filename?: string }>;
+        };
+        const rows = Array.isArray(payload.files) ? payload.files : [];
+        // GitHub Compare caps the files collection. Fall back to exact git diff
+        // instead of silently accepting an incomplete A->B change set.
+        if (rows.length < 300) {
+          const files: RepositoryChangedFile[] = rows.map(file => {
+            const path = file.filename;
+            if (!path) throw new Error('GitHub compare returned a changed file without a filename');
+            switch (file.status) {
+              case 'added': return { status: 'A', path };
+              case 'removed': return { status: 'D', path };
+              case 'renamed': {
+                if (!file.previous_filename) throw new Error('GitHub compare returned a rename without previous_filename');
+                return { status: 'R100', previousPath: file.previous_filename, path };
+              }
+              case 'copied': {
+                if (!file.previous_filename) throw new Error('GitHub compare returned a copy without previous_filename');
+                return { status: 'C100', previousPath: file.previous_filename, path };
+              }
+              default: return { status: 'M', path };
+            }
+          });
+          return { base, head, files };
+        }
+      }
+    } catch {
+      // Network/provider comparison is only an optimization. Exact git diff
+      // below remains the correctness fallback for every repository source.
+    }
+  }
+
   const scratchRoot = path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir());
   await fs.mkdir(scratchRoot, { recursive: true });
   const root = await fs.mkdtemp(path.join(scratchRoot, `devint-diff-${project.replace(/[^a-zA-Z0-9._-]+/g, '-')}-`));
@@ -234,7 +286,6 @@ export async function changedFilesBetweenRevisions(
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
-
 export interface ProjectCheckoutTiming {
   setupMs: number;
   fetchMs: number;
