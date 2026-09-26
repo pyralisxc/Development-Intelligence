@@ -375,6 +375,7 @@ const report = {
     representativeShardBytes,
     representativeAdaptiveBytes,
     representativeAdaptiveRatio: Number(representativeAdaptiveRatio.toFixed(4)),
+    exactAtomCount: queryArtifactBytes.exactAtomCount,
     trigramCount: queryArtifactBytes.trigramCount,
   },
 };

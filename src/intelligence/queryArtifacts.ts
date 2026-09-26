@@ -45,6 +45,7 @@ export interface CanonicalQueryIndexArtifact {
   topologyFingerprint: string | null;
   evidenceFingerprint: string | null;
   bucketCount: 16;
+  exactBuckets: Record<string, number>;
   trigramBuckets: Record<string, number>;
   buckets: Record<string, CanonicalQueryBucketSummary>;
   semanticNodes: CanonicalQuerySemanticNode[];
@@ -139,9 +140,64 @@ function trigrams(value: string): string[] {
   return [...out];
 }
 
-function addTrigramMasks(masks: Map<string, number>, text: string, bucket: string): void {
+function lexicalAtoms(value: unknown): string[] {
+  if (value === null || value === undefined) return [];
+  const original = typeof value === 'string' ? value : JSON.stringify(value);
+  if (!original) return [];
+  const normalized = original.trim().toLowerCase();
+  const atoms = new Set<string>();
+  if (normalized) atoms.add(normalized);
+  for (const token of original
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .split(/[^A-Za-z0-9_./:@#-]+/u)
+    .flatMap(part => part.split(/[\\/]/u))
+    .map(part => part.trim().toLowerCase())
+    .filter(Boolean)) {
+    atoms.add(token);
+    const dotted = token.split(/[.:@#_-]+/u).filter(Boolean);
+    for (const part of dotted) atoms.add(part);
+  }
+  return [...atoms].filter(atom => atom.length >= 2 && atom.length <= 512);
+}
+
+function nodeAtoms(node: GraphNode): string[] {
+  return [...new Set([
+    ...lexicalAtoms(node.id),
+    ...lexicalAtoms(node.kind),
+    ...lexicalAtoms(node.layer),
+    ...lexicalAtoms(node.locator),
+    ...lexicalAtoms(node.field),
+    ...lexicalAtoms(node.name),
+    ...lexicalAtoms(node.raw),
+    ...lexicalAtoms(node.value),
+  ])];
+}
+
+function edgeAtoms(edge: GraphEdge): string[] {
+  return [...new Set([
+    ...lexicalAtoms(edge.id),
+    ...lexicalAtoms(edge.kind),
+    ...lexicalAtoms(edge.layer),
+    ...lexicalAtoms(edge.strategy),
+    ...lexicalAtoms(edge.status),
+    ...edge.evidence.flatMap(lexicalAtoms),
+  ])];
+}
+
+function addMask(masks: Map<string, number>, value: string, bit: number): void {
+  masks.set(value, (masks.get(value) ?? 0) | bit);
+}
+
+function addSearchMasks(
+  exactMasks: Map<string, number>,
+  trigramMasks: Map<string, number>,
+  text: string,
+  atoms: string[],
+  bucket: string,
+): void {
   const bit = 1 << Number.parseInt(bucket, 16);
-  for (const gram of trigrams(text)) masks.set(gram, (masks.get(gram) ?? 0) | bit);
+  for (const atom of atoms) addMask(exactMasks, atom, bit);
+  for (const gram of trigrams(text)) addMask(trigramMasks, gram, bit);
 }
 
 function coverageSummary(graph: IntelligenceGraph): CanonicalQueryIndexArtifact['coverage'] {
@@ -199,6 +255,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
   const revision = requireRevision(graph);
   const nodeSource = new Map(graph.nodes.map(node => [node.id, node.sourceId]));
   const evidenceById = new Map(graph.evidence.map(item => [item.id, item]));
+  const exactMasks = new Map<string, number>();
   const trigramMasks = new Map<string, number>();
 
   const shardNodes = new Map<string, Map<string, GraphNode>>();
@@ -225,7 +282,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
     const bucket = queryBucketForSource(node.sourceId);
     shardNodes.get(bucket)!.set(node.id, node);
     shardSources.get(bucket)!.add(node.sourceId);
-    addTrigramMasks(trigramMasks, nodeSearchText(node), bucket);
+    addSearchMasks(exactMasks, trigramMasks, nodeSearchText(node), nodeAtoms(node), bucket);
     for (const id of node.evidenceIds ?? []) addEvidence(bucket, id);
   }
 
@@ -252,7 +309,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
     for (const bucket of buckets) {
       shardEdges.get(bucket)!.set(edge.id, edge);
       boundaryBuckets.get(bucket)![edge.id] = { from: fromBucket, to: toBucket };
-      addTrigramMasks(trigramMasks, edgeSearchText(edge), bucket);
+      addSearchMasks(exactMasks, trigramMasks, edgeSearchText(edge), edgeAtoms(edge), bucket);
       for (const evidenceId of edge.evidenceIds ?? []) addEvidence(bucket, evidenceId);
       if (fromSource) shardSources.get(bucket)!.add(fromSource);
       if (toSource) shardSources.get(bucket)!.add(toSource);
@@ -288,6 +345,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
       topologyFingerprint: graph.topologyFingerprint,
       evidenceFingerprint: graph.evidenceFingerprint,
       bucketCount: QUERY_DETAIL_BUCKETS,
+      exactBuckets: Object.fromEntries([...exactMasks.entries()].sort(([a], [b]) => a.localeCompare(b))),
       trigramBuckets: Object.fromEntries([...trigramMasks.entries()].sort(([a], [b]) => a.localeCompare(b))),
       buckets: Object.fromEntries(BUCKET_KEYS.map(bucket => [bucket, {
         nodeCount: shardNodes.get(bucket)!.size,
@@ -313,9 +371,17 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
   };
 }
 
+function bucketsFromMask(mask: number): string[] {
+  return BUCKET_KEYS.filter((_, index) => Boolean(mask & (1 << index)));
+}
+
 export function candidateQueryBuckets(index: CanonicalQueryIndexArtifact, query: string): string[] {
   const needle = query.trim().toLowerCase();
   if (needle.length < 3) return [...BUCKET_KEYS];
+
+  const exactMask = index.exactBuckets[needle];
+  if (exactMask !== undefined) return bucketsFromMask(exactMask);
+
   const grams = trigrams(needle);
   let mask = 0xffff;
   for (const gram of grams) {
@@ -323,7 +389,7 @@ export function candidateQueryBuckets(index: CanonicalQueryIndexArtifact, query:
     mask &= gramMask;
     if (mask === 0) return [];
   }
-  return BUCKET_KEYS.filter((_, index) => Boolean(mask & (1 << index)));
+  return bucketsFromMask(mask);
 }
 
 export function materializeQueryBuckets(
@@ -361,6 +427,7 @@ export function serializedQueryArtifactBytes(artifacts: CanonicalQueryArtifacts)
   shardBytes: Record<string, number>;
   totalShardBytes: number;
   maxShardBytes: number;
+  exactAtomCount: number;
   trigramCount: number;
 } {
   const encoder = new TextEncoder();
@@ -372,6 +439,7 @@ export function serializedQueryArtifactBytes(artifacts: CanonicalQueryArtifacts)
     shardBytes,
     totalShardBytes: values.reduce((sum, value) => sum + value, 0),
     maxShardBytes: Math.max(0, ...values),
+    exactAtomCount: Object.keys(artifacts.index.exactBuckets).length,
     trigramCount: Object.keys(artifacts.index.trigramBuckets).length,
   };
 }

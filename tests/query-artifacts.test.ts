@@ -122,3 +122,14 @@ test('source bucket assignment remains stable as unrelated sources are added', (
   buildCanonicalQueryArtifacts(value);
   assert.equal(queryBucketForSource('repo:src/a.ts'), before);
 });
+
+
+test('exact identifier and camelCase component routing stays narrow while retaining all matching sources', () => {
+  const artifacts = buildCanonicalQueryArtifacts(graph());
+  const fullName = candidateQueryBuckets(artifacts.index, 'PanelOutlier');
+  assert.deepEqual(fullName, [queryBucketForSource('repo:src/outlier.ts')]);
+  const componentBuckets = candidateQueryBuckets(artifacts.index, 'panel');
+  assert.ok(componentBuckets.includes(queryBucketForSource('repo:src/a.ts')));
+  assert.ok(componentBuckets.includes(queryBucketForSource('repo:src/b.ts')));
+  assert.ok(componentBuckets.includes(queryBucketForSource('repo:src/outlier.ts')));
+});
