@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { getProjectConfig, loadRegistry } from '../config/registry.js';
 import type { ProjectConfig } from '../types.js';
 import { runChecked } from '../util/process.js';
@@ -235,10 +236,25 @@ export async function changedFilesBetweenRevisions(
   }
 }
 
-export async function withResolvedProjectCheckout<T>(
+export interface ProjectCheckoutTiming {
+  setupMs: number;
+  fetchMs: number;
+  checkoutMs: number;
+  bodyMs: number;
+  cleanupMs: number;
+  totalMs: number;
+}
+
+function elapsedMs(startedAt: number): number {
+  return Number((performance.now() - startedAt).toFixed(3));
+}
+
+export async function withResolvedProjectCheckoutObserved<T>(
   revision: ProjectRevision,
   fn: (input: ProjectRevision & { root: string }) => Promise<T>,
-): Promise<T> {
+): Promise<{ value: T; timing: ProjectCheckoutTiming }> {
+  const totalStarted = performance.now();
+  const setupStarted = performance.now();
   const config = await getProjectConfig(revision.project);
   if (config.repository !== revision.repository) throw new Error(`Repository configuration changed while reading ${revision.project}`);
   assertAllowedRef(revision.project, config, parseRevisionSelector(revision.ref, config.defaultRef));
@@ -246,18 +262,54 @@ export async function withResolvedProjectCheckout<T>(
   await fs.mkdir(scratchRoot, { recursive: true });
   const root = await fs.mkdtemp(path.join(scratchRoot, `devint-${revision.project.replace(/[^a-zA-Z0-9._-]+/g, '-')}-`));
   const auth = await gitAuth(config);
+  let setupMs = 0;
+  let fetchMs = 0;
+  let checkoutMs = 0;
+  let bodyMs = 0;
+  let cleanupMs = 0;
+  let value!: T;
   try {
     await runChecked('git', ['init', '--initial-branch=devint', root], { timeoutMs: 60_000 });
     await runChecked('git', ['-C', root, 'remote', 'add', 'origin', config.repository]);
+    setupMs = elapsedMs(setupStarted);
+
+    const fetchStarted = performance.now();
     await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', revision.sha], { env: auth.env, timeoutMs: 5 * 60_000 });
     const fetched = (await runChecked('git', ['-C', root, 'rev-parse', 'FETCH_HEAD'])).stdout.trim();
+    fetchMs = elapsedMs(fetchStarted);
     if (fetched !== revision.sha) throw new Error(`Repository revision changed while reading ${revision.project}: expected ${revision.sha}, fetched ${fetched}`);
+
+    const checkoutStarted = performance.now();
     await runChecked('git', ['-C', root, 'checkout', '--detach', fetched], { timeoutMs: 2 * 60_000 });
-    return await fn({ ...revision, root });
+    checkoutMs = elapsedMs(checkoutStarted);
+
+    const bodyStarted = performance.now();
+    value = await fn({ ...revision, root });
+    bodyMs = elapsedMs(bodyStarted);
   } finally {
+    const cleanupStarted = performance.now();
     await auth.cleanup();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    cleanupMs = elapsedMs(cleanupStarted);
   }
+  return {
+    value,
+    timing: {
+      setupMs,
+      fetchMs,
+      checkoutMs,
+      bodyMs,
+      cleanupMs,
+      totalMs: elapsedMs(totalStarted),
+    },
+  };
+}
+
+export async function withResolvedProjectCheckout<T>(
+  revision: ProjectRevision,
+  fn: (input: ProjectRevision & { root: string }) => Promise<T>,
+): Promise<T> {
+  return (await withResolvedProjectCheckoutObserved(revision, fn)).value;
 }
 
 export async function withProjectCheckout<T>(
