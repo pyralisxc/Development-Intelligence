@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import test from 'node:test';
-import { clearRepositoryCredentialCacheForTests, resolveRepositoryCredential } from '../src/source/repositoryCredential.js';
+import { clearRepositoryCredentialCacheForTests, listGithubInstallationRepositories, resolveRepositoryCredential } from '../src/source/repositoryCredential.js';
 import type { ProjectConfig } from '../src/types.js';
 
 test('dedicated GitHub App mints single-repository read-only installation credentials', async () => {
@@ -104,6 +104,65 @@ test('GitHub App credential fails closed on non-read installation permissions', 
 
   try {
     await assert.rejects(resolveRepositoryCredential(config), /non-read permission/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearRepositoryCredentialCacheForTests();
+    const restore = (key: string, value: string | undefined) => value === undefined ? delete process.env[key] : process.env[key] = value;
+    restore('DEVINT_GITHUB_APP_ID', previous.appId);
+    restore('DEVINT_GITHUB_APP_PRIVATE_KEY', previous.appKey);
+  }
+});
+
+
+test('GitHub App enumerates every readable repository for an authorized owner with one read-only installation token', async () => {
+  const previous = {
+    appId: process.env.DEVINT_GITHUB_APP_ID,
+    appKey: process.env.DEVINT_GITHUB_APP_PRIVATE_KEY,
+  };
+  const originalFetch = globalThis.fetch;
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  process.env.DEVINT_GITHUB_APP_ID = '123456';
+  process.env.DEVINT_GITHUB_APP_PRIVATE_KEY = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  clearRepositoryCredentialCacheForTests();
+
+  const requests: string[] = [];
+  globalThis.fetch = async (input: any, init: any = {}) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.endsWith('/users/pyralisxc/installation')) {
+      assert.match(String(init.headers?.authorization ?? ''), /^Bearer /u);
+      return Response.json({ id: 42, account: { login: 'pyralisxc' } });
+    }
+    if (url.endsWith('/app/installations/42/access_tokens')) {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.repositories, undefined, 'portfolio token should retain the installation repository scope');
+      assert.deepEqual(body.permissions, { contents: 'read', pull_requests: 'read' });
+      return Response.json({
+        token: 'owner-read-token',
+        expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+        permissions: { contents: 'read', metadata: 'read', pull_requests: 'read' },
+      });
+    }
+    if (url.endsWith('/installation/repositories?per_page=100&page=1')) {
+      assert.equal(String(init.headers?.authorization ?? ''), 'Bearer owner-read-token');
+      return Response.json({
+        total_count: 3,
+        repositories: [
+          { name: 'CardForge', full_name: 'pyralisxc/CardForge', default_branch: 'main', archived: false, disabled: false, private: false, fork: false, owner: { login: 'pyralisxc' } },
+          { name: 'Development-Intelligence', full_name: 'pyralisxc/Development-Intelligence', default_branch: 'main', archived: false, disabled: false, private: false, fork: false, owner: { login: 'pyralisxc' } },
+          { name: 'other-owner-repo', full_name: 'someone/other-owner-repo', default_branch: 'main', archived: false, disabled: false, private: false, fork: false, owner: { login: 'someone' } },
+        ],
+      });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  try {
+    const repositories = await listGithubInstallationRepositories('pyralisxc');
+    assert.deepEqual(repositories.map(item => item.fullName), ['pyralisxc/CardForge', 'pyralisxc/Development-Intelligence']);
+    const cached = await listGithubInstallationRepositories('pyralisxc');
+    assert.deepEqual(cached.map(item => item.fullName), ['pyralisxc/CardForge', 'pyralisxc/Development-Intelligence']);
+    assert.equal(requests.filter(url => url.endsWith('/app/installations/42/access_tokens')).length, 1, 'owner installation token should be cached');
   } finally {
     globalThis.fetch = originalFetch;
     clearRepositoryCredentialCacheForTests();

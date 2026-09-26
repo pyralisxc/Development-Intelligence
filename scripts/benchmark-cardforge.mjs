@@ -38,15 +38,49 @@ process.env.DEVINT_SCRATCH_DIR = path.join(temp, 'scratch');
 process.env.DEVINT_GRAPH_MAX_FILES = process.env.DEVINT_GRAPH_MAX_FILES ?? '20000';
 process.env.DEVINT_GRAPH_MAX_FILE_BYTES = process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? '2000000';
 process.env.DEVINT_GRAPH_CACHE_SIZE = '3';
+process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(temp, 'canonical');
 
 const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
 const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
-const { clearGraphCache } = await import('../dist/src/intelligence/service.js');
+const { clearGraphCache, graphStatus } = await import('../dist/src/intelligence/service.js');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
+
+function percentile(values, fraction) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * fraction) - 1));
+  return sorted[index];
+}
+
+clearGraphCache(project);
+const canonicalColdStarted = process.hrtime.bigint();
+const canonicalCold = await graphStatus(project);
+const canonicalColdWallMs = Number(process.hrtime.bigint() - canonicalColdStarted) / 1_000_000;
+if (canonicalCold.observability?.persistence?.saveState !== 'stored' || !canonicalCold.observability?.coldBuild) {
+  throw new Error('CardForge canonical benchmark expected the first default-revision read to build and persist the graph');
+}
+const canonicalHitDurations = [];
+const canonicalLoadDurations = [];
+for (let index = 0; index < 12; index += 1) {
+  clearGraphCache(project);
+  const hitStarted = process.hrtime.bigint();
+  const hit = await graphStatus(project);
+  const elapsed = Number(process.hrtime.bigint() - hitStarted) / 1_000_000;
+  if (hit.observability?.persistence?.loadState !== 'hit') throw new Error('CardForge canonical benchmark expected persisted canonical hit');
+  if (hit.observability?.coldBuild !== null) throw new Error('CardForge canonical hit unexpectedly performed a cold Git/graph build');
+  canonicalHitDurations.push(elapsed);
+  canonicalLoadDurations.push(Number(hit.observability?.persistence?.loadMs ?? 0));
+}
+const canonicalHotP50Ms = percentile(canonicalHitDurations, 0.50);
+const canonicalHotP95Ms = percentile(canonicalHitDurations, 0.95);
+if (!(canonicalHotP95Ms < canonicalColdWallMs)) {
+  throw new Error(`CardForge canonical p95 must remain below cold build wall time: cold=${canonicalColdWallMs.toFixed(2)} ms p95=${canonicalHotP95Ms.toFixed(2)} ms`);
+}
+const canonicalSpeedupVsP50 = canonicalColdWallMs / Math.max(canonicalHotP50Ms, 0.001);
+
 const started = Date.now();
 const scan = await callTool('scan_graph', { project, ref });
 const temporalStarted = process.hrtime.bigint();
@@ -284,6 +318,15 @@ const report = {
     technicalCorrelationTotal: portfolio.technicalCorrelationTotal,
     blastRadiusCount: portfolio.blastRadius.length,
   },
+  canonicalHotPath: {
+    coldWallMs: Number(canonicalColdWallMs.toFixed(3)),
+    hotDurationsMs: canonicalHitDurations.map(value => Number(value.toFixed(3))),
+    loadDurationsMs: canonicalLoadDurations.map(value => Number(value.toFixed(3))),
+    p50Ms: Number(canonicalHotP50Ms.toFixed(3)),
+    p95Ms: Number(canonicalHotP95Ms.toFixed(3)),
+    speedupVsP50: Number(canonicalSpeedupVsP50.toFixed(2)),
+    coldStages: canonicalCold.observability?.coldBuild ?? null,
+  },
   warmOverview: { durationsMs: warmOverviewDurations.map(value => Number(value.toFixed(3))), maxMs: Number(warmOverviewMaxMs.toFixed(3)) },
   repositoryAudit: { elapsedMs: Number(repositoryAuditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers, architectureBoundaryCount: repositoryAudit.architectureBoundaries.length },
   assessment: {
@@ -330,6 +373,7 @@ const summary = [
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
   `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
+  `- Canonical current-graph hot path: **cold ${canonicalColdWallMs.toFixed(3)} ms → p50 ${canonicalHotP50Ms.toFixed(3)} ms / p95 ${canonicalHotP95Ms.toFixed(3)} ms across 12 process-cache-evicted reads (${canonicalSpeedupVsP50.toFixed(2)}× vs p50)**`,
   `- Warm exact-graph project overview: **${warmOverviewMaxMs.toFixed(3)} ms max across 3 reads / 1000 ms budget**`,
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
