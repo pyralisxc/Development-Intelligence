@@ -15,6 +15,18 @@ interface CachedAppToken {
 }
 
 const appTokenCache = new Map<string, CachedAppToken>();
+const ownerAppTokenCache = new Map<string, CachedAppToken>();
+
+export interface GithubInstallationRepository {
+  owner: string;
+  name: string;
+  fullName: string;
+  defaultBranch: string;
+  archived: boolean;
+  disabled: boolean;
+  private: boolean;
+  fork: boolean;
+}
 
 function githubRepository(repository: string): { owner: string; name: string } {
   const url = new URL(repository);
@@ -152,6 +164,111 @@ async function githubAppCredential(config: ProjectConfig): Promise<ResolvedRepos
   };
 }
 
+
+async function ownerInstallation(owner: string, jwt: string): Promise<{ id: number; account?: { login?: string } }> {
+  for (const kind of ['users', 'orgs'] as const) {
+    const response = await fetch(`https://api.github.com/${kind}/${encodeURIComponent(owner)}/installation`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+        'user-agent': 'development-intelligence',
+        authorization: `Bearer ${jwt}`,
+      },
+      redirect: 'error',
+    });
+    if (response.status === 404) continue;
+    if (!response.ok) {
+      const requestId = response.headers.get('x-github-request-id');
+      throw new Error(`GitHub App owner installation request failed: HTTP ${response.status}${requestId ? ` (request ${requestId})` : ''}`);
+    }
+    return await response.json() as { id: number; account?: { login?: string } };
+  }
+  throw new Error(`GitHub App is not installed for authorized owner: ${owner}`);
+}
+
+async function githubOwnerCredential(owner: string): Promise<ResolvedRepositoryCredential> {
+  const appId = process.env.DEVINT_GITHUB_APP_ID?.trim();
+  const privateKey = process.env.DEVINT_GITHUB_APP_PRIVATE_KEY?.trim();
+  if (!appId || !privateKey) throw new Error('Portfolio repository discovery requires DEVINT_GITHUB_APP_ID and DEVINT_GITHUB_APP_PRIVATE_KEY');
+
+  const cacheKey = `${appId}:owner:${owner.toLowerCase()}`;
+  const cached = ownerAppTokenCache.get(cacheKey);
+  if (cached && cached.expiresAtMs - Date.now() > 5 * 60_000) {
+    return { token: cached.token, username: 'x-access-token', kind: 'github-app-installation', expiresAt: cached.expiresAt };
+  }
+
+  const jwt = appJwt(appId, privateKey);
+  const installation = await ownerInstallation(owner, jwt);
+  if (!Number.isSafeInteger(installation.id) || installation.id < 1) throw new Error(`GitHub returned an invalid installation for owner ${owner}`);
+  const account = installation.account?.login;
+  if (account && account.toLowerCase() !== owner.toLowerCase()) {
+    throw new Error(`GitHub App installation account ${account} does not match authorized owner ${owner}`);
+  }
+
+  const tokenResponse = await githubJson<{
+    token: string;
+    expires_at: string;
+    permissions?: Record<string, string>;
+  }>(
+    `https://api.github.com/app/installations/${installation.id}/access_tokens`,
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${jwt}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ permissions: { contents: 'read', pull_requests: 'read' } }),
+    },
+  );
+  if (!tokenResponse.token || !tokenResponse.expires_at) throw new Error('GitHub returned an invalid owner installation access token');
+  for (const [permission, level] of Object.entries(tokenResponse.permissions ?? {})) {
+    if (level !== 'read') throw new Error(`Development Intelligence GitHub App token unexpectedly received non-read permission: ${permission}=${level}`);
+  }
+  const expiresAtMs = Date.parse(tokenResponse.expires_at);
+  if (!Number.isFinite(expiresAtMs)) throw new Error('GitHub returned an invalid owner installation token expiry');
+  ownerAppTokenCache.set(cacheKey, { token: tokenResponse.token, expiresAt: tokenResponse.expires_at, expiresAtMs });
+  return { token: tokenResponse.token, username: 'x-access-token', kind: 'github-app-installation', expiresAt: tokenResponse.expires_at };
+}
+
+export async function listGithubInstallationRepositories(owner: string): Promise<GithubInstallationRepository[]> {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u.test(owner)) throw new Error(`Invalid GitHub owner: ${owner}`);
+  const credential = await githubOwnerCredential(owner);
+  const repositories: GithubInstallationRepository[] = [];
+  for (let page = 1; page <= 20; page += 1) {
+    const result = await githubJson<{
+      total_count?: number;
+      repositories?: Array<{
+        name?: string;
+        full_name?: string;
+        default_branch?: string;
+        archived?: boolean;
+        disabled?: boolean;
+        private?: boolean;
+        fork?: boolean;
+        owner?: { login?: string };
+      }>;
+    }>(
+      `https://api.github.com/installation/repositories?per_page=100&page=${page}`,
+      { headers: { authorization: `Bearer ${credential.token}` } },
+    );
+    const batch = Array.isArray(result.repositories) ? result.repositories : [];
+    for (const repository of batch) {
+      const repositoryOwner = repository.owner?.login;
+      if (!repositoryOwner || repositoryOwner.toLowerCase() !== owner.toLowerCase()) continue;
+      if (!repository.name || !repository.full_name || !repository.default_branch) continue;
+      repositories.push({
+        owner: repositoryOwner,
+        name: repository.name,
+        fullName: repository.full_name,
+        defaultBranch: repository.default_branch,
+        archived: repository.archived === true,
+        disabled: repository.disabled === true,
+        private: repository.private === true,
+        fork: repository.fork === true,
+      });
+    }
+    if (batch.length < 100) break;
+  }
+  return repositories.sort((a, b) => a.fullName.localeCompare(b.fullName));
+}
+
 export async function resolveRepositoryCredential(config: ProjectConfig): Promise<ResolvedRepositoryCredential | null> {
   const credential = config.credential ?? { type: 'none' as const };
   if (credential.type === 'none') return null;
@@ -168,4 +285,5 @@ export async function resolveRepositoryCredential(config: ProjectConfig): Promis
 
 export function clearRepositoryCredentialCacheForTests(): void {
   appTokenCache.clear();
+  ownerAppTokenCache.clear();
 }

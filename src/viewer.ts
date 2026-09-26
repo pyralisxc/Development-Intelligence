@@ -11,8 +11,29 @@ export interface WorkbenchProjectLink {
 
 export function renderProjectChooser(projects: WorkbenchProjectLink[], githubOwners: string[] = []): string {
   const cards = projects.map(item => `<a class="project-card" href="/workbench?project=${encodeURIComponent(item.project)}"><strong>${escapeHtml(item.project)}</strong><span>${escapeHtml(item.defaultRef ?? 'default ref')}</span><em>Open workspace →</em></a>`).join('');
-  const dynamic = githubOwners.length ? `<form class="card" method="get" action="/workbench" style="margin:18px 0"><h3>Open a GitHub repository</h3><p>Enter an authorized repository as owner/repository. Available owner namespaces: ${githubOwners.map(escapeHtml).join(', ')}.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><input name="project" aria-label="GitHub repository" placeholder="${escapeHtml(githubOwners[0]!)}/repository" pattern="[A-Za-z0-9-]+/[A-Za-z0-9._-]+" required style="flex:1;min-width:220px;border:1px solid #344761;background:#0d1725;color:#fff;border-radius:10px;padding:11px 12px"><button type="submit" style="border:1px solid #3d6488;background:#173451;color:#ecf8ff;border-radius:10px;padding:11px 14px;font-weight:700;cursor:pointer">Open workspace</button></div><p class="muted">Access is read-only. The configured GitHub credential must also be able to read the repository.</p></form>` : '';
+  const dynamic = githubOwners.length ? `<form class="card" method="get" action="/workbench" style="margin:18px 0"><h3>Open a GitHub repository</h3><p>Enter an authorized repository as owner/repository. Available owner namespaces: ${githubOwners.map(escapeHtml).join(', ')}.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><input name="project" aria-label="GitHub repository" placeholder="${escapeHtml(githubOwners[0]!)}/repository" pattern="[A-Za-z0-9-]+/[A-Za-z0-9._-]+" required style="flex:1;min-width:220px;border:1px solid #344761;background:#0d1725;color:#fff;border-radius:10px;padding:11px 12px"><button type="submit" style="border:1px solid #3d6488;background:#173451;color:#ecf8ff;border-radius:10px;padding:11px 14px;font-weight:700;cursor:pointer">Open workspace</button></div><p class="muted">Access is read-only. The configured GitHub credential must also be able to read the repository.</p></form><form class="card" method="post" action="/workbench/reconcile-canonical" style="margin:18px 0"><h3>Canonical graph portfolio</h3><p>Seed or refresh the current default-branch graph for repositories visible to the read-only GitHub App. Git remains authority; only reconstructable current graph state is written.</p><input type="hidden" name="confirm" value="reconcile-current"><input type="hidden" name="limit" value="12"><button type="submit" style="border:1px solid #3d6488;background:#173451;color:#ecf8ff;border-radius:10px;padding:11px 14px;font-weight:700;cursor:pointer">Reconcile current graphs</button><p class="muted">Runs sequentially and processes at most 12 repositories per request to avoid burst graph-building pressure.</p></form>` : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Development Intelligence</title><style>${sharedCss()}</style></head><body class="chooser-body"><main class="chooser"><div class="brand-mark">DI</div><p class="eyebrow">Development Intelligence</p><h1>Choose a project workspace</h1><p class="lead">Inspect current architecture, code, evidence, changes, runtime sources and technical data without treating the graph as the interface.</p>${dynamic}<div class="project-grid">${cards || '<div class="empty-card">No fixed projects are configured for this deployment.</div>'}</div></main></body></html>`;
+}
+
+export function renderCanonicalPortfolioResult(result: Record<string, unknown>): string {
+  const counts = result.counts && typeof result.counts === 'object' ? result.counts as Record<string, unknown> : {};
+  const items = Array.isArray(result.items) ? result.items as Array<Record<string, unknown>> : [];
+  const error = typeof result.error === 'string' ? result.error : null;
+  const summary = ['hit', 'stored', 'not-configured', 'error', 'skipped']
+    .map(key => `<div class="metric"><strong>${escapeHtml(String(counts[key] ?? 0))}</strong><span>${escapeHtml(key)}</span></div>`)
+    .join('');
+  const rows = items.map(item => {
+    const project = escapeHtml(String(item.project ?? 'unknown'));
+    const outcome = escapeHtml(String(item.outcome ?? 'unknown'));
+    const revision = typeof item.revision === 'string' ? escapeHtml(item.revision.slice(0, 12)) : '—';
+    const duration = typeof item.durationMs === 'number' ? `${Math.round(item.durationMs)} ms` : '—';
+    const reason = typeof item.reason === 'string' ? `<small>${escapeHtml(item.reason)}</small>` : '';
+    return `<div class="row"><div class="row-main"><strong>${project}</strong><small>${outcome} · ${revision} · ${duration}</small>${reason}</div></div>`;
+  }).join('');
+  const headline = error
+    ? `<div class="card" style="border-color:#713b43"><h2>Reconcile stopped</h2><p>${escapeHtml(error)}</p></div>`
+    : `<div class="card"><h2>Canonical portfolio reconcile complete</h2><p>Current derived graph state was checked sequentially. GitHub remains source/history authority.</p></div>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Canonical portfolio — Development Intelligence</title><style>${sharedCss()}</style></head><body class="chooser-body"><main class="chooser"><div class="brand-mark">DI</div><p class="eyebrow">Owner maintenance</p><h1>Canonical graph portfolio</h1>${headline}<div class="metric-grid" style="margin-top:14px">${summary}</div><div class="list" style="margin-top:18px">${rows || '<div class="empty-card">No repositories were processed.</div>'}</div><p style="margin-top:22px"><a href="/workbench">← Back to Workbench</a></p></main></body></html>`;
 }
 
 function sharedCss(): string {
