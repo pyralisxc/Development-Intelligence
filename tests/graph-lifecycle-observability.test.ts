@@ -56,7 +56,8 @@ test('graph lifecycle diagnostics distinguish cold acquisition from warm process
     assert.equal(cold.observability.graphAccess.cacheState, 'miss');
     assert.equal(cold.observability.persistence.mode, 'process-only');
     assert.equal(cold.observability.persistence.durable, false);
-    assert.equal(cold.observability.persistence.state, 'not-configured');
+    assert.equal(cold.observability.persistence.loadState, 'not-configured');
+    assert.equal(cold.observability.persistence.saveState, 'not-configured');
     assert.ok(cold.observability.graphAccess.revisionResolutionMs >= 0);
     assert.ok(cold.observability.graphAccess.graphLoadMs >= 0);
     assert.ok(cold.observability.graphAccess.totalMs >= 0);
