@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
-import { sealLocalGraph } from '../src/intelligence/local.js';
+import { buildLocalGraph, sealLocalGraph } from '../src/intelligence/local.js';
 import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
 import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
@@ -64,7 +64,9 @@ export const privateServiceConfig = { authorization: 'must-not-be-persisted' };
 server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: true }));
 `);
   await fs.writeFile(path.join(source, 'README.md'), '# Sample Project\n\nManage item from the application.\n');
-  await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', access_token: 'must-not-be-persisted' }, null, 2));
+  await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', module: 'NodeNext', access_token: 'must-not-be-persisted' }, null, 2));
+  await fs.mkdir(path.join(source, '.github', 'workflows'), { recursive: true });
+  await fs.writeFile(path.join(source, '.github', 'workflows', 'verify.yml'), 'name: verify\non:\n  push:\n    branches: [main, preview]\njobs:\n  verify:\n    steps:\n      - uses: actions/setup-node@v7\n        with:\n          node-version: 22\n');
   await fs.writeFile(path.join(source, 'src', 'panel.css'), `
 :root { --action-gap: 0.5rem; --api-token: css-secret-value; }
 .action-rail, .manage-button { display: flex; overflow-x: auto; gap: var(--action-gap); }
@@ -361,6 +363,36 @@ test('shared investigation router maps ordinary questions to existing DI primiti
     const directAssessment = await callTool('query_intelligence', { project: fixture.project, question: 'What evidence supports Panel?' }) as any;
     assert.equal(directAssessment.interpretedSubject, 'Panel');
     assert.equal(directAssessment.answerStatus, 'supported');
+
+
+    const scopedOwner = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which module owns helper behavior in this file?',
+      scope: 'src/panel.tsx',
+    }) as any;
+    assert.notEqual(scopedOwner.subject?.name, 'module', 'generic nouns outside an explicit scope must not outrank scoped entities');
+    assert.match(scopedOwner.subject?.locator ?? '', /src\/panel\.tsx/);
+
+    const workflowSource = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which Node.js version does .github/workflows/verify.yml configure?',
+    }) as any;
+    assert.equal(workflowSource.intent, 'source-search');
+    assert.equal(workflowSource.routing.tool, 'search_code');
+    assert.ok(workflowSource.result.matches.some((match: any) => /node-version:\s*22/.test(match.text)));
+
+    const premise = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Where does Panel write accepted graph state?',
+    }) as any;
+    assert.equal(premise.intent, 'implementation-claim');
+    assert.equal(premise.routing.premiseAssumed, false);
+
+    const negativeProof = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Prove Panel is the only composition root.',
+    }) as any;
+    assert.equal(negativeProof.routing.tool, 'query_intelligence', 'uniqueness/negative proof must not degrade into simple entity inspection');
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -447,9 +479,83 @@ test('scope orientation surfaces explainable local graph structure without an op
     }) as any;
     assert.equal(missingScope.intent, 'orientation');
     assert.equal(missingScope.result.scopeRequired, true, 'deictic scope should remain explicit instead of guessing');
+
+
+    const scopedSpecific = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which file owns this module behavior?',
+      scope: 'src/panel.tsx',
+    }) as any;
+    assert.equal(scopedSpecific.subject?.locator, 'src/panel.tsx', 'explicit file scope must constrain specific subject resolution as well as orientation');
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test('headless rich projections stay compact by default and preserve explicit detail escape hatches', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project);
+    const panel = graph.nodes.find(node => node.name === 'Panel');
+    assert.ok(panel);
+
+    const inspected = await callTool('inspect_entity', { project: fixture.project, node: panel.id }) as any;
+    assert.equal(inspected.coverage?.files, undefined);
+    assert.equal(inspected.coverage?.fileDetailTool, undefined);
+    assert.ok(inspected.detailTools.includes('get_evidence'));
+
+    const assessed = await callTool('query_intelligence', { project: fixture.project, question: 'Panel' }) as any;
+    assert.equal(assessed.realization?.resolvedPaths?.nodes, undefined);
+    assert.equal(typeof assessed.realization?.resolvedPaths?.nodeCount, 'number');
+    assert.ok(Array.isArray(assessed.realization?.resolvedPaths?.detailTools));
+
+    const overview = await callTool('project_overview', { project: fixture.project, subjects: ['Panel'] }) as any;
+    assert.equal(overview.changes?.detail, undefined);
+    assert.equal(overview.changes?.detailTool, 'diff_graph');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('search_code path filtering is explicit, safe, and supports literal/prefix/glob modes', async () => {
+  const fixture = await makeFixture();
+  try {
+    const literal = await callTool('search_code', {
+      project: fixture.project,
+      pattern: 'helper',
+      filePattern: 'src/panel.tsx',
+      filePatternMode: 'literal',
+    }) as any;
+    assert.ok(literal.matches.length > 0);
+    assert.ok(literal.matches.every((match: any) => match.file === 'src/panel.tsx'));
+
+    const glob = await callTool('search_code', {
+      project: fixture.project,
+      pattern: 'helper',
+      filePattern: 'src/**/*.tsx',
+      filePatternMode: 'glob',
+    }) as any;
+    assert.ok(glob.matches.some((match: any) => match.file === 'src/panel.tsx'));
+
+    await assert.rejects(
+      () => callTool('search_code', { project: fixture.project, pattern: 'helper', filePattern: 'src/**/*.ts' }),
+      /filePattern is an invalid regular expression.*filePatternMode/s,
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('Development Intelligence semantic self-model covers every live MCP tool', async () => {
+  const graph = await buildLocalGraph(process.cwd(), 'Development-Intelligence');
+  const modeled = graph.nodes
+    .filter(node => node.kind === 'mcp' && node.layer === 'semantic')
+    .map(node => node.name)
+    .filter((name): name is string => Boolean(name))
+    .sort();
+  const live = listTools().map(tool => tool.name).sort();
+  assert.deepEqual(modeled, live);
 });
 
 test('public tool surface is the intrinsic DI and Workbench contract, not development methodology or housekeeping', () => {
