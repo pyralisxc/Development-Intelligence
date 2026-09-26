@@ -622,7 +622,7 @@ function subjectDescriptor(node: GraphNode | null, fallback: string | null, ambi
 
 function explicitPathMention(text: string): string | null {
   const backtick = [...text.matchAll(/`([^`]+)`/gu)].map(match => match[1]!.trim()).filter(Boolean);
-  const raw = [...text.matchAll(/(?:^|[\s("'\`])((?:\.{0,2}\/)?(?:[A-Za-z0-9_.@+-]+\/)+[A-Za-z0-9_.@+-]+|Dockerfile(?:\.[A-Za-z0-9_.-]+)?|\.env(?:\.[A-Za-z0-9_.-]+)?)(?=$|[\s)"'\`,?])/gu)]
+  const raw = [...text.matchAll(/(?:^|[\s("'`])((?:\.{0,2}\/)?(?:[A-Za-z0-9_.@+-]+\/)+[A-Za-z0-9_.@+-]+|Dockerfile(?:\.[A-Za-z0-9_.-]+)?|\.env(?:\.[A-Za-z0-9_.-]+)?)(?=$|[\s)"'`,?])/gu)]
     .map(match => match[1]!.trim());
   return [...backtick, ...raw].find(value => value.includes('/') || value.startsWith('.env') || value.startsWith('Dockerfile')) ?? null;
 }
