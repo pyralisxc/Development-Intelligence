@@ -496,8 +496,8 @@ test('headless rich projections stay compact by default and preserve explicit de
   const fixture = await makeFixture();
   try {
     clearGraphCache(fixture.project);
-    const search = await callTool('search_graph', { project: fixture.project, query: 'Panel', limit: 10 }) as any;
-    const panel = search.nodes.find((node: any) => node.name === 'Panel');
+    const graph = await scanGraph(fixture.project);
+    const panel = graph.nodes.find(node => node.name === 'Panel');
     assert.ok(panel);
 
     const inspected = await callTool('inspect_entity', { project: fixture.project, node: panel.id }) as any;

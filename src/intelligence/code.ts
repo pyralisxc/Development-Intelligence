@@ -19,8 +19,13 @@ function globMatcher(pattern: string): RegExp {
   for (let index = 0; index < pattern.length; index += 1) {
     const char = pattern[index]!;
     if (char === '*' && pattern[index + 1] === '*') {
-      source += '.*';
-      index += 1;
+      if (pattern[index + 2] === '/') {
+        source += '(?:.*/)?';
+        index += 2;
+      } else {
+        source += '.*';
+        index += 1;
+      }
     } else if (char === '*') source += '[^/]*';
     else if (char === '?') source += '[^/]';
     else source += escapeRegex(char);
