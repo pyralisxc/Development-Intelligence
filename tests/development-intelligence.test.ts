@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
-import { buildLocalGraph, sealLocalGraph } from '../src/intelligence/local.js';
+import { sealLocalGraph } from '../src/intelligence/local.js';
+import { DEVELOPMENT_INTELLIGENCE_SEMANTICS } from '../src/intelligence/semantics.js';
 import { graphStatus, scanGraph, clearGraphCache } from '../src/intelligence/service.js';
 import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
@@ -547,12 +548,11 @@ test('search_code path filtering is explicit, safe, and supports literal/prefix/
   }
 });
 
-test('Development Intelligence semantic self-model covers every live MCP tool', async () => {
-  const graph = await buildLocalGraph(process.cwd(), 'Development-Intelligence');
-  const modeled = graph.nodes
-    .filter(node => node.kind === 'mcp' && node.layer === 'semantic')
-    .map(node => node.name)
-    .filter((name): name is string => Boolean(name))
+test('Development Intelligence semantic declarations cover every live MCP tool without requiring repository Git metadata', () => {
+  const modeled = DEVELOPMENT_INTELLIGENCE_SEMANTICS
+    .map(entry => entry.developmentIntelligence)
+    .filter(entry => entry.kind === 'mcp')
+    .map(entry => entry.id)
     .sort();
   const live = listTools().map(tool => tool.name).sort();
   assert.deepEqual(modeled, live);
