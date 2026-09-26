@@ -12,6 +12,7 @@ import { verifyTransition } from './intelligence/temporalVerification.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import { inspectPortfolio, tracePortfolio, type PortfolioParticipantInput } from './intelligence/portfolio.js';
 import { stableHash } from './util/hash.js';
+import { recordToolExecution } from './observability.js';
 import type { GraphNodeLayer, GraphCoverageStatus, RelationshipStatus, TechnicalSourceCapability } from './types.js';
 
 export interface ToolDefinition {
@@ -327,5 +328,15 @@ export async function callTool(name: string, args: Record<string, unknown> = {})
   const tool = tools.find(item => item.name === name);
   if (!tool) throw new Error(`Unknown tool: ${name}`);
   validateAgainstSchema(tool.inputSchema, args);
-  return await tool.handler(args);
+  const project = typeof args.project === 'string' && args.project ? args.project : null;
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+  try {
+    const result = await tool.handler(args);
+    if (project) recordToolExecution({ project, tool: name, startedAt, durationMs: Math.max(0, Date.now() - started), status: 'ok' });
+    return result;
+  } catch (error) {
+    if (project) recordToolExecution({ project, tool: name, startedAt, durationMs: Number((Date.now() - started).toFixed(3)), status: 'error' });
+    throw error;
+  }
 }
