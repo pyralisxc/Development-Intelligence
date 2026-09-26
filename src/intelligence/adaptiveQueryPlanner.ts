@@ -212,7 +212,7 @@ export function planAdaptiveQuery(index: GlobalQueryIndex, input: AdaptiveQueryP
   const needle = query.toLowerCase();
   const maxSelectedSources = Math.min(Math.max(input.maxSelectedSources ?? 32, 1), 256);
   const layers = new Set(input.layers ?? []);
-  const statuses = new Set(input.statuses ?? ['resolved']);
+  const statuses = new Set<RelationshipStatus>(input.statuses ?? ['resolved']);
   const reasons: string[] = [];
   let requiresFullGraph = false;
   let indexOnly = false;
