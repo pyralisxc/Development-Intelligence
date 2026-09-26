@@ -36,7 +36,7 @@ export type CanonicalLoadState = 'not-configured' | 'hit' | 'miss' | 'invalid' |
 export type CanonicalSaveState = 'not-configured' | 'stored' | 'error' | 'skipped';
 
 export interface CanonicalPersistenceDiagnostics {
-  mode: 'process-only' | 'canonical-file';
+  mode: 'process-only' | 'canonical-file' | 'vercel-blob';
   durable: boolean;
   loadState: CanonicalLoadState;
   saveState: CanonicalSaveState;
@@ -50,11 +50,51 @@ export interface CanonicalLoadResult {
   record?: CanonicalGraphRecord;
 }
 
+interface BlobConfig {
+  storeId: string;
+  token: string;
+  apiBase: string;
+  readBase: string;
+}
+
 const MAX_CANONICAL_BYTES = 200 * 1024 * 1024;
+const BLOB_API_VERSION = '12';
 
 function configuredRoot(): string | null {
   const value = process.env.DEVINT_CANONICAL_GRAPH_DIR?.trim();
   return value ? path.resolve(value) : null;
+}
+
+function blobRequested(): boolean {
+  return process.env.DEVINT_CANONICAL_GRAPH_STORE?.trim().toLowerCase() === 'vercel-blob';
+}
+
+function normalizeStoreId(value: string): string {
+  return value.startsWith('store_') ? value.slice('store_'.length) : value;
+}
+
+function storeIdFromReadWriteToken(token: string): string | null {
+  const [, , , storeId = ''] = token.split('_');
+  return storeId ? normalizeStoreId(storeId) : null;
+}
+
+function blobConfig(): BlobConfig | null {
+  if (!blobRequested()) return null;
+  const oidc = process.env.VERCEL_OIDC_TOKEN?.trim() ?? '';
+  const readWrite = process.env.BLOB_READ_WRITE_TOKEN?.trim() ?? '';
+  const token = oidc || readWrite;
+  const storeId = normalizeStoreId(process.env.BLOB_STORE_ID?.trim() || storeIdFromReadWriteToken(readWrite) || '');
+  if (!token || !storeId) return null;
+  const apiBase = (process.env.VERCEL_BLOB_API_URL?.trim() || 'https://vercel.com/api/blob').replace(/\/+$/u, '');
+  const configuredReadBase = process.env.DEVINT_CANONICAL_BLOB_READ_BASE_URL?.trim();
+  const readBase = (configuredReadBase || `https://${storeId}.private.blob.vercel-storage.com`).replace(/\/+$/u, '');
+  if (!/^https:\/\//u.test(apiBase) && !/^http:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]+)?(?:\/|$)/u.test(apiBase)) {
+    throw new Error('Vercel Blob API base must use HTTPS except for loopback tests');
+  }
+  if (!/^https:\/\//u.test(readBase) && !/^http:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]+)?(?:\/|$)/u.test(readBase)) {
+    throw new Error('Vercel Blob read base must use HTTPS except for loopback tests');
+  }
+  return { storeId, token, apiBase, readBase };
 }
 
 function projectStorageKey(project: string): string {
@@ -62,21 +102,40 @@ function projectStorageKey(project: string): string {
   return `${readable}-${stableHash([project]).slice(0, 12)}`;
 }
 
+function assertRevision(revision: string): void {
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(revision)) throw new Error('Canonical graph revisions require an exact Git object id');
+}
+
+export function canonicalGraphObjectPath(project: string, revision: string): string {
+  assertRevision(revision);
+  const analyzer = encodeURIComponent(ANALYZER_VERSION);
+  return `development-intelligence/canonical/v1/${projectStorageKey(project)}/${analyzer}/${revision}.json`;
+}
+
 export function canonicalGraphFilePath(project: string, revision: string): string | null {
   const root = configuredRoot();
   if (!root) return null;
-  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(revision)) throw new Error('Canonical graph revisions require an exact Git object id');
+  assertRevision(revision);
   return path.join(root, projectStorageKey(project), `${revision}.json`);
 }
 
+function mode(): CanonicalPersistenceDiagnostics['mode'] {
+  if (blobRequested()) return 'vercel-blob';
+  if (configuredRoot()) return 'canonical-file';
+  return 'process-only';
+}
+
 function baseDiagnostics(): CanonicalPersistenceDiagnostics {
+  const selected = mode();
+  const ready = selected === 'canonical-file' ? true : selected === 'vercel-blob' ? Boolean(blobConfig()) : false;
   return {
-    mode: configuredRoot() ? 'canonical-file' : 'process-only',
-    durable: Boolean(configuredRoot()),
-    loadState: configuredRoot() ? 'miss' : 'not-configured',
-    saveState: configuredRoot() ? 'skipped' : 'not-configured',
+    mode: selected,
+    durable: ready,
+    loadState: selected === 'process-only' ? 'not-configured' : ready ? 'miss' : 'error',
+    saveState: selected === 'process-only' ? 'not-configured' : ready ? 'skipped' : 'error',
     loadMs: 0,
     saveMs: 0,
+    ...(!ready && selected === 'vercel-blob' ? { error: 'Vercel Blob canonical storage requires BLOB_STORE_ID plus VERCEL_OIDC_TOKEN or BLOB_READ_WRITE_TOKEN' } : {}),
   };
 }
 
@@ -119,10 +178,20 @@ function validateRecord(
   return value;
 }
 
-export async function loadCanonicalGraph(
+function classifyLoadError(error: unknown): CanonicalLoadState {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Canonical') || error instanceof SyntaxError ? 'invalid' : 'error';
+}
+
+function parseBoundedJson(text: string): unknown {
+  if (Buffer.byteLength(text, 'utf8') > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record exceeds the bounded storage size');
+  return JSON.parse(text);
+}
+
+async function loadFile(
   expected: { project: string; repository: string; revision: string },
+  diagnostics: CanonicalPersistenceDiagnostics,
 ): Promise<CanonicalLoadResult> {
-  const diagnostics = baseDiagnostics();
   const target = canonicalGraphFilePath(expected.project, expected.revision);
   if (!target) return { diagnostics };
   const startedAt = Date.now();
@@ -137,35 +206,113 @@ export async function loadCanonicalGraph(
       return { diagnostics };
     }
     if (!stat.isFile() || stat.size > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record is not a bounded regular file');
-    const parsed = JSON.parse(await fs.readFile(target, 'utf8'));
-    const record = validateRecord(parsed, expected);
+    const record = validateRecord(parseBoundedJson(await fs.readFile(target, 'utf8')), expected);
     diagnostics.loadState = 'hit';
     diagnostics.loadMs = Math.max(0, Date.now() - startedAt);
     return { diagnostics, record };
   } catch (error) {
     diagnostics.loadMs = Math.max(0, Date.now() - startedAt);
-    const message = error instanceof Error ? error.message : String(error);
-    diagnostics.error = message;
-    diagnostics.loadState = message.includes('Canonical') || error instanceof SyntaxError ? 'invalid' : 'error';
+    diagnostics.error = error instanceof Error ? error.message : String(error);
+    diagnostics.loadState = classifyLoadError(error);
     return { diagnostics };
   }
 }
 
-export async function saveCanonicalGraph(record: CanonicalGraphRecord): Promise<CanonicalPersistenceDiagnostics> {
+function blobHeaders(config: BlobConfig): Record<string, string> {
+  return {
+    authorization: `Bearer ${config.token}`,
+    'x-vercel-blob-store-id': config.storeId,
+    'x-api-version': BLOB_API_VERSION,
+  };
+}
+
+async function loadBlob(
+  expected: { project: string; repository: string; revision: string },
+  diagnostics: CanonicalPersistenceDiagnostics,
+): Promise<CanonicalLoadResult> {
+  const config = blobConfig();
+  if (!config) return { diagnostics };
+  const startedAt = Date.now();
+  const objectPath = canonicalGraphObjectPath(expected.project, expected.revision);
+  try {
+    const url = `${config.readBase}/${objectPath}?cache=0`;
+    const response = await fetch(url, { method: 'GET', headers: blobHeaders(config), redirect: 'error' });
+    if (response.status === 404) {
+      diagnostics.loadState = 'miss';
+      diagnostics.loadMs = Math.max(0, Date.now() - startedAt);
+      return { diagnostics };
+    }
+    if (!response.ok) throw new Error(`Vercel Blob canonical read failed with HTTP ${response.status}`);
+    const length = Number(response.headers.get('content-length') ?? '0');
+    if (Number.isFinite(length) && length > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record exceeds the bounded storage size');
+    const record = validateRecord(parseBoundedJson(await response.text()), expected);
+    diagnostics.loadState = 'hit';
+    diagnostics.loadMs = Math.max(0, Date.now() - startedAt);
+    return { diagnostics, record };
+  } catch (error) {
+    diagnostics.loadMs = Math.max(0, Date.now() - startedAt);
+    diagnostics.error = error instanceof Error ? error.message : String(error);
+    diagnostics.loadState = classifyLoadError(error);
+    return { diagnostics };
+  }
+}
+
+export async function loadCanonicalGraph(
+  expected: { project: string; repository: string; revision: string },
+): Promise<CanonicalLoadResult> {
   const diagnostics = baseDiagnostics();
+  if (diagnostics.mode === 'canonical-file') return await loadFile(expected, diagnostics);
+  if (diagnostics.mode === 'vercel-blob') return await loadBlob(expected, diagnostics);
+  return { diagnostics };
+}
+
+async function saveFile(record: CanonicalGraphRecord, diagnostics: CanonicalPersistenceDiagnostics, payload: string): Promise<CanonicalPersistenceDiagnostics> {
   const target = canonicalGraphFilePath(record.project, record.revision);
   if (!target) return diagnostics;
+  const directory = path.dirname(target);
+  await fs.mkdir(directory, { recursive: true });
+  const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
+  await fs.writeFile(temporary, payload, { encoding: 'utf8', mode: 0o600 });
+  await fs.rename(temporary, target);
+  diagnostics.saveState = 'stored';
+  return diagnostics;
+}
+
+async function saveBlob(record: CanonicalGraphRecord, diagnostics: CanonicalPersistenceDiagnostics, payload: string): Promise<CanonicalPersistenceDiagnostics> {
+  const config = blobConfig();
+  if (!config) return diagnostics;
+  const objectPath = canonicalGraphObjectPath(record.project, record.revision);
+  const params = new URLSearchParams({ pathname: objectPath });
+  const response = await fetch(`${config.apiBase}/?${params.toString()}`, {
+    method: 'PUT',
+    body: payload,
+    redirect: 'error',
+    headers: {
+      ...blobHeaders(config),
+      'content-type': 'application/json',
+      'x-content-type': 'application/json',
+      'x-access': 'private',
+      'x-add-random-suffix': '0',
+      'x-allow-overwrite': '1',
+      'x-cache-control-max-age': '31536000',
+      'x-content-length': String(Buffer.byteLength(payload, 'utf8')),
+    },
+  });
+  if (!response.ok) throw new Error(`Vercel Blob canonical write failed with HTTP ${response.status}`);
+  diagnostics.saveState = 'stored';
+  return diagnostics;
+}
+
+export async function saveCanonicalGraph(record: CanonicalGraphRecord): Promise<CanonicalPersistenceDiagnostics> {
+  const diagnostics = baseDiagnostics();
+  if (diagnostics.mode === 'process-only' || !diagnostics.durable) return diagnostics;
   const startedAt = Date.now();
   try {
     const validated = validateRecord(record, { project: record.project, repository: record.repository, revision: record.revision });
-    const directory = path.dirname(target);
-    await fs.mkdir(directory, { recursive: true });
-    const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
     const payload = JSON.stringify(validated);
     if (Buffer.byteLength(payload, 'utf8') > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record exceeds the bounded storage size');
-    await fs.writeFile(temporary, payload, { encoding: 'utf8', mode: 0o600 });
-    await fs.rename(temporary, target);
-    diagnostics.saveState = 'stored';
+    if (diagnostics.mode === 'canonical-file') await saveFile(record, diagnostics, payload);
+    else await saveBlob(record, diagnostics, payload);
   } catch (error) {
     diagnostics.saveState = 'error';
     diagnostics.error = error instanceof Error ? error.message : String(error);
