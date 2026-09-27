@@ -78,3 +78,37 @@ npm run benchmark:accuracy -- benchmark/accuracy/cases.json benchmark/accuracy/o
 ```
 
 The checked-in portfolio cases and automatic DI observation collector are added incrementally as their independent ground truth is established.
+
+## Semantic-candidate accuracy
+
+Semantic bootstrap uses the same case/scoring contract rather than a separate benchmark authority. Cases may add an optional `groundTruth.semanticCandidates` block:
+
+```json
+{
+  "semanticCandidates": {
+    "universeScopes": ["src/features/authentication", "src/features/editor", "src/shared"],
+    "required": [
+      {
+        "scope": "src/features/authentication",
+        "name": "Authentication",
+        "origin": "intrinsic-derivation",
+        "accepted": false,
+        "persisted": false,
+        "proofEligible": false,
+        "requiresExplicitReview": true,
+        "minEvidenceFamilies": 2
+      }
+    ],
+    "forbidden": [
+      { "scope": "src/shared" }
+    ],
+    "complete": true
+  }
+}
+```
+
+Semantic precision is reported only for complete ground truth. `universeScopes` can define a bounded, independently reviewed evaluation universe inside a much larger repository: observations outside that universe remain unjudged rather than being mislabeled false positives. Within a complete universe, extra observed candidates count as false positives.
+
+A required semantic candidate is matched by exact scope plus any optional constraints supplied by the case: name, kind, evidence families, minimum evidence-family count, provenance origin, and authority fields. This lets the benchmark detect both concept errors and authority drift (for example a derived proposal becoming `accepted:true` without review).
+
+The CardForge benchmark uses a pinned seven-scope reviewed universe to produce real-repository semantic-candidate precision, recall, and false-positive rate while preserving the broader repository as unjudged evidence. This is deliberately narrower than claiming repository-wide semantic precision before exhaustive independent ground truth exists.

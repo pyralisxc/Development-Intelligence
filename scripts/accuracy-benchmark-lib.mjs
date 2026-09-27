@@ -41,6 +41,111 @@ function truthSet(value, field, relationship = false) {
   };
 }
 
+function optionalString(value, field) {
+  if (value === undefined) return null;
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} must be a non-empty string`);
+  return value.trim();
+}
+
+function optionalBoolean(value, field) {
+  if (value === undefined) return null;
+  if (typeof value !== 'boolean') throw new Error(`${field} must be boolean`);
+  return value;
+}
+
+function semanticExpectation(value, field) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} must be an object`);
+  if (typeof value.scope !== 'string' || !value.scope.trim()) throw new Error(`${field}.scope must be non-empty`);
+  const minEvidenceFamilies = value.minEvidenceFamilies === undefined ? null : Number(value.minEvidenceFamilies);
+  if (minEvidenceFamilies !== null && (!Number.isInteger(minEvidenceFamilies) || minEvidenceFamilies < 0)) {
+    throw new Error(`${field}.minEvidenceFamilies must be a non-negative integer`);
+  }
+  return {
+    scope: value.scope.trim(),
+    name: optionalString(value.name, `${field}.name`),
+    kind: optionalString(value.kind, `${field}.kind`),
+    evidenceFamilies: stringList(value.evidenceFamilies, `${field}.evidenceFamilies`),
+    minEvidenceFamilies,
+    origin: optionalString(value.origin, `${field}.origin`),
+    accepted: optionalBoolean(value.accepted, `${field}.accepted`),
+    reviewed: optionalBoolean(value.reviewed, `${field}.reviewed`),
+    persisted: optionalBoolean(value.persisted, `${field}.persisted`),
+    proofEligible: optionalBoolean(value.proofEligible, `${field}.proofEligible`),
+    requiresExplicitReview: optionalBoolean(value.requiresExplicitReview, `${field}.requiresExplicitReview`),
+  };
+}
+
+function semanticTruthSet(value, field) {
+  if (value === undefined) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} must be an object`);
+  const requiredInput = value.required ?? [];
+  const forbiddenInput = value.forbidden ?? [];
+  if (!Array.isArray(requiredInput) || !Array.isArray(forbiddenInput)) {
+    throw new Error(`${field}.required and ${field}.forbidden must be arrays`);
+  }
+  const universeScopes = stringList(value.universeScopes, `${field}.universeScopes`);
+  const required = requiredInput.map((item, index) => semanticExpectation(item, `${field}.required[${index}]`));
+  const forbidden = forbiddenInput.map((item, index) => semanticExpectation(item, `${field}.forbidden[${index}]`));
+  if (universeScopes.length) {
+    const universe = new Set(universeScopes);
+    for (const item of [...required, ...forbidden]) {
+      if (!universe.has(item.scope)) throw new Error(`${field} expectation scope ${item.scope} is outside universeScopes`);
+    }
+  }
+  return { required, forbidden, universeScopes, complete: value.complete === true };
+}
+
+function semanticObservation(value, field) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} must be an object`);
+  if (typeof value.scope !== 'string' || !value.scope.trim()) throw new Error(`${field}.scope must be non-empty`);
+  const proposal = value.proposal && typeof value.proposal === 'object' ? value.proposal : {};
+  const provenance = value.provenance && typeof value.provenance === 'object' ? value.provenance : {};
+  const authority = value.authority && typeof value.authority === 'object' ? value.authority : {};
+  const evidenceFamilies = value.evidenceFamilies ?? provenance.evidenceFamilies;
+  return {
+    scope: value.scope.trim(),
+    name: typeof (value.name ?? proposal.name) === 'string' ? String(value.name ?? proposal.name) : null,
+    kind: typeof (value.kind ?? proposal.kind) === 'string' ? String(value.kind ?? proposal.kind) : null,
+    evidenceFamilies: stringList(evidenceFamilies, `${field}.evidenceFamilies`),
+    origin: typeof (value.origin ?? provenance.origin) === 'string' ? String(value.origin ?? provenance.origin) : null,
+    accepted: typeof (value.accepted ?? authority.accepted) === 'boolean' ? Boolean(value.accepted ?? authority.accepted) : null,
+    reviewed: typeof (value.reviewed ?? authority.reviewed) === 'boolean' ? Boolean(value.reviewed ?? authority.reviewed) : null,
+    persisted: typeof (value.persisted ?? authority.persisted) === 'boolean' ? Boolean(value.persisted ?? authority.persisted) : null,
+    proofEligible: typeof (value.proofEligible ?? authority.proofEligible) === 'boolean' ? Boolean(value.proofEligible ?? authority.proofEligible) : null,
+    requiresExplicitReview: typeof (value.requiresExplicitReview ?? authority.requiresExplicitReview) === 'boolean'
+      ? Boolean(value.requiresExplicitReview ?? authority.requiresExplicitReview)
+      : null,
+  };
+}
+
+function semanticObservationList(value, field) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  return value.map((item, index) => semanticObservation(item, `${field}[${index}]`));
+}
+
+function semanticExpectationKey(value) {
+  return [value.scope, value.kind ?? '*', value.name ?? '*'].join('|');
+}
+
+function semanticObservationKey(value) {
+  return [value.scope, value.kind ?? '?', value.name ?? '?'].join('|');
+}
+
+function semanticMatches(expected, observed) {
+  if (expected.scope !== observed.scope) return false;
+  if (expected.name !== null && expected.name !== observed.name) return false;
+  if (expected.kind !== null && expected.kind !== observed.kind) return false;
+  if (expected.origin !== null && expected.origin !== observed.origin) return false;
+  for (const field of ['accepted', 'reviewed', 'persisted', 'proofEligible', 'requiresExplicitReview']) {
+    if (expected[field] !== null && expected[field] !== observed[field]) return false;
+  }
+  if (expected.minEvidenceFamilies !== null && observed.evidenceFamilies.length < expected.minEvidenceFamilies) return false;
+  const observedFamilies = new Set(observed.evidenceFamilies);
+  if (expected.evidenceFamilies.some(family => !observedFamilies.has(family))) return false;
+  return true;
+}
+
 export function normalizeAccuracyCase(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('case must be an object');
   if (value.version !== 1) throw new Error('case.version must be 1');
@@ -61,6 +166,7 @@ export function normalizeAccuracyCase(value) {
     groundTruth: {
       entities: truthSet(groundTruth.entities, 'case.groundTruth.entities'),
       relationships: truthSet(groundTruth.relationships, 'case.groundTruth.relationships', true),
+      semanticCandidates: semanticTruthSet(groundTruth.semanticCandidates, 'case.groundTruth.semanticCandidates'),
       answerStatuses,
     },
     provenance: Array.isArray(value.provenance) ? value.provenance : [],
@@ -74,6 +180,7 @@ export function normalizeAccuracyObservation(value) {
     caseId: value.caseId.trim(),
     entities: stringList(value.entities, 'observation.entities'),
     relationships: relationshipList(value.relationships, 'observation.relationships'),
+    semanticCandidates: semanticObservationList(value.semanticCandidates, 'observation.semanticCandidates'),
     answerStatus: typeof value.answerStatus === 'string' ? value.answerStatus : null,
   };
 }
@@ -100,6 +207,32 @@ function scoreSet(expected, observed) {
   };
 }
 
+function scoreSemanticCandidates(expected, observations) {
+  if (expected === null) return null;
+  const universe = new Set(expected.universeScopes);
+  const actual = universe.size ? observations.filter(item => universe.has(item.scope)) : observations;
+  const requiredFound = expected.required.filter(item => actual.some(observed => semanticMatches(item, observed)));
+  const missingRequired = expected.required.filter(item => !actual.some(observed => semanticMatches(item, observed)));
+  const forbiddenPresent = expected.forbidden.filter(item => actual.some(observed => semanticMatches(item, observed)));
+  const relevantObserved = actual.filter(observed => expected.required.some(item => semanticMatches(item, observed)));
+  const falseObserved = expected.complete
+    ? actual.filter(observed => !expected.required.some(item => semanticMatches(item, observed)))
+    : [];
+  return {
+    required: expected.required.length,
+    observed: actual.length,
+    requiredFound: requiredFound.length,
+    missingRequired: missingRequired.map(semanticExpectationKey),
+    forbiddenPresent: forbiddenPresent.map(semanticExpectationKey),
+    universeScopes: expected.universeScopes,
+    completeGroundTruth: expected.complete,
+    recall: ratio(requiredFound.length, expected.required.length),
+    precision: expected.complete ? ratio(relevantObserved.length, actual.length) : null,
+    falsePositiveRate: expected.complete ? ratio(falseObserved.length, actual.length, 0) : null,
+    falseObserved: falseObserved.map(semanticObservationKey),
+  };
+}
+
 export function scoreAccuracyCase(caseInput, observationInput) {
   const challenge = normalizeAccuracyCase(caseInput);
   const observation = normalizeAccuracyObservation(observationInput);
@@ -107,14 +240,20 @@ export function scoreAccuracyCase(caseInput, observationInput) {
 
   const entityScore = scoreSet(challenge.groundTruth.entities, observation.entities);
   const relationshipScore = scoreSet(challenge.groundTruth.relationships, observation.relationships);
+  const semanticCandidateScore = scoreSemanticCandidates(challenge.groundTruth.semanticCandidates, observation.semanticCandidates);
   const allowedStatuses = challenge.groundTruth.answerStatuses;
   const answerStatusPass = allowedStatuses.length === 0 || (observation.answerStatus !== null && allowedStatuses.includes(observation.answerStatus));
+  const semanticPass = semanticCandidateScore === null
+    || (semanticCandidateScore.missingRequired.length === 0
+      && semanticCandidateScore.forbiddenPresent.length === 0
+      && semanticCandidateScore.falseObserved.length === 0);
   const pass = entityScore.missingRequired.length === 0
     && entityScore.forbiddenPresent.length === 0
     && relationshipScore.missingRequired.length === 0
     && relationshipScore.forbiddenPresent.length === 0
     && entityScore.falseObserved.length === 0
     && relationshipScore.falseObserved.length === 0
+    && semanticPass
     && answerStatusPass;
 
   return {
@@ -124,6 +263,7 @@ export function scoreAccuracyCase(caseInput, observationInput) {
     pass,
     entityScore,
     relationshipScore,
+    semanticCandidateScore,
     answerStatus: {
       observed: observation.answerStatus,
       allowed: allowedStatuses,
@@ -147,6 +287,9 @@ export function scoreAccuracySuite(cases, observations) {
   });
   const completeEntityPrecision = results.map(item => item.entityScore.precision).filter(value => value !== null);
   const completeRelationshipPrecision = results.map(item => item.relationshipScore.precision).filter(value => value !== null);
+  const semanticScores = results.map(item => item.semanticCandidateScore).filter(value => value !== null);
+  const completeSemanticPrecision = semanticScores.map(item => item.precision).filter(value => value !== null);
+  const completeSemanticFalsePositiveRates = semanticScores.map(item => item.falsePositiveRate).filter(value => value !== null);
   return {
     cases: results.length,
     passed: results.filter(item => item.pass).length,
@@ -155,6 +298,9 @@ export function scoreAccuracySuite(cases, observations) {
     entityPrecision: average(completeEntityPrecision),
     relationshipRecall: average(results.map(item => item.relationshipScore.recall)),
     relationshipPrecision: average(completeRelationshipPrecision),
+    semanticCandidateRecall: average(semanticScores.map(item => item.recall)),
+    semanticCandidatePrecision: average(completeSemanticPrecision),
+    semanticCandidateFalsePositiveRate: average(completeSemanticFalsePositiveRates),
     results,
   };
 }
