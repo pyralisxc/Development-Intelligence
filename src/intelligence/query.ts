@@ -3,7 +3,7 @@ import { getProjectConfig } from '../config/registry.js';
 import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus , EvidenceRecord} from '../types.js';
 import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
-import { currentGraph, graphContext, repositoryGraphs } from './service.js';
+import { currentGraph, graphContext, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 
