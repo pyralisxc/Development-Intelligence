@@ -44,6 +44,22 @@ public sealed class ArchitectureAggregateProbe
     public ArchitectureAggregateProbe() {}
 }
 `);
+  await fs.writeFile(path.join(source, 'src', 'interaction.tsx'), `
+function handlePointerMove() {}
+function handleDrop() {}
+function handleClick() {}
+function handleFocus() {}
+function handleCustomSignal() {}
+export function InteractionFixture() {
+  return <CanvasWidget
+    onPointerMove={handlePointerMove}
+    onDrop={handleDrop}
+    onClick={handleClick}
+    onFocus={handleFocus}
+    dataAction={handleCustomSignal}
+  />;
+}
+`);
   await fs.writeFile(path.join(source, 'src', 'panel.tsx'), `
 import { helper } from './helper';
 export function Panel() {
@@ -477,6 +493,38 @@ test('interface projection organizes UI interactions and effects without creatin
     assert.equal(natural.intent, 'interface');
     assert.equal(natural.routing.tool, 'inspect_interface');
     assert.equal(natural.result.scope.kind, 'file');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('interface projection groups exact source-observed event mechanisms without upgrading declared handlers', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const projection = await interfaceProjection({
+      project: fixture.project,
+      scope: 'src/interaction.tsx',
+      limit: 30,
+    }) as any;
+
+    assert.equal(projection.capabilities.interactionMechanisms, true);
+    assert.equal(projection.interactionMechanisms.policy.sourceObservedOnly, true);
+    assert.equal(projection.interactionMechanisms.policy.runtimeOccurrenceProven, false);
+    assert.equal(projection.interactionMechanisms.policy.stateEffectsInferred, false);
+
+    const groups = new Map(projection.interactionMechanisms.families.map((group: any) => [group.family, group]));
+    for (const family of ['pointer', 'drop', 'click', 'focus']) assert.ok(groups.has(family), family);
+    const pointer = (groups.get('pointer') as any).items.find((item: any) => item.prop === 'onPointerMove');
+    assert.equal(pointer.component, 'CanvasWidget');
+    assert.equal(pointer.declaredHandler, 'handlePointerMove');
+    assert.equal(pointer.resolvedHandler?.name, 'handlePointerMove');
+    const drop = (groups.get('drop') as any).items.find((item: any) => item.prop === 'onDrop');
+    assert.equal(drop.declaredHandler, 'handleDrop');
+    assert.equal(drop.resolvedHandler?.name, 'handleDrop');
+    const allItems = projection.interactionMechanisms.families.flatMap((group: any) => group.items);
+    assert.equal(allItems.some((item: any) => item.prop === 'dataAction'), false);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }

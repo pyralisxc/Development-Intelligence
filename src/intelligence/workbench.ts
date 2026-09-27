@@ -597,6 +597,31 @@ const INTERFACE_INTERACTION_KINDS = new Set(['ui-element', 'component-prop-handl
 const INTERFACE_TRANSITION_KINDS = new Set(['navigation-call', 'route-reference', 'route']);
 const INTERFACE_EFFECT_KINDS = new Set(['http-call', 'rpc-call', 'sql-reference', 'mcp-tool']);
 const INTERFACE_REPRESENTATION_KINDS = new Set(['css-class-reference', 'css-selector', 'css-at-rule', 'css-custom-property']);
+const INTERACTION_MECHANISM_NODE_KINDS = new Set(['component-prop-binding', 'component-prop-handler']);
+const INTERACTION_FAMILY_ORDER = ['pointer', 'drop', 'drag', 'scroll', 'click', 'focus', 'keyboard', 'input', 'submit', 'context-menu', 'touch', 'mouse'] as const;
+type InteractionFamily = typeof INTERACTION_FAMILY_ORDER[number];
+
+function interactionFamily(prop: string): InteractionFamily | null {
+  if (/^on(?:Stage)?Pointer[A-Z]/u.test(prop)) return 'pointer';
+  if (prop === 'onDrop') return 'drop';
+  if (/^onDrag[A-Z]?/u.test(prop)) return 'drag';
+  if (/^onScroll[A-Z]?/u.test(prop)) return 'scroll';
+  if (/^on(?:Double)?Click$/u.test(prop)) return 'click';
+  if (prop === 'onFocus' || prop === 'onBlur') return 'focus';
+  if (/^onKey[A-Z]/u.test(prop)) return 'keyboard';
+  if (['onChange', 'onInput', 'onBeforeInput'].includes(prop)) return 'input';
+  if (prop === 'onSubmit') return 'submit';
+  if (prop === 'onContextMenu') return 'context-menu';
+  if (/^onTouch[A-Z]/u.test(prop)) return 'touch';
+  if (/^onMouse[A-Z]/u.test(prop)) return 'mouse';
+  return null;
+}
+
+function objectValue(node: GraphNode): Record<string, unknown> {
+  return node.value && typeof node.value === 'object' && !Array.isArray(node.value)
+    ? node.value as Record<string, unknown>
+    : {};
+}
 
 interface InterfaceProjectionItem {
   id: string;
@@ -690,6 +715,7 @@ export async function interfaceProjection(input: {
       surfaces: [],
       state: [],
       interactions: [],
+      interactionMechanisms: { total: 0, families: [] },
       transitions: [],
       effects: [],
       representation: [],
@@ -788,6 +814,67 @@ export async function interfaceProjection(input: {
   const effects = projectNodes(INTERFACE_EFFECT_KINDS);
   const representation = projectNodes(INTERFACE_REPRESENTATION_KINDS);
 
+  const mechanismItems = [...projectionCandidates.values()]
+    .filter(node => INTERACTION_MECHANISM_NODE_KINDS.has(node.kind))
+    .map(node => {
+      const value = objectValue(node);
+      const prop = typeof value.prop === 'string' ? value.prop : null;
+      if (!prop) return null;
+      const family = interactionFamily(prop);
+      if (!family) return null;
+      const component = typeof value.component === 'string' ? value.component : null;
+      const declaredHandler = typeof value.handler === 'string' ? value.handler : null;
+      const handlerEdge = (incidentByNode.get(node.id) ?? []).find(edge =>
+        edge.status === 'resolved' && edge.from === node.id && edge.kind === 'binds_to' && Boolean(edge.to));
+      const handlerNode = handlerEdge?.to ? byId.get(handlerEdge.to) : undefined;
+      return {
+        id: node.id,
+        family,
+        component,
+        prop,
+        declaredHandler,
+        resolvedHandler: handlerNode ? {
+          id: handlerNode.id,
+          name: displayName(handlerNode),
+          kind: handlerNode.kind,
+          locator: handlerNode.locator,
+        } : null,
+        evidence: {
+          nodeId: node.id,
+          nodeKind: node.kind,
+          locator: node.locator,
+          sourceFile: sourceFile(node.locator),
+          plane: 'source',
+        },
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .sort((a, b) =>
+      INTERACTION_FAMILY_ORDER.indexOf(a.family) - INTERACTION_FAMILY_ORDER.indexOf(b.family)
+      || String(a.component ?? '').localeCompare(String(b.component ?? ''))
+      || a.prop.localeCompare(b.prop)
+      || a.id.localeCompare(b.id));
+  const mechanismSampleLimit = Math.min(limit, 20);
+  const interactionMechanisms = {
+    total: mechanismItems.length,
+    families: INTERACTION_FAMILY_ORDER
+      .map(family => {
+        const familyItems = mechanismItems.filter(item => item.family === family);
+        return {
+          family,
+          count: familyItems.length,
+          items: familyItems.slice(0, mechanismSampleLimit),
+        };
+      })
+      .filter(group => group.count > 0),
+    policy: {
+      sourceObservedOnly: true,
+      declaredHandlerIsNotResolvedHandler: true,
+      runtimeOccurrenceProven: false,
+      stateEffectsInferred: false,
+    },
+  };
+
   const uncertaintyEdges = touchingEdges.filter(edge => edge.status !== 'resolved');
   const runtimeSources = graph.sources.filter(source => source.kind !== 'repository');
   const observedKinds = new Set(nodes.map(node => node.kind));
@@ -817,6 +904,7 @@ export async function interfaceProjection(input: {
       surfaces.length ? String(surfaces.length) + ' surface/route item(s)' : 'no surface/route items',
       state.length ? String(state.length) + ' state item(s)' : 'no state items',
       interactions.length ? String(interactions.length) + ' interaction item(s)' : 'no interaction items',
+      mechanismItems.length ? String(mechanismItems.length) + ' source-observed interaction mechanism(s)' : 'no classified interaction mechanisms',
       transitions.length ? String(transitions.length) + ' transition item(s)' : 'no transition items',
       effects.length ? String(effects.length) + ' external/persistence effect item(s)' : 'no external/persistence effects',
     ].join('; ') + ' observed in the selected scope.',
@@ -824,6 +912,7 @@ export async function interfaceProjection(input: {
       surfaces: surfaces.length > 0,
       state: state.length > 0,
       interactions: interactions.length > 0,
+      interactionMechanisms: mechanismItems.length > 0,
       transitions: transitions.length > 0,
       effects: effects.length > 0,
       representation: representation.length > 0,
@@ -832,6 +921,7 @@ export async function interfaceProjection(input: {
     surfaces,
     state,
     interactions,
+    interactionMechanisms,
     transitions,
     effects,
     representation,
