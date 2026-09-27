@@ -61,11 +61,13 @@ export interface SemanticAuditProjection {
 
 const BEHAVIOR_FAMILIES = new Set(['interface', 'state', 'api', 'persistence', 'motif']);
 
-function auditCandidate(graph: IntelligenceGraph, candidate: SemanticCandidate): SemanticCandidateAudit {
-  const nodeIds = new Set(graph.nodes.map(node => node.id));
-  const edgeIds = new Set(graph.edges.map(edge => edge.id));
-  const missingNodeIds = candidate.provenance.nodeIds.filter(id => !nodeIds.has(id));
-  const missingEdgeIds = candidate.provenance.edgeIds.filter(id => !edgeIds.has(id));
+function auditCandidate(
+  candidate: SemanticCandidate,
+  observedNodeIds: ReadonlySet<string>,
+  observedEdgeIds: ReadonlySet<string>,
+): SemanticCandidateAudit {
+  const missingNodeIds = candidate.provenance.nodeIds.filter(id => !observedNodeIds.has(id));
+  const missingEdgeIds = candidate.provenance.edgeIds.filter(id => !observedEdgeIds.has(id));
   const factualityReasons: string[] = [];
 
   if (candidate.support.evidenceFamilyCount < 2) factualityReasons.push('fewer than two independent evidence families');
@@ -137,14 +139,26 @@ export function auditSemanticCandidates(
   options: { limit?: number } = {},
 ): SemanticAuditProjection {
   const limit = Math.max(1, Math.min(options.limit ?? 24, 200));
-  const audited = bootstrap.candidates.map(candidate => auditCandidate(graph, candidate));
+  const candidateById = new Map(bootstrap.candidates.map(candidate => [candidate.id, candidate]));
+  const wantedNodeIds = new Set<string>();
+  const wantedEdgeIds = new Set<string>();
+  for (const candidate of bootstrap.candidates) {
+    for (const id of candidate.provenance.nodeIds) wantedNodeIds.add(id);
+    for (const id of candidate.provenance.edgeIds) wantedEdgeIds.add(id);
+  }
+  const observedNodeIds = new Set<string>();
+  for (const node of graph.nodes) if (wantedNodeIds.has(node.id)) observedNodeIds.add(node.id);
+  const observedEdgeIds = new Set<string>();
+  for (const edge of graph.edges) if (wantedEdgeIds.has(edge.id)) observedEdgeIds.add(edge.id);
+
+  const audited = bootstrap.candidates.map(candidate => auditCandidate(candidate, observedNodeIds, observedEdgeIds));
   audited.sort((a, b) => {
     const aCore = a.coreness.classification === 'core-candidate' ? 0 : 1;
     const bCore = b.coreness.classification === 'core-candidate' ? 0 : 1;
     const aSupported = a.factuality.status === 'supported' ? 0 : 1;
     const bSupported = b.factuality.status === 'supported' ? 0 : 1;
-    const aCandidate = bootstrap.candidates.find(candidate => candidate.id === a.candidateId)!;
-    const bCandidate = bootstrap.candidates.find(candidate => candidate.id === b.candidateId)!;
+    const aCandidate = candidateById.get(a.candidateId)!;
+    const bCandidate = candidateById.get(b.candidateId)!;
     return aSupported - bSupported
       || aCore - bCore
       || Number(b.coreness.facets.functionalContainer) - Number(a.coreness.facets.functionalContainer)
