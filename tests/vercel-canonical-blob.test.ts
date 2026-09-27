@@ -6,8 +6,14 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
-import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
-import { searchGraph } from '../src/intelligence/query.js';
+import { clearGraphCache, graphStatus, scanGraph } from '../src/intelligence/service.js';
+import { searchGraph, traceGraph } from '../src/intelligence/query.js';
+import { queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
+import {
+  loadCanonicalQueryArtifacts,
+  publishCanonicalQueryArtifacts,
+  releaseCanonicalQueryArtifactSlot,
+} from '../src/intelligence/queryArtifactStore.js';
 import { runChecked } from '../src/util/process.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../src/vercelRequestContext.js';
 
@@ -23,6 +29,8 @@ async function readRequestBody(request: any): Promise<any> {
 }
 async function startBlobServer() {
   const blobs = new Map<string, any>();
+  const etags = new Map<string, string>();
+  let etagSequence = 0;
   const requests: Array<{ method: string; pathname: string; query: string; headers: Record<string, string | string[] | undefined> }> = [];
   let origin = '';
   const server = http.createServer(async (request: any, response: any) => {
@@ -43,10 +51,27 @@ async function startBlobServer() {
       }
       assert.equal(request.headers['x-vercel-blob-access'], 'private');
       assert.equal(request.headers['x-add-random-suffix'], '0');
-      assert.equal(request.headers['x-allow-overwrite'], '1');
+      const allowOverwrite = String(request.headers['x-allow-overwrite'] ?? '');
+      assert.ok(['0', '1'].includes(allowOverwrite), `unexpected overwrite mode: ${allowOverwrite}`);
+      const expectedEtag = typeof request.headers['x-if-match'] === 'string' ? request.headers['x-if-match'] : null;
+      const currentEtag = etags.get(pathname) ?? null;
+      if (allowOverwrite === '0' && blobs.has(pathname)) {
+        response.statusCode = 409;
+        response.end('conflict');
+        return;
+      }
+      if (expectedEtag !== null && expectedEtag !== currentEtag) {
+        response.statusCode = 412;
+        if (currentEtag) response.setHeader('etag', currentEtag);
+        response.end('precondition failed');
+        return;
+      }
       const contentType = String(request.headers['x-content-type'] ?? '');
       assert.ok(['application/json', 'application/gzip'].includes(contentType), `unexpected Blob content type: ${contentType}`);
       blobs.set(pathname, await readRequestBody(request));
+      const etag = `"mock-${++etagSequence}"`;
+      etags.set(pathname, etag);
+      response.setHeader('etag', etag);
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ url: `${origin}/private/${pathname}`, downloadUrl: `${origin}/private/${pathname}?download=1`, pathname, contentType }));
       return;
@@ -58,6 +83,8 @@ async function startBlobServer() {
       if (value === undefined) { response.statusCode = 404; response.end('not found'); return; }
       response.setHeader('content-type', pathname.endsWith('.gz') ? 'application/gzip' : 'application/json');
       response.setHeader('content-length', String(value.byteLength));
+      const etag = etags.get(pathname);
+      if (etag) response.setHeader('etag', etag);
       response.end(value); return;
     }
     response.statusCode = 404; response.end('not found');
@@ -85,6 +112,14 @@ async function fixture() {
   await fs.writeFile(path.join(source, 'src', 'value.ts'), "export const value = 1;\n");
   await fs.writeFile(path.join(source, 'src', 'use.ts'), "import { value } from './value.js';\nexport const doubled = value * 2;\n");
   await fs.writeFile(path.join(source, 'src', 'outlier.ts'), "export function valueOutlier() { return 7; }\n");
+  const traceEntryFile = 'trace-entry.ts';
+  let traceTargetFile = 'trace-target-0.ts';
+  for (let index = 0; queryBucketForSource(`repo:src/${traceEntryFile}`) === queryBucketForSource(`repo:src/${traceTargetFile}`); index += 1) {
+    traceTargetFile = `trace-target-${index + 1}.ts`;
+  }
+  const traceTargetModule = traceTargetFile.slice(0, -3);
+  await fs.writeFile(path.join(source, 'src', traceTargetFile), "export function traceTarget() { return 11; }\n");
+  await fs.writeFile(path.join(source, 'src', traceEntryFile), `import { traceTarget } from './${traceTargetModule}.js';\nexport function traceEntry() { return traceTarget(); }\n`);
   const firstSha = await commit(source, 'initial');
   await runChecked('git', ['-C', source, 'remote', 'add', 'origin', pathToFileURL(remote).href]);
   await runChecked('git', ['-C', source, 'push', '-u', 'origin', 'main']);
@@ -130,6 +165,32 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.ok(adaptiveSearch.queryPlane.selectedBuckets >= 1);
     assert.equal(adaptiveSearch.adaptiveShadow.parity, null);
     assert.ok(adaptiveSearch.nodes.some((node: any) => String(node.id).includes('outlier')), 'adaptive answer should include disconnected outlier match');
+
+    const adaptiveTrace = await traceGraph({ project: item.project, node: 'traceEntry', direction: 'outbound', depth: 2, limit: 100 }) as any;
+    assert.equal(adaptiveTrace.queryPlane.mode, 'adaptive');
+    assert.equal(adaptiveTrace.queryPlane.authoritative, true);
+    assert.ok(adaptiveTrace.queryPlane.selectedBuckets >= 2, 'cross-file trace should expand across at least two detail buckets');
+    assert.ok(adaptiveTrace.nodes.some((node: any) => node.name === 'traceTarget'));
+    const fullTrace = await traceGraph({
+      project: item.project,
+      graphId: first.working.graphId,
+      node: 'traceEntry',
+      direction: 'outbound',
+      depth: 2,
+      limit: 100,
+    }) as any;
+    assert.equal(fullTrace.queryPlane.mode, 'full');
+    assert.deepEqual(
+      [...adaptiveTrace.nodes.map((node: any) => node.id)].sort(),
+      [...fullTrace.nodes.map((node: any) => node.id)].sort(),
+      'adaptive trace node recall must match the full canonical oracle',
+    );
+    assert.deepEqual(
+      [...adaptiveTrace.edges.map((edge: any) => edge.id)].sort(),
+      [...fullTrace.edges.map((edge: any) => edge.id)].sort(),
+      'adaptive trace edge recall must match the full canonical oracle',
+    );
+
     clearGraphCache(item.project);
     await fs.rm(item.scratch, { recursive: true, force: true });
     await fs.writeFile(item.scratch, 'checkout must not touch this path');
@@ -147,6 +208,19 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
       'authoritative narrow search must not read the full canonical graph blob',
     );
 
+    const traceRequestStart = item.blob.requests.length;
+    const traceOnly = await traceGraph({ project: item.project, node: 'traceEntry', direction: 'outbound', depth: 2, limit: 100 }) as any;
+    assert.equal(traceOnly.queryPlane.mode, 'adaptive');
+    assert.equal(traceOnly.queryPlane.authoritative, true);
+    assert.ok(traceOnly.queryPlane.selectedBuckets >= 2);
+    assert.ok(traceOnly.nodes.some((node: any) => node.name === 'traceTarget'));
+    const traceRequests = item.blob.requests.slice(traceRequestStart);
+    assert.equal(
+      traceRequests.some(request => request.pathname === `/private/${canonicalGraphBlobPath(item.project)}`),
+      false,
+      'authoritative adaptive trace must not read the full canonical graph blob',
+    );
+
     const second = await graphStatus(item.project) as any;
     assert.equal(second.observability.graphAccess.cacheState, 'miss');
     assert.equal(second.observability.persistence.mode, 'vercel-private-blob');
@@ -158,6 +232,54 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.equal(second.working.graphId, first.working.graphId);
     assert.equal(second.observability.queryArtifacts.state, 'referenced');
     assert.equal(item.blob.blobs.size, firstBlobCount, 'canonical hit must not republish derived artifacts');
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('concurrent Vercel query generations reserve distinct bounded slots', async () => {
+  const item = await fixture();
+  try {
+    const firstGraph = await scanGraph(item.project);
+    const record = JSON.parse(item.blob.blobs.get(canonicalGraphBlobPath(item.project))!.toString('utf8'));
+    assert.ok(record.queryArtifacts);
+    const previous = record.queryArtifacts;
+    const repository = pathToFileURL(item.remote).href;
+
+    const graphB = {
+      ...firstGraph,
+      graphId: `repo-${'b'.repeat(40)}-concurrentb`,
+      repositoryRevision: 'b'.repeat(40),
+      sourceFingerprint: 'source-concurrent-b',
+      topologyFingerprint: 'topology-concurrent-b',
+      evidenceFingerprint: 'evidence-concurrent-b',
+    };
+    const graphC = {
+      ...firstGraph,
+      graphId: `repo-${'c'.repeat(40)}-concurrentc`,
+      repositoryRevision: 'c'.repeat(40),
+      sourceFingerprint: 'source-concurrent-c',
+      topologyFingerprint: 'topology-concurrent-c',
+      evidenceFingerprint: 'evidence-concurrent-c',
+    };
+
+    const [publishedB, publishedC] = await Promise.all([
+      publishCanonicalQueryArtifacts(graphB, previous, { repository }),
+      publishCanonicalQueryArtifacts(graphC, previous, { repository }),
+    ]);
+    assert.equal(publishedB.state, 'stored');
+    assert.equal(publishedC.state, 'stored');
+    assert.ok(publishedB.ref);
+    assert.ok(publishedC.ref);
+    assert.notEqual(publishedB.ref!.slot, publishedC.ref!.slot, 'CAS reservations must isolate concurrent writers');
+
+    const previousStillReadable = await loadCanonicalQueryArtifacts(firstGraph, previous);
+    assert.equal(previousStillReadable.state, 'hit', 'current generation must remain readable during concurrent publication');
+    assert.equal((await loadCanonicalQueryArtifacts(graphB, publishedB.ref)).state, 'hit');
+    assert.equal((await loadCanonicalQueryArtifacts(graphC, publishedC.ref)).state, 'hit');
+
+    await releaseCanonicalQueryArtifactSlot(item.project, publishedB.ref);
+    await releaseCanonicalQueryArtifactSlot(item.project, publishedC.ref);
   } finally {
     cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
   }
@@ -185,8 +307,12 @@ test('legacy canonical hits backfill query artifacts without rebuilding or touch
     assert.equal(firstSearch.queryPlane.mode, 'full', 'legacy record should fail closed for the request that discovers missing artifacts');
     assert.ok(firstSearch.nodes.some((node: any) => String(node.id).includes('outlier')));
 
+    const afterRead = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.equal(afterRead.queryArtifacts, undefined, 'read-only query must not backfill or persist derived artifacts');
+
+    await scanGraph(item.project);
     const migrated = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
-    assert.ok(migrated.queryArtifacts, 'canonical hit should be rewritten with the backfilled query generation reference');
+    assert.ok(migrated.queryArtifacts, 'explicit scan_graph should backfill the query generation from canonical W');
 
     clearGraphCache(item.project);
     const requestStart = item.blob.requests.length;
@@ -206,6 +332,47 @@ test('legacy canonical hits backfill query artifacts without rebuilding or touch
     assert.equal(status.observability.queryArtifacts.state, 'referenced');
     assert.equal(status.observability.coldBuild, null);
     assert.equal(status.revision, first.revision);
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('ordinary current-state reads never advance stale canonical truth', async () => {
+  const item = await fixture();
+  try {
+    const first = await graphStatus(item.project) as any;
+    const pathname = canonicalGraphBlobPath(item.project);
+    const storedBefore = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.equal(storedBefore.revision, first.revision);
+
+    await fs.writeFile(path.join(item.source, 'src', 'value.ts'), "export const value = 9;\n");
+    const nextSha = await commit(item.source, 'advance behind read plane');
+    await runChecked('git', ['-C', item.source, 'push', 'origin', 'main']);
+    clearGraphCache(item.project);
+
+    const requestStart = item.blob.requests.length;
+    await assert.rejects(
+      () => searchGraph({ project: item.project, query: 'value', limit: 100 }),
+      /Run scan_graph for the current revision before retrying this read-only operation/,
+    );
+    const readRequests = item.blob.requests.slice(requestStart);
+    assert.equal(
+      readRequests.some(request => request.method === 'PUT'),
+      false,
+      'ordinary read must not publish canonical state or query artifacts',
+    );
+    const stillStored = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.equal(stillStored.revision, first.revision, 'read-only query must not advance canonical W');
+
+    const materialized = await scanGraph(item.project);
+    assert.equal(materialized.repositoryRevision, nextSha, 'scan_graph explicitly advances canonical W');
+
+    clearGraphCache(item.project);
+    const after = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
+    assert.equal(after.revision, nextSha);
+    assert.equal(after.queryPlane.mode, 'adaptive');
+    const storedAfter = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.equal(storedAfter.revision, nextSha);
   } finally {
     cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
   }

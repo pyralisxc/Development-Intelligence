@@ -9,7 +9,7 @@ export async function projectStatus(project: string, checkUpstream = true): Prom
   let upstreamSha: string | null = null;
   let upstreamError: string | null = null;
   try {
-    graph = await graphStatus(project, config.defaultRef);
+    graph = await graphStatus(project, config.defaultRef, false);
     upstreamSha = checkUpstream && typeof graph.revision === 'string' ? graph.revision : null;
   } catch (error) {
     graphError = error instanceof Error ? error.message : String(error);

@@ -284,6 +284,49 @@ function derivedObjectByteLength(body: string | Uint8Array): number {
   return typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : body.byteLength;
 }
 
+export interface CanonicalDerivedObjectVersion {
+  body: Uint8Array;
+  etag: string | null;
+}
+
+function localDerivedEtag(body: Uint8Array): string {
+  return `"${stableHash([Buffer.from(body).toString('base64')])}"`;
+}
+
+export async function readCanonicalDerivedObjectVersioned(
+  project: string,
+  relativePath: string,
+  maxBytes = MAX_DERIVED_OBJECT_BYTES,
+): Promise<CanonicalDerivedObjectVersion | null> {
+  assertDerivedRelativePath(relativePath);
+  const selected = backend();
+  if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return null;
+  const bounded = Math.min(Math.max(maxBytes, 1), MAX_DERIVED_OBJECT_BYTES);
+  if (selected.kind === 'file') {
+    const target = canonicalDerivedObjectFilePath(project, relativePath)!;
+    const stat = await fs.stat(target).catch((error: any) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat) return null;
+    if (!stat.isFile() || stat.size > bounded) throw new Error('Canonical derived object is not a bounded regular file');
+    const body = new Uint8Array(await fs.readFile(target));
+    return { body, etag: localDerivedEtag(body) };
+  }
+
+  const response = await fetch(blobObjectUrl(selected, canonicalDerivedObjectBlobPath(project, relativePath)), {
+    headers: blobHeaders(selected),
+    cache: 'no-store',
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Vercel canonical derived object read failed with HTTP ${response.status}`);
+  const contentLength = Number(response.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.byteLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
+  return { body, etag: response.headers.get('etag') };
+}
+
 export async function readCanonicalDerivedObject(
   project: string,
   relativePath: string,
@@ -315,6 +358,70 @@ export async function readCanonicalDerivedObject(
   const body = new Uint8Array(await response.arrayBuffer());
   if (body.byteLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
   return body;
+}
+
+export interface CanonicalDerivedConditionalWriteResult {
+  state: 'stored' | 'conflict' | 'not-configured';
+  etag: string | null;
+}
+
+export async function writeCanonicalDerivedObjectConditional(
+  project: string,
+  relativePath: string,
+  body: string | Uint8Array,
+  contentType: string,
+  expectedEtag: string | null,
+): Promise<CanonicalDerivedConditionalWriteResult> {
+  assertDerivedRelativePath(relativePath);
+  const selected = backend();
+  if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) {
+    return { state: 'not-configured', etag: null };
+  }
+  const size = derivedObjectByteLength(body);
+  if (size > MAX_DERIVED_OBJECT_BYTES) throw new Error('Canonical derived object exceeds the bounded storage size');
+
+  if (selected.kind === 'file') {
+    const target = canonicalDerivedObjectFilePath(project, relativePath)!;
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const current = await fs.readFile(target).catch((error: any) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    const currentEtag = current ? localDerivedEtag(new Uint8Array(current)) : null;
+    if (currentEtag !== expectedEtag) return { state: 'conflict', etag: currentEtag };
+    const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
+    await fs.writeFile(temporary, body, { mode: 0o600 });
+    await fs.rename(temporary, target);
+    const nextBody = typeof body === 'string' ? new Uint8Array(Buffer.from(body, 'utf8')) : body;
+    return { state: 'stored', etag: localDerivedEtag(nextBody) };
+  }
+
+  const requestUrl = new URL(selected.apiUrl);
+  requestUrl.searchParams.set('pathname', canonicalDerivedObjectBlobPath(project, relativePath));
+  const requestId = `${selected.storeId}:${Date.now()}:${stableHash([project, relativePath, size, expectedEtag, Date.now()]).slice(0, 12)}`;
+  const response = await fetch(requestUrl, {
+    method: 'PUT',
+    headers: {
+      ...blobHeaders(selected),
+      'x-api-blob-request-id': requestId,
+      'x-api-blob-request-attempt': '0',
+      'x-api-version': BLOB_API_VERSION,
+      'x-vercel-blob-access': 'private',
+      'x-add-random-suffix': '0',
+      'x-allow-overwrite': expectedEtag === null ? '0' : '1',
+      ...(expectedEtag === null ? {} : { 'x-if-match': expectedEtag }),
+      'x-content-type': contentType,
+      'x-cache-control-max-age': '60',
+      'content-type': contentType,
+    },
+    body,
+  });
+  if (response.status === 409 || response.status === 412) return { state: 'conflict', etag: response.headers.get('etag') };
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500);
+    throw new Error(`Vercel canonical conditional derived object write failed with HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+  }
+  return { state: 'stored', etag: response.headers.get('etag') };
 }
 
 export async function writeCanonicalDerivedObject(

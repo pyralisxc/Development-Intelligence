@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { GraphNode, IntelligenceGraph } from '../src/types.js';
 import {
   canonicalDerivedObjectFilePath,
+  readCanonicalDerivedObjectVersioned,
   writeCanonicalDerivedObject,
 } from '../src/intelligence/canonicalStore.js';
 import {
@@ -16,6 +17,7 @@ import {
   prepareCanonicalQueryArtifactGeneration,
   publishCanonicalQueryArtifactPointer,
   publishCanonicalQueryArtifacts,
+  releaseCanonicalQueryArtifactSlot,
   QUERY_ARTIFACT_SLOT_COUNT,
 } from '../src/intelligence/queryArtifactStore.js';
 import { candidateQueryBuckets } from '../src/intelligence/queryArtifacts.js';
@@ -143,6 +145,7 @@ test('query artifact publication uses a fixed four-slot ring', async () => {
       assert.ok(published.ref);
       slots.push(published.ref!.slot);
       previous = published.ref;
+      await releaseCanonicalQueryArtifactSlot('fixture/query-artifacts', published.ref);
     }
     assert.deepEqual(slots, [0, 1, 2, 3, 0, 1, 2]);
 
@@ -207,6 +210,65 @@ test('current query pointer loads an exact generation without a full graph objec
       revision: 'cccccccccccccccccccccccccccccccccccccccc',
     });
     assert.equal(stale.state, 'stale');
+  } finally {
+    delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('stale query pointer writer cannot overwrite a newer conditional publication', { timeout: 10_000 }, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-query-pointer-cas-'));
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const repository = 'file:///fixture.git';
+    const base = graph('1111111111111111111111111111111111111111', 'base');
+    const baseArtifacts = await publishCanonicalQueryArtifacts(base);
+    assert.equal(baseArtifacts.state, 'stored');
+    const basePointer = await publishCanonicalQueryArtifactPointer(base, repository, baseArtifacts.ref!);
+    assert.equal(basePointer.state, 'stored');
+
+    const observed = await readCanonicalDerivedObjectVersioned(base.project, 'current-query-generation.json', 128 * 1024);
+    assert.ok(observed?.etag);
+
+    const current = graph('3333333333333333333333333333333333333333', 'current');
+    const currentArtifacts = await publishCanonicalQueryArtifacts(current, baseArtifacts.ref);
+    assert.equal(currentArtifacts.state, 'stored');
+
+    const stale = graph('2222222222222222222222222222222222222222', 'stale');
+    const staleArtifacts = await publishCanonicalQueryArtifacts(stale, baseArtifacts.ref);
+    assert.equal(staleArtifacts.state, 'stored');
+    assert.notEqual(currentArtifacts.ref?.slot, staleArtifacts.ref?.slot, 'concurrent candidates from the same previous generation must reserve different slots');
+
+    const previousStillReadable = await loadCanonicalQueryArtifacts(base, baseArtifacts.ref);
+    assert.equal(previousStillReadable.state, 'hit');
+
+    const currentPublish = await publishCanonicalQueryArtifactPointer(
+      current,
+      repository,
+      currentArtifacts.ref!,
+      { expectedEtag: observed!.etag },
+    );
+    assert.equal(currentPublish.state, 'stored');
+
+    const stalePublish = await publishCanonicalQueryArtifactPointer(
+      stale,
+      repository,
+      staleArtifacts.ref!,
+      { expectedEtag: observed!.etag },
+    );
+    assert.equal(stalePublish.state, 'conflict');
+
+    const pointerLoad = await loadCanonicalQueryArtifactPointer({
+      project: current.project,
+      repository,
+      revision: current.repositoryRevision!,
+    });
+    assert.equal(pointerLoad.state, 'hit');
+    assert.equal(pointerLoad.pointer?.revision, current.repositoryRevision);
+    assert.equal(pointerLoad.pointer?.graphId, current.graphId);
+    await releaseCanonicalQueryArtifactSlot(stale.project, staleArtifacts.ref);
+    await releaseCanonicalQueryArtifactSlot(base.project, baseArtifacts.ref);
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });
