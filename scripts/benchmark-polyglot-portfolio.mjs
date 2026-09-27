@@ -4,6 +4,8 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
+import { bootstrapSemanticCandidates } from '../dist/src/intelligence/semanticBootstrap.js';
+import { scoreAccuracyCase } from './accuracy-benchmark-lib.mjs';
 import { assessGraph } from '../dist/src/intelligence/assessment.js';
 import { synthesizeRepositoryAudit } from '../dist/src/intelligence/repositoryAudit.js';
 import { verifyTransition } from '../dist/src/intelligence/temporalVerification.js';
@@ -15,6 +17,20 @@ const targets = [
     expectedSha: process.env.GAME_STUDIO_CORE_BENCHMARK_SHA ?? '55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d',
     requiredKinds: ['class', 'interface', 'method', 'unity-object', 'unity-asset-guid'],
     requiredStrategies: ['unity-guid', 'unity-file-id', 'unity-meta-companion'],
+    semanticTruth: {
+      universeScopes: [
+        'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay',
+        'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Character',
+        'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Input',
+        'Packages/com.neonblackinteractivellc.neonblackhub',
+      ],
+      required: [
+        { scope: 'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay', name: 'Gameplay' },
+        { scope: 'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Character', name: 'Character' },
+        { scope: 'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Input', name: 'Input' },
+      ],
+      forbidden: [{ scope: 'Packages/com.neonblackinteractivellc.neonblackhub' }],
+    },
   },
   {
     project: 'Medieval-Sim',
@@ -22,6 +38,36 @@ const targets = [
     expectedSha: process.env.MEDIEVAL_SIM_BENCHMARK_SHA ?? '8f721556d9548dfd09378d337b06416415ee09e7',
     requiredKinds: ['class', 'method', 'constructor', 'package', 'import-binding'],
     requiredRelationships: ['imports', 'resolves_to'],
+    semanticTruth: {
+      universeScopes: [
+        'src/main/java/medievalsim/grandexchange',
+        'src/main/java/medievalsim/zones',
+        'src/main',
+      ],
+      required: [
+        { scope: 'src/main/java/medievalsim/grandexchange' },
+        { scope: 'src/main/java/medievalsim/zones', name: 'Zones' },
+      ],
+      forbidden: [{ scope: 'src/main' }],
+    },
+  },
+  {
+    project: 'AI-Systems-Control',
+    root: path.resolve(process.argv[4] ?? 'benchmark/ai-systems-control'),
+    expectedSha: process.env.AI_SYSTEMS_CONTROL_BENCHMARK_SHA ?? '36c9162d94b974500535ce211aa018512432485c',
+    requiredKinds: ['file', 'function', 'interface', 'route', 'api', 'feature'],
+    requiredRelationships: ['imports', 'resolves_to'],
+    semanticTruth: {
+      universeScopes: [
+        'src/features/project-workspace',
+        'src/slice-a',
+      ],
+      required: [
+        { scope: 'src/features/project-workspace', name: 'Project Workspace' },
+        { scope: 'src/slice-a', name: 'Slice A' },
+      ],
+      forbidden: [],
+    },
   },
 ];
 
@@ -53,6 +99,51 @@ for (const target of targets) {
   if (actualSha !== target.expectedSha) throw new Error(`${target.project} benchmark SHA mismatch: expected ${target.expectedSha}, got ${actualSha}`);
   const started = Date.now();
   const graph = await buildLocalGraph(target.root, target.project);
+  const semanticStarted = process.hrtime.bigint();
+  const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: 50 });
+  const semanticElapsedMs = Number(process.hrtime.bigint() - semanticStarted) / 1_000_000;
+  if (semanticElapsedMs > 2000) throw new Error(`${target.project} semantic bootstrap exceeded 2000 ms: ${semanticElapsedMs.toFixed(2)} ms`);
+  if (semanticBootstrap.candidates.some(candidate => candidate.authority.accepted || candidate.authority.persisted || candidate.authority.proofEligible)) {
+    throw new Error(`${target.project} semantic bootstrap crossed the proposal authority boundary`);
+  }
+  const semanticCase = {
+    version: 1,
+    id: `${target.project.toLowerCase()}-semantic-bootstrap-reviewed-universe`,
+    capability: 'semantic-bootstrap',
+    language: target.project === 'Game-Studio-Core' ? 'csharp' : target.project === 'Medieval-Sim' ? 'java' : 'typescript',
+    project: target.project,
+    ref: `commit:${actualSha}`,
+    groundTruth: {
+      semanticCandidates: {
+        universeScopes: target.semanticTruth.universeScopes,
+        required: target.semanticTruth.required.map(item => ({
+          ...item,
+          origin: 'intrinsic-derivation',
+          accepted: false,
+          persisted: false,
+          proofEligible: false,
+          requiresExplicitReview: true,
+          minEvidenceFamilies: 2,
+        })),
+        forbidden: target.semanticTruth.forbidden,
+        complete: true,
+      },
+    },
+  };
+  const semanticAccuracy = scoreAccuracyCase(semanticCase, {
+    caseId: semanticCase.id,
+    semanticCandidates: semanticBootstrap.candidates,
+  });
+  const semanticPresentationAccuracy = scoreAccuracyCase(semanticCase, {
+    caseId: semanticCase.id,
+    semanticCandidates: semanticBootstrap.candidates.slice(0, 32),
+  });
+  if (!semanticAccuracy.pass || semanticAccuracy.semanticCandidateScore?.precision !== 1 || semanticAccuracy.semanticCandidateScore?.recall !== 1) {
+    throw new Error(`${target.project} semantic derivation accuracy failed: ${JSON.stringify(semanticAccuracy.semanticCandidateScore)}`);
+  }
+  if (!semanticPresentationAccuracy.pass) {
+    throw new Error(`${target.project} semantic top-32 presentation failed: ${JSON.stringify(semanticPresentationAccuracy.semanticCandidateScore)}`);
+  }
   const kindCounts = Object.fromEntries(target.requiredKinds.map(kind => [kind, graph.nodes.filter(node => node.kind === kind).length]));
   const strategyCounts = Object.fromEntries((target.requiredStrategies ?? []).map(strategy => [strategy, graph.edges.filter(edge => edge.strategy === strategy && edge.status === 'resolved').length]));
   const relationshipCounts = Object.fromEntries((target.requiredRelationships ?? []).map(kind => [kind, graph.edges.filter(edge => edge.kind === kind && edge.status === 'resolved').length]));
@@ -224,6 +315,17 @@ for (const target of targets) {
     kindCounts,
     strategyCounts,
     relationshipCounts,
+    semanticAccuracy: {
+      elapsedMs: Number(semanticElapsedMs.toFixed(3)),
+      candidateCount: semanticBootstrap.candidates.length,
+      precision: semanticAccuracy.semanticCandidateScore.precision,
+      recall: semanticAccuracy.semanticCandidateScore.recall,
+      falsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
+      boundedPresentationLimit: 32,
+      boundedPresentationPrecision: semanticPresentationAccuracy.semanticCandidateScore.precision,
+      boundedPresentationRecall: semanticPresentationAccuracy.semanticCandidateScore.recall,
+      boundedPresentationFalsePositiveRate: semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate,
+    },
     temporalVerification,
     repositoryAudit: { elapsedMs: Number(auditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers, architectureBoundaryCount: repositoryAudit.architectureBoundaries.length },
     orientationProbe,
@@ -240,7 +342,7 @@ const resourceReport = {
   systemCpuMs: Number((processResources.systemCPUTime / 1000).toFixed(1)),
 };
 const jsonPath = process.env.DEVINT_PORTFOLIO_JSON ?? path.resolve('benchmark-polyglot-portfolio.json');
-await fs.writeFile(jsonPath, `${JSON.stringify({ benchmark: 'Development Intelligence pinned C#/Unity + Java portfolio', processResources: resourceReport, reports }, null, 2)}\n`);
+await fs.writeFile(jsonPath, `${JSON.stringify({ benchmark: 'Development Intelligence pinned C#/Unity + Java + TypeScript semantic portfolio', processResources: resourceReport, reports }, null, 2)}\n`);
 const summary = [
   '# Development Intelligence polyglot portfolio benchmark',
   '',
@@ -255,6 +357,8 @@ const summary = [
     '',
     ...Object.entries({ ...item.kindCounts, ...item.strategyCounts, ...item.relationshipCounts }).map(([name, count]) => `- ${name}: **${count}**`),
     ...(item.temporalVerification ? [`- parent→pinned temporal verification: **${item.temporalVerification.elapsedMs} ms — ${item.temporalVerification.changedFileCount} changed files / ${item.temporalVerification.unexpectedTotal} unexpected graph changes**`] : []),
+    `- semantic derivation: **precision ${(item.semanticAccuracy.precision * 100).toFixed(0)}% / recall ${(item.semanticAccuracy.recall * 100).toFixed(0)}% / FPR ${(item.semanticAccuracy.falsePositiveRate * 100).toFixed(0)}% / ${item.semanticAccuracy.elapsedMs} ms**`,
+    `- semantic top-32 presentation: **precision ${(item.semanticAccuracy.boundedPresentationPrecision * 100).toFixed(0)}% / recall ${(item.semanticAccuracy.boundedPresentationRecall * 100).toFixed(0)}% / FPR ${(item.semanticAccuracy.boundedPresentationFalsePositiveRate * 100).toFixed(0)}%**`,
     `- repository audit: **${item.repositoryAudit.elapsedMs} ms** — ${item.repositoryAudit.findingTotal} deterministic findings / ${item.repositoryAudit.targetCount} bounded investigation target(s)`,
     ...(item.orientationProbe ? [
       `- orientation known query: **${item.orientationProbe.known.elapsedMs} ms** — ${item.orientationProbe.known.answerStatus}, ${item.orientationProbe.known.analyzerTechnology}/${item.orientationProbe.known.analyzerDepth}, ${item.orientationProbe.known.disambiguatingEvidenceCount} disambiguating-evidence hint(s)`,

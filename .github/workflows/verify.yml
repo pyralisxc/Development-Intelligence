@@ -141,6 +141,7 @@ jobs:
     env:
       GAME_STUDIO_CORE_BENCHMARK_SHA: 55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d
       MEDIEVAL_SIM_BENCHMARK_SHA: 8f721556d9548dfd09378d337b06416415ee09e7
+      AI_SYSTEMS_CONTROL_BENCHMARK_SHA: 36c9162d94b974500535ce211aa018512432485c
     steps:
       - name: Check out Development Intelligence candidate
         uses: actions/checkout@v7
@@ -163,9 +164,16 @@ jobs:
           ref: 8f721556d9548dfd09378d337b06416415ee09e7
           path: benchmark/medieval-sim
           persist-credentials: false
+      - name: Check out pinned TypeScript/web target
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/AI-Systems-Control
+          ref: 36c9162d94b974500535ce211aa018512432485c
+          path: benchmark/ai-systems-control
+          persist-credentials: false
       - name: Replay pinned polyglot portfolio
         run: |
-          node scripts/benchmark-polyglot-portfolio.mjs benchmark/game-studio-core benchmark/medieval-sim
+          node scripts/benchmark-polyglot-portfolio.mjs benchmark/game-studio-core benchmark/medieval-sim benchmark/ai-systems-control
           cat benchmark-polyglot-portfolio.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload portfolio evidence
         uses: actions/upload-artifact@v4

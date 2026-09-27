@@ -168,7 +168,7 @@ const semanticAccuracy = scoreAccuracyCase(semanticAccuracyCase, {
 });
 const semanticPresentationAccuracy = scoreAccuracyCase(semanticAccuracyCase, {
   caseId: semanticAccuracyCase.id,
-  semanticCandidates: semanticBootstrap.candidates.slice(0, 20),
+  semanticCandidates: semanticBootstrap.candidates.slice(0, 32),
 });
 if (!semanticAccuracy.pass) {
   throw new Error(`CardForge semantic accuracy failed: ${JSON.stringify(semanticAccuracy.semanticCandidateScore)}`);
@@ -538,7 +538,7 @@ const report = {
     caseId: semanticAccuracy.caseId,
     reviewedUniverseScopes: semanticAccuracyUniverse,
     derivationPoolLimit: 50,
-    boundedPresentationLimit: 20,
+    boundedPresentationLimit: 32,
     boundedPresentation: {
       recall: semanticPresentationAccuracy.semanticCandidateScore.recall,
       precision: semanticPresentationAccuracy.semanticCandidateScore.precision,
@@ -670,7 +670,7 @@ const summary = [
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
   `- Semantic derivation accuracy (50-candidate pool, 7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
-  `- Semantic bounded presentation (top 20 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
+  `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,
