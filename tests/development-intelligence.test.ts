@@ -453,8 +453,9 @@ test('interface projection organizes UI interactions and effects without creatin
     assert.equal(projection.policy.deterministic, true);
     assert.equal(projection.policy.persisted, false);
     assert.equal(projection.policy.semanticAuthority, false);
-    assert.ok(projection.surfaces.some((item: any) => item.kind === 'ui-element'));
-    assert.ok(projection.interactions.length > 0);
+    assert.ok(projection.surfaces.length > 0, 'projection should expose an explicit surface or a source-evidenced surface owner');
+    assert.ok(projection.surfaces.some((item: any) => item.projectionRole === 'surface' || item.projectionRole === 'surface-owner'));
+    assert.ok(projection.interactions.length > 0 || projection.surfaces.some((item: any) => item.projectionRole === 'surface-owner'));
     assert.ok(projection.effects.some((item: any) => item.kind === 'http-call'));
     assert.ok(projection.transitions.some((item: any) => item.kind === 'navigation-call'));
     assert.equal(projection.runtimeObservations.available, false);

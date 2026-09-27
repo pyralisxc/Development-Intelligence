@@ -729,7 +729,34 @@ export async function interfaceProjection(input: {
     .slice(0, limit)
     .map(node => interfaceProjectionItem(node, byId, incidentByNode.get(node.id) ?? []));
 
-  const surfaces = projectNodes(INTERFACE_SURFACE_KINDS);
+  const explicitSurfaces = projectNodes(INTERFACE_SURFACE_KINDS).map(item => ({ ...item, projectionRole: 'surface' }));
+  const interfaceEvidenceKinds = new Set([
+    ...INTERFACE_INTERACTION_KINDS,
+    ...INTERFACE_STATE_KINDS,
+    ...INTERFACE_TRANSITION_KINDS,
+    ...INTERFACE_EFFECT_KINDS,
+  ]);
+  const surfaceOwners = nodes
+    .filter(node => ['function', 'method', 'class', 'interface', 'file'].includes(node.kind))
+    .filter(node => /\.(?:tsx|jsx)$/iu.test(sourceFile(node.locator) ?? ''))
+    .filter(node => (incidentByNode.get(node.id) ?? []).some(edge => {
+      if (edge.status !== 'resolved') return false;
+      const neighborId = edge.from === node.id ? edge.to : edge.from;
+      const neighbor = neighborId ? byId.get(neighborId) : undefined;
+      return Boolean(neighbor && interfaceEvidenceKinds.has(neighbor.kind));
+    }))
+    .sort((a, b) =>
+      (incidentByNode.get(b.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
+      - (incidentByNode.get(a.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
+      || displayName(a).localeCompare(displayName(b)))
+    .slice(0, limit)
+    .map(node => ({
+      ...interfaceProjectionItem(node, byId, incidentByNode.get(node.id) ?? []),
+      projectionRole: 'surface-owner',
+    }));
+  const surfaces = [...explicitSurfaces, ...surfaceOwners]
+    .filter((item, index, all) => all.findIndex(other => other.id === item.id) === index)
+    .slice(0, limit);
   const state = projectNodes(INTERFACE_STATE_KINDS);
   const interactions = projectNodes(INTERFACE_INTERACTION_KINDS);
   const transitions = projectNodes(INTERFACE_TRANSITION_KINDS);
