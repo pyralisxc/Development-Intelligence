@@ -203,3 +203,42 @@ test('bounded semantic output prioritizes top-level functional containers over n
   assert.equal(result.candidates[0]?.support.scopeRole, 'functional-container');
   assert.equal(result.candidates[0]?.support.scopeDepth, 3);
 });
+
+
+test('exact documentation scope assertions strengthen existing candidates without creating authority', () => {
+  const fixture = graph();
+  fixture.nodes.push(
+    node('file:editor-view', 'file', 'src/features/editor/Editor.tsx'),
+    node('symbol:editor-view', 'function', 'src/features/editor/Editor.tsx:2', 'Editor'),
+    node('ui:editor-view', 'ui-element', 'src/features/editor/Editor.tsx:4', 'Editor', 'representation'),
+    {
+      id: 'doc:editor',
+      sourceId: 'repo:docs/architecture.md',
+      kind: 'document-statement',
+      locator: 'docs/architecture.md:20',
+      value: 'src/features/editor owns the interactive editor workspace.',
+      raw: 'src/features/editor owns the interactive editor workspace.',
+      layer: 'structural',
+      checkpoint: false,
+    },
+  );
+  fixture.edges.push(
+    edge('editor-file-declares', 'file:editor-view', 'symbol:editor-view', 'contains'),
+    edge('editor-view-contains-ui', 'symbol:editor-view', 'ui:editor-view', 'contains'),
+  );
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 20 });
+  const editor = result.candidates.find(candidate => candidate.scope === 'src/features/editor');
+  assert.ok(editor);
+  assert.ok(editor.provenance.evidenceFamilies.includes('documentation'));
+  assert.ok(editor.provenance.nodeIds.includes('doc:editor'));
+  assert.equal(editor.authority.accepted, false);
+  assert.equal(editor.authority.persisted, false);
+  assert.equal(editor.authority.requiresExplicitReview, true);
+
+  const docsOnly = structuredClone(fixture);
+  docsOnly.nodes = docsOnly.nodes.filter(item => item.id === 'doc:editor');
+  docsOnly.edges = [];
+  const docsOnlyResult = bootstrapSemanticCandidates(docsOnly, { limit: 20 });
+  assert.equal(docsOnlyResult.candidates.length, 0, 'documentation alone must not manufacture semantic ownership');
+});
