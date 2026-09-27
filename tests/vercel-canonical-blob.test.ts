@@ -7,6 +7,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
 import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
+import { searchGraph } from '../src/intelligence/query.js';
 import { runChecked } from '../src/util/process.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../src/vercelRequestContext.js';
 
@@ -83,6 +84,7 @@ async function fixture() {
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
   await fs.writeFile(path.join(source, 'src', 'value.ts'), "export const value = 1;\n");
   await fs.writeFile(path.join(source, 'src', 'use.ts'), "import { value } from './value.js';\nexport const doubled = value * 2;\n");
+  await fs.writeFile(path.join(source, 'src', 'outlier.ts'), "export const valueOutlier = 7;\n");
   const firstSha = await commit(source, 'initial');
   await runChecked('git', ['-C', source, 'remote', 'add', 'origin', pathToFileURL(remote).href]);
   await runChecked('git', ['-C', source, 'push', '-u', 'origin', 'main']);
@@ -122,6 +124,13 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.ok(firstRecord.queryArtifacts);
     assert.equal(firstRecord.queryArtifacts.slot, 0);
     const firstBlobCount = item.blob.blobs.size;
+    const shadowedSearch = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
+    assert.equal(shadowedSearch.adaptiveShadow.state, 'hit');
+    assert.equal(shadowedSearch.adaptiveShadow.parity, true);
+    assert.ok(shadowedSearch.adaptiveShadow.selectedBuckets >= 1);
+    assert.ok(shadowedSearch.nodes.some((node: any) => String(node.id).includes('outlier')), 'full answer should include disconnected outlier match');
+    assert.deepEqual(shadowedSearch.adaptiveShadow.comparisons[0].missingNodes, []);
+    assert.deepEqual(shadowedSearch.adaptiveShadow.comparisons[0].missingEdges, []);
     clearGraphCache(item.project);
     await fs.rm(item.scratch, { recursive: true, force: true });
     await fs.writeFile(item.scratch, 'checkout must not touch this path');
@@ -252,4 +261,25 @@ test('request-scoped Vercel OIDC contexts remain isolated across concurrent asyn
 
   assert.deepEqual(await Promise.all([first, second]), ['first-token', 'second-token']);
   assert.equal(currentVercelOidcToken(), null);
+});
+
+
+test('adaptive search shadow fails closed on corrupt query artifacts while full search remains authoritative', async () => {
+  const item = await fixture();
+  try {
+    await graphStatus(item.project);
+    const pathname = canonicalGraphBlobPath(item.project);
+    const record = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.ok(record.queryArtifacts);
+    const manifestKey = [...item.blob.blobs.keys()].find(key => key.endsWith(`/query-slots/${record.queryArtifacts.slot}/manifest.json`));
+    assert.ok(manifestKey);
+    item.blob.blobs.set(manifestKey!, Buffer.from('corrupt-manifest'));
+
+    const result = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
+    assert.ok(result.nodeTotal >= 1, 'full canonical search must still answer');
+    assert.equal(result.adaptiveShadow.parity, null);
+    assert.ok(['invalid', 'error', 'miss'].includes(result.adaptiveShadow.state));
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
 });
