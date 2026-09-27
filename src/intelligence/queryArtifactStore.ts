@@ -20,6 +20,7 @@ import {
 
 export const QUERY_ARTIFACT_SLOT_COUNT = 4;
 export const QUERY_ARTIFACT_FORMAT_VERSION = 4;
+const QUERY_ARTIFACT_SLOT_RESERVATION_STALE_MS = 60 * 60 * 1000;
 
 export interface CanonicalQueryArtifactDescriptor {
   path: string;
@@ -61,6 +62,18 @@ export interface CanonicalQueryArtifactPublishResult {
   saveMs: number;
   ref: CanonicalQueryArtifactGenerationRef | null;
   error?: string;
+}
+
+interface CanonicalQueryArtifactSlotReservation {
+  formatVersion: 1;
+  artifactFormatVersion: 4;
+  project: string;
+  revision: string;
+  graphId: string;
+  generationId: string;
+  slot: number;
+  state: 'reserved' | 'released';
+  updatedAt: string;
 }
 
 export interface CanonicalQueryArtifactLoadResult {
@@ -153,6 +166,131 @@ function slotPrefix(slot: number): string {
   return `query-slots/${slot}`;
 }
 
+function slotReservationPath(slot: number): string {
+  return `${slotPrefix(slot)}/reservation.json`;
+}
+
+function parseSlotReservation(value: unknown, slot: number): CanonicalQueryArtifactSlotReservation | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  if (
+    item.formatVersion !== 1
+    || item.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
+    || typeof item.project !== 'string'
+    || typeof item.revision !== 'string'
+    || typeof item.graphId !== 'string'
+    || typeof item.generationId !== 'string'
+    || !/^[0-9a-f]{24}$/u.test(item.generationId)
+    || item.slot !== slot
+    || !['reserved', 'released'].includes(String(item.state))
+    || typeof item.updatedAt !== 'string'
+  ) return null;
+  return item as unknown as CanonicalQueryArtifactSlotReservation;
+}
+
+async function reserveCanonicalQueryArtifactSlot(
+  graph: IntelligenceGraph,
+  previous: CanonicalQueryArtifactGenerationRef | null | undefined,
+  repository?: string,
+): Promise<number> {
+  if (!graph.repositoryRevision) throw new Error('Canonical query artifact slot reservation requires an exact repository revision');
+  const generation = generationId(graph);
+  const protectedSlots = new Set<number>();
+  if (previous) protectedSlots.add(previous.slot);
+
+  let pointerState: CanonicalQueryArtifactPointerLoadResult | null = null;
+  if (repository) {
+    pointerState = await loadCanonicalQueryArtifactPointer({
+      project: graph.project,
+      repository,
+      revision: graph.repositoryRevision,
+    });
+    if (pointerState.pointer) protectedSlots.add(pointerState.pointer.ref.slot);
+  }
+  const mayReclaimStale = !pointerState || ['hit', 'stale', 'miss', 'not-configured'].includes(pointerState.state);
+  const start = slotAfter(previous);
+
+  for (let offset = 0; offset < QUERY_ARTIFACT_SLOT_COUNT; offset += 1) {
+    const slot = (start + offset) % QUERY_ARTIFACT_SLOT_COUNT;
+    if (protectedSlots.has(slot)) continue;
+    const path = slotReservationPath(slot);
+    const observed = await readCanonicalDerivedObjectVersioned(graph.project, path, 128 * 1024);
+    let existing: CanonicalQueryArtifactSlotReservation | null = null;
+    if (observed?.body) {
+      try {
+        existing = parseSlotReservation(JSON.parse(Buffer.from(observed.body).toString('utf8')), slot);
+      } catch {
+        existing = null;
+      }
+    }
+
+    if (existing?.generationId === generation && existing.state === 'reserved') return slot;
+    const updatedAt = existing ? Date.parse(existing.updatedAt) : Number.NaN;
+    const stale = existing?.state === 'reserved'
+      && mayReclaimStale
+      && Number.isFinite(updatedAt)
+      && Date.now() - updatedAt >= QUERY_ARTIFACT_SLOT_RESERVATION_STALE_MS;
+    if (existing?.state === 'reserved' && !stale) continue;
+
+    const reservation: CanonicalQueryArtifactSlotReservation = {
+      formatVersion: 1,
+      artifactFormatVersion: QUERY_ARTIFACT_FORMAT_VERSION,
+      project: graph.project,
+      revision: graph.repositoryRevision,
+      graphId: graph.graphId,
+      generationId: generation,
+      slot,
+      state: 'reserved',
+      updatedAt: new Date().toISOString(),
+    };
+    const written = await writeCanonicalDerivedObjectConditional(
+      graph.project,
+      path,
+      JSON.stringify(reservation),
+      'application/json',
+      observed?.etag ?? null,
+    );
+    if (written.state === 'stored') return slot;
+    if (written.state === 'not-configured') throw new Error('Canonical derived storage is not configured');
+  }
+  throw new Error('No canonical query artifact slot is currently available; retry after an in-flight publication settles');
+}
+
+export async function releaseCanonicalQueryArtifactSlot(
+  project: string,
+  ref: CanonicalQueryArtifactGenerationRef | null | undefined,
+): Promise<boolean> {
+  if (!ref) return false;
+  const path = slotReservationPath(ref.slot);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const observed = await readCanonicalDerivedObjectVersioned(project, path, 128 * 1024);
+    if (!observed) return false;
+    let reservation: CanonicalQueryArtifactSlotReservation | null = null;
+    try {
+      reservation = parseSlotReservation(JSON.parse(Buffer.from(observed.body).toString('utf8')), ref.slot);
+    } catch {
+      return false;
+    }
+    if (!reservation || reservation.generationId !== ref.generationId) return false;
+    if (reservation.state === 'released') return true;
+    const released: CanonicalQueryArtifactSlotReservation = {
+      ...reservation,
+      state: 'released',
+      updatedAt: new Date().toISOString(),
+    };
+    const written = await writeCanonicalDerivedObjectConditional(
+      project,
+      path,
+      JSON.stringify(released),
+      'application/json',
+      observed.etag,
+    );
+    if (written.state === 'stored') return true;
+    if (written.state === 'not-configured') return false;
+  }
+  return false;
+}
+
 function encodeArtifact(value: unknown): { body: Uint8Array; bytes: number; uncompressedBytes: number; sha256: string } {
   const raw = Buffer.from(JSON.stringify(value), 'utf8');
   const body = new Uint8Array(gzipSync(raw, { level: 6 }));
@@ -166,10 +304,11 @@ function descriptor(path: string, encoded: ReturnType<typeof encodeArtifact>): C
 export function prepareCanonicalQueryArtifactGeneration(
   graph: IntelligenceGraph,
   previous: CanonicalQueryArtifactGenerationRef | null | undefined = null,
+  slotOverride?: number,
 ): PreparedCanonicalQueryArtifactGeneration {
   if (!graph.repositoryRevision) throw new Error('Canonical query artifact publication requires an exact repository revision');
   const generation = generationId(graph);
-  const slot = slotAfter(previous);
+  const slot = slotOverride ?? slotAfter(previous);
   const prefix = slotPrefix(slot);
   const artifacts = buildCanonicalQueryArtifacts(graph);
   const objects: PreparedCanonicalQueryArtifactGeneration['objects'] = [];
@@ -249,15 +388,20 @@ export async function persistPreparedCanonicalQueryArtifacts(
 export async function publishCanonicalQueryArtifacts(
   graph: IntelligenceGraph,
   previous: CanonicalQueryArtifactGenerationRef | null | undefined = null,
+  options: { repository?: string } = {},
 ): Promise<CanonicalQueryArtifactPublishResult> {
   const startedAt = Date.now();
   const storage = canonicalDerivedStorageInfo();
   if (!storage.durable) return { state: 'not-configured', saveMs: 0, ref: null };
+  let reservedRef: CanonicalQueryArtifactGenerationRef | null = null;
   try {
-    const prepared = prepareCanonicalQueryArtifactGeneration(graph, previous);
+    const slot = await reserveCanonicalQueryArtifactSlot(graph, previous, options.repository);
+    const prepared = prepareCanonicalQueryArtifactGeneration(graph, previous, slot);
+    reservedRef = prepared.ref;
     await persistPreparedCanonicalQueryArtifacts(graph.project, prepared);
     return { state: 'stored', saveMs: Math.max(0, Date.now() - startedAt), ref: prepared.ref };
   } catch (error) {
+    if (reservedRef) await releaseCanonicalQueryArtifactSlot(graph.project, reservedRef).catch(() => false);
     return {
       state: 'error',
       saveMs: Math.max(0, Date.now() - startedAt),

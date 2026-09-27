@@ -17,6 +17,7 @@ import {
   prepareCanonicalQueryArtifactGeneration,
   publishCanonicalQueryArtifactPointer,
   publishCanonicalQueryArtifacts,
+  releaseCanonicalQueryArtifactSlot,
   QUERY_ARTIFACT_SLOT_COUNT,
 } from '../src/intelligence/queryArtifactStore.js';
 import { candidateQueryBuckets } from '../src/intelligence/queryArtifacts.js';
@@ -144,6 +145,7 @@ test('query artifact publication uses a fixed four-slot ring', async () => {
       assert.ok(published.ref);
       slots.push(published.ref!.slot);
       previous = published.ref;
+      await releaseCanonicalQueryArtifactSlot('fixture/query-artifacts', published.ref);
     }
     assert.deepEqual(slots, [0, 1, 2, 3, 0, 1, 2]);
 
@@ -236,6 +238,10 @@ test('stale query pointer writer cannot overwrite a newer conditional publicatio
     const stale = graph('2222222222222222222222222222222222222222', 'stale');
     const staleArtifacts = await publishCanonicalQueryArtifacts(stale, baseArtifacts.ref);
     assert.equal(staleArtifacts.state, 'stored');
+    assert.notEqual(currentArtifacts.ref?.slot, staleArtifacts.ref?.slot, 'concurrent candidates from the same previous generation must reserve different slots');
+
+    const previousStillReadable = await loadCanonicalQueryArtifacts(base, baseArtifacts.ref);
+    assert.equal(previousStillReadable.state, 'hit');
 
     const currentPublish = await publishCanonicalQueryArtifactPointer(
       current,
@@ -261,6 +267,8 @@ test('stale query pointer writer cannot overwrite a newer conditional publicatio
     assert.equal(pointerLoad.state, 'hit');
     assert.equal(pointerLoad.pointer?.revision, current.repositoryRevision);
     assert.equal(pointerLoad.pointer?.graphId, current.graphId);
+    await releaseCanonicalQueryArtifactSlot(stale.project, staleArtifacts.ref);
+    await releaseCanonicalQueryArtifactSlot(base.project, baseArtifacts.ref);
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });

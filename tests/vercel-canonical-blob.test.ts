@@ -9,6 +9,11 @@ import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
 import { clearGraphCache, graphStatus, scanGraph } from '../src/intelligence/service.js';
 import { searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
+import {
+  loadCanonicalQueryArtifacts,
+  publishCanonicalQueryArtifacts,
+  releaseCanonicalQueryArtifactSlot,
+} from '../src/intelligence/queryArtifactStore.js';
 import { runChecked } from '../src/util/process.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../src/vercelRequestContext.js';
 
@@ -227,6 +232,54 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.equal(second.working.graphId, first.working.graphId);
     assert.equal(second.observability.queryArtifacts.state, 'referenced');
     assert.equal(item.blob.blobs.size, firstBlobCount, 'canonical hit must not republish derived artifacts');
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('concurrent Vercel query generations reserve distinct bounded slots', async () => {
+  const item = await fixture();
+  try {
+    const firstGraph = await scanGraph(item.project);
+    const record = JSON.parse(item.blob.blobs.get(canonicalGraphBlobPath(item.project))!.toString('utf8'));
+    assert.ok(record.queryArtifacts);
+    const previous = record.queryArtifacts;
+    const repository = pathToFileURL(item.remote).href;
+
+    const graphB = {
+      ...firstGraph,
+      graphId: `repo-${'b'.repeat(40)}-concurrentb`,
+      repositoryRevision: 'b'.repeat(40),
+      sourceFingerprint: 'source-concurrent-b',
+      topologyFingerprint: 'topology-concurrent-b',
+      evidenceFingerprint: 'evidence-concurrent-b',
+    };
+    const graphC = {
+      ...firstGraph,
+      graphId: `repo-${'c'.repeat(40)}-concurrentc`,
+      repositoryRevision: 'c'.repeat(40),
+      sourceFingerprint: 'source-concurrent-c',
+      topologyFingerprint: 'topology-concurrent-c',
+      evidenceFingerprint: 'evidence-concurrent-c',
+    };
+
+    const [publishedB, publishedC] = await Promise.all([
+      publishCanonicalQueryArtifacts(graphB, previous, { repository }),
+      publishCanonicalQueryArtifacts(graphC, previous, { repository }),
+    ]);
+    assert.equal(publishedB.state, 'stored');
+    assert.equal(publishedC.state, 'stored');
+    assert.ok(publishedB.ref);
+    assert.ok(publishedC.ref);
+    assert.notEqual(publishedB.ref!.slot, publishedC.ref!.slot, 'CAS reservations must isolate concurrent writers');
+
+    const previousStillReadable = await loadCanonicalQueryArtifacts(firstGraph, previous);
+    assert.equal(previousStillReadable.state, 'hit', 'current generation must remain readable during concurrent publication');
+    assert.equal((await loadCanonicalQueryArtifacts(graphB, publishedB.ref)).state, 'hit');
+    assert.equal((await loadCanonicalQueryArtifacts(graphC, publishedC.ref)).state, 'hit');
+
+    await releaseCanonicalQueryArtifactSlot(item.project, publishedB.ref);
+    await releaseCanonicalQueryArtifactSlot(item.project, publishedC.ref);
   } finally {
     cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
   }
