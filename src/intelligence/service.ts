@@ -205,7 +205,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
               });
               saved = await saveCanonicalGraph(migratedRecord);
               if (saved.saveState === 'stored') {
-                queryPointerPublication = await publishCanonicalQueryArtifactPointer(
+                queryPointerPublication = await publishCurrentQueryArtifactPointer(
                   loaded.record.working,
                   revision.repository,
                   queryArtifactPublication.ref,
@@ -348,7 +348,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         });
         const saved = await saveCanonicalGraph(record);
         const queryPointerPublication = saved.saveState === 'stored' && queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref
-          ? await publishCanonicalQueryArtifactPointer(observed.value.graph, revision.repository, queryArtifactPublication.ref)
+          ? await publishCurrentQueryArtifactPointer(observed.value.graph, revision.repository, queryArtifactPublication.ref)
           : null;
         return {
           ...observed.value,
@@ -483,6 +483,34 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
   };
 }
 
+
+async function publishCurrentQueryArtifactPointer(
+  graph: IntelligenceGraph,
+  repository: string,
+  ref: CanonicalQueryArtifactGenerationRef,
+): Promise<CanonicalQueryArtifactPointerPublishResult> {
+  let result = await publishCanonicalQueryArtifactPointer(graph, repository, ref);
+  for (let attempt = 0; result.state === 'conflict' && attempt < 2; attempt += 1) {
+    if (!graph.repositoryRevision) return result;
+    const current = await resolveProjectRevision(graph.project);
+    if (current.repository !== repository || current.sha !== graph.repositoryRevision) {
+      return {
+        ...result,
+        state: 'error',
+        error: 'Canonical query pointer conflict was not retried because the candidate revision is no longer current',
+      };
+    }
+    result = await publishCanonicalQueryArtifactPointer(graph, repository, ref);
+  }
+  if (result.state === 'conflict') {
+    return {
+      ...result,
+      state: 'error',
+      error: 'Canonical query pointer remained contended after bounded optimistic retries',
+    };
+  }
+  return result;
+}
 
 export async function loadCurrentQueryArtifacts(
   project: string,

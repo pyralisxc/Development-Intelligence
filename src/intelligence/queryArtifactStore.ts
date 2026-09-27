@@ -5,7 +5,9 @@ import { stableHash } from '../util/hash.js';
 import {
   canonicalDerivedStorageInfo,
   readCanonicalDerivedObject,
+  readCanonicalDerivedObjectVersioned,
   writeCanonicalDerivedObject,
+  writeCanonicalDerivedObjectConditional,
   type CanonicalQueryArtifactGenerationRef,
 } from './canonicalStore.js';
 import {
@@ -93,9 +95,10 @@ export interface CanonicalQueryArtifactPointerLoadResult {
 }
 
 export interface CanonicalQueryArtifactPointerPublishResult {
-  state: 'not-configured' | 'stored' | 'error';
+  state: 'not-configured' | 'stored' | 'conflict' | 'error';
   saveMs: number;
   pointer: CanonicalQueryArtifactPointer | null;
+  etag?: string | null;
   error?: string;
 }
 
@@ -368,6 +371,7 @@ export async function publishCanonicalQueryArtifactPointer(
   graph: IntelligenceGraph,
   repository: string,
   ref: CanonicalQueryArtifactGenerationRef,
+  options: { expectedEtag?: string | null } = {},
 ): Promise<CanonicalQueryArtifactPointerPublishResult> {
   const startedAt = Date.now();
   const storage = canonicalDerivedStorageInfo();
@@ -390,9 +394,32 @@ export async function publishCanonicalQueryArtifactPointer(
       ref,
       publishedAt: new Date().toISOString(),
     };
-    const stored = await writeCanonicalDerivedObject(graph.project, CURRENT_QUERY_POINTER_PATH, JSON.stringify(pointer), 'application/json');
-    if (!stored) return { state: 'not-configured', saveMs: Math.max(0, Date.now() - startedAt), pointer: null };
-    return { state: 'stored', saveMs: Math.max(0, Date.now() - startedAt), pointer };
+    const observed = Object.prototype.hasOwnProperty.call(options, 'expectedEtag')
+      ? null
+      : await readCanonicalDerivedObjectVersioned(graph.project, CURRENT_QUERY_POINTER_PATH, 128 * 1024);
+    const expectedEtag = Object.prototype.hasOwnProperty.call(options, 'expectedEtag')
+      ? options.expectedEtag ?? null
+      : observed?.etag ?? null;
+    const stored = await writeCanonicalDerivedObjectConditional(
+      graph.project,
+      CURRENT_QUERY_POINTER_PATH,
+      JSON.stringify(pointer),
+      'application/json',
+      expectedEtag,
+    );
+    if (stored.state === 'not-configured') {
+      return { state: 'not-configured', saveMs: Math.max(0, Date.now() - startedAt), pointer: null };
+    }
+    if (stored.state === 'conflict') {
+      return {
+        state: 'conflict',
+        saveMs: Math.max(0, Date.now() - startedAt),
+        pointer: null,
+        etag: stored.etag,
+        error: 'Canonical query pointer optimistic write conflict',
+      };
+    }
+    return { state: 'stored', saveMs: Math.max(0, Date.now() - startedAt), pointer, etag: stored.etag };
   } catch (error) {
     return {
       state: 'error',
