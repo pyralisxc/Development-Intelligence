@@ -109,14 +109,15 @@ test('query artifact corruption fails closed instead of returning a partial gene
     assert.equal(full.state, 'hit');
     const buckets = candidateQueryBuckets(full.index!, 'needle');
     assert.ok(buckets.length > 0);
+    const bucket = buckets[0]!;
 
     const manifestPath = `query-slots/${published.ref!.slot}/manifest.json`;
     const manifestFile = canonicalDerivedObjectFilePath(value.project, manifestPath)!;
     const manifest = JSON.parse(await fs.readFile(manifestFile, 'utf8'));
-    const shardPath = manifest.shards[buckets[0]].path as string;
+    const shardPath = manifest.shards[bucket].path as string;
     await writeCanonicalDerivedObject(value.project, shardPath, new Uint8Array([1, 2, 3, 4]), 'application/gzip');
 
-    const corrupted = await loadCanonicalQueryArtifacts(value, published.ref, [buckets[0]!]);
+    const corrupted = await loadCanonicalQueryArtifacts(value, published.ref, [bucket]);
     assert.equal(corrupted.state, 'invalid');
     assert.match(corrupted.error ?? '', /integrity validation|size is invalid|incorrect header/i);
   } finally {
