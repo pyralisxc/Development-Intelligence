@@ -596,7 +596,7 @@ const INTERFACE_STATE_KINDS = new Set(['state-binding', 'state-write']);
 const INTERFACE_INTERACTION_KINDS = new Set(['ui-element', 'component-prop-handler', 'component-prop-binding']);
 const INTERFACE_TRANSITION_KINDS = new Set(['navigation-call', 'route-reference', 'route']);
 const INTERFACE_EFFECT_KINDS = new Set(['http-call', 'rpc-call', 'sql-reference', 'mcp-tool']);
-const INTERFACE_REPRESENTATION_KINDS = new Set(['css-selector', 'css-at-rule', 'css-custom-property']);
+const INTERFACE_REPRESENTATION_KINDS = new Set(['css-class-reference', 'css-selector', 'css-at-rule', 'css-custom-property']);
 
 interface InterfaceProjectionItem {
   id: string;
@@ -605,6 +605,7 @@ interface InterfaceProjectionItem {
   layer: string;
   locator: string;
   sourceFile: string | null;
+  value: unknown;
   resolvedRelationshipCount: number;
   links: Array<{
     edgeId: string;
@@ -644,6 +645,7 @@ function interfaceProjectionItem(
     layer: node.layer ?? 'structural',
     locator: node.locator,
     sourceFile: sourceFile(node.locator),
+    value: node.value ?? null,
     resolvedRelationshipCount: resolved.length,
     links,
   };
