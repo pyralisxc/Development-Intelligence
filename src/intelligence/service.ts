@@ -181,6 +181,62 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
       if (canonicalEligible) {
         const loaded = await loadCanonicalGraph({ project, repository: revision.repository, revision: revision.sha });
         if (loaded.record) {
+          let persistence = loaded.diagnostics;
+          let queryArtifacts: CachedRepositoryGraph['queryArtifacts'] = loaded.record.queryArtifacts
+            ? { state: 'referenced', saveMs: 0, ref: loaded.record.queryArtifacts }
+            : { state: 'none', saveMs: 0, ref: null };
+
+          // Canonical W may predate the derived query-plane format. Backfill the
+          // disposable generation from the already-valid stored graph without
+          // rebuilding/advancing source truth or touching Git checkout state.
+          if (!loaded.record.queryArtifacts && loaded.diagnostics.durable) {
+            const queryArtifactPublication = await publishCanonicalQueryArtifacts(loaded.record.working);
+            let saved = null;
+            let queryPointerPublication = null;
+            if (queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
+              const migratedRecord = makeCanonicalGraphRecord({
+                project,
+                repository: revision.repository,
+                revision: revision.sha,
+                working: loaded.record.working,
+                accepted: loaded.record.accepted,
+                currentness: loaded.record.currentness,
+                queryArtifacts: queryArtifactPublication.ref,
+              });
+              saved = await saveCanonicalGraph(migratedRecord);
+              if (saved.saveState === 'stored') {
+                queryPointerPublication = await publishCanonicalQueryArtifactPointer(
+                  loaded.record.working,
+                  revision.repository,
+                  queryArtifactPublication.ref,
+                );
+              }
+            }
+            if (saved) {
+              persistence = {
+                ...loaded.diagnostics,
+                saveState: saved.saveState,
+                saveMs: saved.saveMs,
+                ...(saved.error
+                  ? { error: saved.error }
+                  : loaded.diagnostics.error
+                    ? { error: loaded.diagnostics.error }
+                    : {}),
+              };
+            }
+            const migrationError = queryPointerPublication?.error
+              ?? saved?.error
+              ?? queryArtifactPublication.error;
+            queryArtifacts = {
+              state: queryPointerPublication?.state === 'error' || saved?.saveState === 'error'
+                ? 'error'
+                : queryArtifactPublication.state,
+              saveMs: queryArtifactPublication.saveMs + (saved?.saveMs ?? 0) + (queryPointerPublication?.saveMs ?? 0),
+              ref: queryArtifactPublication.ref,
+              ...(migrationError ? { error: migrationError } : {}),
+            };
+          }
+
           return {
             graph: loaded.record.working,
             accepted: loaded.record.accepted,
@@ -188,10 +244,8 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
             revision,
             touchedAt: Date.now(),
             buildTiming: null,
-            persistence: loaded.diagnostics,
-            queryArtifacts: loaded.record.queryArtifacts
-              ? { state: 'referenced', saveMs: 0, ref: loaded.record.queryArtifacts }
-              : { state: 'none', saveMs: 0, ref: null },
+            persistence,
+            queryArtifacts,
           } satisfies CachedRepositoryGraph;
         }
 
