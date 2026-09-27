@@ -203,3 +203,58 @@ test('bounded semantic output prioritizes top-level functional containers over n
   assert.equal(result.candidates[0]?.support.scopeRole, 'functional-container');
   assert.equal(result.candidates[0]?.support.scopeDepth, 3);
 });
+
+
+test('semantic bootstrap skips Unity package/member wrappers and preserves functional ownership', () => {
+  const fixture = graph();
+  fixture.nodes.push(
+    node('file:gsc-bootstrap', 'file', 'Packages/com.example.game/Members/Owner/Gameplay/Glue/Bootstrap/GameplaySessionBootstrap.cs'),
+    node('symbol:gsc-bootstrap', 'class', 'Packages/com.example.game/Members/Owner/Gameplay/Glue/Bootstrap/GameplaySessionBootstrap.cs:2', 'GameplaySessionBootstrap'),
+    node('file:gsc-session', 'file', 'Packages/com.example.game/Members/Owner/Gameplay/Glue/Session/SessionStateMachine.cs'),
+    node('symbol:gsc-session', 'class', 'Packages/com.example.game/Members/Owner/Gameplay/Glue/Session/SessionStateMachine.cs:2', 'SessionStateMachine'),
+    node('file:gsc-character-a', 'file', 'Packages/com.example.game/Members/Owner/Gameplay/Modules/Character/Runtime/CharacterController.cs'),
+    node('symbol:gsc-character-a', 'class', 'Packages/com.example.game/Members/Owner/Gameplay/Modules/Character/Runtime/CharacterController.cs:2', 'CharacterController'),
+    node('file:gsc-character-b', 'file', 'Packages/com.example.game/Members/Owner/Gameplay/Modules/Character/Runtime/InteractionInputAdapter2D.cs'),
+    node('symbol:gsc-character-b', 'class', 'Packages/com.example.game/Members/Owner/Gameplay/Modules/Character/Runtime/InteractionInputAdapter2D.cs:2', 'InteractionInputAdapter2D'),
+  );
+  fixture.edges.push(
+    edge('gsc-bootstrap-contains', 'file:gsc-bootstrap', 'symbol:gsc-bootstrap', 'contains'),
+    edge('gsc-session-contains', 'file:gsc-session', 'symbol:gsc-session', 'contains'),
+    edge('gsc-bootstrap-session', 'symbol:gsc-bootstrap', 'symbol:gsc-session', 'calls'),
+    edge('gsc-character-a-contains', 'file:gsc-character-a', 'symbol:gsc-character-a', 'contains'),
+    edge('gsc-character-b-contains', 'file:gsc-character-b', 'symbol:gsc-character-b', 'contains'),
+    edge('gsc-character-link', 'symbol:gsc-character-a', 'symbol:gsc-character-b', 'calls'),
+  );
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 20 });
+  assert.ok(result.candidates.some(candidate => candidate.scope === 'Packages/com.example.game/Members/Owner/Gameplay' && candidate.proposal.name === 'Gameplay'));
+  assert.ok(result.candidates.some(candidate => candidate.scope === 'Packages/com.example.game/Members/Owner/Gameplay/Modules/Character' && candidate.proposal.name === 'Character'));
+  assert.equal(result.candidates.some(candidate => candidate.scope === 'Packages/com.example.game'), false);
+});
+
+test('semantic bootstrap skips Java source/package wrappers and exposes package-level concepts', () => {
+  const fixture = graph();
+  fixture.nodes.push(
+    node('file:java-ge-a', 'file', 'src/main/java/medievalsim/grandexchange/domain/GrandExchangeLevelData.java'),
+    node('symbol:java-ge-a', 'class', 'src/main/java/medievalsim/grandexchange/domain/GrandExchangeLevelData.java:2', 'GrandExchangeLevelData'),
+    node('file:java-ge-b', 'file', 'src/main/java/medievalsim/grandexchange/ui/GrandExchangeContainer.java'),
+    node('symbol:java-ge-b', 'class', 'src/main/java/medievalsim/grandexchange/ui/GrandExchangeContainer.java:2', 'GrandExchangeContainer'),
+    node('file:java-zone-a', 'file', 'src/main/java/medievalsim/zones/ui/CreateOrExpandZoneTool.java'),
+    node('symbol:java-zone-a', 'class', 'src/main/java/medievalsim/zones/ui/CreateOrExpandZoneTool.java:2', 'CreateOrExpandZoneTool'),
+    node('file:java-zone-b', 'file', 'src/main/java/medievalsim/zones/ui/ZoneVisualizationHud.java'),
+    node('symbol:java-zone-b', 'class', 'src/main/java/medievalsim/zones/ui/ZoneVisualizationHud.java:2', 'ZoneVisualizationHud'),
+  );
+  fixture.edges.push(
+    edge('java-ge-a-contains', 'file:java-ge-a', 'symbol:java-ge-a', 'contains'),
+    edge('java-ge-b-contains', 'file:java-ge-b', 'symbol:java-ge-b', 'contains'),
+    edge('java-ge-link', 'symbol:java-ge-a', 'symbol:java-ge-b', 'calls'),
+    edge('java-zone-a-contains', 'file:java-zone-a', 'symbol:java-zone-a', 'contains'),
+    edge('java-zone-b-contains', 'file:java-zone-b', 'symbol:java-zone-b', 'contains'),
+    edge('java-zone-link', 'symbol:java-zone-a', 'symbol:java-zone-b', 'calls'),
+  );
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 20 });
+  assert.ok(result.candidates.some(candidate => candidate.scope === 'src/main/java/medievalsim/grandexchange'));
+  assert.ok(result.candidates.some(candidate => candidate.scope === 'src/main/java/medievalsim/zones'));
+  assert.equal(result.candidates.some(candidate => candidate.scope === 'src/main'), false);
+});

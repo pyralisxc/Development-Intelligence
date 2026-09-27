@@ -113,7 +113,29 @@ function scopeForPath(path: string): { scope: string; token: string; scopeRole: 
   const file = parts[parts.length - 1]!;
   const directories = parts.slice(0, -1);
   let start = 0;
-  while (start < directories.length && ROOT_SEGMENTS.has(directories[start]!.toLowerCase())) start += 1;
+
+  // Normalize common repository source-layout wrappers before choosing semantic
+  // ownership. These wrappers describe build/package organization, not product meaning.
+  if (
+    directories[0]?.toLowerCase() === 'src'
+    && ['main', 'test'].includes(directories[1]?.toLowerCase() ?? '')
+    && directories[2]?.toLowerCase() === 'java'
+  ) {
+    start = 3;
+    const firstPackage = directories[start]?.toLowerCase();
+    if (['com', 'org', 'net', 'io', 'dev'].includes(firstPackage ?? '') && directories.length > start + 3) {
+      start += 3;
+    } else if (directories.length > start + 1) {
+      start += 1;
+    }
+  } else if (directories[0]?.toLowerCase() === 'packages' && directories[1]) {
+    start = 2;
+    if (directories[start]?.toLowerCase() === 'members' && directories[start + 1] && directories[start + 2]) {
+      start += 2;
+    }
+  } else {
+    while (start < directories.length && ROOT_SEGMENTS.has(directories[start]!.toLowerCase())) start += 1;
+  }
   while (start < directories.length - 1 && SUPPORT_SEGMENTS.has(directories[start]!.toLowerCase())) start += 1;
 
   const marker = directories.findIndex((part, index) =>
