@@ -33,6 +33,8 @@ export interface SemanticCandidate {
     evidenceIds: string[];
   };
   support: {
+    scopeRole: 'functional-container' | 'direct';
+    scopeDepth: number;
     evidenceFamilyCount: number;
     fileCount: number;
     nodeCount: number;
@@ -65,6 +67,7 @@ export interface SemanticBootstrapProjection {
 interface CandidateGroup {
   scope: string;
   token: string;
+  scopeRole: 'functional-container' | 'direct';
   nodes: GraphNode[];
   files: Set<string>;
   edges: GraphEdge[];
@@ -103,7 +106,7 @@ function title(value: string): string {
     .join(' ');
 }
 
-function scopeForPath(path: string): { scope: string; token: string } | null {
+function scopeForPath(path: string): { scope: string; token: string; scopeRole: 'functional-container' | 'direct' } | null {
   if (TEST_OR_DOC_PATH.test(path)) return null;
   const parts = path.split('/').filter(Boolean);
   if (!parts.length) return null;
@@ -121,13 +124,17 @@ function scopeForPath(path: string): { scope: string; token: string } | null {
   const meaningfulIndex = marker >= 0 ? marker + 1 : start;
 
   if (meaningfulIndex < directories.length) {
-    return { scope: directories.slice(0, meaningfulIndex + 1).join('/'), token: directories[meaningfulIndex]! };
+    return {
+      scope: directories.slice(0, meaningfulIndex + 1).join('/'),
+      token: directories[meaningfulIndex]!,
+      scopeRole: marker >= 0 ? 'functional-container' : 'direct',
+    };
   }
 
   const fileStem = stem(file);
   if (!fileStem || GENERIC_FILE_STEMS.has(fileStem.toLowerCase())) return null;
   const prefix = directories.join('/');
-  return { scope: prefix ? `${prefix}/${file}` : file, token: fileStem };
+  return { scope: prefix ? `${prefix}/${file}` : file, token: fileStem, scopeRole: 'direct' };
 }
 
 function nodeSearchText(node: GraphNode): string {
@@ -188,7 +195,14 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     if (!file) continue;
     const scoped = scopeForPath(file);
     if (!scoped) continue;
-    const current = groups.get(scoped.scope) ?? { scope: scoped.scope, token: scoped.token, nodes: [], files: new Set<string>(), edges: [] };
+    const current = groups.get(scoped.scope) ?? {
+      scope: scoped.scope,
+      token: scoped.token,
+      scopeRole: scoped.scopeRole,
+      nodes: [],
+      files: new Set<string>(),
+      edges: [],
+    };
     current.nodes.push(node);
     current.files.add(file);
     groups.set(scoped.scope, current);
@@ -253,6 +267,8 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
         evidenceIds,
       },
       support: {
+        scopeRole: group.scopeRole,
+        scopeDepth: group.scope.split('/').filter(Boolean).length,
         evidenceFamilyCount: families.length,
         fileCount: group.files.size,
         nodeCount: group.nodes.length,
@@ -280,12 +296,16 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     });
   }
 
-  candidates.sort((a, b) =>
-    b.support.evidenceFamilyCount - a.support.evidenceFamilyCount
-    || b.support.fileCount - a.support.fileCount
-    || a.proposal.name.localeCompare(b.proposal.name)
-    || a.scope.localeCompare(b.scope),
-  );
+  candidates.sort((a, b) => {
+    const aRole = a.support.scopeRole === 'functional-container' ? 0 : 1;
+    const bRole = b.support.scopeRole === 'functional-container' ? 0 : 1;
+    return aRole - bRole
+      || a.support.scopeDepth - b.support.scopeDepth
+      || b.support.evidenceFamilyCount - a.support.evidenceFamilyCount
+      || b.support.fileCount - a.support.fileCount
+      || a.proposal.name.localeCompare(b.proposal.name)
+      || a.scope.localeCompare(b.scope);
+  });
 
   const semanticNodes = graph.nodes.filter(node => (node.layer ?? 'structural') === 'semantic');
   const declaredSemanticCount = semanticNodes.filter(node => node.tags?.includes('declared')).length;

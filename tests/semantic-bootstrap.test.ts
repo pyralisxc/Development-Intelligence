@@ -169,3 +169,37 @@ test('existing accepted semantic declarations are reported separately from deriv
   assert.equal(result.declaredSemanticCount, 1);
   assert.ok(result.candidates.every(candidate => candidate.authority.state === 'proposed' && candidate.authority.accepted === false));
 });
+
+
+test('bounded semantic output prioritizes top-level functional containers over noisy direct scopes', () => {
+  const fixture = graph();
+  for (let index = 0; index < 12; index += 1) {
+    fixture.nodes.push(
+      node(`file:noise-${index}`, 'file', `src/runtime/noise-${index}.ts`),
+      node(`symbol:noise-${index}`, 'function', `src/runtime/noise-${index}.ts:2`, `noise${index}`),
+      node(`state:noise-${index}`, 'state-binding', `src/runtime/noise-${index}.ts:3`, `noiseState${index}`, 'representation'),
+    );
+    fixture.edges.push(
+      edge(`noise-contains-${index}`, `file:noise-${index}`, `symbol:noise-${index}`, 'contains'),
+      edge(`noise-state-${index}`, `symbol:noise-${index}`, `state:noise-${index}`, 'state-write'),
+    );
+  }
+  fixture.nodes.push(
+    node('file:editor-page', 'file', 'src/features/editor/EditorPage.tsx'),
+    node('symbol:editor-page', 'function', 'src/features/editor/EditorPage.tsx:2', 'EditorPage'),
+    node('ui:editor', 'ui-element', 'src/features/editor/EditorPage.tsx:4', 'Editor', 'representation'),
+    node('file:editor-state', 'file', 'src/features/editor/editorState.ts'),
+    node('state:editor', 'state-binding', 'src/features/editor/editorState.ts:3', 'editorState', 'representation'),
+  );
+  fixture.edges.push(
+    edge('editor-contains-page', 'file:editor-page', 'symbol:editor-page', 'contains'),
+    edge('editor-contains-ui', 'symbol:editor-page', 'ui:editor', 'contains'),
+    edge('editor-state-write', 'symbol:editor-page', 'state:editor', 'state-write'),
+  );
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 1 });
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0]?.scope, 'src/features/editor');
+  assert.equal(result.candidates[0]?.support.scopeRole, 'functional-container');
+  assert.equal(result.candidates[0]?.support.scopeDepth, 3);
+});
