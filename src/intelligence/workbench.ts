@@ -598,11 +598,28 @@ const INTERFACE_TRANSITION_KINDS = new Set(['navigation-call', 'route-reference'
 const INTERFACE_EFFECT_KINDS = new Set(['http-call', 'rpc-call', 'sql-reference', 'mcp-tool']);
 const INTERFACE_REPRESENTATION_KINDS = new Set(['css-selector', 'css-at-rule', 'css-custom-property']);
 
+interface InterfaceProjectionItem {
+  id: string;
+  name: string;
+  kind: string;
+  layer: string;
+  locator: string;
+  sourceFile: string | null;
+  resolvedRelationshipCount: number;
+  links: Array<{
+    edgeId: string;
+    kind: string;
+    direction: 'outbound' | 'inbound';
+    neighbor: { id: string; name: string; kind: string; locator: string | null } | null;
+  }>;
+  projectionRole?: 'surface' | 'surface-owner';
+}
+
 function interfaceProjectionItem(
   node: GraphNode,
   byId: Map<string, GraphNode>,
   incident: GraphEdge[],
-): Record<string, unknown> {
+): InterfaceProjectionItem {
   const resolved = incident.filter(edge => edge.status === 'resolved');
   const links = resolved.slice(0, 8).map(edge => {
     const outbound = edge.from === node.id;
