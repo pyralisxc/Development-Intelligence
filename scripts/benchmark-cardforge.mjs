@@ -245,6 +245,25 @@ const studioRoutedQuestion = await callTool('investigate', {
 });
 if (studioRoutedQuestion.intent !== 'interface' || studioRoutedQuestion.routing?.tool !== 'inspect_interface') throw new Error('CardForge Studio natural-language interaction question did not route to inspect_interface');
 
+const templateEditorScope = 'src/features/template-editor';
+const templateEditorProjectionStarted = process.hrtime.bigint();
+const templateEditorProjection = await callTool('inspect_interface', { project, graphId: scan.graphId, scope: templateEditorScope, limit: 100 });
+const templateEditorProjectionElapsedMs = Number(process.hrtime.bigint() - templateEditorProjectionStarted) / 1_000_000;
+const mechanismGroups = new Map((templateEditorProjection.interactionMechanisms?.families ?? []).map(group => [group.family, group]));
+const pointerGroup = mechanismGroups.get('pointer');
+const dropGroup = mechanismGroups.get('drop');
+const clickGroup = mechanismGroups.get('click');
+if (!pointerGroup || Number(pointerGroup.count ?? 0) < 2) throw new Error('CardForge template editor projection expected multiple source-observed pointer mechanisms');
+if (!dropGroup || Number(dropGroup.count ?? 0) < 1) throw new Error('CardForge template editor projection expected a source-observed drop mechanism');
+if (!clickGroup || Number(clickGroup.count ?? 0) < 1) throw new Error('CardForge template editor projection expected source-observed click mechanisms');
+const pointerMoveMechanism = (pointerGroup.items ?? []).find(item => item.component === 'TemplateCanvasStage' && item.prop === 'onPointerMove' && item.declaredHandler === 'handlePointerMove');
+const dropMechanism = (dropGroup.items ?? []).find(item => item.component === 'TemplateCanvasStage' && item.prop === 'onDrop' && item.declaredHandler === 'handleDrop');
+if (!pointerMoveMechanism) throw new Error('CardForge template editor projection lost TemplateCanvasStage.onPointerMove handler evidence');
+if (!dropMechanism) throw new Error('CardForge template editor projection lost TemplateCanvasStage.onDrop handler evidence');
+if (templateEditorProjection.interactionMechanisms?.policy?.runtimeOccurrenceProven !== false) throw new Error('CardForge template editor projection incorrectly promoted source event bindings into runtime occurrence');
+if (templateEditorProjection.interactionMechanisms?.policy?.stateEffectsInferred !== false) throw new Error('CardForge template editor projection inferred state effects without resolved evidence');
+if (templateEditorProjectionElapsedMs > 2000) throw new Error(`CardForge template editor mechanism projection exceeded 2000 ms budget: ${templateEditorProjectionElapsedMs.toFixed(2)} ms`);
+
 const studioBaselineCalls = 5;
 const studioProjectionCalls = 1;
 const studioCallReduction = studioBaselineCalls - studioProjectionCalls;
@@ -450,6 +469,16 @@ const report = {
       intent: studioRoutedQuestion.intent,
       tool: studioRoutedQuestion.routing?.tool ?? null,
     },
+    interactionMechanisms: {
+      scope: templateEditorScope,
+      elapsedMs: Number(templateEditorProjectionElapsedMs.toFixed(3)),
+      total: templateEditorProjection.interactionMechanisms.total,
+      families: templateEditorProjection.interactionMechanisms.families.map(group => ({ family: group.family, count: group.count })),
+      pointerMove: pointerMoveMechanism,
+      drop: dropMechanism,
+      runtimeOccurrenceProven: templateEditorProjection.interactionMechanisms.policy.runtimeOccurrenceProven,
+      stateEffectsInferred: templateEditorProjection.interactionMechanisms.policy.stateEffectsInferred,
+    },
     callReduction: studioCallReduction,
     callReductionPct: Number(studioCallReductionPct.toFixed(4)),
   },
@@ -496,6 +525,7 @@ const summary = [
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
   `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
+  `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,
   `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Canonical current-graph hot path: **cold ${canonicalColdWallMs.toFixed(3)} ms → p50 ${canonicalHotP50Ms.toFixed(3)} ms / p95 ${canonicalHotP95Ms.toFixed(3)} ms across 12 process-cache-evicted reads (${canonicalSpeedupVsP50.toFixed(2)}× vs p50)**`,
