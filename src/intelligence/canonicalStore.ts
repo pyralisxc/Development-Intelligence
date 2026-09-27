@@ -383,30 +383,17 @@ export async function writeCanonicalDerivedObjectConditional(
   if (selected.kind === 'file') {
     const target = canonicalDerivedObjectFilePath(project, relativePath)!;
     await fs.mkdir(path.dirname(target), { recursive: true });
-    const lockPath = `${target}.cas.lock`;
-    let lock = null;
-    try {
-      lock = await fs.open(lockPath, 'wx', 0o600);
-    } catch (error: any) {
-      if (error?.code === 'EEXIST') return { state: 'conflict', etag: null };
+    const current = await fs.readFile(target).catch((error: any) => {
+      if (error?.code === 'ENOENT') return null;
       throw error;
-    }
-    try {
-      const current = await fs.readFile(target).catch((error: any) => {
-        if (error?.code === 'ENOENT') return null;
-        throw error;
-      });
-      const currentEtag = current ? localDerivedEtag(new Uint8Array(current)) : null;
-      if (currentEtag !== expectedEtag) return { state: 'conflict', etag: currentEtag };
-      const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
-      await fs.writeFile(temporary, body, { mode: 0o600 });
-      await fs.rename(temporary, target);
-      const nextBody = typeof body === 'string' ? new Uint8Array(Buffer.from(body, 'utf8')) : body;
-      return { state: 'stored', etag: localDerivedEtag(nextBody) };
-    } finally {
-      await lock.close();
-      await fs.unlink(lockPath).catch(() => undefined);
-    }
+    });
+    const currentEtag = current ? localDerivedEtag(new Uint8Array(current)) : null;
+    if (currentEtag !== expectedEtag) return { state: 'conflict', etag: currentEtag };
+    const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
+    await fs.writeFile(temporary, body, { mode: 0o600 });
+    await fs.rename(temporary, target);
+    const nextBody = typeof body === 'string' ? new Uint8Array(Buffer.from(body, 'utf8')) : body;
+    return { state: 'stored', etag: localDerivedEtag(nextBody) };
   }
 
   const requestUrl = new URL(selected.apiUrl);
