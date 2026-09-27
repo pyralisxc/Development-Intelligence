@@ -1020,6 +1020,7 @@ export async function queryWorkbench(input: {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
   const lower = text.toLowerCase();
+  const interfaceIntent = /\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/.test(lower);
 
   if (input.sourceId) {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
@@ -1029,7 +1030,7 @@ export async function queryWorkbench(input: {
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
 
-  if (/\b(what changed|changes?|diff|delta)\b/.test(lower)) {
+  if (/\b(what changed|changes?|diff|delta)\b/.test(lower) && !interfaceIntent) {
     const result = await diffAcceptedToWorking(input.project, input.ref);
     const counts = semanticDiffCounts(result);
     return { intent: 'change', subject: null, routing: { tool: 'diff_graph' }, answer: `Accepted → working semantic change: ${counts.added} added, ${counts.removed} removed, ${counts.changed} changed records.`, result };
@@ -1092,7 +1093,7 @@ export async function queryWorkbench(input: {
     }
   }
 
-  if (/\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/.test(lower)) {
+  if (interfaceIntent) {
     let requestedScope = input.scope?.trim() || '';
     if (!requestedScope) {
       const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
