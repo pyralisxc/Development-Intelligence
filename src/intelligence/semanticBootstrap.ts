@@ -147,10 +147,19 @@ function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph): { fami
   if (group.nodes.some(node => /(?:sql-|database|storage|persistence)/u.test(node.kind)) || /\b(?:database|storage|persist|supabase|postgres|redis|sql)\b/u.test(text)) families.add('persistence');
 
   const motifKinds = new Set<DerivedMotifKind>();
+  // Motif projection is comparatively expensive because it performs graph-neighborhood
+  // lookups. Only invoke it when the entity identity can satisfy one of the current
+  // deterministic motif predicates; do not run motif detection speculatively across
+  // every node in every semantic candidate group.
+  const motifIdentityHint = /(?:bootstrap|composition root|lifetime scope|service registration|service installer|startup|state machine|adapter|bridge|relay|translator|mapper|pipeline|workflow|processing chain|repository|store|persistence|storage|database|\bdao\b)/iu;
   const motifSubjects = group.nodes
-    .filter(node => (node.layer ?? 'structural') === 'structural' && ['file', 'class', 'function', 'declaration'].includes(node.kind))
+    .filter(node =>
+      (node.layer ?? 'structural') === 'structural'
+      && ['file', 'class', 'function', 'declaration'].includes(node.kind)
+      && motifIdentityHint.test([node.name ?? '', node.locator].join(' '))
+    )
     .sort((a, b) => a.id.localeCompare(b.id))
-    .slice(0, 16);
+    .slice(0, 6);
   for (const node of motifSubjects) {
     for (const motif of deriveMotifs(graph, node)) motifKinds.add(motif.kind);
   }
