@@ -3,7 +3,7 @@ import { getProjectConfig } from '../config/registry.js';
 import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus , EvidenceRecord} from '../types.js';
 import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
-import { currentGraph, graphContext, loadCurrentQueryArtifacts, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
+import { currentGraph, graphContext, loadCurrentQueryArtifactBuckets, loadCurrentQueryArtifacts, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 
@@ -604,7 +604,7 @@ export async function searchGraph(input: SearchGraphInput): Promise<Record<strin
   return { ...common, adaptiveShadow: shadow, ...searchGraphResult(graph, input, input.query) };
 }
 
-export async function traceGraph(input: {
+interface TraceGraphInput {
   project: string;
   ref?: string | undefined;
   graphId?: string | undefined;
@@ -615,10 +615,14 @@ export async function traceGraph(input: {
   statuses?: RelationshipStatus[] | undefined;
   layers?: GraphNodeLayer[] | undefined;
   limit?: number | undefined;
-}): Promise<Record<string, unknown>> {
-  const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const query = input.node?.trim();
-  if (!query) throw new Error('node must be a non-empty graph node id/name/query');
+}
+
+function fullTraceGraphResult(
+  graph: IntelligenceGraph,
+  input: TraceGraphInput,
+  query: string,
+  queryPlane?: Record<string, unknown>,
+): Record<string, unknown> {
   const candidates = findGraphNodeCandidates(graph, query, 20);
   if (!candidates.length) throw new Error(`Graph node not found: ${input.node}`);
   if (candidates.length > 1 && !candidates.some(node => node.id === query)) {
@@ -632,6 +636,7 @@ export async function traceGraph(input: {
       instruction: 'Retry trace_path with an exact node id.',
       nodes: [],
       edges: [],
+      ...(queryPlane ? { queryPlane } : {}),
     };
   }
   const start = candidates.find(node => node.id === query) ?? candidates[0]!;
@@ -672,7 +677,220 @@ export async function traceGraph(input: {
     start,
     nodes: [...visited].map(id => context.node(id)).filter(Boolean),
     edges: selectedEdges,
+    ...(queryPlane ? { queryPlane } : {}),
   };
+}
+
+function traceBoundaryBucket(
+  shards: Record<string, { boundaryBuckets: Record<string, { from: string | null; to: string | null }> }>,
+  edge: GraphEdge,
+  neighbor: string,
+): string | null | undefined {
+  for (const shard of Object.values(shards)) {
+    const boundary = shard.boundaryBuckets[edge.id];
+    if (!boundary) continue;
+    if (edge.from === neighbor) return boundary.from;
+    if (edge.to === neighbor) return boundary.to;
+  }
+  return undefined;
+}
+
+async function adaptiveCurrentTrace(
+  input: TraceGraphInput,
+  query: string,
+): Promise<{ result: Record<string, unknown> | null; reason: string; loadMs: number; selectedBuckets: number }> {
+  if (input.ref || input.graphId) {
+    return { result: null, reason: 'explicit-graph-context-requires-full-canonical', loadMs: 0, selectedBuckets: 0 };
+  }
+
+  const loaded = await loadCurrentQueryArtifacts(input.project, [query]);
+  if (loaded.state !== 'hit' || !loaded.index || !loaded.pointer) {
+    return {
+      result: null,
+      reason: loaded.reason ?? `query-artifacts-${loaded.state}`,
+      loadMs: loaded.loadMs,
+      selectedBuckets: loaded.bucketIds.length,
+    };
+  }
+  if (!queryArtifactEnvelopeComplete(loaded.index)) {
+    return {
+      result: null,
+      reason: 'query-index-missing-trace-envelope-metadata',
+      loadMs: loaded.loadMs,
+      selectedBuckets: loaded.bucketIds.length,
+    };
+  }
+
+  const maxBuckets = 32;
+  const bucketIds = new Set(loaded.bucketIds);
+  if (bucketIds.size > maxBuckets) {
+    return {
+      result: null,
+      reason: 'candidate-bucket-count-exceeds-adaptive-trace-bound',
+      loadMs: loaded.loadMs,
+      selectedBuckets: bucketIds.size,
+    };
+  }
+
+  const shards = { ...loaded.shards };
+  let partial = queryArtifactSearchGraph(loaded.index as any, shards);
+  const candidates = findGraphNodeCandidates(partial, query, 20);
+  if (!candidates.length) {
+    return { result: null, reason: 'adaptive-trace-seed-not-materialized', loadMs: loaded.loadMs, selectedBuckets: bucketIds.size };
+  }
+
+  let totalLoadMs = loaded.loadMs;
+  const queryPlane = () => ({
+    mode: 'adaptive',
+    authoritative: true,
+    selectedBuckets: bucketIds.size,
+    bucketIds: [...bucketIds].sort(),
+    loadMs: totalLoadMs,
+    reason: 'global-index-and-boundary-metadata-proved-bounded-trace-envelope',
+  });
+  if (candidates.length > 1 && !candidates.some(node => node.id === query)) {
+    return {
+      result: {
+        project: input.project,
+        graphId: loaded.index.graphId,
+        revision: loaded.index.revision,
+        ambiguous: true,
+        query,
+        candidates: candidates.map(node => ({ id: node.id, kind: node.kind, layer: node.layer ?? 'structural', name: node.name ?? null, locator: node.locator })),
+        instruction: 'Retry trace_path with an exact node id.',
+        nodes: [],
+        edges: [],
+        queryPlane: queryPlane(),
+      },
+      reason: 'adaptive',
+      loadMs: totalLoadMs,
+      selectedBuckets: bucketIds.size,
+    };
+  }
+
+  const start = candidates.find(node => node.id === query) ?? candidates[0]!;
+  const allowedKinds = new Set(input.relationshipKinds ?? []);
+  const allowedStatuses = new Set(input.statuses ?? ['resolved']);
+  const allowedLayers = new Set(input.layers ?? []);
+  const maxDepth = Math.min(Math.max(input.depth ?? 3, 0), 10);
+  const limit = Math.min(Math.max(input.limit ?? 250, 1), 2000);
+  const direction = input.direction ?? 'both';
+  const visited = new Set<string>([start.id]);
+  const selectedEdges: GraphEdge[] = [];
+  const selectedEdgeIds = new Set<string>();
+  let frontier = [start.id];
+
+  for (let depth = 0; depth < maxDepth && frontier.length && visited.size < limit; depth += 1) {
+    partial = queryArtifactSearchGraph(loaded.index as any, shards);
+    let context = graphQueryContext(partial);
+    const next = new Set<string>();
+    const pending = new Map<string, string>();
+    const neededBuckets = new Set<string>();
+
+    for (const current of frontier) {
+      if (!context.node(current)) {
+        return { result: null, reason: 'adaptive-trace-frontier-node-missing', loadMs: totalLoadMs, selectedBuckets: bucketIds.size };
+      }
+      for (const edge of context.incident(current)) {
+        if (!allowedStatuses.has(edge.status) || !edge.from || !edge.to) continue;
+        if (allowedKinds.size && !allowedKinds.has(edge.kind)) continue;
+        if (!layersMatch(edge.layer, allowedLayers)) continue;
+        let neighbor: string | null = null;
+        if ((direction === 'outbound' || direction === 'both') && edge.from === current) neighbor = edge.to;
+        else if ((direction === 'inbound' || direction === 'both') && edge.to === current) neighbor = edge.from;
+        if (!neighbor) continue;
+        if (!selectedEdgeIds.has(edge.id)) { selectedEdgeIds.add(edge.id); selectedEdges.push(edge); }
+        if (visited.has(neighbor) || next.has(neighbor) || pending.has(neighbor)) continue;
+        if (visited.size + next.size + pending.size >= limit) continue;
+        if (context.node(neighbor)) {
+          next.add(neighbor);
+          continue;
+        }
+        const bucket = traceBoundaryBucket(shards, edge, neighbor);
+        if (!bucket) {
+          return { result: null, reason: 'adaptive-trace-boundary-metadata-incomplete', loadMs: totalLoadMs, selectedBuckets: bucketIds.size };
+        }
+        if (bucketIds.has(bucket)) {
+          return { result: null, reason: 'adaptive-trace-neighbor-missing-from-loaded-bucket', loadMs: totalLoadMs, selectedBuckets: bucketIds.size };
+        }
+        pending.set(neighbor, bucket);
+        neededBuckets.add(bucket);
+      }
+    }
+
+    if (neededBuckets.size) {
+      if (bucketIds.size + neededBuckets.size > maxBuckets) {
+        return {
+          result: null,
+          reason: 'adaptive-trace-expansion-exceeds-bucket-bound',
+          loadMs: totalLoadMs,
+          selectedBuckets: bucketIds.size + neededBuckets.size,
+        };
+      }
+      const expansion = await loadCurrentQueryArtifactBuckets(loaded, [...neededBuckets]);
+      totalLoadMs += expansion.loadMs;
+      if (expansion.state !== 'hit' || !expansion.index) {
+        return {
+          result: null,
+          reason: expansion.reason ?? `adaptive-trace-expansion-${expansion.state}`,
+          loadMs: totalLoadMs,
+          selectedBuckets: bucketIds.size,
+        };
+      }
+      if (expansion.index.graphId !== loaded.index.graphId || expansion.index.revision !== loaded.index.revision) {
+        return { result: null, reason: 'adaptive-trace-generation-changed-during-expansion', loadMs: totalLoadMs, selectedBuckets: bucketIds.size };
+      }
+      Object.assign(shards, expansion.shards);
+      for (const bucket of expansion.bucketIds) bucketIds.add(bucket);
+      partial = queryArtifactSearchGraph(loaded.index as any, shards);
+      context = graphQueryContext(partial);
+      for (const [neighbor] of pending) {
+        if (!context.node(neighbor)) {
+          return { result: null, reason: 'adaptive-trace-expanded-neighbor-missing', loadMs: totalLoadMs, selectedBuckets: bucketIds.size };
+        }
+        if (!visited.has(neighbor) && visited.size + next.size < limit) next.add(neighbor);
+      }
+    }
+
+    for (const id of next) visited.add(id);
+    frontier = [...next];
+  }
+
+  partial = queryArtifactSearchGraph(loaded.index as any, shards);
+  const context = graphQueryContext(partial);
+  return {
+    result: {
+      project: input.project,
+      graphId: loaded.index.graphId,
+      revision: loaded.index.revision,
+      coverage: queryArtifactCoverage(loaded.index),
+      ambiguous: false,
+      start,
+      nodes: [...visited].map(id => context.node(id)).filter(Boolean),
+      edges: selectedEdges,
+      queryPlane: queryPlane(),
+    },
+    reason: 'adaptive',
+    loadMs: totalLoadMs,
+    selectedBuckets: bucketIds.size,
+  };
+}
+
+export async function traceGraph(input: TraceGraphInput): Promise<Record<string, unknown>> {
+  const query = input.node?.trim();
+  if (!query) throw new Error('node must be a non-empty graph node id/name/query');
+
+  const adaptive = await adaptiveCurrentTrace(input, query);
+  if (adaptive.result) return adaptive.result;
+
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  return fullTraceGraphResult(graph, input, query, {
+    mode: 'full',
+    authoritative: true,
+    selectedBuckets: adaptive.selectedBuckets,
+    loadMs: adaptive.loadMs,
+    reason: adaptive.reason,
+  });
 }
 
 function emptyCountMap(): Record<string, number> {
