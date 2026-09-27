@@ -262,7 +262,24 @@ if (!pointerMoveMechanism) throw new Error('CardForge template editor projection
 if (!dropMechanism) throw new Error('CardForge template editor projection lost TemplateCanvasStage.onDrop handler evidence');
 if (templateEditorProjection.interactionMechanisms?.policy?.runtimeOccurrenceProven !== false) throw new Error('CardForge template editor projection incorrectly promoted source event bindings into runtime occurrence');
 if (templateEditorProjection.interactionMechanisms?.policy?.stateEffectsInferred !== false) throw new Error('CardForge template editor projection inferred state effects without resolved evidence');
+if (dropMechanism.resolvedHandler !== null || (dropMechanism.directConsequences ?? []).length !== 0) throw new Error('CardForge TemplateCanvasStage.onDrop should remain consequence-unknown without a resolved handler');
 if (templateEditorProjectionElapsedMs > 2000) throw new Error(`CardForge template editor mechanism projection exceeded 2000 ms budget: ${templateEditorProjectionElapsedMs.toFixed(2)} ms`);
+
+const bulkGeneratorScope = 'src/features/card-generator/components/BulkGenerator.tsx';
+const bulkGeneratorProjectionStarted = process.hrtime.bigint();
+const bulkGeneratorProjection = await callTool('inspect_interface', { project, graphId: scan.graphId, scope: bulkGeneratorScope, limit: 100 });
+const bulkGeneratorProjectionElapsedMs = Number(process.hrtime.bigint() - bulkGeneratorProjectionStarted) / 1_000_000;
+const inputMechanisms = (bulkGeneratorProjection.interactionMechanisms?.families ?? []).find(group => group.family === 'input');
+const dataInputMechanism = (inputMechanisms?.items ?? []).find(item => item.component === 'BulkCsvInputPanel' && item.prop === 'onDataInputChange' && item.declaredHandler === 'handleDataInputChange');
+if (!dataInputMechanism) throw new Error('CardForge BulkGenerator projection lost BulkCsvInputPanel.onDataInputChange mechanism');
+if (dataInputMechanism.resolvedHandler?.name !== 'handleDataInputChange') throw new Error('CardForge BulkGenerator input mechanism did not resolve handleDataInputChange exactly');
+const dataInputStateWrites = new Set((dataInputMechanism.directConsequences ?? []).filter(item => item.kind === 'state-write').map(item => item.name));
+for (const expectedState of ['bulkDataInput', 'lastGeneratedCards', 'pendingRevision']) {
+  if (!dataInputStateWrites.has(expectedState)) throw new Error(`CardForge direct consequence projection lost state write ${expectedState}`);
+}
+if ((dataInputMechanism.directConsequences ?? []).some(item => item.proof !== 'resolved-handler-direct-edge')) throw new Error('CardForge direct consequences must be backed by resolved handler edges');
+if (bulkGeneratorProjection.interactionMechanisms?.policy?.directConsequencesRequireResolvedHandler !== true) throw new Error('CardForge direct consequence policy must require a resolved handler');
+if (bulkGeneratorProjectionElapsedMs > 2000) throw new Error(`CardForge BulkGenerator consequence projection exceeded 2000 ms budget: ${bulkGeneratorProjectionElapsedMs.toFixed(2)} ms`);
 
 const studioBaselineCalls = 5;
 const studioProjectionCalls = 1;
@@ -478,6 +495,21 @@ const report = {
       drop: dropMechanism,
       runtimeOccurrenceProven: templateEditorProjection.interactionMechanisms.policy.runtimeOccurrenceProven,
       stateEffectsInferred: templateEditorProjection.interactionMechanisms.policy.stateEffectsInferred,
+      unresolvedDropConsequenceCount: (dropMechanism.directConsequences ?? []).length,
+    },
+    directConsequences: {
+      scope: bulkGeneratorScope,
+      elapsedMs: Number(bulkGeneratorProjectionElapsedMs.toFixed(3)),
+      resolvedHandlerCount: bulkGeneratorProjection.interactionMechanisms.resolvedHandlerCount,
+      directConsequenceMechanismCount: bulkGeneratorProjection.interactionMechanisms.directConsequenceMechanismCount,
+      directConsequenceCount: bulkGeneratorProjection.interactionMechanisms.directConsequenceCount,
+      dataInput: {
+        component: dataInputMechanism.component,
+        prop: dataInputMechanism.prop,
+        declaredHandler: dataInputMechanism.declaredHandler,
+        resolvedHandler: dataInputMechanism.resolvedHandler,
+        consequences: dataInputMechanism.directConsequences,
+      },
     },
     callReduction: studioCallReduction,
     callReductionPct: Number(studioCallReductionPct.toFixed(4)),
@@ -526,6 +558,7 @@ const summary = [
   `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,
+  `- Proven direct consequences: **${bulkGeneratorProjection.interactionMechanisms.directConsequenceCount} direct nodes across ${bulkGeneratorProjection.interactionMechanisms.directConsequenceMechanismCount} mechanisms / ${bulkGeneratorProjectionElapsedMs.toFixed(3)} ms**`,
   `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Canonical current-graph hot path: **cold ${canonicalColdWallMs.toFixed(3)} ms → p50 ${canonicalHotP50Ms.toFixed(3)} ms / p95 ${canonicalHotP95Ms.toFixed(3)} ms across 12 process-cache-evicted reads (${canonicalSpeedupVsP50.toFixed(2)}× vs p50)**`,
