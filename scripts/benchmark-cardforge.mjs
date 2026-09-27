@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { scoreAccuracyCase } from './accuracy-benchmark-lib.mjs';
 
 const cardForgeRoot = path.resolve(process.argv[2] ?? 'benchmark/cardforge');
 const expectedSha = process.env.CARDFORGE_BENCHMARK_SHA ?? '6d6788cf87dd37d7685d26fa10a15e06fa1208ba';
@@ -119,6 +120,58 @@ if (!semanticBootstrap.candidates.some(candidate => candidate.support.evidenceFa
   throw new Error('CardForge semantic bootstrap expected at least one candidate with 3 independent evidence families');
 }
 if (semanticBootstrapElapsedMs > 1000) throw new Error(`CardForge semantic bootstrap exceeded 1000 ms budget: ${semanticBootstrapElapsedMs.toFixed(2)} ms`);
+const semanticAccuracyUniverse = [
+  'src/features/account',
+  'src/features/card-generator',
+  'src/features/creator-workbench',
+  'src/features/storage-management',
+  'src/features/template-editor',
+  'src/shared',
+  'src/utils',
+];
+const semanticAccuracyCase = {
+  version: 1,
+  id: 'cardforge-semantic-bootstrap-reviewed-universe',
+  capability: 'semantic-bootstrap',
+  language: 'typescript',
+  project: 'CardForge',
+  ref: `commit:${actualSha}`,
+  question: 'Which major CardForge feature concepts can be derived from intrinsic evidence?',
+  groundTruth: {
+    semanticCandidates: {
+      universeScopes: semanticAccuracyUniverse,
+      required: [
+        { scope: 'src/features/account', name: 'Account', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+        { scope: 'src/features/card-generator', name: 'Card Generator', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+        { scope: 'src/features/creator-workbench', name: 'Creator Workbench', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+        { scope: 'src/features/storage-management', name: 'Storage Management', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+        { scope: 'src/features/template-editor', name: 'Template Editor', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+      ],
+      forbidden: [
+        { scope: 'src/shared' },
+        { scope: 'src/utils' },
+      ],
+      complete: true,
+    },
+  },
+  provenance: [
+    { kind: 'source', locator: 'src/features/account' },
+    { kind: 'source', locator: 'src/features/card-generator' },
+    { kind: 'source', locator: 'src/features/creator-workbench' },
+    { kind: 'source', locator: 'src/features/storage-management' },
+    { kind: 'source', locator: 'src/features/template-editor' },
+  ],
+};
+const semanticAccuracy = scoreAccuracyCase(semanticAccuracyCase, {
+  caseId: semanticAccuracyCase.id,
+  semanticCandidates: semanticBootstrap.candidates,
+});
+if (!semanticAccuracy.pass) {
+  throw new Error(`CardForge semantic accuracy failed: ${JSON.stringify(semanticAccuracy.semanticCandidateScore)}`);
+}
+if (semanticAccuracy.semanticCandidateScore?.precision !== 1 || semanticAccuracy.semanticCandidateScore?.recall !== 1) {
+  throw new Error(`CardForge semantic accuracy must remain 1.0 precision/recall within reviewed universe: ${JSON.stringify(semanticAccuracy.semanticCandidateScore)}`);
+}
 const queryArtifacts = buildCanonicalQueryArtifacts(graph);
 const queryArtifactBytes = serializedQueryArtifactBytes(queryArtifacts);
 const fullGraphBytes = Buffer.byteLength(JSON.stringify(graph), 'utf8');
@@ -477,6 +530,19 @@ const report = {
     workflowQueries: workflowSearch.results.map(result => ({ query: result.query, nodeTotal: result.nodeTotal, edgeTotal: result.edgeTotal })),
   },
   sourceSearch: { total: sourceSearch.total ?? 0, sample: Array.isArray(sourceSearch.matches) ? sourceSearch.matches.slice(0, 5) : [] },
+  semanticAccuracy: {
+    caseId: semanticAccuracy.caseId,
+    reviewedUniverseScopes: semanticAccuracyUniverse,
+    recall: semanticAccuracy.semanticCandidateScore.recall,
+    precision: semanticAccuracy.semanticCandidateScore.precision,
+    falsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
+    requiredFound: semanticAccuracy.semanticCandidateScore.requiredFound,
+    required: semanticAccuracy.semanticCandidateScore.required,
+    observed: semanticAccuracy.semanticCandidateScore.observed,
+    missingRequired: semanticAccuracy.semanticCandidateScore.missingRequired,
+    forbiddenPresent: semanticAccuracy.semanticCandidateScore.forbiddenPresent,
+    falseObserved: semanticAccuracy.semanticCandidateScore.falseObserved,
+  },
   semanticBootstrap: {
     stage: 'T1-derived-candidates',
     zeroMetadata: semanticBootstrap.zeroMetadata,
@@ -588,6 +654,7 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
+  `- Semantic candidate accuracy (7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,

@@ -11,32 +11,68 @@
       "question": "Which implementation realizes /api/health?",
       "groundTruth": {
         "entities": {
-          "required": [
-            "api:/api/health"
-          ],
+          "required": ["api:/api/health"],
           "forbidden": [],
           "complete": false
         },
         "relationships": {
           "required": [
-            {
-              "from": "api:/api/health",
-              "kind": "implemented-by",
-              "to": "symbol:handler"
-            }
+            { "from": "api:/api/health", "kind": "implemented-by", "to": "symbol:handler" }
           ],
           "forbidden": [],
           "complete": false
         },
-        "answerStatuses": [
-          "supported"
-        ]
+        "answerStatuses": ["supported"]
       },
       "provenance": [
-        {
-          "kind": "source",
-          "locator": "src/app/api/health/route.ts"
+        { "kind": "source", "locator": "src/app/api/health/route.ts" }
+      ]
+    },
+    {
+      "version": 1,
+      "id": "example-semantic-bootstrap-reviewed-universe",
+      "capability": "semantic-bootstrap",
+      "language": "typescript",
+      "project": "pyralisxc/Example",
+      "ref": "commit:1111111111111111111111111111111111111111",
+      "question": "Which functional concepts can be derived from intrinsic evidence?",
+      "groundTruth": {
+        "semanticCandidates": {
+          "universeScopes": [
+            "src/features/authentication",
+            "src/features/editor",
+            "src/shared"
+          ],
+          "required": [
+            {
+              "scope": "src/features/authentication",
+              "name": "Authentication",
+              "origin": "intrinsic-derivation",
+              "accepted": false,
+              "persisted": false,
+              "proofEligible": false,
+              "requiresExplicitReview": true,
+              "minEvidenceFamilies": 2
+            },
+            {
+              "scope": "src/features/editor",
+              "name": "Editor",
+              "origin": "intrinsic-derivation",
+              "accepted": false,
+              "persisted": false,
+              "proofEligible": false,
+              "requiresExplicitReview": true
+            }
+          ],
+          "forbidden": [
+            { "scope": "src/shared" }
+          ],
+          "complete": true
         }
+      },
+      "provenance": [
+        { "kind": "source", "locator": "src/features/authentication" },
+        { "kind": "source", "locator": "src/features/editor" }
       ]
     }
   ]
