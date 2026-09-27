@@ -600,6 +600,39 @@ test('scope orientation surfaces explainable local graph structure without an op
   }
 });
 
+test('semantic audit exposes factuality and core facets without changing semantic authority', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+
+    const direct = await callTool('audit_semantics', {
+      project: fixture.project,
+      candidateLimit: 200,
+      limit: 30,
+    }) as any;
+    assert.equal(direct.policy.derivedAssessmentOnly, true);
+    assert.equal(direct.policy.authorityUnaffected, true);
+    assert.equal(direct.policy.verificationUnaffected, true);
+    assert.equal(direct.policy.subjectiveGlobalScore, false);
+    assert.equal(direct.policy.productIntentInferred, false);
+    assert.equal(direct.candidateUniverse.eligible >= direct.candidateUniverse.returned, true);
+    assert.ok(Array.isArray(direct.items));
+    assert.ok(direct.items.every((item: any) => item.authority.accepted === false && item.authority.persisted === false));
+    assert.ok(direct.items.every((item: any) => ['core-candidate', 'supporting-candidate'].includes(item.coreness.classification)));
+
+    const natural = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which semantic meanings look core and are they factual?',
+    }) as any;
+    assert.equal(natural.intent, 'semantic-audit');
+    assert.equal(natural.routing.tool, 'audit_semantics');
+    assert.equal(natural.result.policy.authorityUnaffected, true);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('headless rich projections stay compact by default and preserve explicit detail escape hatches', async () => {
   const fixture = await makeFixture();
   try {
@@ -676,6 +709,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'investigate',
     'orient_scope',
     'inspect_interface',
+    'audit_semantics',
     'query_intelligence',
     'audit_repository',
     'inspect_portfolio',
@@ -709,6 +743,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('scan_graph')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('inspect_interface')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('inspect_interface')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('audit_semantics')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('audit_semantics')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('query_source')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_parity')?.annotations?.openWorldHint, true);
@@ -720,7 +756,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 28, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 29, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -738,7 +774,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 28);
+  assert.equal(identity.mcp.toolCount, 29);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
@@ -807,6 +843,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'investigate'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'orient_scope'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_interface'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'audit_semantics'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_entity'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'query_source'));
     assert.equal(listBody.result.tools.some((tool: any) => tool.name === 'clear_cache'), false);
