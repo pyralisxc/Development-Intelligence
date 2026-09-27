@@ -480,6 +480,7 @@ const report = {
   semanticBootstrap: {
     stage: 'T1-derived-candidates',
     zeroMetadata: semanticBootstrap.zeroMetadata,
+    observedSemanticCount: semanticBootstrap.observedSemanticCount,
     declaredSemanticCount: semanticBootstrap.declaredSemanticCount,
     candidateCount: semanticBootstrap.candidates.length,
     elapsedMs: semanticBootstrapElapsedMs,

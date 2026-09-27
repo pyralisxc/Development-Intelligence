@@ -95,6 +95,7 @@ function graph(reverse = false): IntelligenceGraph {
 test('semantic bootstrap derives evidence-linked zero-metadata candidates without accepting them', () => {
   const result = bootstrapSemanticCandidates(graph(), { limit: 10 });
   assert.equal(result.zeroMetadata, true);
+  assert.equal(result.observedSemanticCount, 0);
   assert.equal(result.declaredSemanticCount, 0);
   assert.equal(result.policy.stage, 'T1-derived-candidates');
   assert.equal(result.policy.persisted, false);
@@ -128,6 +129,26 @@ test('semantic candidate identities and ordering are deterministic across graph 
   );
 });
 
+test('observed semantic facts do not falsely count as explicit semantic metadata', () => {
+  const fixture = graph();
+  fixture.nodes.push({
+    id: 'mcp:observed-tool',
+    sourceId: 'repo:src/tool.ts',
+    kind: 'mcp',
+    locator: 'src/tool.ts:1:mcp',
+    name: 'observed_tool',
+    value: { tool: 'observed_tool' },
+    raw: '{"tool":"observed_tool"}',
+    tags: ['semantic', 'protocol-observed'],
+    layer: 'semantic',
+    checkpoint: true,
+  });
+  const result = bootstrapSemanticCandidates(fixture);
+  assert.equal(result.observedSemanticCount, 1);
+  assert.equal(result.declaredSemanticCount, 0);
+  assert.equal(result.zeroMetadata, true);
+});
+
 test('existing accepted semantic declarations are reported separately from derived candidates', () => {
   const fixture = graph();
   fixture.nodes.push({
@@ -138,12 +159,13 @@ test('existing accepted semantic declarations are reported separately from deriv
     name: 'Declared authentication',
     value: 'Declared authentication',
     raw: 'Declared authentication',
-    tags: ['semantic'],
+    tags: ['semantic', 'declared'],
     layer: 'semantic',
     checkpoint: true,
   });
   const result = bootstrapSemanticCandidates(fixture);
   assert.equal(result.zeroMetadata, false);
+  assert.equal(result.observedSemanticCount, 1);
   assert.equal(result.declaredSemanticCount, 1);
   assert.ok(result.candidates.every(candidate => candidate.authority.state === 'proposed' && candidate.authority.accepted === false));
 });

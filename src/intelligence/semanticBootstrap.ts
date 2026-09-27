@@ -49,6 +49,7 @@ export interface SemanticBootstrapProjection {
   version: 1;
   revision: string | null;
   zeroMetadata: boolean;
+  observedSemanticCount: number;
   declaredSemanticCount: number;
   candidates: SemanticCandidate[];
   policy: {
@@ -277,11 +278,13 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     || a.scope.localeCompare(b.scope),
   );
 
-  const declaredSemanticCount = graph.nodes.filter(node => (node.layer ?? 'structural') === 'semantic').length;
+  const semanticNodes = graph.nodes.filter(node => (node.layer ?? 'structural') === 'semantic');
+  const declaredSemanticCount = semanticNodes.filter(node => node.tags?.includes('declared')).length;
   return {
     version: 1,
     revision: graph.repositoryRevision,
     zeroMetadata: declaredSemanticCount === 0,
+    observedSemanticCount: semanticNodes.length,
     declaredSemanticCount,
     candidates: candidates.slice(0, limit),
     policy: {
