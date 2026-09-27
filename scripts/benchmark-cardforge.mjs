@@ -46,6 +46,8 @@ const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
 const { clearGraphCache, graphStatus } = await import('../dist/src/intelligence/service.js');
+const { buildCanonicalQueryArtifacts, candidateQueryBuckets, materializeQueryBuckets, serializedQueryArtifactBytes } = await import('../dist/src/intelligence/queryArtifacts.js');
+const { gzipSync } = await import('node:zlib');
 const project = 'CardForge';
 const ref = 'refs/heads/devint-benchmark';
 
@@ -101,6 +103,24 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+const queryArtifacts = buildCanonicalQueryArtifacts(graph);
+const queryArtifactBytes = serializedQueryArtifactBytes(queryArtifacts);
+const fullGraphBytes = Buffer.byteLength(JSON.stringify(graph), 'utf8');
+const representativeBucketIds = candidateQueryBuckets(queryArtifacts.index, 'createCreatorInteractionSession');
+const representativeShardBytes = representativeBucketIds.reduce((sum, bucket) => sum + Number(queryArtifactBytes.shardBytes[bucket] ?? 0), 0);
+const representativeAdaptiveBytes = queryArtifactBytes.indexBytes + representativeShardBytes;
+const queryIndexRatio = queryArtifactBytes.indexBytes / Math.max(fullGraphBytes, 1);
+const representativeAdaptiveRatio = representativeAdaptiveBytes / Math.max(fullGraphBytes, 1);
+const compressedIndexBytes = gzipSync(Buffer.from(JSON.stringify(queryArtifacts.index), 'utf8'), { level: 6 }).byteLength;
+const compressedShardBytes = Object.fromEntries(Object.entries(queryArtifacts.shards).map(([bucket, shard]) => [
+  bucket,
+  gzipSync(Buffer.from(JSON.stringify(shard), 'utf8'), { level: 6 }).byteLength,
+]));
+const compressedRepresentativeShardBytes = representativeBucketIds.reduce((sum, bucket) => sum + Number(compressedShardBytes[bucket] ?? 0), 0);
+const compressedRepresentativeAdaptiveBytes = compressedIndexBytes + compressedRepresentativeShardBytes;
+const compressedIndexRatio = compressedIndexBytes / Math.max(fullGraphBytes, 1);
+const compressedRepresentativeAdaptiveRatio = compressedRepresentativeAdaptiveBytes / Math.max(fullGraphBytes, 1);
+
 const devintGraph = await buildLocalGraph(path.resolve('.'), 'Development-Intelligence');
 const portfolioStarted = process.hrtime.bigint();
 const portfolio = synthesizePortfolio([
@@ -202,6 +222,12 @@ for (const probe of probes) {
   const search = await callTool('search_graph', { project, ref, query: probe.query, limit: 40 });
   const searchNodes = Array.isArray(search.nodes) ? search.nodes : [];
   if (Number(search.nodeTotal ?? 0) < 1) throw new Error(`Graph benchmark failed to find known CardForge symbol: ${probe.query}`);
+  const adaptiveBuckets = candidateQueryBuckets(queryArtifacts.index, probe.query);
+  const adaptiveDetail = materializeQueryBuckets(queryArtifacts, adaptiveBuckets);
+  const adaptiveNodeIds = new Set(adaptiveDetail.nodes.map(node => node.id));
+  const adaptiveEdgeIds = new Set(adaptiveDetail.edges.map(edge => edge.id));
+  for (const node of searchNodes) if (node?.id && !adaptiveNodeIds.has(node.id)) throw new Error(`Adaptive query artifacts lost CardForge search node ${node.id} for ${probe.query}`);
+  for (const edge of Array.isArray(search.edges) ? search.edges : []) if (edge?.id && !adaptiveEdgeIds.has(edge.id)) throw new Error(`Adaptive query artifacts lost CardForge search edge ${edge.id} for ${probe.query}`);
   const candidates = searchNodes.filter(node => String(node?.name ?? '').toLowerCase() === probe.query.toLowerCase());
   const ids = [...new Set((candidates.length ? candidates : searchNodes).map(node => node.id).filter(Boolean))].slice(0, 16);
   let trace = null;
@@ -348,6 +374,24 @@ const report = {
     workflowQueries: workflowSearch.results.map(result => ({ query: result.query, nodeTotal: result.nodeTotal, edgeTotal: result.edgeTotal })),
   },
   sourceSearch: { total: sourceSearch.total ?? 0, sample: Array.isArray(sourceSearch.matches) ? sourceSearch.matches.slice(0, 5) : [] },
+  queryArtifacts: {
+    fullGraphBytes,
+    indexBytes: queryArtifactBytes.indexBytes,
+    indexRatio: Number(queryIndexRatio.toFixed(4)),
+    totalShardBytes: queryArtifactBytes.totalShardBytes,
+    maxShardBytes: queryArtifactBytes.maxShardBytes,
+    representativeQuery: 'createCreatorInteractionSession',
+    representativeBucketIds,
+    representativeShardBytes,
+    representativeAdaptiveBytes,
+    representativeAdaptiveRatio: Number(representativeAdaptiveRatio.toFixed(4)),
+    compressedIndexBytes,
+    compressedIndexRatio: Number(compressedIndexRatio.toFixed(4)),
+    compressedRepresentativeShardBytes,
+    compressedRepresentativeAdaptiveBytes,
+    compressedRepresentativeAdaptiveRatio: Number(compressedRepresentativeAdaptiveRatio.toFixed(4)),
+    searchRecords: queryArtifactBytes.searchRecords,
+  },
 };
 
 const jsonPath = process.env.DEVINT_BENCHMARK_JSON ?? path.resolve('benchmark-cardforge.json');
@@ -374,6 +418,7 @@ const summary = [
   `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Canonical current-graph hot path: **cold ${canonicalColdWallMs.toFixed(3)} ms → p50 ${canonicalHotP50Ms.toFixed(3)} ms / p95 ${canonicalHotP95Ms.toFixed(3)} ms across 12 process-cache-evicted reads (${canonicalSpeedupVsP50.toFixed(2)}× vs p50)**`,
+  `- Query artifact sizing: **raw index ${(queryArtifactBytes.indexBytes / 1024 / 1024).toFixed(2)} MiB; raw adaptive ${(representativeAdaptiveBytes / 1024 / 1024).toFixed(2)} MiB across ${representativeBucketIds.length}/64 shards; gzip index ${(compressedIndexBytes / 1024 / 1024).toFixed(2)} MiB (${(compressedIndexRatio * 100).toFixed(1)}% of full graph); gzip adaptive ${(compressedRepresentativeAdaptiveBytes / 1024 / 1024).toFixed(2)} MiB (${(compressedRepresentativeAdaptiveRatio * 100).toFixed(1)}% of full graph)**`,
   `- Warm exact-graph project overview: **${warmOverviewMaxMs.toFixed(3)} ms max across 3 reads / 1000 ms budget**`,
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
