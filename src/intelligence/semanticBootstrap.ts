@@ -54,6 +54,21 @@ export interface SemanticBootstrapProjection {
   observedSemanticCount: number;
   declaredSemanticCount: number;
   candidates: SemanticCandidate[];
+  capacity: {
+    requestedLimit: number;
+    operationalLimit: 1000;
+    groupedScopeCount: number;
+    eligibleCandidateCount: number;
+    rejectedScopeCount: number;
+    returnedCandidateCount: number;
+    truncated: boolean;
+    exhausted: boolean;
+    rejectionReasons: {
+      insufficientEvidenceFamilies: number;
+      insufficientFileSupport: number;
+      genericSupportScope: number;
+    };
+  };
   policy: {
     stage: 'T1-derived-candidates';
     persisted: false;
@@ -80,10 +95,16 @@ const GENERIC_FILE_STEMS = new Set(['index', 'main', 'mod', 'module', 'app', 'ap
 const TEST_OR_DOC_PATH = /(^|\/)(?:tests?|__tests__|fixtures?|docs?|examples?)(?:\/|$)/iu;
 
 function sourceFile(locator: string): string | null {
-  const clean = locator.replace(/^repo:/u, '').split('#', 1)[0] ?? locator;
-  const match = /^(.*?)(?::\d+(?::.*)?)?$/u.exec(clean);
-  const path = (match?.[1] ?? clean).replace(/^\.\//u, '').replace(/\\/gu, '/');
-  return path.includes('/') || /\.[A-Za-z0-9]+$/u.test(path) ? path : null;
+  const clean = (locator.replace(/^repo:/u, '').split('#', 1)[0] ?? locator)
+    .replace(/^\.\//u, '')
+    .replace(/\\/gu, '/');
+
+  // Graph representations may append semantic locator suffixes that are not
+  // line numbers (for example :selector:..., :state-write, :navigation).
+  // Resolve identity to the physical source file before semantic grouping so
+  // observations from one file cannot manufacture pseudo-file scopes.
+  const physicalFile = /^(.+\.[A-Za-z0-9]+)(?::.*)?$/u.exec(clean)?.[1] ?? null;
+  return physicalFile;
 }
 
 function stem(value: string): string {
@@ -207,7 +228,8 @@ function addUnique<T>(target: T[], value: T): void {
 }
 
 export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: { limit?: number } = {}): SemanticBootstrapProjection {
-  const limit = Math.max(1, Math.min(options.limit ?? 12, 50));
+  const operationalLimit = 1000 as const;
+  const limit = Math.max(1, Math.min(options.limit ?? 12, operationalLimit));
   const groups = new Map<string, CandidateGroup>();
   const nodeScope = new Map<string, string>();
 
@@ -246,10 +268,26 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   }
 
   const candidates: SemanticCandidate[] = [];
+  const rejectionReasons = {
+    insufficientEvidenceFamilies: 0,
+    insufficientFileSupport: 0,
+    genericSupportScope: 0,
+  };
   for (const group of groups.values()) {
     const { families, motifs } = familyEvidence(group, graph);
     const strongFamily = families.some(family => ['interface', 'api', 'persistence', 'motif', 'state'].includes(family));
-    if (families.length < 2 || (group.files.size < 2 && !strongFamily)) continue;
+    if (group.scopeRole === 'direct' && SUPPORT_SEGMENTS.has(group.token.toLowerCase())) {
+      rejectionReasons.genericSupportScope += 1;
+      continue;
+    }
+    if (families.length < 2) {
+      rejectionReasons.insufficientEvidenceFamilies += 1;
+      continue;
+    }
+    if (group.files.size < 2 && !strongFamily) {
+      rejectionReasons.insufficientFileSupport += 1;
+      continue;
+    }
 
     const kind = candidateKind(families);
     const name = title(group.token);
@@ -331,13 +369,25 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
 
   const semanticNodes = graph.nodes.filter(node => (node.layer ?? 'structural') === 'semantic');
   const declaredSemanticCount = semanticNodes.filter(node => node.tags?.includes('declared')).length;
+  const returnedCandidates = candidates.slice(0, limit);
   return {
     version: 1,
     revision: graph.repositoryRevision,
     zeroMetadata: declaredSemanticCount === 0,
     observedSemanticCount: semanticNodes.length,
     declaredSemanticCount,
-    candidates: candidates.slice(0, limit),
+    candidates: returnedCandidates,
+    capacity: {
+      requestedLimit: limit,
+      operationalLimit,
+      groupedScopeCount: groups.size,
+      eligibleCandidateCount: candidates.length,
+      rejectedScopeCount: groups.size - candidates.length,
+      returnedCandidateCount: returnedCandidates.length,
+      truncated: returnedCandidates.length < candidates.length,
+      exhausted: returnedCandidates.length === candidates.length,
+      rejectionReasons,
+    },
     policy: {
       stage: 'T1-derived-candidates',
       persisted: false,

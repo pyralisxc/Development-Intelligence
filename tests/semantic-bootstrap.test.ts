@@ -258,3 +258,225 @@ test('semantic bootstrap skips Java source/package wrappers and exposes package-
   assert.ok(result.candidates.some(candidate => candidate.scope === 'src/main/java/medievalsim/zones'));
   assert.equal(result.candidates.some(candidate => candidate.scope === 'src/main'), false);
 });
+
+
+test('semantic capacity expands without quota filling and remains prefix-stable', () => {
+  const fixture = graph();
+  fixture.nodes = [];
+  fixture.edges = [];
+  fixture.coverage = {
+    trackedFiles: 160,
+    eligibleFiles: 160,
+    analyzedFiles: 160,
+    completeFiles: 160,
+    partialFiles: 0,
+    unsupportedFiles: 0,
+    skippedFiles: 0,
+    failedFiles: 0,
+    skippedOversizedFiles: 0,
+    skippedNonRegularFiles: 0,
+    skippedFileLimitFiles: 0,
+    files: [],
+  };
+
+  for (let index = 0; index < 60; index += 1) {
+    const suffix = String(index).padStart(2, '0');
+    const fileA = `src/features/feature-${suffix}/a.ts`;
+    const fileB = `src/features/feature-${suffix}/b.ts`;
+    fixture.nodes.push(
+      node(`file:feature-${suffix}-a`, 'file', fileA),
+      node(`symbol:feature-${suffix}-a`, 'function', `${fileA}:2`, `feature${suffix}A`),
+      node(`file:feature-${suffix}-b`, 'file', fileB),
+      node(`symbol:feature-${suffix}-b`, 'function', `${fileB}:2`, `feature${suffix}B`),
+    );
+    fixture.edges.push(
+      edge(`contains-feature-${suffix}-a`, `file:feature-${suffix}-a`, `symbol:feature-${suffix}-a`, 'contains'),
+      edge(`contains-feature-${suffix}-b`, `file:feature-${suffix}-b`, `symbol:feature-${suffix}-b`, 'contains'),
+      edge(`feature-${suffix}-link`, `symbol:feature-${suffix}-a`, `symbol:feature-${suffix}-b`, 'calls'),
+    );
+    fixture.coverage.files.push({ path: fileA, status: 'complete' }, { path: fileB, status: 'complete' });
+  }
+
+  for (let index = 0; index < 40; index += 1) {
+    const suffix = String(index).padStart(2, '0');
+    const file = `src/internal/noise-${suffix}/single.ts`;
+    fixture.nodes.push(
+      node(`file:noise-${suffix}`, 'file', file),
+      node(`symbol:noise-${suffix}`, 'function', `${file}:2`, `noise${suffix}`),
+    );
+    fixture.coverage.files.push({ path: file, status: 'complete' });
+  }
+
+  const at50 = bootstrapSemanticCandidates(fixture, { limit: 50 });
+  const at100 = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  const overRequested = bootstrapSemanticCandidates(fixture, { limit: 500 });
+
+  assert.equal(at50.candidates.length, 50);
+  assert.equal(at50.capacity.eligibleCandidateCount, 60);
+  assert.equal(at50.capacity.truncated, true);
+  assert.equal(at50.capacity.exhausted, false);
+
+  assert.equal(at100.candidates.length, 60, '100 is a ceiling, not a quota');
+  assert.equal(at100.capacity.requestedLimit, 100);
+  assert.equal(at100.capacity.operationalLimit, 1000);
+  assert.equal(at100.capacity.groupedScopeCount, 100);
+  assert.equal(at100.capacity.eligibleCandidateCount, 60);
+  assert.equal(at100.capacity.rejectedScopeCount, 40);
+  assert.equal(at100.capacity.returnedCandidateCount, 60);
+  assert.equal(at100.capacity.truncated, false);
+  assert.equal(at100.capacity.exhausted, true);
+  assert.equal(at100.capacity.rejectionReasons.insufficientEvidenceFamilies, 40);
+  assert.equal(at100.capacity.rejectionReasons.insufficientFileSupport, 0);
+
+  assert.deepEqual(
+    at50.candidates.map(candidate => candidate.id),
+    at100.candidates.slice(0, 50).map(candidate => candidate.id),
+    'raising the presentation budget must not reorder or rewrite earlier meanings',
+  );
+  assert.equal(overRequested.capacity.requestedLimit, 500, '100 is a benchmark checkpoint, not a semantic hard limit');
+  assert.deepEqual(overRequested.candidates.map(candidate => candidate.id), at100.candidates.map(candidate => candidate.id));
+});
+
+
+test('representation locator suffixes cannot manufacture semantic pseudo-file scopes', () => {
+  const fixture = graph();
+  fixture.nodes = [
+    node('file:editor-a', 'file', 'src/features/editor/Editor.tsx'),
+    node('symbol:editor-a', 'function', 'src/features/editor/Editor.tsx:2', 'Editor'),
+    node('ui:editor-a', 'ui-element', 'src/features/editor/Editor.tsx:selector:.editor-shell', 'Editor shell', 'representation'),
+    node('state:editor-a', 'state-binding', 'src/features/editor/Editor.tsx:state-write:selection', 'selection', 'representation'),
+    node('file:editor-b', 'file', 'src/features/editor/editorState.ts'),
+    node('symbol:editor-b', 'function', 'src/features/editor/editorState.ts:2', 'updateEditorState'),
+    node('nav:editor-b', 'navigation-call', 'src/features/editor/editorState.ts:navigation:/studio', '/studio', 'representation'),
+  ];
+  fixture.edges = [
+    edge('editor-a-contains', 'file:editor-a', 'symbol:editor-a', 'contains'),
+    edge('editor-a-ui', 'symbol:editor-a', 'ui:editor-a', 'contains'),
+    edge('editor-a-state', 'symbol:editor-a', 'state:editor-a', 'state-write'),
+    edge('editor-b-contains', 'file:editor-b', 'symbol:editor-b', 'contains'),
+    edge('editor-b-nav', 'symbol:editor-b', 'nav:editor-b', 'invokes'),
+    edge('editor-link', 'symbol:editor-a', 'symbol:editor-b', 'calls'),
+  ];
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  assert.equal(result.capacity.groupedScopeCount, 1, 'all observations must collapse to the physical editor files and one feature scope');
+  assert.equal(result.capacity.eligibleCandidateCount, 1);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0]?.scope, 'src/features/editor');
+  assert.equal(result.candidates[0]?.support.fileCount, 2, 'semantic support must count physical files, not locator suffixes');
+});
+
+
+test('generic support roots stay structural even when they contain strong technical activity', () => {
+  const fixture = graph();
+  fixture.nodes = [
+    node('file:shared-a', 'file', 'src/shared/session.ts'),
+    node('symbol:shared-a', 'function', 'src/shared/session.ts:2', 'writeSession'),
+    node('state:shared-a', 'state-binding', 'src/shared/session.ts:state-write:session', 'session', 'representation'),
+    node('file:shared-b', 'file', 'src/shared/request.ts'),
+    node('symbol:shared-b', 'function', 'src/shared/request.ts:2', 'requestApi'),
+    node('api:shared-b', 'http-call', 'src/shared/request.ts:http-call:/api/session', '/api/session', 'representation'),
+  ];
+  fixture.edges = [
+    edge('shared-a-contains', 'file:shared-a', 'symbol:shared-a', 'contains'),
+    edge('shared-state', 'symbol:shared-a', 'state:shared-a', 'state-write'),
+    edge('shared-b-contains', 'file:shared-b', 'symbol:shared-b', 'contains'),
+    edge('shared-api', 'symbol:shared-b', 'api:shared-b', 'calls'),
+    edge('shared-link', 'symbol:shared-a', 'symbol:shared-b', 'calls'),
+  ];
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  assert.equal(result.capacity.groupedScopeCount, 1);
+  assert.equal(result.capacity.eligibleCandidateCount, 0);
+  assert.equal(result.capacity.rejectedScopeCount, 1);
+  assert.equal(result.capacity.rejectionReasons.genericSupportScope, 1);
+  assert.equal(result.candidates.length, 0, 'shared is technical support structure, not product meaning');
+});
+
+
+test('logical graph locators without physical files cannot create semantic scopes', () => {
+  const fixture = graph();
+  fixture.nodes = [
+    {
+      id: 'route:logical',
+      sourceId: 'route:/account',
+      kind: 'route',
+      locator: 'route:/account',
+      name: '/account',
+      value: '/account',
+      raw: '/account',
+      layer: 'representation',
+      checkpoint: false,
+    },
+    {
+      id: 'api:logical',
+      sourceId: 'api:/api/account',
+      kind: 'api',
+      locator: 'api:/api/account',
+      name: '/api/account',
+      value: '/api/account',
+      raw: '/api/account',
+      layer: 'representation',
+      checkpoint: false,
+    },
+  ];
+  fixture.edges = [edge('route-api', 'route:logical', 'api:logical', 'calls')];
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  assert.equal(result.capacity.groupedScopeCount, 0);
+  assert.equal(result.capacity.eligibleCandidateCount, 0);
+  assert.equal(result.candidates.length, 0);
+});
+
+
+test('semantic capacity can honestly enumerate more than 100 evidence-qualified meanings', () => {
+  const fixture = graph();
+  fixture.nodes = [];
+  fixture.edges = [];
+  fixture.coverage = {
+    trackedFiles: 300,
+    eligibleFiles: 300,
+    analyzedFiles: 300,
+    completeFiles: 300,
+    partialFiles: 0,
+    unsupportedFiles: 0,
+    skippedFiles: 0,
+    failedFiles: 0,
+    skippedOversizedFiles: 0,
+    skippedNonRegularFiles: 0,
+    skippedFileLimitFiles: 0,
+    files: [],
+  };
+
+  for (let index = 0; index < 140; index += 1) {
+    const suffix = String(index).padStart(3, '0');
+    const fileA = `src/features/capability-${suffix}/a.ts`;
+    const fileB = `src/features/capability-${suffix}/b.ts`;
+    fixture.nodes.push(
+      node(`file:cap-${suffix}-a`, 'file', fileA),
+      node(`symbol:cap-${suffix}-a`, 'function', `${fileA}:2`, `capability${suffix}A`),
+      node(`file:cap-${suffix}-b`, 'file', fileB),
+      node(`symbol:cap-${suffix}-b`, 'function', `${fileB}:2`, `capability${suffix}B`),
+    );
+    fixture.edges.push(
+      edge(`cap-${suffix}-contains-a`, `file:cap-${suffix}-a`, `symbol:cap-${suffix}-a`, 'contains'),
+      edge(`cap-${suffix}-contains-b`, `file:cap-${suffix}-b`, `symbol:cap-${suffix}-b`, 'contains'),
+      edge(`cap-${suffix}-link`, `symbol:cap-${suffix}-a`, `symbol:cap-${suffix}-b`, 'calls'),
+    );
+    fixture.coverage.files.push({ path: fileA, status: 'complete' }, { path: fileB, status: 'complete' });
+  }
+
+  const at50 = bootstrapSemanticCandidates(fixture, { limit: 50 });
+  const at100 = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  const at200 = bootstrapSemanticCandidates(fixture, { limit: 200 });
+
+  assert.equal(at50.capacity.eligibleCandidateCount, 140);
+  assert.equal(at100.capacity.eligibleCandidateCount, 140);
+  assert.equal(at100.candidates.length, 100);
+  assert.equal(at100.capacity.truncated, true);
+  assert.equal(at100.capacity.exhausted, false);
+  assert.equal(at200.candidates.length, 140);
+  assert.equal(at200.capacity.exhausted, true);
+  assert.deepEqual(at50.candidates.map(candidate => candidate.id), at100.candidates.slice(0, 50).map(candidate => candidate.id));
+  assert.deepEqual(at100.candidates.map(candidate => candidate.id), at200.candidates.slice(0, 100).map(candidate => candidate.id));
+});
