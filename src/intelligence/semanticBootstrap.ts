@@ -54,6 +54,20 @@ export interface SemanticBootstrapProjection {
   observedSemanticCount: number;
   declaredSemanticCount: number;
   candidates: SemanticCandidate[];
+  capacity: {
+    requestedLimit: number;
+    hardLimit: 100;
+    groupedScopeCount: number;
+    eligibleCandidateCount: number;
+    rejectedScopeCount: number;
+    returnedCandidateCount: number;
+    truncated: boolean;
+    exhausted: boolean;
+    rejectionReasons: {
+      insufficientEvidenceFamilies: number;
+      insufficientFileSupport: number;
+    };
+  };
   policy: {
     stage: 'T1-derived-candidates';
     persisted: false;
@@ -207,7 +221,8 @@ function addUnique<T>(target: T[], value: T): void {
 }
 
 export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: { limit?: number } = {}): SemanticBootstrapProjection {
-  const limit = Math.max(1, Math.min(options.limit ?? 12, 50));
+  const hardLimit = 100 as const;
+  const limit = Math.max(1, Math.min(options.limit ?? 12, hardLimit));
   const groups = new Map<string, CandidateGroup>();
   const nodeScope = new Map<string, string>();
 
@@ -246,10 +261,21 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   }
 
   const candidates: SemanticCandidate[] = [];
+  const rejectionReasons = {
+    insufficientEvidenceFamilies: 0,
+    insufficientFileSupport: 0,
+  };
   for (const group of groups.values()) {
     const { families, motifs } = familyEvidence(group, graph);
     const strongFamily = families.some(family => ['interface', 'api', 'persistence', 'motif', 'state'].includes(family));
-    if (families.length < 2 || (group.files.size < 2 && !strongFamily)) continue;
+    if (families.length < 2) {
+      rejectionReasons.insufficientEvidenceFamilies += 1;
+      continue;
+    }
+    if (group.files.size < 2 && !strongFamily) {
+      rejectionReasons.insufficientFileSupport += 1;
+      continue;
+    }
 
     const kind = candidateKind(families);
     const name = title(group.token);
@@ -331,13 +357,25 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
 
   const semanticNodes = graph.nodes.filter(node => (node.layer ?? 'structural') === 'semantic');
   const declaredSemanticCount = semanticNodes.filter(node => node.tags?.includes('declared')).length;
+  const returnedCandidates = candidates.slice(0, limit);
   return {
     version: 1,
     revision: graph.repositoryRevision,
     zeroMetadata: declaredSemanticCount === 0,
     observedSemanticCount: semanticNodes.length,
     declaredSemanticCount,
-    candidates: candidates.slice(0, limit),
+    candidates: returnedCandidates,
+    capacity: {
+      requestedLimit: limit,
+      hardLimit,
+      groupedScopeCount: groups.size,
+      eligibleCandidateCount: candidates.length,
+      rejectedScopeCount: groups.size - candidates.length,
+      returnedCandidateCount: returnedCandidates.length,
+      truncated: returnedCandidates.length < candidates.length,
+      exhausted: returnedCandidates.length === candidates.length,
+      rejectionReasons,
+    },
     policy: {
       stage: 'T1-derived-candidates',
       persisted: false,

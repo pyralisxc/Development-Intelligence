@@ -100,8 +100,23 @@ for (const target of targets) {
   const started = Date.now();
   const graph = await buildLocalGraph(target.root, target.project);
   const semanticStarted = process.hrtime.bigint();
-  const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: 50 });
+  const semanticBootstrap50 = bootstrapSemanticCandidates(graph, { limit: 50 });
+  const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: 100 });
   const semanticElapsedMs = Number(process.hrtime.bigint() - semanticStarted) / 1_000_000;
+  if (!semanticBootstrap.capacity.exhausted) {
+    throw new Error(`${target.project} semantic capacity did not plateau within 100 candidates: ${JSON.stringify(semanticBootstrap.capacity)}`);
+  }
+  if (semanticBootstrap.capacity.returnedCandidateCount !== semanticBootstrap.capacity.eligibleCandidateCount) {
+    throw new Error(`${target.project} semantic capacity census returned a partial eligible set`);
+  }
+  if (semanticBootstrap.capacity.eligibleCandidateCount + semanticBootstrap.capacity.rejectedScopeCount !== semanticBootstrap.capacity.groupedScopeCount) {
+    throw new Error(`${target.project} semantic scope census does not reconcile`);
+  }
+  if (semanticBootstrap.candidates.some(candidate => candidate.support.evidenceFamilyCount < 2)) {
+    throw new Error(`${target.project} semantic capacity admitted an evidence-insufficient candidate`);
+  }
+  const semanticPrefixStable = semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id);
+  if (!semanticPrefixStable) throw new Error(`${target.project} semantic 50→100 expansion changed prior candidate identity/order`);
   if (semanticElapsedMs > 2000) throw new Error(`${target.project} semantic bootstrap exceeded 2000 ms: ${semanticElapsedMs.toFixed(2)} ms`);
   if (semanticBootstrap.candidates.some(candidate => candidate.authority.accepted || candidate.authority.persisted || candidate.authority.proofEligible)) {
     throw new Error(`${target.project} semantic bootstrap crossed the proposal authority boundary`);
@@ -318,6 +333,10 @@ for (const target of targets) {
     semanticAccuracy: {
       elapsedMs: Number(semanticElapsedMs.toFixed(3)),
       candidateCount: semanticBootstrap.candidates.length,
+      capacity: semanticBootstrap.capacity,
+      first50PrefixStable: semanticPrefixStable,
+      kindCounts: Object.fromEntries([...new Set(semanticBootstrap.candidates.map(candidate => candidate.proposal.kind))].sort().map(kind => [kind, semanticBootstrap.candidates.filter(candidate => candidate.proposal.kind === kind).length])),
+      scopeRoleCounts: Object.fromEntries(['functional-container', 'direct'].map(role => [role, semanticBootstrap.candidates.filter(candidate => candidate.support.scopeRole === role).length])),
       precision: semanticAccuracy.semanticCandidateScore.precision,
       recall: semanticAccuracy.semanticCandidateScore.recall,
       falsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
@@ -359,6 +378,7 @@ const summary = [
     ...(item.temporalVerification ? [`- parent→pinned temporal verification: **${item.temporalVerification.elapsedMs} ms — ${item.temporalVerification.changedFileCount} changed files / ${item.temporalVerification.unexpectedTotal} unexpected graph changes**`] : []),
     `- semantic derivation: **precision ${(item.semanticAccuracy.precision * 100).toFixed(0)}% / recall ${(item.semanticAccuracy.recall * 100).toFixed(0)}% / FPR ${(item.semanticAccuracy.falsePositiveRate * 100).toFixed(0)}% / ${item.semanticAccuracy.elapsedMs} ms**`,
     `- semantic top-32 presentation: **precision ${(item.semanticAccuracy.boundedPresentationPrecision * 100).toFixed(0)}% / recall ${(item.semanticAccuracy.boundedPresentationRecall * 100).toFixed(0)}% / FPR ${(item.semanticAccuracy.boundedPresentationFalsePositiveRate * 100).toFixed(0)}%**`,
+    `- semantic capacity census: **${item.semanticAccuracy.capacity.eligibleCandidateCount} evidence-qualified / ${item.semanticAccuracy.capacity.groupedScopeCount} grouped scopes; ${item.semanticAccuracy.capacity.rejectedScopeCount} rejected; exhausted=${item.semanticAccuracy.capacity.exhausted}; 50→100 prefix stable=${item.semanticAccuracy.first50PrefixStable}**`,
     `- repository audit: **${item.repositoryAudit.elapsedMs} ms** — ${item.repositoryAudit.findingTotal} deterministic findings / ${item.repositoryAudit.targetCount} bounded investigation target(s)`,
     ...(item.orientationProbe ? [
       `- orientation known query: **${item.orientationProbe.known.elapsedMs} ms** — ${item.orientationProbe.known.answerStatus}, ${item.orientationProbe.known.analyzerTechnology}/${item.orientationProbe.known.analyzerDepth}, ${item.orientationProbe.known.disambiguatingEvidenceCount} disambiguating-evidence hint(s)`,

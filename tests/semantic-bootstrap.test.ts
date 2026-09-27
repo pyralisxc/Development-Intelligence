@@ -258,3 +258,81 @@ test('semantic bootstrap skips Java source/package wrappers and exposes package-
   assert.ok(result.candidates.some(candidate => candidate.scope === 'src/main/java/medievalsim/zones'));
   assert.equal(result.candidates.some(candidate => candidate.scope === 'src/main'), false);
 });
+
+
+test('semantic capacity expands to 100 without quota filling and remains prefix-stable', () => {
+  const fixture = graph();
+  fixture.nodes = [];
+  fixture.edges = [];
+  fixture.coverage = {
+    trackedFiles: 160,
+    eligibleFiles: 160,
+    analyzedFiles: 160,
+    completeFiles: 160,
+    partialFiles: 0,
+    unsupportedFiles: 0,
+    skippedFiles: 0,
+    failedFiles: 0,
+    skippedOversizedFiles: 0,
+    skippedNonRegularFiles: 0,
+    skippedFileLimitFiles: 0,
+    files: [],
+  };
+
+  for (let index = 0; index < 60; index += 1) {
+    const suffix = String(index).padStart(2, '0');
+    const fileA = `src/features/feature-${suffix}/a.ts`;
+    const fileB = `src/features/feature-${suffix}/b.ts`;
+    fixture.nodes.push(
+      node(`file:feature-${suffix}-a`, 'file', fileA),
+      node(`symbol:feature-${suffix}-a`, 'function', `${fileA}:2`, `feature${suffix}A`),
+      node(`file:feature-${suffix}-b`, 'file', fileB),
+      node(`symbol:feature-${suffix}-b`, 'function', `${fileB}:2`, `feature${suffix}B`),
+    );
+    fixture.edges.push(
+      edge(`contains-feature-${suffix}-a`, `file:feature-${suffix}-a`, `symbol:feature-${suffix}-a`, 'contains'),
+      edge(`contains-feature-${suffix}-b`, `file:feature-${suffix}-b`, `symbol:feature-${suffix}-b`, 'contains'),
+      edge(`feature-${suffix}-link`, `symbol:feature-${suffix}-a`, `symbol:feature-${suffix}-b`, 'calls'),
+    );
+    fixture.coverage.files.push({ path: fileA, status: 'complete' }, { path: fileB, status: 'complete' });
+  }
+
+  for (let index = 0; index < 40; index += 1) {
+    const suffix = String(index).padStart(2, '0');
+    const file = `src/internal/noise-${suffix}/single.ts`;
+    fixture.nodes.push(
+      node(`file:noise-${suffix}`, 'file', file),
+      node(`symbol:noise-${suffix}`, 'function', `${file}:2`, `noise${suffix}`),
+    );
+    fixture.coverage.files.push({ path: file, status: 'complete' });
+  }
+
+  const at50 = bootstrapSemanticCandidates(fixture, { limit: 50 });
+  const at100 = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  const overRequested = bootstrapSemanticCandidates(fixture, { limit: 500 });
+
+  assert.equal(at50.candidates.length, 50);
+  assert.equal(at50.capacity.eligibleCandidateCount, 60);
+  assert.equal(at50.capacity.truncated, true);
+  assert.equal(at50.capacity.exhausted, false);
+
+  assert.equal(at100.candidates.length, 60, '100 is a ceiling, not a quota');
+  assert.equal(at100.capacity.requestedLimit, 100);
+  assert.equal(at100.capacity.hardLimit, 100);
+  assert.equal(at100.capacity.groupedScopeCount, 100);
+  assert.equal(at100.capacity.eligibleCandidateCount, 60);
+  assert.equal(at100.capacity.rejectedScopeCount, 40);
+  assert.equal(at100.capacity.returnedCandidateCount, 60);
+  assert.equal(at100.capacity.truncated, false);
+  assert.equal(at100.capacity.exhausted, true);
+  assert.equal(at100.capacity.rejectionReasons.insufficientEvidenceFamilies, 40);
+  assert.equal(at100.capacity.rejectionReasons.insufficientFileSupport, 0);
+
+  assert.deepEqual(
+    at50.candidates.map(candidate => candidate.id),
+    at100.candidates.slice(0, 50).map(candidate => candidate.id),
+    'raising the presentation budget must not reorder or rewrite earlier meanings',
+  );
+  assert.equal(overRequested.capacity.requestedLimit, 100, 'hard limit should clamp oversized requests');
+  assert.deepEqual(overRequested.candidates.map(candidate => candidate.id), at100.candidates.map(candidate => candidate.id));
+});

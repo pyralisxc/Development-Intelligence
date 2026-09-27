@@ -106,8 +106,27 @@ const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
 const semanticBootstrapStarted = process.hrtime.bigint();
-const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: 50 });
+const semanticBootstrap50 = bootstrapSemanticCandidates(graph, { limit: 50 });
+const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: 100 });
 const semanticBootstrapElapsedMs = Number(process.hrtime.bigint() - semanticBootstrapStarted) / 1_000_000;
+if (!semanticBootstrap.capacity.exhausted) {
+  throw new Error(`CardForge semantic capacity did not plateau within the 100-candidate census: ${JSON.stringify(semanticBootstrap.capacity)}`);
+}
+if (semanticBootstrap.capacity.returnedCandidateCount !== semanticBootstrap.capacity.eligibleCandidateCount) {
+  throw new Error('CardForge semantic capacity census returned a partial eligible set despite exhaustion');
+}
+if (semanticBootstrap.capacity.eligibleCandidateCount > semanticBootstrap.capacity.groupedScopeCount) {
+  throw new Error('CardForge semantic capacity exceeded grouped source scope capacity');
+}
+if (semanticBootstrap.capacity.eligibleCandidateCount + semanticBootstrap.capacity.rejectedScopeCount !== semanticBootstrap.capacity.groupedScopeCount) {
+  throw new Error('CardForge semantic scope census does not reconcile');
+}
+if (semanticBootstrap.candidates.some(candidate => candidate.support.evidenceFamilyCount < 2)) {
+  throw new Error('CardForge semantic capacity admitted an evidence-insufficient candidate');
+}
+if (semanticBootstrap50.candidates.some((candidate, index) => semanticBootstrap.candidates[index]?.id !== candidate.id)) {
+  throw new Error('CardForge semantic 50→100 expansion changed candidate identity/order instead of extending the same ranking');
+}
 if (semanticBootstrap.zeroMetadata !== true) throw new Error('CardForge semantic-bootstrap benchmark must remain zero-metadata');
 if (semanticBootstrap.candidates.length < 3) throw new Error(`CardForge semantic bootstrap expected at least 3 candidates, got ${semanticBootstrap.candidates.length}`);
 if (semanticBootstrap.candidates.some(candidate => candidate.authority.persisted || candidate.authority.proofEligible || candidate.authority.accepted)) {
@@ -537,7 +556,7 @@ const report = {
   semanticAccuracy: {
     caseId: semanticAccuracy.caseId,
     reviewedUniverseScopes: semanticAccuracyUniverse,
-    derivationPoolLimit: 50,
+    derivationPoolLimit: 100,
     boundedPresentationLimit: 32,
     boundedPresentation: {
       recall: semanticPresentationAccuracy.semanticCandidateScore.recall,
@@ -564,6 +583,10 @@ const report = {
     observedSemanticCount: semanticBootstrap.observedSemanticCount,
     declaredSemanticCount: semanticBootstrap.declaredSemanticCount,
     candidateCount: semanticBootstrap.candidates.length,
+    capacity: semanticBootstrap.capacity,
+    first50PrefixStable: semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id),
+    kindCounts: Object.fromEntries([...new Set(semanticBootstrap.candidates.map(candidate => candidate.proposal.kind))].sort().map(kind => [kind, semanticBootstrap.candidates.filter(candidate => candidate.proposal.kind === kind).length])),
+    scopeRoleCounts: Object.fromEntries(['functional-container', 'direct'].map(role => [role, semanticBootstrap.candidates.filter(candidate => candidate.support.scopeRole === role).length])),
     elapsedMs: semanticBootstrapElapsedMs,
     maxEvidenceFamilyCount: Math.max(0, ...semanticBootstrap.candidates.map(candidate => candidate.support.evidenceFamilyCount)),
     sample: semanticBootstrap.candidates.slice(0, 8).map(candidate => ({
@@ -669,8 +692,9 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
-  `- Semantic derivation accuracy (50-candidate pool, 7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
+  `- Semantic derivation accuracy (100-candidate capacity census, 7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
+  `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; 100-slot census exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 prefix stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
   `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,
