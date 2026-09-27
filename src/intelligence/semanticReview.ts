@@ -1,7 +1,8 @@
 import type { SemanticCandidate, SemanticProposalOrigin } from './semanticBootstrap.js';
+import { stableHash } from '../util/hash.js';
 
 export type SemanticReviewActorKind = SemanticProposalOrigin;
-export type SemanticReviewState = 'proposed' | 'reviewed' | 'accepted' | 'rejected';
+export type SemanticReviewState = 'proposed' | 'reviewed' | 'accepted' | 'rejected' | 'superseded' | 'split' | 'merged';
 
 export interface SemanticReviewActor {
   kind: SemanticReviewActorKind;
@@ -21,30 +22,43 @@ export interface SemanticVerificationRecord {
   rationale: string | null;
 }
 
+export interface SemanticMeaningLineage {
+  predecessorMeaningIds: string[];
+  successorMeaningIds: string[];
+}
+
 export type SemanticReviewEvent =
   | { kind: 'amend'; actor: SemanticReviewActor; at: string; rationale: string | null; before: SemanticCandidate['proposal']; after: SemanticCandidate['proposal'] }
   | { kind: 'accept'; actor: SemanticReviewActor; at: string; rationale: string | null }
   | { kind: 'reject'; actor: SemanticReviewActor; at: string; rationale: string | null }
-  | { kind: 'verify'; actor: SemanticReviewActor; at: string; rationale: string | null; evidenceIds: string[] };
+  | { kind: 'verify'; actor: SemanticReviewActor; at: string; rationale: string | null; evidenceIds: string[] }
+  | { kind: 'supersede'; actor: SemanticReviewActor; at: string; rationale: string | null; successorMeaningIds: string[] }
+  | { kind: 'split'; actor: SemanticReviewActor; at: string; rationale: string | null; successorMeaningIds: string[] }
+  | { kind: 'merge'; actor: SemanticReviewActor; at: string; rationale: string | null; successorMeaningId: string; sourceMeaningIds: string[] }
+  | { kind: 'replace'; actor: SemanticReviewActor; at: string; rationale: string | null; successorMeaningId: string };
 
 export interface SemanticMeaningReview {
   version: 1;
+  meaningId: string;
   candidateId: string;
   scope: string;
   proposalRevision: string | null;
   proposal: SemanticCandidate['proposal'];
   proposalProvenance: SemanticCandidate['provenance'];
+  proposalSupport: SemanticCandidate['support'];
   state: SemanticReviewState;
   reviewed: boolean;
   accepted: boolean;
   acceptance: SemanticAcceptanceRecord | null;
   verification: SemanticVerificationRecord | null;
+  lineage: SemanticMeaningLineage;
   history: SemanticReviewEvent[];
   policy: {
     sharedHumanAiReviewSurface: true;
     acceptanceImpliesVerification: false;
     verificationRequiresEvidence: true;
     proposalProvenancePreserved: true;
+    stableMeaningIdentityDistinctFromCandidateIdentity: true;
     persisted: false;
     acceptedGraphAffected: false;
   };
@@ -72,17 +86,17 @@ export type SemanticReviewAction =
       rationale?: string | null;
     };
 
-function actor(value: SemanticReviewActor): SemanticReviewActor {
+export function normalizeSemanticReviewActor(value: SemanticReviewActor): SemanticReviewActor {
   if (!value.id.trim()) throw new Error('semantic review actor id must be non-empty');
   return { kind: value.kind, id: value.id.trim() };
 }
 
-function timestamp(value: string): string {
+export function normalizeSemanticReviewTimestamp(value: string): string {
   if (!value.trim() || Number.isNaN(Date.parse(value))) throw new Error('semantic review action requires an ISO-compatible timestamp');
   return value;
 }
 
-function rationale(value: string | null | undefined): string | null {
+export function normalizeSemanticReviewRationale(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
 }
@@ -91,9 +105,26 @@ function cloneProposal(value: SemanticCandidate['proposal']): SemanticCandidate[
   return { ...value, alternatives: [...value.alternatives] };
 }
 
-export function semanticMeaningReview(candidate: SemanticCandidate): SemanticMeaningReview {
+function cloneSupport(value: SemanticCandidate['support']): SemanticCandidate['support'] {
+  return { ...value, motifKinds: [...value.motifKinds] };
+}
+
+function initialMeaningId(candidate: SemanticCandidate): string {
+  return `semantic-meaning:${stableHash([
+    'semantic-meaning.v1',
+    candidate.id,
+    candidate.provenance.revision ?? 'unknown-revision',
+  ])}`;
+}
+
+export function semanticMeaningReview(
+  candidate: SemanticCandidate,
+  options: { meaningId?: string; predecessorMeaningIds?: string[] } = {},
+): SemanticMeaningReview {
+  const meaningId = options.meaningId?.trim() || initialMeaningId(candidate);
   return {
     version: 1,
+    meaningId,
     candidateId: candidate.id,
     scope: candidate.scope,
     proposalRevision: candidate.provenance.revision,
@@ -105,17 +136,23 @@ export function semanticMeaningReview(candidate: SemanticCandidate): SemanticMea
       edgeIds: [...candidate.provenance.edgeIds],
       evidenceIds: [...candidate.provenance.evidenceIds],
     },
+    proposalSupport: cloneSupport(candidate.support),
     state: 'proposed',
     reviewed: false,
     accepted: false,
     acceptance: null,
     verification: null,
+    lineage: {
+      predecessorMeaningIds: [...new Set(options.predecessorMeaningIds ?? [])].sort(),
+      successorMeaningIds: [],
+    },
     history: [],
     policy: {
       sharedHumanAiReviewSurface: true,
       acceptanceImpliesVerification: false,
       verificationRequiresEvidence: true,
       proposalProvenancePreserved: true,
+      stableMeaningIdentityDistinctFromCandidateIdentity: true,
       persisted: false,
       acceptedGraphAffected: false,
     },
@@ -126,9 +163,13 @@ export function applySemanticReviewAction(
   current: SemanticMeaningReview,
   action: SemanticReviewAction,
 ): SemanticMeaningReview {
-  const who = actor(action.actor);
-  const at = timestamp(action.at);
-  const why = rationale(action.rationale);
+  const who = normalizeSemanticReviewActor(action.actor);
+  const at = normalizeSemanticReviewTimestamp(action.at);
+  const why = normalizeSemanticReviewRationale(action.rationale);
+
+  if (['superseded', 'split', 'merged'].includes(current.state)) {
+    throw new Error('terminal semantic meaning must be followed through lineage rather than reviewed in place');
+  }
 
   if (action.kind === 'amend') {
     if (current.state === 'accepted' || current.state === 'rejected') {
