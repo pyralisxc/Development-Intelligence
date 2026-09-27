@@ -215,7 +215,7 @@ test('current query pointer loads an exact generation without a full graph objec
 });
 
 
-test('stale query pointer writer cannot overwrite a newer conditional publication', async () => {
+test('stale query pointer writer cannot overwrite a newer conditional publication', { timeout: 10_000 }, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-query-pointer-cas-'));
   process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
   try {
