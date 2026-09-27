@@ -621,7 +621,7 @@ function interfaceProjectionItem(
   incident: GraphEdge[],
 ): InterfaceProjectionItem {
   const resolved = incident.filter(edge => edge.status === 'resolved');
-  const links = resolved.slice(0, 8).map(edge => {
+  const links: InterfaceProjectionItem['links'] = resolved.slice(0, 8).map(edge => {
     const outbound = edge.from === node.id;
     const neighborId = outbound ? edge.to : edge.from;
     const neighbor = neighborId ? byId.get(neighborId) : undefined;
