@@ -17,6 +17,7 @@ import {
   loadCanonicalQueryDetailShardsFromPointer,
   publishCanonicalQueryArtifactPointer,
   publishCanonicalQueryArtifacts,
+  releaseCanonicalQueryArtifactSlot,
   type CanonicalQueryArtifactLoadResult,
   type CanonicalQueryArtifactPointer,
   type CanonicalQueryArtifactPointerPublishResult,
@@ -194,7 +195,11 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           // disposable generation from the already-valid stored graph without
           // rebuilding/advancing source truth or touching Git checkout state.
           if (!loaded.record.queryArtifacts && loaded.diagnostics.durable) {
-            const queryArtifactPublication = await publishCanonicalQueryArtifacts(loaded.record.working);
+            const queryArtifactPublication = await publishCanonicalQueryArtifacts(
+              loaded.record.working,
+              null,
+              { repository: revision.repository },
+            );
             let saved = null;
             let queryPointerPublication = null;
             if (queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
@@ -213,7 +218,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
                   loaded.record.working,
                   revision.repository,
                   queryArtifactPublication.ref,
+                  null,
                 );
+              } else {
+                await releaseCanonicalQueryArtifactSlot(project, queryArtifactPublication.ref).catch(() => false);
               }
             }
             if (saved) {
@@ -337,9 +345,11 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           acceptedProjectionMs = elapsedMs(acceptedProjectionStarted);
           return { graph, accepted, currentness };
         });
+        const previousQueryArtifacts = loaded.staleRecord?.queryArtifacts ?? null;
         const queryArtifactPublication = await publishCanonicalQueryArtifacts(
           observed.value.graph,
-          loaded.staleRecord?.queryArtifacts ?? null,
+          previousQueryArtifacts,
+          { repository: revision.repository },
         );
         const record = makeCanonicalGraphRecord({
           project,
@@ -351,9 +361,17 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           queryArtifacts: queryArtifactPublication.state === 'stored' ? queryArtifactPublication.ref : null,
         });
         const saved = await saveCanonicalGraph(record);
-        const queryPointerPublication = saved.saveState === 'stored' && queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref
-          ? await publishCurrentQueryArtifactPointer(observed.value.graph, revision.repository, queryArtifactPublication.ref)
-          : null;
+        let queryPointerPublication = null;
+        if (saved.saveState === 'stored' && queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
+          queryPointerPublication = await publishCurrentQueryArtifactPointer(
+            observed.value.graph,
+            revision.repository,
+            queryArtifactPublication.ref,
+            previousQueryArtifacts,
+          );
+        } else if (queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
+          await releaseCanonicalQueryArtifactSlot(project, queryArtifactPublication.ref).catch(() => false);
+        }
         return {
           ...observed.value,
           revision,
@@ -571,26 +589,41 @@ async function publishCurrentQueryArtifactPointer(
   graph: IntelligenceGraph,
   repository: string,
   ref: CanonicalQueryArtifactGenerationRef,
+  previousRef: CanonicalQueryArtifactGenerationRef | null = null,
 ): Promise<CanonicalQueryArtifactPointerPublishResult> {
+  const observed = graph.repositoryRevision
+    ? await loadCanonicalQueryArtifactPointer({ project: graph.project, repository, revision: graph.repositoryRevision })
+    : null;
+  const priorRef = observed?.pointer?.ref ?? previousRef;
+
   let result = await publishCanonicalQueryArtifactPointer(graph, repository, ref);
   for (let attempt = 0; result.state === 'conflict' && attempt < 2; attempt += 1) {
-    if (!graph.repositoryRevision) return result;
+    if (!graph.repositoryRevision) break;
     const current = await resolveProjectRevision(graph.project);
     if (current.repository !== repository || current.sha !== graph.repositoryRevision) {
-      return {
+      result = {
         ...result,
         state: 'error',
         error: 'Canonical query pointer conflict was not retried because the candidate revision is no longer current',
       };
+      break;
     }
     result = await publishCanonicalQueryArtifactPointer(graph, repository, ref);
   }
   if (result.state === 'conflict') {
-    return {
+    result = {
       ...result,
       state: 'error',
       error: 'Canonical query pointer remained contended after bounded optimistic retries',
     };
+  }
+
+  if (result.state === 'stored') {
+    if (priorRef && priorRef.generationId !== ref.generationId) {
+      await releaseCanonicalQueryArtifactSlot(graph.project, priorRef).catch(() => false);
+    }
+  } else {
+    await releaseCanonicalQueryArtifactSlot(graph.project, ref).catch(() => false);
   }
   return result;
 }
