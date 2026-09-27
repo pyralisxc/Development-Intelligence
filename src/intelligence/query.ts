@@ -3,7 +3,7 @@ import { getProjectConfig } from '../config/registry.js';
 import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus , EvidenceRecord} from '../types.js';
 import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
-import { currentGraph, graphContext, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
+import { currentGraph, graphContext, loadCurrentQueryArtifacts, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 
@@ -375,6 +375,143 @@ function partialGraphForSearch(graph: IntelligenceGraph, shards: Record<string, 
   };
 }
 
+function queryArtifactSearchGraph(
+  index: {
+    graphSchemaVersion: 2;
+    analyzerVersion: string;
+    graphId: string;
+    project: string;
+    revision: string;
+    sourceFingerprint: string | null;
+    topologyFingerprint: string | null;
+    evidenceFingerprint: string | null;
+    explicitValueConflicts: IntelligenceGraph['explicitValueConflicts'];
+  },
+  shards: Record<string, { nodes: GraphNode[]; edges: GraphEdge[]; evidence: EvidenceRecord[] }>,
+): IntelligenceGraph {
+  const nodes = new Map<string, GraphNode>();
+  const edges = new Map<string, GraphEdge>();
+  const evidence = new Map<string, EvidenceRecord>();
+  for (const shard of Object.values(shards)) {
+    for (const node of shard.nodes) nodes.set(node.id, node);
+    for (const edge of shard.edges) edges.set(edge.id, edge);
+    for (const item of shard.evidence) evidence.set(item.id, item);
+  }
+  return {
+    schemaVersion: index.graphSchemaVersion,
+    analyzerVersion: index.analyzerVersion,
+    graphId: index.graphId,
+    project: index.project,
+    role: 'W',
+    createdAt: '',
+    repositoryRevision: index.revision,
+    sourceFingerprint: index.sourceFingerprint,
+    topologyFingerprint: index.topologyFingerprint,
+    evidenceFingerprint: index.evidenceFingerprint,
+    sources: [],
+    evidence: [...evidence.values()],
+    nodes: [...nodes.values()],
+    edges: [...edges.values()],
+    namingDivergences: [],
+    explicitValueConflicts: index.explicitValueConflicts,
+    unmatchedNodeIds: [],
+    unavailableSourceIds: [],
+  };
+}
+
+function queryArtifactCoverage(index: any): Record<string, unknown> | null {
+  const coverage = index?.coverage;
+  if (!coverage || coverage.available !== true) return null;
+  return {
+    trackedFiles: coverage.trackedFiles,
+    eligibleFiles: coverage.eligibleFiles,
+    analyzedFiles: coverage.analyzedFiles,
+    completeFiles: coverage.completeFiles,
+    partialFiles: coverage.partialFiles,
+    failedFiles: coverage.failedFiles,
+    skippedFiles: coverage.skippedFiles,
+    unsupportedFiles: coverage.unsupportedFiles,
+    completeForEligibleSources: coverage.completeForEligibleSources,
+  };
+}
+
+function queryArtifactEnvelopeComplete(index: any): boolean {
+  const coverage = index?.coverage;
+  return Boolean(
+    coverage
+    && Object.prototype.hasOwnProperty.call(coverage, 'available')
+    && Object.prototype.hasOwnProperty.call(coverage, 'trackedFiles')
+    && Object.prototype.hasOwnProperty.call(coverage, 'completeFiles')
+    && Object.prototype.hasOwnProperty.call(coverage, 'unsupportedFiles')
+    && Array.isArray(index?.explicitValueConflicts),
+  );
+}
+
+async function adaptiveCurrentSearch(
+  input: SearchGraphInput,
+  queries: string[],
+): Promise<{ result: Record<string, unknown> | null; reason: string; loadMs: number; selectedBuckets: number }> {
+  if (input.ref || input.graphId) {
+    return { result: null, reason: 'explicit-graph-context-requires-full-canonical', loadMs: 0, selectedBuckets: 0 };
+  }
+  if (!queries.length || queries.some(query => !query.trim())) {
+    return { result: null, reason: 'broad-empty-query-requires-full-canonical', loadMs: 0, selectedBuckets: 0 };
+  }
+
+  const loaded = await loadCurrentQueryArtifacts(input.project, queries);
+  if (loaded.state !== 'hit' || !loaded.index) {
+    return {
+      result: null,
+      reason: loaded.reason ?? `query-artifacts-${loaded.state}`,
+      loadMs: loaded.loadMs,
+      selectedBuckets: loaded.bucketIds.length,
+    };
+  }
+  if (!queryArtifactEnvelopeComplete(loaded.index)) {
+    return {
+      result: null,
+      reason: 'query-index-missing-search-envelope-metadata',
+      loadMs: loaded.loadMs,
+      selectedBuckets: loaded.bucketIds.length,
+    };
+  }
+  if (loaded.bucketIds.length > 32) {
+    return {
+      result: null,
+      reason: 'candidate-bucket-count-exceeds-adaptive-bound',
+      loadMs: loaded.loadMs,
+      selectedBuckets: loaded.bucketIds.length,
+    };
+  }
+
+  const graph = queryArtifactSearchGraph(loaded.index as any, loaded.shards);
+  const common = {
+    project: input.project,
+    graphId: loaded.index.graphId,
+    revision: loaded.index.revision,
+    role: 'W',
+    coverage: queryArtifactCoverage(loaded.index),
+    explicitValueConflicts: loaded.index.explicitValueConflicts,
+    queryPlane: {
+      mode: 'adaptive',
+      authoritative: true,
+      selectedBuckets: loaded.bucketIds.length,
+      bucketIds: loaded.bucketIds,
+      loadMs: loaded.loadMs,
+      reason: 'global-index-proved-bounded-search-envelope',
+    },
+    adaptiveShadow: {
+      state: 'not-run',
+      parity: null,
+      reason: 'adaptive-query-plane-served-without-full-canonical-materialization',
+    },
+  };
+  const result = queries.length > 1
+    ? { ...common, results: queries.map(query => searchGraphResult(graph, input, query)) }
+    : { ...common, ...searchGraphResult(graph, input, queries[0]) };
+  return { result, reason: 'adaptive', loadMs: loaded.loadMs, selectedBuckets: loaded.bucketIds.length };
+}
+
 function idSetEqual(left: Array<{ id: string }>, right: Array<{ id: string }>): boolean {
   if (left.length !== right.length) return false;
   const ids = new Set(left.map(item => item.id));
@@ -429,6 +566,17 @@ async function adaptiveSearchShadow(
 
 export async function searchGraph(input: SearchGraphInput): Promise<Record<string, unknown>> {
   if (input.query && input.queries?.length) throw new Error('Use either query or queries, not both');
+
+  const queries = input.queries
+    ? input.queries.map(query => query.trim()).filter(Boolean)
+    : input.query?.trim()
+      ? [input.query.trim()]
+      : [];
+  if (input.queries && !queries.length) throw new Error('queries must contain at least one non-empty string');
+
+  const adaptive = await adaptiveCurrentSearch(input, queries);
+  if (adaptive.result) return adaptive.result;
+
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const common = {
     project: input.project,
@@ -437,10 +585,15 @@ export async function searchGraph(input: SearchGraphInput): Promise<Record<strin
     role: graph.role,
     coverage: coverageSummary(graph),
     explicitValueConflicts: graph.explicitValueConflicts,
+    queryPlane: {
+      mode: 'full',
+      authoritative: true,
+      selectedBuckets: adaptive.selectedBuckets,
+      loadMs: adaptive.loadMs,
+      reason: adaptive.reason,
+    },
   };
   if (input.queries) {
-    const queries = input.queries.map(query => query.trim()).filter(Boolean);
-    if (!queries.length) throw new Error('queries must contain at least one non-empty string');
     const shadow = await adaptiveSearchShadow(graph, input, queries);
     return { ...common, adaptiveShadow: shadow, results: queries.map(query => searchGraphResult(graph, input, query)) };
   }

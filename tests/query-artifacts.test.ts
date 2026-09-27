@@ -142,3 +142,22 @@ test('source bucket assignment remains stable as unrelated sources are added', (
   buildCanonicalQueryArtifacts(value);
   assert.equal(queryBucketForSource('repo:src/a.ts'), before);
 });
+
+
+test('global query index preserves search_graph coverage and explicit conflict envelope', () => {
+  const value = graph();
+  value.explicitValueConflicts = [{
+    entityId: 'node:panel',
+    leftSourceId: 'repo:src/a.ts',
+    rightSourceId: 'repo:src/b.ts',
+    key: 'mode',
+    leftValue: 'a',
+    rightValue: 'b',
+  }];
+  const artifacts = buildCanonicalQueryArtifacts(value);
+  assert.equal(artifacts.index.coverage.available, true);
+  assert.equal(artifacts.index.coverage.trackedFiles, value.coverage?.trackedFiles);
+  assert.equal(artifacts.index.coverage.completeFiles, value.coverage?.completeFiles);
+  assert.equal(artifacts.index.coverage.unsupportedFiles, value.coverage?.unsupportedFiles);
+  assert.deepEqual(artifacts.index.explicitValueConflicts, value.explicitValueConflicts);
+});

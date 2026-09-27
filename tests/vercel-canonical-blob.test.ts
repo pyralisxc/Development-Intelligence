@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
-import { clearGraphCache, graphStatus, loadCurrentQueryArtifacts } from '../src/intelligence/service.js';
+import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
 import { searchGraph } from '../src/intelligence/query.js';
 import { runChecked } from '../src/util/process.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../src/vercelRequestContext.js';
@@ -124,27 +124,27 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.ok(firstRecord.queryArtifacts);
     assert.equal(firstRecord.queryArtifacts.slot, 0);
     const firstBlobCount = item.blob.blobs.size;
-    const shadowedSearch = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
-    assert.equal(shadowedSearch.adaptiveShadow.state, 'hit');
-    assert.equal(shadowedSearch.adaptiveShadow.parity, true);
-    assert.ok(shadowedSearch.adaptiveShadow.selectedBuckets >= 1);
-    assert.ok(shadowedSearch.nodes.some((node: any) => String(node.id).includes('outlier')), 'full answer should include disconnected outlier match');
-    assert.deepEqual(shadowedSearch.adaptiveShadow.comparisons[0].missingNodes, []);
-    assert.deepEqual(shadowedSearch.adaptiveShadow.comparisons[0].missingEdges, []);
+    const adaptiveSearch = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
+    assert.equal(adaptiveSearch.queryPlane.mode, 'adaptive');
+    assert.equal(adaptiveSearch.queryPlane.authoritative, true);
+    assert.ok(adaptiveSearch.queryPlane.selectedBuckets >= 1);
+    assert.equal(adaptiveSearch.adaptiveShadow.parity, null);
+    assert.ok(adaptiveSearch.nodes.some((node: any) => String(node.id).includes('outlier')), 'adaptive answer should include disconnected outlier match');
     clearGraphCache(item.project);
     await fs.rm(item.scratch, { recursive: true, force: true });
     await fs.writeFile(item.scratch, 'checkout must not touch this path');
 
     const queryRequestStart = item.blob.requests.length;
-    const queryOnly = await loadCurrentQueryArtifacts(item.project, ['value']);
-    assert.equal(queryOnly.state, 'hit');
-    assert.ok(queryOnly.index);
-    assert.ok(queryOnly.bucketIds.length > 0);
+    const queryOnly = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
+    assert.equal(queryOnly.queryPlane.mode, 'adaptive');
+    assert.equal(queryOnly.queryPlane.authoritative, true);
+    assert.ok(queryOnly.queryPlane.selectedBuckets > 0);
+    assert.ok(queryOnly.nodes.some((node: any) => String(node.id).includes('outlier')));
     const queryRequests = item.blob.requests.slice(queryRequestStart);
     assert.equal(
       queryRequests.some(request => request.pathname === `/private/${canonicalGraphBlobPath(item.project)}`),
       false,
-      'query-plane bootstrap must not read the full canonical graph blob',
+      'authoritative narrow search must not read the full canonical graph blob',
     );
 
     const second = await graphStatus(item.project) as any;
@@ -290,6 +290,7 @@ test('adaptive search shadow fails closed on corrupt query artifacts while full 
 
     const result = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
     assert.ok(result.nodeTotal >= 1, 'full canonical search must still answer');
+    assert.equal(result.queryPlane.mode, 'full');
     assert.equal(result.adaptiveShadow.parity, null);
     assert.ok(['invalid', 'error', 'miss'].includes(result.adaptiveShadow.state));
   } finally {

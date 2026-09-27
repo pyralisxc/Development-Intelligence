@@ -1,5 +1,6 @@
 import type {
   EvidenceRecord,
+  ExplicitValueConflict,
   GraphEdge,
   GraphNode,
   GraphNodeLayer,
@@ -71,13 +72,18 @@ export interface CanonicalQueryIndexArtifact {
   semanticNodes: CanonicalQuerySemanticNode[];
   semanticEdges: CanonicalQuerySemanticEdge[];
   coverage: {
+    available: boolean;
     completeForEligibleSources: boolean;
+    trackedFiles: number | null;
     eligibleFiles: number | null;
     analyzedFiles: number | null;
+    completeFiles: number | null;
     partialFiles: number | null;
     failedFiles: number | null;
     skippedFiles: number | null;
+    unsupportedFiles: number | null;
   };
+  explicitValueConflicts: ExplicitValueConflict[];
   counts: {
     nodes: number;
     edges: number;
@@ -164,24 +170,32 @@ function recordIncludes(
 function coverageSummary(graph: IntelligenceGraph): CanonicalQueryIndexArtifact['coverage'] {
   const coverage = graph.coverage;
   if (!coverage) return {
+    available: false,
     completeForEligibleSources: false,
+    trackedFiles: null,
     eligibleFiles: null,
     analyzedFiles: null,
+    completeFiles: null,
     partialFiles: null,
     failedFiles: null,
     skippedFiles: null,
+    unsupportedFiles: null,
   };
   return {
+    available: true,
     completeForEligibleSources:
       coverage.failedFiles === 0
       && coverage.partialFiles === 0
       && coverage.skippedFiles === 0
       && coverage.analyzedFiles === coverage.eligibleFiles,
+    trackedFiles: coverage.trackedFiles,
     eligibleFiles: coverage.eligibleFiles,
     analyzedFiles: coverage.analyzedFiles,
+    completeFiles: coverage.completeFiles,
     partialFiles: coverage.partialFiles,
     failedFiles: coverage.failedFiles,
     skippedFiles: coverage.skippedFiles,
+    unsupportedFiles: coverage.unsupportedFiles,
   };
 }
 
@@ -317,6 +331,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
       semanticNodes,
       semanticEdges,
       coverage: coverageSummary(graph),
+      explicitValueConflicts: graph.explicitValueConflicts,
       counts: {
         nodes: graph.nodes.length,
         edges: graph.edges.length,
