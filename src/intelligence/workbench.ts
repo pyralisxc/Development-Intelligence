@@ -725,19 +725,25 @@ export async function interfaceProjection(input: {
     const touches = Boolean((edge.from && scopedSet.has(edge.from)) || (edge.to && scopedSet.has(edge.to)));
     if (!touches) continue;
     touchingEdges.push(edge);
-    if (edge.from && scopedSet.has(edge.from)) {
-      const current = incidentByNode.get(edge.from) ?? [];
+    for (const endpoint of [edge.from, edge.to]) {
+      if (!endpoint) continue;
+      const current = incidentByNode.get(endpoint) ?? [];
       current.push(edge);
-      incidentByNode.set(edge.from, current);
-    }
-    if (edge.to && scopedSet.has(edge.to) && edge.to !== edge.from) {
-      const current = incidentByNode.get(edge.to) ?? [];
-      current.push(edge);
-      incidentByNode.set(edge.to, current);
+      incidentByNode.set(endpoint, current);
     }
   }
 
-  const projectNodes = (kinds: Set<string>) => nodes
+  const projectionCandidates = new Map(nodes.map(node => [node.id, node]));
+  for (const edge of touchingEdges) {
+    if (edge.status !== 'resolved') continue;
+    for (const endpoint of [edge.from, edge.to]) {
+      if (!endpoint || projectionCandidates.has(endpoint)) continue;
+      const node = byId.get(endpoint);
+      if (node) projectionCandidates.set(endpoint, node);
+    }
+  }
+
+  const projectNodes = (kinds: Set<string>) => [...projectionCandidates.values()]
     .filter(node => kinds.has(node.kind))
     .sort((a, b) =>
       (incidentByNode.get(b.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
