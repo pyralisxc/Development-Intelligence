@@ -4,7 +4,7 @@ import { deriveMotifs, type DerivedMotifKind } from './motifs.js';
 
 export type SemanticCandidateKind = 'feature' | 'capability' | 'surface' | 'domain';
 export type SemanticProposalOrigin = 'intrinsic-derivation' | 'ai-model' | 'human' | 'repository-declaration' | 'imported-assertion';
-export type SemanticEvidenceFamily = 'structure' | 'relationship' | 'documentation' | 'interface' | 'state' | 'api' | 'persistence' | 'motif';
+export type SemanticEvidenceFamily = 'structure' | 'relationship' | 'interface' | 'state' | 'api' | 'persistence' | 'motif';
 
 export interface SemanticCandidate {
   id: string;
@@ -146,7 +146,6 @@ function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph): { fami
   if (group.files.size > 0) families.add('structure');
   const resolvedEdges = group.edges.filter(edge => edge.status === 'resolved');
   if (resolvedEdges.length > 0) families.add('relationship');
-  if (group.nodes.some(node => node.kind === 'document-statement')) families.add('documentation');
 
   const text = group.nodes.map(nodeSearchText).join('\n');
   if (group.nodes.some(node => /(?:ui-element|component-prop|navigation-call|html-element|css-class-reference|route)/u.test(node.kind))) families.add('interface');
@@ -208,17 +207,6 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     current.files.add(file);
     groups.set(scoped.scope, current);
     nodeScope.set(node.id, scoped.scope);
-  }
-
-  // Documentation is evidence, not ownership. An exact source-scope mention may
-  // strengthen an already observed candidate, but documentation alone never creates
-  // a candidate or changes acceptance authority.
-  const documentation = graph.nodes.filter(node => node.kind === 'document-statement');
-  for (const group of groups.values()) {
-    for (const statement of documentation) {
-      const text = [statement.name ?? '', statement.raw, JSON.stringify(statement.value ?? null)].join(' ');
-      if (text.includes(group.scope)) group.nodes.push(statement);
-    }
   }
 
   for (const edge of graph.edges) {
