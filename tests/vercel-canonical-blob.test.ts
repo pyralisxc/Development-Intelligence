@@ -23,6 +23,8 @@ async function readRequestBody(request: any): Promise<any> {
 }
 async function startBlobServer() {
   const blobs = new Map<string, any>();
+  const etags = new Map<string, string>();
+  let etagSequence = 0;
   const requests: Array<{ method: string; pathname: string; query: string; headers: Record<string, string | string[] | undefined> }> = [];
   let origin = '';
   const server = http.createServer(async (request: any, response: any) => {
@@ -43,10 +45,27 @@ async function startBlobServer() {
       }
       assert.equal(request.headers['x-vercel-blob-access'], 'private');
       assert.equal(request.headers['x-add-random-suffix'], '0');
-      assert.equal(request.headers['x-allow-overwrite'], '1');
+      const allowOverwrite = String(request.headers['x-allow-overwrite'] ?? '');
+      assert.ok(['0', '1'].includes(allowOverwrite), `unexpected overwrite mode: ${allowOverwrite}`);
+      const expectedEtag = typeof request.headers['x-if-match'] === 'string' ? request.headers['x-if-match'] : null;
+      const currentEtag = etags.get(pathname) ?? null;
+      if (allowOverwrite === '0' && blobs.has(pathname)) {
+        response.statusCode = 409;
+        response.end('conflict');
+        return;
+      }
+      if (expectedEtag !== null && expectedEtag !== currentEtag) {
+        response.statusCode = 412;
+        if (currentEtag) response.setHeader('etag', currentEtag);
+        response.end('precondition failed');
+        return;
+      }
       const contentType = String(request.headers['x-content-type'] ?? '');
       assert.ok(['application/json', 'application/gzip'].includes(contentType), `unexpected Blob content type: ${contentType}`);
       blobs.set(pathname, await readRequestBody(request));
+      const etag = `"mock-${++etagSequence}"`;
+      etags.set(pathname, etag);
+      response.setHeader('etag', etag);
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ url: `${origin}/private/${pathname}`, downloadUrl: `${origin}/private/${pathname}?download=1`, pathname, contentType }));
       return;
@@ -58,6 +77,8 @@ async function startBlobServer() {
       if (value === undefined) { response.statusCode = 404; response.end('not found'); return; }
       response.setHeader('content-type', pathname.endsWith('.gz') ? 'application/gzip' : 'application/json');
       response.setHeader('content-length', String(value.byteLength));
+      const etag = etags.get(pathname);
+      if (etag) response.setHeader('etag', etag);
       response.end(value); return;
     }
     response.statusCode = 404; response.end('not found');
