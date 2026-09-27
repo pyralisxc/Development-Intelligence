@@ -94,10 +94,18 @@ const GENERIC_FILE_STEMS = new Set(['index', 'main', 'mod', 'module', 'app', 'ap
 const TEST_OR_DOC_PATH = /(^|\/)(?:tests?|__tests__|fixtures?|docs?|examples?)(?:\/|$)/iu;
 
 function sourceFile(locator: string): string | null {
-  const clean = locator.replace(/^repo:/u, '').split('#', 1)[0] ?? locator;
-  const match = /^(.*?)(?::\d+(?::.*)?)?$/u.exec(clean);
-  const path = (match?.[1] ?? clean).replace(/^\.\//u, '').replace(/\\/gu, '/');
-  return path.includes('/') || /\.[A-Za-z0-9]+$/u.test(path) ? path : null;
+  const clean = (locator.replace(/^repo:/u, '').split('#', 1)[0] ?? locator)
+    .replace(/^\.\//u, '')
+    .replace(/\\/gu, '/');
+
+  // Graph representations may append semantic locator suffixes that are not
+  // line numbers (for example :selector:..., :state-write, :navigation).
+  // Resolve identity to the physical source file before semantic grouping so
+  // observations from one file cannot manufacture pseudo-file scopes.
+  const physicalFile = /^(.+\.[A-Za-z0-9]+)(?::.*)?$/u.exec(clean)?.[1] ?? null;
+  if (physicalFile) return physicalFile;
+
+  return clean.includes('/') ? clean : null;
 }
 
 function stem(value: string): string {

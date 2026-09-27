@@ -336,3 +336,32 @@ test('semantic capacity expands to 100 without quota filling and remains prefix-
   assert.equal(overRequested.capacity.requestedLimit, 100, 'hard limit should clamp oversized requests');
   assert.deepEqual(overRequested.candidates.map(candidate => candidate.id), at100.candidates.map(candidate => candidate.id));
 });
+
+
+test('representation locator suffixes cannot manufacture semantic pseudo-file scopes', () => {
+  const fixture = graph();
+  fixture.nodes = [
+    node('file:editor-a', 'file', 'src/features/editor/Editor.tsx'),
+    node('symbol:editor-a', 'function', 'src/features/editor/Editor.tsx:2', 'Editor'),
+    node('ui:editor-a', 'ui-element', 'src/features/editor/Editor.tsx:selector:.editor-shell', 'Editor shell', 'representation'),
+    node('state:editor-a', 'state-binding', 'src/features/editor/Editor.tsx:state-write:selection', 'selection', 'representation'),
+    node('file:editor-b', 'file', 'src/features/editor/editorState.ts'),
+    node('symbol:editor-b', 'function', 'src/features/editor/editorState.ts:2', 'updateEditorState'),
+    node('nav:editor-b', 'navigation-call', 'src/features/editor/editorState.ts:navigation:/studio', '/studio', 'representation'),
+  ];
+  fixture.edges = [
+    edge('editor-a-contains', 'file:editor-a', 'symbol:editor-a', 'contains'),
+    edge('editor-a-ui', 'symbol:editor-a', 'ui:editor-a', 'contains'),
+    edge('editor-a-state', 'symbol:editor-a', 'state:editor-a', 'state-write'),
+    edge('editor-b-contains', 'file:editor-b', 'symbol:editor-b', 'contains'),
+    edge('editor-b-nav', 'symbol:editor-b', 'nav:editor-b', 'invokes'),
+    edge('editor-link', 'symbol:editor-a', 'symbol:editor-b', 'calls'),
+  ];
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  assert.equal(result.capacity.groupedScopeCount, 1, 'all observations must collapse to the physical editor files and one feature scope');
+  assert.equal(result.capacity.eligibleCandidateCount, 1);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0]?.scope, 'src/features/editor');
+  assert.equal(result.candidates[0]?.support.fileCount, 2, 'semantic support must count physical files, not locator suffixes');
+});
