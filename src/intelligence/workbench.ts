@@ -541,7 +541,7 @@ export async function scopeOrientation(input: {
     const external = byId.get(externalId);
     return {
       edgeId: edge.id,
-      direction: outbound ? 'outbound' : 'inbound',
+      direction: outbound ? ('outbound' as const) : ('inbound' as const),
       kind: edge.kind,
       external: { id: externalId, name: displayName(external, externalId), kind: external?.kind ?? 'unknown', locator: external?.locator ?? null },
     };
