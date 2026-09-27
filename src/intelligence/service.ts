@@ -14,9 +14,11 @@ import {
   loadCanonicalQueryArtifactPointer,
   loadCanonicalQueryArtifacts,
   loadCanonicalQueryArtifactsFromPointer,
+  loadCanonicalQueryDetailShardsFromPointer,
   publishCanonicalQueryArtifactPointer,
   publishCanonicalQueryArtifacts,
   type CanonicalQueryArtifactLoadResult,
+  type CanonicalQueryArtifactPointer,
   type CanonicalQueryArtifactPointerPublishResult,
 } from './queryArtifactStore.js';
 import { candidateQueryBuckets } from './queryArtifacts.js';
@@ -68,6 +70,7 @@ export interface QueryArtifactShadowLoad {
   bucketIds: string[];
   index: CanonicalQueryArtifactLoadResult['index'] | null;
   shards: NonNullable<CanonicalQueryArtifactLoadResult['shards']>;
+  pointer?: CanonicalQueryArtifactPointer;
   reason?: string;
 }
 
@@ -569,6 +572,34 @@ export async function loadCurrentQueryArtifacts(
     bucketIds,
     index: detailLoad.index ?? indexLoad.index,
     shards: detailLoad.shards ?? {},
+    pointer,
+    ...(detailLoad.error ? { reason: detailLoad.error } : {}),
+  };
+}
+
+export async function loadCurrentQueryArtifactBuckets(
+  established: QueryArtifactShadowLoad,
+  bucketIds: string[],
+): Promise<QueryArtifactShadowLoad> {
+  if (established.state !== 'hit' || !established.pointer || !established.index) {
+    return {
+      state: 'unavailable',
+      loadMs: 0,
+      bucketIds: [],
+      index: established.index,
+      shards: {},
+      reason: 'query-artifact-expansion-requires-an-established-current-generation',
+    };
+  }
+  const selected = [...new Set(bucketIds)].sort();
+  const detailLoad = await loadCanonicalQueryDetailShardsFromPointer(established.pointer, established.index, selected);
+  return {
+    state: detailLoad.state,
+    loadMs: detailLoad.loadMs,
+    bucketIds: selected,
+    index: established.index,
+    shards: detailLoad.shards ?? {},
+    pointer: established.pointer,
     ...(detailLoad.error ? { reason: detailLoad.error } : {}),
   };
 }

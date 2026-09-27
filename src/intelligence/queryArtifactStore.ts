@@ -367,6 +367,73 @@ export async function loadCanonicalQueryArtifacts(
 }
 
 
+export async function loadCanonicalQueryDetailShardsFromPointer(
+  pointer: CanonicalQueryArtifactPointer,
+  index: CanonicalQueryIndexArtifact,
+  bucketIds: string[],
+): Promise<CanonicalQueryArtifactLoadResult> {
+  const startedAt = Date.now();
+  const storage = canonicalDerivedStorageInfo();
+  if (!storage.durable) return { state: 'not-configured', loadMs: 0 };
+  try {
+    if (
+      index.formatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
+      || index.project !== pointer.project
+      || index.revision !== pointer.revision
+      || index.graphId !== pointer.graphId
+    ) throw new Error('Canonical query artifact expansion index identity is invalid');
+
+    const identity: CanonicalQueryArtifactIdentity = {
+      project: pointer.project,
+      repositoryRevision: pointer.revision,
+      analyzerVersion: pointer.analyzerVersion,
+      schemaVersion: pointer.graphSchemaVersion,
+      graphId: pointer.graphId,
+      sourceFingerprint: pointer.sourceFingerprint,
+      topologyFingerprint: pointer.topologyFingerprint,
+      evidenceFingerprint: pointer.evidenceFingerprint,
+    };
+    const manifestPath = `${slotPrefix(pointer.ref.slot)}/manifest.json`;
+    const manifestBody = await readCanonicalDerivedObject(pointer.project, manifestPath, 4 * 1024 * 1024);
+    if (!manifestBody) return { state: 'miss', loadMs: Math.max(0, Date.now() - startedAt) };
+    const manifestText = Buffer.from(manifestBody).toString('utf8');
+    if (sha256(manifestText) !== pointer.ref.manifestSha256) {
+      throw new Error('Canonical query artifact expansion manifest integrity does not match the current pointer');
+    }
+    const manifest = validateManifest(JSON.parse(manifestText), identity, pointer.ref);
+    const populated = populatedQueryBuckets(index);
+    if (populated.join(',') !== manifest.bucketIds.join(',')) {
+      throw new Error('Canonical query artifact expansion manifest does not match the established index');
+    }
+
+    const shards: Record<string, CanonicalQueryDetailShard> = {};
+    for (const bucket of [...new Set(bucketIds)].sort()) {
+      const item = manifest.shards[bucket];
+      if (!item) {
+        const summary = index.buckets[bucket];
+        if (summary && summary.nodeCount === 0 && summary.edgeCount === 0 && summary.evidenceCount === 0) continue;
+        throw new Error(`Canonical query artifact expansion shard is not declared: ${bucket}`);
+      }
+      const shard = await readDescriptor(pointer.project, item) as CanonicalQueryDetailShard;
+      if (
+        shard.formatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
+        || shard.project !== pointer.project
+        || shard.revision !== pointer.revision
+        || shard.graphId !== pointer.graphId
+        || shard.bucket !== bucket
+      ) throw new Error(`Canonical query artifact expansion shard identity is invalid: ${bucket}`);
+      shards[bucket] = shard;
+    }
+    return { state: 'hit', loadMs: Math.max(0, Date.now() - startedAt), index, shards };
+  } catch (error) {
+    return {
+      state: 'invalid',
+      loadMs: Math.max(0, Date.now() - startedAt),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function publishCanonicalQueryArtifactPointer(
   graph: IntelligenceGraph,
   repository: string,

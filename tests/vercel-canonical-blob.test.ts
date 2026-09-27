@@ -7,7 +7,8 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
 import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
-import { searchGraph } from '../src/intelligence/query.js';
+import { searchGraph, traceGraph } from '../src/intelligence/query.js';
+import { queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
 import { runChecked } from '../src/util/process.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../src/vercelRequestContext.js';
 
@@ -106,6 +107,14 @@ async function fixture() {
   await fs.writeFile(path.join(source, 'src', 'value.ts'), "export const value = 1;\n");
   await fs.writeFile(path.join(source, 'src', 'use.ts'), "import { value } from './value.js';\nexport const doubled = value * 2;\n");
   await fs.writeFile(path.join(source, 'src', 'outlier.ts'), "export function valueOutlier() { return 7; }\n");
+  const traceEntryFile = 'trace-entry.ts';
+  let traceTargetFile = 'trace-target-0.ts';
+  for (let index = 0; queryBucketForSource(`repo:src/${traceEntryFile}`) === queryBucketForSource(`repo:src/${traceTargetFile}`); index += 1) {
+    traceTargetFile = `trace-target-${index + 1}.ts`;
+  }
+  const traceTargetModule = traceTargetFile.slice(0, -3);
+  await fs.writeFile(path.join(source, 'src', traceTargetFile), "export function traceTarget() { return 11; }\n");
+  await fs.writeFile(path.join(source, 'src', traceEntryFile), `import { traceTarget } from './${traceTargetModule}.js';\nexport function traceEntry() { return traceTarget(); }\n`);
   const firstSha = await commit(source, 'initial');
   await runChecked('git', ['-C', source, 'remote', 'add', 'origin', pathToFileURL(remote).href]);
   await runChecked('git', ['-C', source, 'push', '-u', 'origin', 'main']);
@@ -151,6 +160,32 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.ok(adaptiveSearch.queryPlane.selectedBuckets >= 1);
     assert.equal(adaptiveSearch.adaptiveShadow.parity, null);
     assert.ok(adaptiveSearch.nodes.some((node: any) => String(node.id).includes('outlier')), 'adaptive answer should include disconnected outlier match');
+
+    const adaptiveTrace = await traceGraph({ project: item.project, node: 'traceEntry', direction: 'outbound', depth: 2, limit: 100 }) as any;
+    assert.equal(adaptiveTrace.queryPlane.mode, 'adaptive');
+    assert.equal(adaptiveTrace.queryPlane.authoritative, true);
+    assert.ok(adaptiveTrace.queryPlane.selectedBuckets >= 2, 'cross-file trace should expand across at least two detail buckets');
+    assert.ok(adaptiveTrace.nodes.some((node: any) => node.name === 'traceTarget'));
+    const fullTrace = await traceGraph({
+      project: item.project,
+      graphId: first.working.graphId,
+      node: 'traceEntry',
+      direction: 'outbound',
+      depth: 2,
+      limit: 100,
+    }) as any;
+    assert.equal(fullTrace.queryPlane.mode, 'full');
+    assert.deepEqual(
+      [...adaptiveTrace.nodes.map((node: any) => node.id)].sort(),
+      [...fullTrace.nodes.map((node: any) => node.id)].sort(),
+      'adaptive trace node recall must match the full canonical oracle',
+    );
+    assert.deepEqual(
+      [...adaptiveTrace.edges.map((edge: any) => edge.id)].sort(),
+      [...fullTrace.edges.map((edge: any) => edge.id)].sort(),
+      'adaptive trace edge recall must match the full canonical oracle',
+    );
+
     clearGraphCache(item.project);
     await fs.rm(item.scratch, { recursive: true, force: true });
     await fs.writeFile(item.scratch, 'checkout must not touch this path');
@@ -166,6 +201,19 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
       queryRequests.some(request => request.pathname === `/private/${canonicalGraphBlobPath(item.project)}`),
       false,
       'authoritative narrow search must not read the full canonical graph blob',
+    );
+
+    const traceRequestStart = item.blob.requests.length;
+    const traceOnly = await traceGraph({ project: item.project, node: 'traceEntry', direction: 'outbound', depth: 2, limit: 100 }) as any;
+    assert.equal(traceOnly.queryPlane.mode, 'adaptive');
+    assert.equal(traceOnly.queryPlane.authoritative, true);
+    assert.ok(traceOnly.queryPlane.selectedBuckets >= 2);
+    assert.ok(traceOnly.nodes.some((node: any) => node.name === 'traceTarget'));
+    const traceRequests = item.blob.requests.slice(traceRequestStart);
+    assert.equal(
+      traceRequests.some(request => request.pathname === `/private/${canonicalGraphBlobPath(item.project)}`),
+      false,
+      'authoritative adaptive trace must not read the full canonical graph blob',
     );
 
     const second = await graphStatus(item.project) as any;
