@@ -17,6 +17,7 @@ import {
   publishCanonicalQueryArtifactPointer,
   publishCanonicalQueryArtifacts,
   type CanonicalQueryArtifactLoadResult,
+  type CanonicalQueryArtifactPointerPublishResult,
 } from './queryArtifactStore.js';
 import { candidateQueryBuckets } from './queryArtifacts.js';
 
