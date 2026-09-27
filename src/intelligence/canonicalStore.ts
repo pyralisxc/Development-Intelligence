@@ -17,6 +17,15 @@ export interface CanonicalGraphCurrentness {
   checkpointError: string | null;
 }
 
+export interface CanonicalQueryArtifactGenerationRef {
+  formatVersion: 1;
+  artifactFormatVersion: number;
+  generationId: string;
+  slot: number;
+  objectCount: number;
+  manifestSha256: string;
+}
+
 export interface CanonicalGraphRecord {
   formatVersion: 1;
   project: string;
@@ -31,6 +40,7 @@ export interface CanonicalGraphRecord {
   working: IntelligenceGraph;
   accepted: IntelligenceGraph | null;
   currentness: CanonicalGraphCurrentness;
+  queryArtifacts?: CanonicalQueryArtifactGenerationRef | null;
 }
 
 export type CanonicalLoadState = 'not-configured' | 'hit' | 'stale' | 'miss' | 'invalid' | 'error';
@@ -63,6 +73,7 @@ interface BlobBackend {
 type CanonicalBackend = FileBackend | BlobBackend | null;
 
 const MAX_CANONICAL_BYTES = 200 * 1024 * 1024;
+const MAX_DERIVED_OBJECT_BYTES = 64 * 1024 * 1024;
 const BLOB_API_VERSION = '12';
 
 function configuredRoot(): string | null {
@@ -106,7 +117,7 @@ function backend(): CanonicalBackend {
   return configuredBlobBackend();
 }
 
-function projectStorageKey(project: string): string {
+export function canonicalProjectStorageKey(project: string): string {
   const readable = project.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 72) || 'project';
   return `${readable}-${stableHash([project]).slice(0, 12)}`;
 }
@@ -119,11 +130,38 @@ export function canonicalGraphFilePath(project: string, revision: string): strin
   const root = configuredRoot();
   if (!root) return null;
   assertExactRevision(revision);
-  return path.join(root, projectStorageKey(project), `${revision}.json`);
+  return path.join(root, canonicalProjectStorageKey(project), `${revision}.json`);
 }
 
 export function canonicalGraphBlobPath(project: string): string {
-  return `development-intelligence/canonical/${projectStorageKey(project)}/current.json`;
+  return `development-intelligence/canonical/${canonicalProjectStorageKey(project)}/current.json`;
+}
+
+function assertDerivedRelativePath(relativePath: string): void {
+  if (!relativePath || relativePath.startsWith('/') || relativePath.includes('..') || relativePath.includes('\\')) {
+    throw new Error('Canonical derived object path must be a safe relative path');
+  }
+  for (const segment of relativePath.split('/')) {
+    if (!segment || !/^[A-Za-z0-9._-]+$/u.test(segment)) throw new Error('Canonical derived object path contains an invalid segment');
+  }
+}
+
+export function canonicalDerivedObjectBlobPath(project: string, relativePath: string): string {
+  assertDerivedRelativePath(relativePath);
+  return `development-intelligence/canonical/${canonicalProjectStorageKey(project)}/derived/${relativePath}`;
+}
+
+export function canonicalDerivedObjectFilePath(project: string, relativePath: string): string | null {
+  const root = configuredRoot();
+  if (!root) return null;
+  assertDerivedRelativePath(relativePath);
+  return path.join(root, canonicalProjectStorageKey(project), 'derived', ...relativePath.split('/'));
+}
+
+export function canonicalDerivedStorageInfo(): { mode: CanonicalPersistenceDiagnostics['mode']; durable: boolean } {
+  const selected = backend();
+  const diagnostics = baseDiagnostics(selected);
+  return { mode: diagnostics.mode, durable: diagnostics.durable };
 }
 
 function baseDiagnostics(selected: CanonicalBackend = backend()): CanonicalPersistenceDiagnostics {
@@ -159,6 +197,27 @@ function recordIdentity(value: unknown): { formatVersion?: unknown; project?: un
     : null;
 }
 
+
+function validQueryArtifactRef(value: unknown): value is CanonicalQueryArtifactGenerationRef {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return item.formatVersion === 1
+    && typeof item.artifactFormatVersion === 'number'
+    && Number.isInteger(item.artifactFormatVersion)
+    && item.artifactFormatVersion > 0
+    && typeof item.generationId === 'string'
+    && /^[0-9a-f]{24}$/u.test(item.generationId)
+    && typeof item.slot === 'number'
+    && Number.isInteger(item.slot)
+    && item.slot >= 0
+    && item.slot < 4
+    && typeof item.objectCount === 'number'
+    && Number.isInteger(item.objectCount)
+    && item.objectCount > 0
+    && typeof item.manifestSha256 === 'string'
+    && /^[0-9a-f]{64}$/u.test(item.manifestSha256);
+}
+
 function validateRecord(record: unknown, expected: { project: string; repository: string; revision: string }): CanonicalGraphRecord {
   if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('Canonical graph record must be an object');
   const value = record as CanonicalGraphRecord;
@@ -168,6 +227,9 @@ function validateRecord(record: unknown, expected: { project: string; repository
   }
   if (value.analyzerVersion !== ANALYZER_VERSION || value.graphSchemaVersion !== 2) throw new Error('Canonical graph analyzer/schema identity is stale');
   if (!validCurrentness(value.currentness)) throw new Error('Canonical graph currentness is malformed');
+  if (value.queryArtifacts !== undefined && value.queryArtifacts !== null && !validQueryArtifactRef(value.queryArtifacts)) {
+    throw new Error('Canonical query artifact generation reference is malformed');
+  }
   const working = value.working;
   if (!working || working.schemaVersion !== 2 || working.project !== expected.project || working.repositoryRevision !== expected.revision || working.analyzerVersion !== ANALYZER_VERSION) {
     throw new Error('Canonical working graph identity is stale or malformed');
@@ -218,12 +280,96 @@ function blobHeaders(config: BlobBackend): Record<string, string> {
   return { authorization: `Bearer ${config.token}`, 'x-vercel-blob-store-id': config.storeId };
 }
 
+function derivedObjectByteLength(body: string | Uint8Array): number {
+  return typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : body.byteLength;
+}
+
+export async function readCanonicalDerivedObject(
+  project: string,
+  relativePath: string,
+  maxBytes = MAX_DERIVED_OBJECT_BYTES,
+): Promise<Uint8Array | null> {
+  assertDerivedRelativePath(relativePath);
+  const selected = backend();
+  if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return null;
+  const bounded = Math.min(Math.max(maxBytes, 1), MAX_DERIVED_OBJECT_BYTES);
+  if (selected.kind === 'file') {
+    const target = canonicalDerivedObjectFilePath(project, relativePath)!;
+    const stat = await fs.stat(target).catch((error: any) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat) return null;
+    if (!stat.isFile() || stat.size > bounded) throw new Error('Canonical derived object is not a bounded regular file');
+    return new Uint8Array(await fs.readFile(target));
+  }
+
+  const response = await fetch(blobObjectUrl(selected, canonicalDerivedObjectBlobPath(project, relativePath)), {
+    headers: blobHeaders(selected),
+    cache: 'no-store',
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Vercel canonical derived object read failed with HTTP ${response.status}`);
+  const contentLength = Number(response.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.byteLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
+  return body;
+}
+
+export async function writeCanonicalDerivedObject(
+  project: string,
+  relativePath: string,
+  body: string | Uint8Array,
+  contentType = 'application/octet-stream',
+): Promise<boolean> {
+  assertDerivedRelativePath(relativePath);
+  const selected = backend();
+  if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return false;
+  const size = derivedObjectByteLength(body);
+  if (size > MAX_DERIVED_OBJECT_BYTES) throw new Error('Canonical derived object exceeds the bounded storage size');
+
+  if (selected.kind === 'file') {
+    const target = canonicalDerivedObjectFilePath(project, relativePath)!;
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
+    await fs.writeFile(temporary, body, { mode: 0o600 });
+    await fs.rename(temporary, target);
+    return true;
+  }
+
+  const requestUrl = new URL(selected.apiUrl);
+  requestUrl.searchParams.set('pathname', canonicalDerivedObjectBlobPath(project, relativePath));
+  const requestId = `${selected.storeId}:${Date.now()}:${stableHash([project, relativePath, size, Date.now()]).slice(0, 12)}`;
+  const response = await fetch(requestUrl, {
+    method: 'PUT',
+    headers: {
+      ...blobHeaders(selected),
+      'x-api-blob-request-id': requestId,
+      'x-api-blob-request-attempt': '0',
+      'x-api-version': BLOB_API_VERSION,
+      'x-vercel-blob-access': 'private',
+      'x-add-random-suffix': '0',
+      'x-allow-overwrite': '1',
+      'x-content-type': contentType,
+      'x-cache-control-max-age': '60',
+      'content-type': contentType,
+    },
+    body,
+  });
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500);
+    throw new Error(`Vercel canonical derived object write failed with HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+  }
+  return true;
+}
+
 async function loadFromFile(
   selected: FileBackend,
   expected: { project: string; repository: string; revision: string },
   diagnostics: CanonicalPersistenceDiagnostics,
 ): Promise<CanonicalLoadResult> {
-  const target = path.join(selected.root, projectStorageKey(expected.project), `${expected.revision}.json`);
+  const target = path.join(selected.root, canonicalProjectStorageKey(expected.project), `${expected.revision}.json`);
   const stat = await fs.stat(target).catch((error: any) => {
     if (error?.code === 'ENOENT') return null;
     throw error;
@@ -280,7 +426,7 @@ export async function loadCanonicalGraph(expected: { project: string; repository
 }
 
 async function saveToFile(selected: FileBackend, record: CanonicalGraphRecord, payload: string): Promise<void> {
-  const target = path.join(selected.root, projectStorageKey(record.project), `${record.revision}.json`);
+  const target = path.join(selected.root, canonicalProjectStorageKey(record.project), `${record.revision}.json`);
   const directory = path.dirname(target);
   await fs.mkdir(directory, { recursive: true });
   const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
@@ -343,6 +489,7 @@ export function makeCanonicalGraphRecord(input: {
   working: IntelligenceGraph;
   accepted: IntelligenceGraph | null;
   currentness: CanonicalGraphCurrentness;
+  queryArtifacts?: CanonicalQueryArtifactGenerationRef | null;
 }): CanonicalGraphRecord {
   return {
     formatVersion: 1,
@@ -358,5 +505,6 @@ export function makeCanonicalGraphRecord(input: {
     working: input.working,
     accepted: input.accepted,
     currentness: input.currentness,
+    ...(input.queryArtifacts !== undefined ? { queryArtifacts: input.queryArtifacts } : {}),
   };
 }
