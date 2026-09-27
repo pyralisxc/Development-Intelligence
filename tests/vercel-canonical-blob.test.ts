@@ -163,6 +163,54 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
   }
 });
 
+test('legacy canonical hits backfill query artifacts without rebuilding or touching checkout', async () => {
+  const item = await fixture();
+  try {
+    const first = await graphStatus(item.project) as any;
+    const pathname = canonicalGraphBlobPath(item.project);
+    const legacy = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.ok(legacy.queryArtifacts);
+
+    delete legacy.queryArtifacts;
+    item.blob.blobs.set(pathname, Buffer.from(JSON.stringify(legacy)));
+    for (const key of [...item.blob.blobs.keys()]) {
+      if (key !== pathname) item.blob.blobs.delete(key);
+    }
+
+    clearGraphCache(item.project);
+    await fs.rm(item.scratch, { recursive: true, force: true });
+    await fs.writeFile(item.scratch, 'checkout must not touch this path');
+
+    const firstSearch = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
+    assert.equal(firstSearch.queryPlane.mode, 'full', 'legacy record should fail closed for the request that discovers missing artifacts');
+    assert.ok(firstSearch.nodes.some((node: any) => String(node.id).includes('outlier')));
+
+    const migrated = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.ok(migrated.queryArtifacts, 'canonical hit should be rewritten with the backfilled query generation reference');
+
+    clearGraphCache(item.project);
+    const requestStart = item.blob.requests.length;
+    const secondSearch = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
+    assert.equal(secondSearch.queryPlane.mode, 'adaptive', 'subsequent narrow reads should use the backfilled query plane');
+    assert.equal(secondSearch.queryPlane.authoritative, true);
+    assert.ok(secondSearch.queryPlane.selectedBuckets > 0);
+    assert.ok(secondSearch.nodes.some((node: any) => String(node.id).includes('outlier')));
+    const requests = item.blob.requests.slice(requestStart);
+    assert.equal(
+      requests.some(request => request.pathname === `/private/${pathname}`),
+      false,
+      'adaptive read after migration must not load the full canonical graph blob',
+    );
+
+    const status = await graphStatus(item.project) as any;
+    assert.equal(status.observability.queryArtifacts.state, 'referenced');
+    assert.equal(status.observability.coldBuild, null);
+    assert.equal(status.revision, first.revision);
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
 test('Main A->B advancement reuses a bounded dependency frontier and matches a forced full rebuild', async () => {
   const item = await fixture();
   try {
