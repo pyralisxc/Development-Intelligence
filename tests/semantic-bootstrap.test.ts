@@ -260,7 +260,7 @@ test('semantic bootstrap skips Java source/package wrappers and exposes package-
 });
 
 
-test('semantic capacity expands to 100 without quota filling and remains prefix-stable', () => {
+test('semantic capacity expands without quota filling and remains prefix-stable', () => {
   const fixture = graph();
   fixture.nodes = [];
   fixture.edges = [];
@@ -318,7 +318,7 @@ test('semantic capacity expands to 100 without quota filling and remains prefix-
 
   assert.equal(at100.candidates.length, 60, '100 is a ceiling, not a quota');
   assert.equal(at100.capacity.requestedLimit, 100);
-  assert.equal(at100.capacity.hardLimit, 100);
+  assert.equal(at100.capacity.operationalLimit, 1000);
   assert.equal(at100.capacity.groupedScopeCount, 100);
   assert.equal(at100.capacity.eligibleCandidateCount, 60);
   assert.equal(at100.capacity.rejectedScopeCount, 40);
@@ -333,7 +333,7 @@ test('semantic capacity expands to 100 without quota filling and remains prefix-
     at100.candidates.slice(0, 50).map(candidate => candidate.id),
     'raising the presentation budget must not reorder or rewrite earlier meanings',
   );
-  assert.equal(overRequested.capacity.requestedLimit, 100, 'hard limit should clamp oversized requests');
+  assert.equal(overRequested.capacity.requestedLimit, 500, '100 is a benchmark checkpoint, not a semantic hard limit');
   assert.deepEqual(overRequested.candidates.map(candidate => candidate.id), at100.candidates.map(candidate => candidate.id));
 });
 
@@ -426,4 +426,57 @@ test('logical graph locators without physical files cannot create semantic scope
   assert.equal(result.capacity.groupedScopeCount, 0);
   assert.equal(result.capacity.eligibleCandidateCount, 0);
   assert.equal(result.candidates.length, 0);
+});
+
+
+test('semantic capacity can honestly enumerate more than 100 evidence-qualified meanings', () => {
+  const fixture = graph();
+  fixture.nodes = [];
+  fixture.edges = [];
+  fixture.coverage = {
+    trackedFiles: 300,
+    eligibleFiles: 300,
+    analyzedFiles: 300,
+    completeFiles: 300,
+    partialFiles: 0,
+    unsupportedFiles: 0,
+    skippedFiles: 0,
+    failedFiles: 0,
+    skippedOversizedFiles: 0,
+    skippedNonRegularFiles: 0,
+    skippedFileLimitFiles: 0,
+    files: [],
+  };
+
+  for (let index = 0; index < 140; index += 1) {
+    const suffix = String(index).padStart(3, '0');
+    const fileA = `src/features/capability-${suffix}/a.ts`;
+    const fileB = `src/features/capability-${suffix}/b.ts`;
+    fixture.nodes.push(
+      node(`file:cap-${suffix}-a`, 'file', fileA),
+      node(`symbol:cap-${suffix}-a`, 'function', `${fileA}:2`, `capability${suffix}A`),
+      node(`file:cap-${suffix}-b`, 'file', fileB),
+      node(`symbol:cap-${suffix}-b`, 'function', `${fileB}:2`, `capability${suffix}B`),
+    );
+    fixture.edges.push(
+      edge(`cap-${suffix}-contains-a`, `file:cap-${suffix}-a`, `symbol:cap-${suffix}-a`, 'contains'),
+      edge(`cap-${suffix}-contains-b`, `file:cap-${suffix}-b`, `symbol:cap-${suffix}-b`, 'contains'),
+      edge(`cap-${suffix}-link`, `symbol:cap-${suffix}-a`, `symbol:cap-${suffix}-b`, 'calls'),
+    );
+    fixture.coverage.files.push({ path: fileA, status: 'complete' }, { path: fileB, status: 'complete' });
+  }
+
+  const at50 = bootstrapSemanticCandidates(fixture, { limit: 50 });
+  const at100 = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  const at200 = bootstrapSemanticCandidates(fixture, { limit: 200 });
+
+  assert.equal(at50.capacity.eligibleCandidateCount, 140);
+  assert.equal(at100.capacity.eligibleCandidateCount, 140);
+  assert.equal(at100.candidates.length, 100);
+  assert.equal(at100.capacity.truncated, true);
+  assert.equal(at100.capacity.exhausted, false);
+  assert.equal(at200.candidates.length, 140);
+  assert.equal(at200.capacity.exhausted, true);
+  assert.deepEqual(at50.candidates.map(candidate => candidate.id), at100.candidates.slice(0, 50).map(candidate => candidate.id));
+  assert.deepEqual(at100.candidates.map(candidate => candidate.id), at200.candidates.slice(0, 100).map(candidate => candidate.id));
 });
