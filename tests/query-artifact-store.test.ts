@@ -155,3 +155,13 @@ test('query artifact publication uses a fixed four-slot ring', async () => {
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+
+test('query artifact publication omits logically empty detail buckets', async () => {
+  const value = graph('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sparse');
+  const prepared = prepareCanonicalQueryArtifactGeneration(value);
+  assert.ok(prepared.manifest.bucketIds.length > 0);
+  assert.ok(prepared.manifest.bucketIds.length < 64);
+  assert.equal(Object.keys(prepared.manifest.shards).length, prepared.manifest.bucketIds.length);
+  assert.equal(prepared.ref.objectCount, prepared.manifest.bucketIds.length + 1, 'index + populated shards only');
+});

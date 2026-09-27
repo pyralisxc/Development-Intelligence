@@ -9,7 +9,8 @@ import { assertGraphIntegrity } from './integrity.js';
 import { advanceRepositoryGraph, buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { toolExecutionDiagnostics } from '../observability.js';
-import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph, type CanonicalPersistenceDiagnostics } from './canonicalStore.js';
+import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph, type CanonicalPersistenceDiagnostics, type CanonicalQueryArtifactGenerationRef } from './canonicalStore.js';
+import { publishCanonicalQueryArtifacts } from './queryArtifactStore.js';
 
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_GRAPH_MAX_RUNTIME_BYTES ?? process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
 
@@ -45,6 +46,13 @@ export interface GraphAccessTiming {
   persistence: CanonicalPersistenceDiagnostics;
 }
 
+export interface QueryArtifactPublicationDiagnostics {
+  state: 'referenced' | 'stored' | 'not-configured' | 'error' | 'none';
+  saveMs: number;
+  ref: CanonicalQueryArtifactGenerationRef | null;
+  error?: string;
+}
+
 interface CachedRepositoryGraph {
   graph: IntelligenceGraph;
   accepted: IntelligenceGraph | null;
@@ -53,6 +61,7 @@ interface CachedRepositoryGraph {
   touchedAt: number;
   buildTiming: GraphColdBuildTiming | null;
   persistence: CanonicalPersistenceDiagnostics;
+  queryArtifacts: QueryArtifactPublicationDiagnostics;
 }
 
 interface RepositoryGraphAccess extends CachedRepositoryGraph {
@@ -163,6 +172,9 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
             touchedAt: Date.now(),
             buildTiming: null,
             persistence: loaded.diagnostics,
+            queryArtifacts: loaded.record.queryArtifacts
+              ? { state: 'referenced', saveMs: 0, ref: loaded.record.queryArtifacts }
+              : { state: 'none', saveMs: 0, ref: null },
           } satisfies CachedRepositoryGraph;
         }
 
@@ -250,6 +262,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           acceptedProjectionMs = elapsedMs(acceptedProjectionStarted);
           return { graph, accepted, currentness };
         });
+        const queryArtifactPublication = await publishCanonicalQueryArtifacts(
+          observed.value.graph,
+          loaded.staleRecord?.queryArtifacts ?? null,
+        );
         const record = makeCanonicalGraphRecord({
           project,
           repository: revision.repository,
@@ -257,6 +273,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           working: observed.value.graph,
           accepted: observed.value.accepted,
           currentness: observed.value.currentness,
+          queryArtifacts: queryArtifactPublication.state === 'stored' ? queryArtifactPublication.ref : null,
         });
         const saved = await saveCanonicalGraph(record);
         return {
@@ -280,6 +297,12 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
             saveState: saved.saveState,
             saveMs: saved.saveMs,
             ...(saved.error ? { error: saved.error } : loaded.diagnostics.error ? { error: loaded.diagnostics.error } : {}),
+          },
+          queryArtifacts: {
+            state: queryArtifactPublication.state,
+            saveMs: queryArtifactPublication.saveMs,
+            ref: queryArtifactPublication.ref,
+            ...(queryArtifactPublication.error ? { error: queryArtifactPublication.error } : {}),
           },
         } satisfies CachedRepositoryGraph;
       }
@@ -354,6 +377,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           loadMs: 0,
           saveMs: 0,
         },
+        queryArtifacts: { state: 'not-configured', saveMs: 0, ref: null },
       } satisfies CachedRepositoryGraph;
     }).then(value => {
       created.value = value;
@@ -599,6 +623,7 @@ export async function graphStatus(project: string, ref?: string): Promise<Record
       coldBuild: repository.buildTiming,
       lastToolCall: toolExecutionDiagnostics(project),
       persistence: repository.accessTiming.persistence,
+      queryArtifacts: repository.queryArtifacts,
     },
   };
 }

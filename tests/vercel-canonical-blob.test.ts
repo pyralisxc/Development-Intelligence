@@ -15,13 +15,13 @@ async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', message]);
   return (await runChecked('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout.trim();
 }
-async function readRequestBody(request: any): Promise<string> {
+async function readRequestBody(request: any): Promise<any> {
   const chunks: any[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
 async function startBlobServer() {
-  const blobs = new Map<string, string>();
+  const blobs = new Map<string, any>();
   const requests: Array<{ method: string; pathname: string; query: string; headers: Record<string, string | string[] | undefined> }> = [];
   let origin = '';
   const server = http.createServer(async (request: any, response: any) => {
@@ -43,10 +43,11 @@ async function startBlobServer() {
       assert.equal(request.headers['x-vercel-blob-access'], 'private');
       assert.equal(request.headers['x-add-random-suffix'], '0');
       assert.equal(request.headers['x-allow-overwrite'], '1');
-      assert.equal(request.headers['x-content-type'], 'application/json');
+      const contentType = String(request.headers['x-content-type'] ?? '');
+      assert.ok(['application/json', 'application/gzip'].includes(contentType), `unexpected Blob content type: ${contentType}`);
       blobs.set(pathname, await readRequestBody(request));
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ url: `${origin}/private/${pathname}`, downloadUrl: `${origin}/private/${pathname}?download=1`, pathname, contentType: 'application/json' }));
+      response.end(JSON.stringify({ url: `${origin}/private/${pathname}`, downloadUrl: `${origin}/private/${pathname}?download=1`, pathname, contentType }));
       return;
     }
     if (request.method === 'GET' && url.pathname.startsWith('/private/')) {
@@ -54,8 +55,8 @@ async function startBlobServer() {
       const pathname = decodeURIComponent(url.pathname.slice('/private/'.length));
       const value = blobs.get(pathname);
       if (value === undefined) { response.statusCode = 404; response.end('not found'); return; }
-      response.setHeader('content-type', 'application/json');
-      response.setHeader('content-length', String(Buffer.byteLength(value, 'utf8')));
+      response.setHeader('content-type', pathname.endsWith('.gz') ? 'application/gzip' : 'application/json');
+      response.setHeader('content-length', String(value.byteLength));
       response.end(value); return;
     }
     response.statusCode = 404; response.end('not found');
@@ -115,8 +116,12 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.equal(first.observability.persistence.loadState, 'miss');
     assert.equal(first.observability.persistence.saveState, 'stored');
     assert.ok(first.observability.coldBuild);
-    assert.equal(item.blob.blobs.size, 1);
+    assert.ok(item.blob.blobs.size > 3, 'canonical graph plus derived query artifacts should be stored');
     assert.ok(item.blob.blobs.has(canonicalGraphBlobPath(item.project)));
+    const firstRecord = JSON.parse(item.blob.blobs.get(canonicalGraphBlobPath(item.project))!.toString('utf8'));
+    assert.ok(firstRecord.queryArtifacts);
+    assert.equal(firstRecord.queryArtifacts.slot, 0);
+    const firstBlobCount = item.blob.blobs.size;
     clearGraphCache(item.project);
     await fs.rm(item.scratch, { recursive: true, force: true });
     await fs.writeFile(item.scratch, 'checkout must not touch this path');
@@ -126,8 +131,11 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.equal(second.observability.persistence.loadState, 'hit');
     assert.equal(second.observability.persistence.saveState, 'skipped');
     assert.equal(second.observability.coldBuild, null);
+    assert.equal(second.observability.queryArtifacts.state, 'referenced');
     assert.equal(second.revision, first.revision);
     assert.equal(second.working.graphId, first.working.graphId);
+    assert.equal(second.observability.queryArtifacts.state, 'referenced');
+    assert.equal(item.blob.blobs.size, firstBlobCount, 'canonical hit must not republish derived artifacts');
   } finally {
     cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
   }
@@ -138,9 +146,11 @@ test('Main A->B advancement reuses a bounded dependency frontier and matches a f
   try {
     const first = await graphStatus(item.project) as any;
     const pathname = canonicalGraphBlobPath(item.project);
-    assert.equal(item.blob.blobs.size, 1);
-    const firstStored = JSON.parse(item.blob.blobs.get(pathname)!);
+    assert.ok(item.blob.blobs.size > 3);
+    const firstStored = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
     assert.equal(firstStored.revision, first.revision);
+    assert.ok(firstStored.queryArtifacts);
+    assert.equal(firstStored.queryArtifacts.slot, 0);
 
     await fs.writeFile(path.join(item.source, 'src', 'value.ts'), "export const value = 2;\n");
     const nextSha = await commit(item.source, 'advance main');
@@ -154,10 +164,13 @@ test('Main A->B advancement reuses a bounded dependency frontier and matches a f
     assert.equal(next.observability.coldBuild.strategy, 'incremental');
     assert.equal(next.observability.coldBuild.changedFiles, 1);
     assert.equal(next.observability.coldBuild.affectedFiles, 2, 'value.ts and its importing use.ts should form the bounded frontier');
-    assert.equal(item.blob.blobs.size, 1);
-    const nextStored = JSON.parse(item.blob.blobs.get(pathname)!);
+    const nextStored = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
     assert.equal(nextStored.revision, nextSha);
     assert.notEqual(nextStored.revision, firstStored.revision);
+    assert.ok(nextStored.queryArtifacts);
+    assert.equal(nextStored.queryArtifacts.slot, 1);
+    assert.notEqual(nextStored.queryArtifacts.generationId, firstStored.queryArtifacts.generationId);
+    assert.equal(next.observability.queryArtifacts.state, 'stored');
 
     clearGraphCache(item.project);
     const full = await graphStatus(item.project, `commit:${nextSha}`) as any;
@@ -200,6 +213,8 @@ test('request-scoped Vercel OIDC authenticates canonical Blob without a runtime 
     assert.equal(first.observability.persistence.durable, true);
     assert.equal(first.observability.persistence.loadState, 'miss');
     assert.equal(first.observability.persistence.saveState, 'stored');
+    assert.equal(first.observability.queryArtifacts.state, 'stored');
+    assert.ok(first.observability.queryArtifacts.ref);
 
     clearGraphCache(item.project);
     const second = await withVercelRequestContext(

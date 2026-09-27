@@ -333,9 +333,16 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
   };
 }
 
+export function populatedQueryBuckets(index: CanonicalQueryIndexArtifact): string[] {
+  return BUCKET_KEYS.filter(bucket => {
+    const summary = index.buckets[bucket];
+    return Boolean(summary && (summary.nodeCount > 0 || summary.edgeCount > 0 || summary.evidenceCount > 0));
+  });
+}
+
 export function candidateQueryBuckets(index: CanonicalQueryIndexArtifact, query: string): string[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return [...BUCKET_KEYS];
+  if (!needle) return populatedQueryBuckets(index);
   const buckets = new Set<string>();
   for (const [bucket, id, kind, layer, text] of index.nodeSearch) {
     if (recordIncludes(needle, [id, kind, layer, text])) buckets.add(bucket);
