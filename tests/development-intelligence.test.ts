@@ -338,6 +338,7 @@ test('shared investigation router maps ordinary questions to existing DI primiti
   const fixture = await makeFixture();
   try {
     clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
 
     const code = await queryWorkbench({ project: fixture.project, text: 'Show me code for Panel' }) as any;
     assert.equal(code.intent, 'code');
@@ -403,6 +404,7 @@ test('multi-question investigation keeps one graph context and isolates question
   const fixture = await makeFixture();
   try {
     clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
     const paragraph = 'What is Panel? What does it depend on? Where is it implemented? What evidence supports those answers?';
     const batch = await queryWorkbenchRequest({ project: fixture.project, text: paragraph }) as any;
     assert.equal(batch.intent, 'batch');
@@ -440,6 +442,7 @@ test('scope orientation surfaces explainable local graph structure without an op
   const fixture = await makeFixture();
   try {
     clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
     const orientation = await scopeOrientation({
       project: fixture.project,
       scope: 'src/panel.tsx',
@@ -659,6 +662,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
   process.env.VERCEL_GIT_COMMIT_SHA = '0123456789abcdef0123456789abcdef01234567';
   process.env.VERCEL_GIT_COMMIT_REF = 'work/health-contract';
   process.env.VERCEL_TARGET_ENV = 'preview';
+  await scanGraph(fixture.project);
   const { createDevelopmentIntelligenceServer } = await import('../src/http.js');
   const server = createDevelopmentIntelligenceServer();
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));

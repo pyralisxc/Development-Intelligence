@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { callTool } from '../src/mcp.js';
-import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
+import { clearGraphCache, graphStatus, scanGraph } from '../src/intelligence/service.js';
 import { clearToolExecutionDiagnostics } from '../src/observability.js';
 import { runChecked } from '../src/util/process.js';
 
@@ -84,6 +84,7 @@ test('graph lifecycle diagnostics distinguish cold acquisition from warm process
 test('project status exposes the previous completed MCP tool execution timing', async () => {
   const fixture = await makeFixture();
   try {
+    await scanGraph(fixture.project);
     await callTool('search_graph', { project: fixture.project, query: 'Panel' });
     const status = await callTool('project_status', { project: fixture.project }) as any;
     assert.equal(status.graph.observability.lastToolCall.tool, 'search_graph');

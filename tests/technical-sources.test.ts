@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadRegistry } from '../src/config/registry.js';
 import { listTechnicalSources, queryTechnicalSource } from '../src/intelligence/technicalSources.js';
+import { clearGraphCache, scanGraph } from '../src/intelligence/service.js';
 import { runChecked } from '../src/util/process.js';
 
 test('external technical evidence normalizes deployment and database sources without becoming graph authority', async () => {
@@ -98,6 +99,9 @@ test('external technical evidence normalizes deployment and database sources wit
     assert.ok(sources.some(item => item.id === 'deploy' && item.adapter === 'deployment-state' && item.providerId === 'vercel'));
     assert.ok(sources.some(item => item.id === 'database' && item.adapter === 'database-schema'));
 
+    clearGraphCache('ExternalEvidence');
+    await scanGraph('ExternalEvidence');
+
     const deployment = await queryTechnicalSource({ project: 'ExternalEvidence', sourceId: 'deploy', query: 'current' }) as any;
     assert.equal(deployment.policy.readOnly, true);
     assert.equal(deployment.policy.providerStateAuthoritative, true);
@@ -124,6 +128,7 @@ test('external technical evidence normalizes deployment and database sources wit
     assert.equal(database.evidence.coverage.status, 'complete');
     assert.deepEqual(database.data.schemas[0].tables, [{ name: 'users' }], 'raw provider payload remains available alongside normalized evidence');
   } finally {
+    clearGraphCache('ExternalEvidence');
     globalThis.fetch = originalFetch;
     if (previousRegistry === undefined) delete process.env.DEVINT_PROJECTS_JSON;
     else process.env.DEVINT_PROJECTS_JSON = previousRegistry;
