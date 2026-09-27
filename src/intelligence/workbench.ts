@@ -7,6 +7,7 @@ import { currentGraph } from './service.js';
 import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLens, searchGraph, traceGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
+import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -201,6 +202,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
     coverageDetailTool: 'check_graph_coverage',
     highlights: semanticHighlights(graph).map(node => ({ id: node.id, kind: node.kind, name: displayName(node), locator: node.locator })),
     areas: topAreas(graph),
+    semanticBootstrap: bootstrapSemanticCandidates(graph, { limit: 12 }),
     changes: diff ? { ...diffCounts, detail: diff } : null,
     findings: findings.slice(0, 20),
     subjects: subjects.slice(0, 10).map(subject => projectSubjectBrief(graph, subject.trim())).filter(item => Boolean(item.query)),
