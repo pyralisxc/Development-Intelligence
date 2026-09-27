@@ -3,9 +3,9 @@
   "schemaVersion": 2,
   "format": "sharded-ndjson",
   "analyzerVersion": "2.7.0-interface-css-linkage",
-  "sourceFingerprint": "2e477ab7adf2384e8a0f79a356d7a841c79caf7ec40287a3cc67440759d72c77",
-  "topologyFingerprint": "4f8648e3a2a077a2d8f0fd5aca7b10167e98d49cacbb0e0c6073192953dcef1d",
-  "evidenceFingerprint": "8d9d718103ba33a2a284109bd5c724ffd3bc41a972332267fa7cd8c81a429f49",
+  "sourceFingerprint": "2bb9d6b3ed5ec13bebded9c86b2440758d436b72b1712eb2d785321f8da415ea",
+  "topologyFingerprint": "ba6e889cf7f775471c2ef7738a0c2b1058708ec6125d6f16b78cf85f47ca8f91",
+  "evidenceFingerprint": "518e0434b2c6d8f9d2233472acaafa625358bef6884130f2b627cb957a6714a1",
   "shards": [
     "0.ndjson",
     "1.ndjson",
@@ -25,14 +25,14 @@
     "f.ndjson"
   ],
   "summary": {
-    "nodes": 43,
-    "edges": 44,
+    "nodes": 44,
+    "edges": 45,
     "unresolved": 0,
     "candidate": 0,
     "kinds": {
       "capability": 10,
       "feature": 1,
-      "mcp": 28,
+      "mcp": 29,
       "provider": 2,
       "surface": 2
     }

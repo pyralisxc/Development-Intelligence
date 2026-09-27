@@ -44,6 +44,7 @@ process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(temp, 'canonical');
 const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
 const { bootstrapSemanticCandidates } = await import('../dist/src/intelligence/semanticBootstrap.js');
+const { auditSemanticCandidates } = await import('../dist/src/intelligence/semanticAudit.js');
 const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
@@ -153,6 +154,16 @@ if (!semanticBootstrap.candidates.some(candidate => candidate.support.evidenceFa
 }
 if (Math.max(semanticBootstrap50ElapsedMs, semanticBootstrap100ElapsedMs, semanticBootstrapElapsedMs) > 1000) {
   throw new Error(`CardForge individual semantic projection exceeded 1000 ms budget: 50=${semanticBootstrap50ElapsedMs.toFixed(2)} / 100=${semanticBootstrap100ElapsedMs.toFixed(2)} / full=${semanticBootstrapElapsedMs.toFixed(2)} ms`);
+}
+const semanticAuditStarted = process.hrtime.bigint();
+const semanticAudit = auditSemanticCandidates(graph, semanticBootstrap, { limit: semanticBootstrap.candidates.length });
+const semanticAuditElapsedMs = Number(process.hrtime.bigint() - semanticAuditStarted) / 1_000_000;
+if (semanticAuditElapsedMs > 1000) throw new Error(`CardForge semantic audit exceeded 1000 ms: ${semanticAuditElapsedMs.toFixed(2)} ms`);
+if (semanticAudit.counts.audited !== semanticBootstrap.candidates.length) throw new Error('CardForge semantic audit did not cover the full derived candidate universe');
+if (semanticAudit.counts.factualityNeedsReview !== 0) throw new Error(`CardForge semantic audit found broken proposal factuality: ${JSON.stringify(semanticAudit.items.filter(item => item.factuality.status === 'needs-review'))}`);
+if (semanticAudit.counts.coreCandidates < 1 || semanticAudit.counts.supportingCandidates < 1) throw new Error('CardForge semantic audit must distinguish both core and supporting semantic candidates');
+if (semanticAudit.policy.authorityUnaffected !== true || semanticAudit.policy.verificationUnaffected !== true || semanticAudit.policy.subjectiveGlobalScore !== false) {
+  throw new Error('CardForge semantic audit crossed the derived-assessment boundary');
 }
 const semanticAccuracyUniverse = [
   'src/features/account',
@@ -599,6 +610,15 @@ const report = {
     declaredSemanticCount: semanticBootstrap.declaredSemanticCount,
     candidateCount: semanticBootstrap.candidates.length,
     capacity: semanticBootstrap.capacity,
+    audit: {
+      elapsedMs: Number(semanticAuditElapsedMs.toFixed(3)),
+      factualitySupported: semanticAudit.counts.factualitySupported,
+      factualityNeedsReview: semanticAudit.counts.factualityNeedsReview,
+      coreCandidates: semanticAudit.counts.coreCandidates,
+      supportingCandidates: semanticAudit.counts.supportingCandidates,
+      sampleCore: semanticAudit.items.filter(item => item.coreness.classification === 'core-candidate').slice(0, 8).map(item => ({ scope: item.scope, name: item.proposal.name, reasons: item.coreness.reasons })),
+      sampleSupporting: semanticAudit.items.filter(item => item.coreness.classification === 'supporting-candidate').slice(0, 8).map(item => ({ scope: item.scope, name: item.proposal.name, reasons: item.coreness.reasons })),
+    },
     first50PrefixStable: semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id),
     first100PrefixStable: semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id),
     kindCounts: Object.fromEntries([...new Set(semanticBootstrap.candidates.map(candidate => candidate.proposal.kind))].sort().map(kind => [kind, semanticBootstrap.candidates.filter(candidate => candidate.proposal.kind === kind).length])),
@@ -717,6 +737,7 @@ const summary = [
   `- Semantic derivation accuracy (full-capacity census, 7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; full exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id)}; 100→full stable=${semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
+  `- Semantic factuality/core audit: **${semanticAudit.counts.factualitySupported} factuality-supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core-candidate / ${semanticAudit.counts.supportingCandidates} supporting-candidate / ${semanticAuditElapsedMs.toFixed(3)} ms**`,
   `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,

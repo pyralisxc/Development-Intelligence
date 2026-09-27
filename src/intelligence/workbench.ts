@@ -8,6 +8,7 @@ import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLe
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
+import { auditSemanticCandidates } from './semanticAudit.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -156,6 +157,30 @@ function projectSubjectBrief(graph: IntelligenceGraph, query: string): Record<st
 }
 
 const OVERVIEW_FINDING_CATEGORIES = new Set<AuditFinding['category']>(['coverage', 'conflict', 'realization']);
+
+export async function semanticAudit(input: {
+  project: string;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  limit?: number | undefined;
+  candidateLimit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const candidateLimit = Math.min(Math.max(input.candidateLimit ?? 200, 1), 1000);
+  const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
+  const audit = auditSemanticCandidates(graph, bootstrap, { limit: input.limit ?? 30 });
+  const reviewed = audit.items.length;
+  const core = audit.counts.coreCandidates;
+  const needsReview = audit.counts.factualityNeedsReview;
+  return {
+    project: input.project,
+    graphId: graph.graphId,
+    summary: `${audit.candidateUniverse.eligible} evidence-qualified semantic candidate(s); ${core} of ${reviewed} audited candidate(s) satisfy the explicit core-candidate facets and ${needsReview} require factuality review.`,
+    ...audit,
+    coverage: compactCoverage(graph),
+    policyNote: 'Core/supporting is an evidence-grounded audit classification, not semantic authority. Acceptance and verification remain separate.',
+  };
+}
 
 export async function projectOverview(project: string, ref?: string | undefined, graphId?: string | undefined, subjects: string[] = []): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
@@ -1259,6 +1284,26 @@ export async function queryWorkbench(input: {
       subject: requestedScope ? { query: requestedScope } : null,
       routing: { tool: 'inspect_interface' },
       answer: String((result as any).summary ?? 'Interface / interaction projection complete.'),
+      result,
+    };
+  }
+
+  if (
+    /\b(semantic factuality|semantic meaning|semantic meanings|semantic candidate|semantic candidates|over[- ]?deriv|over[- ]?expand|core capabilities|core concepts|core meanings|supporting meanings|supporting capabilities)\b/.test(lower)
+    || (/\bsemantic\b/.test(lower) && /\b(core|supporting|factual|factuality|audit|meaning|candidate|candidates)\b/.test(lower))
+  ) {
+    const result = await semanticAudit({
+      project: input.project,
+      ref: input.ref,
+      graphId: input.graphId,
+      limit: 40,
+      candidateLimit: 200,
+    });
+    return {
+      intent: 'semantic-audit',
+      subject: null,
+      routing: { tool: 'audit_semantics' },
+      answer: String((result as any).summary ?? 'Semantic factuality/core audit complete.'),
       result,
     };
   }

@@ -5,6 +5,7 @@ import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { bootstrapSemanticCandidates } from '../dist/src/intelligence/semanticBootstrap.js';
+import { auditSemanticCandidates } from '../dist/src/intelligence/semanticAudit.js';
 import { scoreAccuracyCase } from './accuracy-benchmark-lib.mjs';
 import { assessGraph } from '../dist/src/intelligence/assessment.js';
 import { synthesizeRepositoryAudit } from '../dist/src/intelligence/repositoryAudit.js';
@@ -134,6 +135,15 @@ for (const target of targets) {
   }
   if (semanticBootstrap.candidates.some(candidate => candidate.authority.accepted || candidate.authority.persisted || candidate.authority.proofEligible)) {
     throw new Error(`${target.project} semantic bootstrap crossed the proposal authority boundary`);
+  }
+  const semanticAuditStarted = process.hrtime.bigint();
+  const semanticAudit = auditSemanticCandidates(graph, semanticBootstrap, { limit: semanticBootstrap.candidates.length });
+  const semanticAuditElapsedMs = Number(process.hrtime.bigint() - semanticAuditStarted) / 1_000_000;
+  if (semanticAuditElapsedMs > 1000) throw new Error(`${target.project} semantic audit exceeded 1000 ms: ${semanticAuditElapsedMs.toFixed(2)} ms`);
+  if (semanticAudit.counts.audited !== semanticBootstrap.candidates.length) throw new Error(`${target.project} semantic audit did not cover the full candidate universe`);
+  if (semanticAudit.counts.factualityNeedsReview !== 0) throw new Error(`${target.project} semantic audit found broken proposal factuality`);
+  if (semanticAudit.policy.authorityUnaffected !== true || semanticAudit.policy.verificationUnaffected !== true || semanticAudit.policy.subjectiveGlobalScore !== false) {
+    throw new Error(`${target.project} semantic audit crossed the derived-assessment boundary`);
   }
   const semanticCase = {
     version: 1,
@@ -348,6 +358,13 @@ for (const target of targets) {
       elapsedMs: Number(semanticElapsedMs.toFixed(3)),
       candidateCount: semanticBootstrap.candidates.length,
       capacity: semanticBootstrap.capacity,
+      audit: {
+        elapsedMs: Number(semanticAuditElapsedMs.toFixed(3)),
+        factualitySupported: semanticAudit.counts.factualitySupported,
+        factualityNeedsReview: semanticAudit.counts.factualityNeedsReview,
+        coreCandidates: semanticAudit.counts.coreCandidates,
+        supportingCandidates: semanticAudit.counts.supportingCandidates,
+      },
       first50PrefixStable: semanticPrefixStable,
       first100PrefixStable: semanticFullPrefixStable,
       fullLimit: semanticFullLimit,
@@ -396,6 +413,7 @@ const summary = [
     `- semantic derivation: **precision ${(item.semanticAccuracy.precision * 100).toFixed(0)}% / recall ${(item.semanticAccuracy.recall * 100).toFixed(0)}% / FPR ${(item.semanticAccuracy.falsePositiveRate * 100).toFixed(0)}% / ${item.semanticAccuracy.elapsedMs} ms**`,
     `- semantic top-32 presentation: **precision ${(item.semanticAccuracy.boundedPresentationPrecision * 100).toFixed(0)}% / recall ${(item.semanticAccuracy.boundedPresentationRecall * 100).toFixed(0)}% / FPR ${(item.semanticAccuracy.boundedPresentationFalsePositiveRate * 100).toFixed(0)}%**`,
     `- semantic capacity census: **${item.semanticAccuracy.capacity.eligibleCandidateCount} evidence-qualified / ${item.semanticAccuracy.capacity.groupedScopeCount} grouped scopes; ${item.semanticAccuracy.capacity.rejectedScopeCount} rejected; full exhausted=${item.semanticAccuracy.capacity.exhausted}; 50→100 stable=${item.semanticAccuracy.first50PrefixStable}; 100→full stable=${item.semanticAccuracy.first100PrefixStable}**`,
+    `- semantic factuality/core audit: **${item.semanticAccuracy.audit.factualitySupported} factuality-supported / ${item.semanticAccuracy.audit.factualityNeedsReview} need review / ${item.semanticAccuracy.audit.coreCandidates} core-candidate / ${item.semanticAccuracy.audit.supportingCandidates} supporting-candidate / ${item.semanticAccuracy.audit.elapsedMs} ms**`,
     `- repository audit: **${item.repositoryAudit.elapsedMs} ms** — ${item.repositoryAudit.findingTotal} deterministic findings / ${item.repositoryAudit.targetCount} bounded investigation target(s)`,
     ...(item.orientationProbe ? [
       `- orientation known query: **${item.orientationProbe.known.elapsedMs} ms** — ${item.orientationProbe.known.answerStatus}, ${item.orientationProbe.known.analyzerTechnology}/${item.orientationProbe.known.analyzerDepth}, ${item.orientationProbe.known.disambiguatingEvidenceCount} disambiguating-evidence hint(s)`,
