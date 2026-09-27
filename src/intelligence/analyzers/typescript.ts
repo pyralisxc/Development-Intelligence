@@ -23,6 +23,14 @@ function staticString(node: ts.Expression | undefined): string | undefined {
   return current && ts.isStringLiteralLike(current) ? current.text : undefined;
 }
 
+function staticJsxClassNames(initializer: ts.JsxAttributeValue | undefined): string[] {
+  let value: string | undefined;
+  if (initializer && ts.isStringLiteralLike(initializer)) value = initializer.text;
+  else if (initializer && ts.isJsxExpression(initializer) && initializer.expression) value = staticString(initializer.expression);
+  if (!value) return [];
+  return [...new Set(value.split(/\s+/u).map(item => item.trim()).filter(Boolean))].slice(0, 64);
+}
+
 function scalar(node: ts.Expression): unknown | undefined {
   const current = unwrap(node) ?? node;
   if (ts.isStringLiteralLike(current)) return current.text;
@@ -299,8 +307,35 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
       const opening = ts.isJsxElement(node) ? node.openingElement : node;
       const tagName = opening.tagName.getText(sourceFile);
+      const attrs = opening.attributes.properties.filter(ts.isJsxAttribute);
+      const classAttr = attrs.find(attr => attr.name.getText(sourceFile) === 'className');
+      const classNames = staticJsxClassNames(classAttr?.initializer);
+      if (classAttr && classNames.length) {
+        const classRef = observation({
+          sourceId: context.source.id,
+          kind: 'css-class-reference',
+          locator: locator(classAttr, ':className'),
+          name: `${tagName}.className`,
+          field: 'css-class',
+          value: { tag: tagName, classes: classNames },
+          layer: 'representation',
+          checkpoint: false,
+        });
+        observations.push(classRef);
+        const owner = functionOwner();
+        if (owner) resolutions.push(resolution({
+          from: owner.id,
+          to: classRef.id,
+          kind: 'uses_classes',
+          strategy: 'syntax',
+          confidence: 1,
+          status: 'resolved',
+          evidence: [`${context.locatorBase}:${lineOf(classAttr)}`],
+          layer: 'representation',
+          checkpoint: false,
+        }));
+      }
       if (UI_TAGS.has(tagName.toLowerCase())) {
-        const attrs = opening.attributes.properties.filter(ts.isJsxAttribute);
         const aria = attrs.find(attr => attr.name.getText(sourceFile) === 'aria-label');
         const href = attrs.find(attr => attr.name.getText(sourceFile) === 'href');
         const onClick = attrs.find(attr => ['onClick', 'onSubmit', 'onSelect', 'onChange'].includes(attr.name.getText(sourceFile)));
@@ -325,7 +360,6 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         }
       }
       if (!UI_TAGS.has(tagName.toLowerCase()) && /^[A-Z]/u.test(tagName)) {
-        const attrs = opening.attributes.properties.filter(ts.isJsxAttribute);
         for (const attr of attrs) {
           const prop = attr.name.getText(sourceFile);
           if (!/^on[A-Z]/u.test(prop) || !attr.initializer || !ts.isJsxExpression(attr.initializer) || !attr.initializer.expression) continue;

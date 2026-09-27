@@ -199,6 +199,57 @@ if (scopedAudit.findingSummary?.total !== scopedAudit.findings.length || scopedA
 }
 const assessmentElapsedMs = Date.now() - assessmentStarted;
 
+const studioScope = 'src/features/creator-workbench';
+const studioManualQueries = ['CreatorWorkbench', 'openStudioSheet', 'navigation', 'scroll', 'pointer', 'overlay'];
+const studioManualStarted = process.hrtime.bigint();
+const studioManualSearch = await callTool('search_graph', { project, graphId: scan.graphId, queries: studioManualQueries, limit: 40 });
+const studioManualOrientation = await callTool('orient_scope', { project, graphId: scan.graphId, scope: studioScope, limit: 20 });
+const studioManualSource = await callTool('search_code', {
+  project,
+  graphId: scan.graphId,
+  pattern: 'drag|drop|scroll|pointer|overlay',
+  filePattern: studioScope,
+  filePatternMode: 'prefix',
+  regex: true,
+  context: 2,
+  limit: 80,
+});
+const studioManualCoverage = await callTool('check_graph_coverage', { project, graphId: scan.graphId });
+const studioManualSchema = await callTool('get_graph_schema', { project, graphId: scan.graphId });
+const studioManualElapsedMs = Number(process.hrtime.bigint() - studioManualStarted) / 1_000_000;
+if (!Array.isArray(studioManualSearch.results) || studioManualSearch.results.length !== studioManualQueries.length) throw new Error('CardForge Studio manual decomposition search lost independent queries');
+if (!studioManualOrientation?.scope || Number(studioManualOrientation.scope.nodeCount ?? 0) < 1) throw new Error('CardForge Studio manual orientation did not resolve the feature scope');
+if (Number(studioManualSource.total ?? 0) < 1) throw new Error('CardForge Studio source decomposition expected scroll/pointer/overlay evidence');
+if (!studioManualCoverage?.summary || !studioManualSchema?.nodeKinds) throw new Error('CardForge Studio manual decomposition expected coverage and schema context');
+
+const studioProjectionStarted = process.hrtime.bigint();
+const studioProjection = await callTool('inspect_interface', { project, graphId: scan.graphId, scope: studioScope, limit: 100 });
+const studioProjectionElapsedMs = Number(process.hrtime.bigint() - studioProjectionStarted) / 1_000_000;
+if (studioProjection.ambiguous === true || Number(studioProjection.scope?.nodeCount ?? 0) < 1) throw new Error('CardForge Studio interface projection did not resolve the feature scope');
+if (studioProjection.policy?.deterministic !== true || studioProjection.policy?.persisted !== false || studioProjection.policy?.semanticAuthority !== false) throw new Error('CardForge Studio interface projection crossed its authority boundary');
+if (!Array.isArray(studioProjection.surfaces) || studioProjection.surfaces.length < 1) throw new Error('CardForge Studio interface projection expected surfaces');
+if (!Array.isArray(studioProjection.state) || !studioProjection.state.some(item => item.name === 'openStudioSheet')) throw new Error('CardForge Studio interface projection lost known Studio state ownership');
+if (!Array.isArray(studioProjection.transitions) || !studioProjection.transitions.some(item => item.kind === 'navigation-call')) throw new Error('CardForge Studio interface projection lost navigation evidence');
+if (!Array.isArray(studioProjection.representation) || !studioProjection.representation.some(item => item.kind === 'css-class-reference')) throw new Error('CardForge Studio interface projection expected static JSX class references');
+const studioCssEvidence = studioProjection.representation.find(item => item.kind === 'css-selector' && String(item.name ?? '').includes('cardforge-studio-workspace') && /overflow/u.test(JSON.stringify(item.value ?? null)));
+if (!studioCssEvidence) throw new Error('CardForge Studio interface projection did not join workspace class usage to CSS overflow evidence');
+if (studioProjection.runtimeObservations?.available !== false) throw new Error('CardForge Studio source benchmark unexpectedly claimed runtime observations');
+if (!studioProjection.uncertainty?.unknowns?.some(value => /runtime state transitions|geometry|stacking|scroll ownership|pointer\/focus ownership/i.test(String(value)))) throw new Error('CardForge Studio interface projection did not preserve runtime-only uncertainty');
+if (studioProjectionElapsedMs > 2000) throw new Error(`CardForge Studio interface projection exceeded 2000 ms budget: ${studioProjectionElapsedMs.toFixed(2)} ms`);
+
+const studioRoutedQuestion = await callTool('investigate', {
+  project,
+  graphId: scan.graphId,
+  question: 'What changes when this Studio control is activated?',
+  scope: studioScope,
+});
+if (studioRoutedQuestion.intent !== 'interface' || studioRoutedQuestion.routing?.tool !== 'inspect_interface') throw new Error('CardForge Studio natural-language interaction question did not route to inspect_interface');
+
+const studioBaselineCalls = 5;
+const studioProjectionCalls = 1;
+const studioCallReduction = studioBaselineCalls - studioProjectionCalls;
+const studioCallReductionPct = studioCallReduction / studioBaselineCalls;
+
 const probes = [
   {
     name: 'Library zone action factory',
@@ -374,6 +425,34 @@ const report = {
     workflowQueries: workflowSearch.results.map(result => ({ query: result.query, nodeTotal: result.nodeTotal, edgeTotal: result.edgeTotal })),
   },
   sourceSearch: { total: sourceSearch.total ?? 0, sample: Array.isArray(sourceSearch.matches) ? sourceSearch.matches.slice(0, 5) : [] },
+  interfaceProjection: {
+    scope: studioScope,
+    baselineDecomposition: {
+      calls: studioBaselineCalls,
+      tools: ['search_graph', 'orient_scope', 'search_code', 'check_graph_coverage', 'get_graph_schema'],
+      elapsedMs: Number(studioManualElapsedMs.toFixed(3)),
+      sourceMatches: Number(studioManualSource.total ?? 0),
+    },
+    projection: {
+      calls: studioProjectionCalls,
+      elapsedMs: Number(studioProjectionElapsedMs.toFixed(3)),
+      surfaceCount: studioProjection.surfaces.length,
+      stateCount: studioProjection.state.length,
+      interactionCount: studioProjection.interactions.length,
+      transitionCount: studioProjection.transitions.length,
+      effectCount: studioProjection.effects.length,
+      representationCount: studioProjection.representation.length,
+      cssWorkspaceOverflowEvidence: { id: studioCssEvidence.id, name: studioCssEvidence.name, locator: studioCssEvidence.locator, value: studioCssEvidence.value },
+      runtimeObservationsAvailable: studioProjection.runtimeObservations.available,
+      unknowns: studioProjection.uncertainty.unknowns,
+    },
+    routedQuestion: {
+      intent: studioRoutedQuestion.intent,
+      tool: studioRoutedQuestion.routing?.tool ?? null,
+    },
+    callReduction: studioCallReduction,
+    callReductionPct: Number(studioCallReductionPct.toFixed(4)),
+  },
   queryArtifacts: {
     fullGraphBytes,
     indexBytes: queryArtifactBytes.indexBytes,
@@ -415,6 +494,8 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
+  `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
+  `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Canonical current-graph hot path: **cold ${canonicalColdWallMs.toFixed(3)} ms → p50 ${canonicalHotP50Ms.toFixed(3)} ms / p95 ${canonicalHotP95Ms.toFixed(3)} ms across 12 process-cache-evicted reads (${canonicalSpeedupVsP50.toFixed(2)}× vs p50)**`,
