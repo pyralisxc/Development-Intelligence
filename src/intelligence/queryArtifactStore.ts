@@ -10,6 +10,7 @@ import {
 } from './canonicalStore.js';
 import {
   buildCanonicalQueryArtifacts,
+  populatedQueryBuckets,
   type CanonicalQueryArtifacts,
   type CanonicalQueryDetailShard,
   type CanonicalQueryIndexArtifact,
@@ -41,6 +42,7 @@ export interface CanonicalQueryArtifactManifest {
   evidenceFingerprint: string | null;
   createdAt: string;
   index: CanonicalQueryArtifactDescriptor;
+  bucketIds: string[];
   shards: Record<string, CanonicalQueryArtifactDescriptor>;
 }
 
@@ -118,8 +120,11 @@ export function prepareCanonicalQueryArtifactGeneration(
   const index = descriptor(`${prefix}/index.json.gz`, encodedIndex);
   objects.push({ descriptor: index, body: encodedIndex.body });
 
+  const bucketIds = populatedQueryBuckets(artifacts.index);
   const shards: Record<string, CanonicalQueryArtifactDescriptor> = {};
-  for (const [bucket, shard] of Object.entries(artifacts.shards).sort(([a], [b]) => a.localeCompare(b))) {
+  for (const bucket of bucketIds) {
+    const shard = artifacts.shards[bucket];
+    if (!shard) throw new Error(`Canonical query detail shard is missing during publication: ${bucket}`);
     const encoded = encodeArtifact(shard);
     const item = descriptor(`${prefix}/shards/${bucket}.json.gz`, encoded);
     shards[bucket] = item;
@@ -141,6 +146,7 @@ export function prepareCanonicalQueryArtifactGeneration(
     evidenceFingerprint: graph.evidenceFingerprint,
     createdAt: new Date().toISOString(),
     index,
+    bucketIds,
     shards,
   };
   const manifestPayload = JSON.stringify(manifest);
@@ -224,9 +230,16 @@ function validateManifest(
     || manifest.topologyFingerprint !== graph.topologyFingerprint
     || manifest.evidenceFingerprint !== graph.evidenceFingerprint
   ) throw new Error('Canonical query artifact manifest identity is stale or malformed');
-  if (!manifest.index || !manifest.shards || Object.keys(manifest.shards).length !== 64) {
+  if (!manifest.index || !manifest.shards || !Array.isArray(manifest.bucketIds)) {
     throw new Error('Canonical query artifact manifest inventory is incomplete');
   }
+  const bucketIds = [...new Set(manifest.bucketIds)];
+  if (
+    bucketIds.length !== manifest.bucketIds.length
+    || bucketIds.some(bucket => !/^[0-9a-f]{2}$/u.test(bucket) || Number.parseInt(bucket, 16) >= 64)
+    || bucketIds.join(',') !== [...bucketIds].sort().join(',')
+    || Object.keys(manifest.shards).sort().join(',') !== bucketIds.join(',')
+  ) throw new Error('Canonical query artifact manifest bucket inventory is malformed');
   return manifest;
 }
 
@@ -257,10 +270,24 @@ export async function loadCanonicalQueryArtifacts(
     const manifest = validateManifest(JSON.parse(manifestText), graph, ref);
 
     const index = await readDescriptor(graph.project, manifest.index) as CanonicalQueryIndexArtifact;
+    if (
+      index.formatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
+      || index.project !== graph.project
+      || index.revision !== graph.repositoryRevision
+      || index.graphId !== graph.graphId
+    ) throw new Error('Canonical query artifact index identity is invalid');
+    const populated = populatedQueryBuckets(index);
+    if (populated.join(',') !== manifest.bucketIds.join(',')) {
+      throw new Error('Canonical query artifact manifest does not match the index bucket inventory');
+    }
     const shards: Record<string, CanonicalQueryDetailShard> = {};
     for (const bucket of [...new Set(bucketIds)].sort()) {
       const item = manifest.shards[bucket];
-      if (!item) throw new Error(`Canonical query artifact shard is not declared: ${bucket}`);
+      if (!item) {
+        const summary = index.buckets[bucket];
+        if (summary && summary.nodeCount === 0 && summary.edgeCount === 0 && summary.evidenceCount === 0) continue;
+        throw new Error(`Canonical query artifact shard is not declared: ${bucket}`);
+      }
       const shard = await readDescriptor(graph.project, item) as CanonicalQueryDetailShard;
       if (
         shard.formatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
@@ -271,12 +298,6 @@ export async function loadCanonicalQueryArtifacts(
       ) throw new Error(`Canonical query artifact shard identity is invalid: ${bucket}`);
       shards[bucket] = shard;
     }
-    if (
-      index.formatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
-      || index.project !== graph.project
-      || index.revision !== graph.repositoryRevision
-      || index.graphId !== graph.graphId
-    ) throw new Error('Canonical query artifact index identity is invalid');
     return { state: 'hit', loadMs: Math.max(0, Date.now() - startedAt), index, shards };
   } catch (error) {
     return {
