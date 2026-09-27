@@ -69,8 +69,63 @@ export interface CanonicalQueryArtifactLoadResult {
   error?: string;
 }
 
+export interface CanonicalQueryArtifactPointer {
+  formatVersion: 1;
+  artifactFormatVersion: 4;
+  project: string;
+  repository: string;
+  revision: string;
+  analyzerVersion: string;
+  graphSchemaVersion: 2;
+  graphId: string;
+  sourceFingerprint: string | null;
+  topologyFingerprint: string | null;
+  evidenceFingerprint: string | null;
+  ref: CanonicalQueryArtifactGenerationRef;
+  publishedAt: string;
+}
+
+export interface CanonicalQueryArtifactPointerLoadResult {
+  state: 'not-configured' | 'miss' | 'hit' | 'stale' | 'invalid' | 'error';
+  loadMs: number;
+  pointer?: CanonicalQueryArtifactPointer;
+  error?: string;
+}
+
+export interface CanonicalQueryArtifactPointerPublishResult {
+  state: 'not-configured' | 'stored' | 'error';
+  saveMs: number;
+  pointer: CanonicalQueryArtifactPointer | null;
+  error?: string;
+}
+
+export const CURRENT_QUERY_POINTER_PATH = 'current-query-generation.json';
+
+type CanonicalQueryArtifactIdentity = Pick<
+  IntelligenceGraph,
+  'project' | 'repositoryRevision' | 'analyzerVersion' | 'schemaVersion' | 'graphId' | 'sourceFingerprint' | 'topologyFingerprint' | 'evidenceFingerprint'
+>;
+
 function sha256(body: string | Uint8Array): string {
   return createHash('sha256').update(body).digest('hex');
+}
+
+function validGenerationRef(value: unknown): value is CanonicalQueryArtifactGenerationRef {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return item.formatVersion === 1
+    && item.artifactFormatVersion === QUERY_ARTIFACT_FORMAT_VERSION
+    && typeof item.generationId === 'string'
+    && /^[0-9a-f]{24}$/u.test(item.generationId)
+    && typeof item.slot === 'number'
+    && Number.isInteger(item.slot)
+    && item.slot >= 0
+    && item.slot < QUERY_ARTIFACT_SLOT_COUNT
+    && typeof item.objectCount === 'number'
+    && Number.isInteger(item.objectCount)
+    && item.objectCount > 0
+    && typeof item.manifestSha256 === 'string'
+    && /^[0-9a-f]{64}$/u.test(item.manifestSha256);
 }
 
 function generationId(graph: IntelligenceGraph): string {
@@ -211,7 +266,7 @@ export async function publishCanonicalQueryArtifacts(
 
 function validateManifest(
   value: unknown,
-  graph: IntelligenceGraph,
+  graph: CanonicalQueryArtifactIdentity,
   ref: CanonicalQueryArtifactGenerationRef,
 ): CanonicalQueryArtifactManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Canonical query artifact manifest must be an object');
@@ -253,7 +308,7 @@ async function readDescriptor(project: string, item: CanonicalQueryArtifactDescr
 }
 
 export async function loadCanonicalQueryArtifacts(
-  graph: IntelligenceGraph,
+  graph: CanonicalQueryArtifactIdentity,
   ref: CanonicalQueryArtifactGenerationRef | null | undefined,
   bucketIds: string[] = [],
 ): Promise<CanonicalQueryArtifactLoadResult> {
@@ -306,4 +361,96 @@ export async function loadCanonicalQueryArtifacts(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+
+export async function publishCanonicalQueryArtifactPointer(
+  graph: IntelligenceGraph,
+  repository: string,
+  ref: CanonicalQueryArtifactGenerationRef,
+): Promise<CanonicalQueryArtifactPointerPublishResult> {
+  const startedAt = Date.now();
+  const storage = canonicalDerivedStorageInfo();
+  if (!storage.durable) return { state: 'not-configured', saveMs: 0, pointer: null };
+  try {
+    if (!graph.repositoryRevision) throw new Error('Canonical query pointer publication requires an exact repository revision');
+    if (!validGenerationRef(ref)) throw new Error('Canonical query pointer generation reference is malformed');
+    const pointer: CanonicalQueryArtifactPointer = {
+      formatVersion: 1,
+      artifactFormatVersion: QUERY_ARTIFACT_FORMAT_VERSION,
+      project: graph.project,
+      repository,
+      revision: graph.repositoryRevision,
+      analyzerVersion: graph.analyzerVersion,
+      graphSchemaVersion: graph.schemaVersion,
+      graphId: graph.graphId,
+      sourceFingerprint: graph.sourceFingerprint,
+      topologyFingerprint: graph.topologyFingerprint,
+      evidenceFingerprint: graph.evidenceFingerprint,
+      ref,
+      publishedAt: new Date().toISOString(),
+    };
+    const stored = await writeCanonicalDerivedObject(graph.project, CURRENT_QUERY_POINTER_PATH, JSON.stringify(pointer), 'application/json');
+    if (!stored) return { state: 'not-configured', saveMs: Math.max(0, Date.now() - startedAt), pointer: null };
+    return { state: 'stored', saveMs: Math.max(0, Date.now() - startedAt), pointer };
+  } catch (error) {
+    return {
+      state: 'error',
+      saveMs: Math.max(0, Date.now() - startedAt),
+      pointer: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function loadCanonicalQueryArtifactPointer(expected: {
+  project: string;
+  repository: string;
+  revision: string;
+}): Promise<CanonicalQueryArtifactPointerLoadResult> {
+  const startedAt = Date.now();
+  const storage = canonicalDerivedStorageInfo();
+  if (!storage.durable) return { state: 'not-configured', loadMs: 0 };
+  try {
+    const body = await readCanonicalDerivedObject(expected.project, CURRENT_QUERY_POINTER_PATH, 128 * 1024);
+    if (!body) return { state: 'miss', loadMs: Math.max(0, Date.now() - startedAt) };
+    const value = JSON.parse(Buffer.from(body).toString('utf8')) as CanonicalQueryArtifactPointer;
+    if (
+      value.formatVersion !== 1
+      || value.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
+      || value.project !== expected.project
+      || value.repository !== expected.repository
+      || value.graphSchemaVersion !== 2
+      || typeof value.analyzerVersion !== 'string'
+      || typeof value.graphId !== 'string'
+      || typeof value.publishedAt !== 'string'
+      || !validGenerationRef(value.ref)
+    ) throw new Error('Canonical query pointer identity is malformed');
+    if (value.revision !== expected.revision) {
+      return { state: 'stale', loadMs: Math.max(0, Date.now() - startedAt), pointer: value };
+    }
+    return { state: 'hit', loadMs: Math.max(0, Date.now() - startedAt), pointer: value };
+  } catch (error) {
+    return {
+      state: error instanceof SyntaxError ? 'invalid' : 'error',
+      loadMs: Math.max(0, Date.now() - startedAt),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function loadCanonicalQueryArtifactsFromPointer(
+  pointer: CanonicalQueryArtifactPointer,
+  bucketIds: string[] = [],
+): Promise<CanonicalQueryArtifactLoadResult> {
+  return await loadCanonicalQueryArtifacts({
+    project: pointer.project,
+    repositoryRevision: pointer.revision,
+    analyzerVersion: pointer.analyzerVersion,
+    schemaVersion: pointer.graphSchemaVersion,
+    graphId: pointer.graphId,
+    sourceFingerprint: pointer.sourceFingerprint,
+    topologyFingerprint: pointer.topologyFingerprint,
+    evidenceFingerprint: pointer.evidenceFingerprint,
+  }, pointer.ref, bucketIds);
 }

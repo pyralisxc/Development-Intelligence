@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
-import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
+import { clearGraphCache, graphStatus, loadCurrentQueryArtifacts } from '../src/intelligence/service.js';
 import { searchGraph } from '../src/intelligence/query.js';
 import { runChecked } from '../src/util/process.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../src/vercelRequestContext.js';
@@ -134,6 +134,19 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     clearGraphCache(item.project);
     await fs.rm(item.scratch, { recursive: true, force: true });
     await fs.writeFile(item.scratch, 'checkout must not touch this path');
+
+    const queryRequestStart = item.blob.requests.length;
+    const queryOnly = await loadCurrentQueryArtifacts(item.project, ['value']);
+    assert.equal(queryOnly.state, 'hit');
+    assert.ok(queryOnly.index);
+    assert.ok(queryOnly.bucketIds.length > 0);
+    const queryRequests = item.blob.requests.slice(queryRequestStart);
+    assert.equal(
+      queryRequests.some(request => request.pathname === `/private/${canonicalGraphBlobPath(item.project)}`),
+      false,
+      'query-plane bootstrap must not read the full canonical graph blob',
+    );
+
     const second = await graphStatus(item.project) as any;
     assert.equal(second.observability.graphAccess.cacheState, 'miss');
     assert.equal(second.observability.persistence.mode, 'vercel-private-blob');

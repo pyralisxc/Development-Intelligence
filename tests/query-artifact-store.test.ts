@@ -9,9 +9,12 @@ import {
   writeCanonicalDerivedObject,
 } from '../src/intelligence/canonicalStore.js';
 import {
+  loadCanonicalQueryArtifactPointer,
   loadCanonicalQueryArtifacts,
+  loadCanonicalQueryArtifactsFromPointer,
   persistPreparedCanonicalQueryArtifacts,
   prepareCanonicalQueryArtifactGeneration,
+  publishCanonicalQueryArtifactPointer,
   publishCanonicalQueryArtifacts,
   QUERY_ARTIFACT_SLOT_COUNT,
 } from '../src/intelligence/queryArtifactStore.js';
@@ -164,4 +167,48 @@ test('query artifact publication omits logically empty detail buckets', async ()
   assert.ok(prepared.manifest.bucketIds.length < 64);
   assert.equal(Object.keys(prepared.manifest.shards).length, prepared.manifest.bucketIds.length);
   assert.equal(prepared.ref.objectCount, prepared.manifest.bucketIds.length + 1, 'index + populated shards only');
+});
+
+
+test('current query pointer loads an exact generation without a full graph object', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-query-pointer-'));
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const value = graph('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'pointer');
+    const published = await publishCanonicalQueryArtifacts(value);
+    assert.equal(published.state, 'stored');
+    assert.ok(published.ref);
+
+    const pointerPublish = await publishCanonicalQueryArtifactPointer(value, 'file:///fixture.git', published.ref!);
+    assert.equal(pointerPublish.state, 'stored');
+    assert.ok(pointerPublish.pointer);
+
+    const pointerLoad = await loadCanonicalQueryArtifactPointer({
+      project: value.project,
+      repository: 'file:///fixture.git',
+      revision: value.repositoryRevision!,
+    });
+    assert.equal(pointerLoad.state, 'hit');
+    assert.equal(pointerLoad.pointer?.graphId, value.graphId);
+
+    const indexLoad = await loadCanonicalQueryArtifactsFromPointer(pointerLoad.pointer!);
+    assert.equal(indexLoad.state, 'hit');
+    assert.ok(indexLoad.index);
+    const buckets = candidateQueryBuckets(indexLoad.index!, 'needle');
+    assert.ok(buckets.length > 0);
+
+    const detailLoad = await loadCanonicalQueryArtifactsFromPointer(pointerLoad.pointer!, buckets);
+    assert.equal(detailLoad.state, 'hit');
+    assert.ok(Object.keys(detailLoad.shards ?? {}).length > 0);
+
+    const stale = await loadCanonicalQueryArtifactPointer({
+      project: value.project,
+      repository: 'file:///fixture.git',
+      revision: 'cccccccccccccccccccccccccccccccccccccccc',
+    });
+    assert.equal(stale.state, 'stale');
+  } finally {
+    delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
