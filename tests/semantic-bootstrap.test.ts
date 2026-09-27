@@ -365,3 +365,30 @@ test('representation locator suffixes cannot manufacture semantic pseudo-file sc
   assert.equal(result.candidates[0]?.scope, 'src/features/editor');
   assert.equal(result.candidates[0]?.support.fileCount, 2, 'semantic support must count physical files, not locator suffixes');
 });
+
+
+test('generic support roots stay structural even when they contain strong technical activity', () => {
+  const fixture = graph();
+  fixture.nodes = [
+    node('file:shared-a', 'file', 'src/shared/session.ts'),
+    node('symbol:shared-a', 'function', 'src/shared/session.ts:2', 'writeSession'),
+    node('state:shared-a', 'state-binding', 'src/shared/session.ts:state-write:session', 'session', 'representation'),
+    node('file:shared-b', 'file', 'src/shared/request.ts'),
+    node('symbol:shared-b', 'function', 'src/shared/request.ts:2', 'requestApi'),
+    node('api:shared-b', 'http-call', 'src/shared/request.ts:http-call:/api/session', '/api/session', 'representation'),
+  ];
+  fixture.edges = [
+    edge('shared-a-contains', 'file:shared-a', 'symbol:shared-a', 'contains'),
+    edge('shared-state', 'symbol:shared-a', 'state:shared-a', 'state-write'),
+    edge('shared-b-contains', 'file:shared-b', 'symbol:shared-b', 'contains'),
+    edge('shared-api', 'symbol:shared-b', 'api:shared-b', 'calls'),
+    edge('shared-link', 'symbol:shared-a', 'symbol:shared-b', 'calls'),
+  ];
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  assert.equal(result.capacity.groupedScopeCount, 1);
+  assert.equal(result.capacity.eligibleCandidateCount, 0);
+  assert.equal(result.capacity.rejectedScopeCount, 1);
+  assert.equal(result.capacity.rejectionReasons.genericSupportScope, 1);
+  assert.equal(result.candidates.length, 0, 'shared is technical support structure, not product meaning');
+});

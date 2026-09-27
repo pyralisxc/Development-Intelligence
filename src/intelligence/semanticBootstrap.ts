@@ -66,6 +66,7 @@ export interface SemanticBootstrapProjection {
     rejectionReasons: {
       insufficientEvidenceFamilies: number;
       insufficientFileSupport: number;
+      genericSupportScope: number;
     };
   };
   policy: {
@@ -272,10 +273,15 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   const rejectionReasons = {
     insufficientEvidenceFamilies: 0,
     insufficientFileSupport: 0,
+    genericSupportScope: 0,
   };
   for (const group of groups.values()) {
     const { families, motifs } = familyEvidence(group, graph);
     const strongFamily = families.some(family => ['interface', 'api', 'persistence', 'motif', 'state'].includes(family));
+    if (group.scopeRole === 'direct' && SUPPORT_SEGMENTS.has(group.token.toLowerCase())) {
+      rejectionReasons.genericSupportScope += 1;
+      continue;
+    }
     if (families.length < 2) {
       rejectionReasons.insufficientEvidenceFamilies += 1;
       continue;
