@@ -26,3 +26,8 @@ declare module 'node:async_hooks' {
     getStore(): T | undefined;
   }
 }
+
+declare module 'node:zlib' {
+  export const gzipSync: any;
+  export const gunzipSync: any;
+}

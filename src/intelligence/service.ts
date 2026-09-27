@@ -6,10 +6,19 @@ import { analyzeHtml, analyzeJson } from './analyzers/index.js';
 import { AsyncGate, cacheEntryLimitSetting, graphRecordWeight, positiveIntegerSetting, retentionEvictions, type RetentionItem } from './capacity.js';
 import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
 import { assertGraphIntegrity } from './integrity.js';
-import { advanceRepositoryGraph, buildRepositoryGraph } from './repository.js';
+import { advanceRepositoryGraph, ANALYZER_VERSION, buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { toolExecutionDiagnostics } from '../observability.js';
-import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph, type CanonicalPersistenceDiagnostics } from './canonicalStore.js';
+import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph, type CanonicalPersistenceDiagnostics, type CanonicalQueryArtifactGenerationRef } from './canonicalStore.js';
+import {
+  loadCanonicalQueryArtifactPointer,
+  loadCanonicalQueryArtifacts,
+  loadCanonicalQueryArtifactsFromPointer,
+  publishCanonicalQueryArtifactPointer,
+  publishCanonicalQueryArtifacts,
+  type CanonicalQueryArtifactLoadResult,
+} from './queryArtifactStore.js';
+import { candidateQueryBuckets } from './queryArtifacts.js';
 
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_GRAPH_MAX_RUNTIME_BYTES ?? process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
 
@@ -45,6 +54,22 @@ export interface GraphAccessTiming {
   persistence: CanonicalPersistenceDiagnostics;
 }
 
+export interface QueryArtifactPublicationDiagnostics {
+  state: 'referenced' | 'stored' | 'not-configured' | 'error' | 'none';
+  saveMs: number;
+  ref: CanonicalQueryArtifactGenerationRef | null;
+  error?: string;
+}
+
+export interface QueryArtifactShadowLoad {
+  state: 'hit' | 'unavailable' | 'miss' | 'invalid' | 'error' | 'not-configured';
+  loadMs: number;
+  bucketIds: string[];
+  index: CanonicalQueryArtifactLoadResult['index'] | null;
+  shards: NonNullable<CanonicalQueryArtifactLoadResult['shards']>;
+  reason?: string;
+}
+
 interface CachedRepositoryGraph {
   graph: IntelligenceGraph;
   accepted: IntelligenceGraph | null;
@@ -53,6 +78,7 @@ interface CachedRepositoryGraph {
   touchedAt: number;
   buildTiming: GraphColdBuildTiming | null;
   persistence: CanonicalPersistenceDiagnostics;
+  queryArtifacts: QueryArtifactPublicationDiagnostics;
 }
 
 interface RepositoryGraphAccess extends CachedRepositoryGraph {
@@ -163,6 +189,9 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
             touchedAt: Date.now(),
             buildTiming: null,
             persistence: loaded.diagnostics,
+            queryArtifacts: loaded.record.queryArtifacts
+              ? { state: 'referenced', saveMs: 0, ref: loaded.record.queryArtifacts }
+              : { state: 'none', saveMs: 0, ref: null },
           } satisfies CachedRepositoryGraph;
         }
 
@@ -250,6 +279,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           acceptedProjectionMs = elapsedMs(acceptedProjectionStarted);
           return { graph, accepted, currentness };
         });
+        const queryArtifactPublication = await publishCanonicalQueryArtifacts(
+          observed.value.graph,
+          loaded.staleRecord?.queryArtifacts ?? null,
+        );
         const record = makeCanonicalGraphRecord({
           project,
           repository: revision.repository,
@@ -257,8 +290,12 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           working: observed.value.graph,
           accepted: observed.value.accepted,
           currentness: observed.value.currentness,
+          queryArtifacts: queryArtifactPublication.state === 'stored' ? queryArtifactPublication.ref : null,
         });
         const saved = await saveCanonicalGraph(record);
+        const queryPointerPublication = saved.saveState === 'stored' && queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref
+          ? await publishCanonicalQueryArtifactPointer(observed.value.graph, revision.repository, queryArtifactPublication.ref)
+          : null;
         return {
           ...observed.value,
           revision,
@@ -280,6 +317,16 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
             saveState: saved.saveState,
             saveMs: saved.saveMs,
             ...(saved.error ? { error: saved.error } : loaded.diagnostics.error ? { error: loaded.diagnostics.error } : {}),
+          },
+          queryArtifacts: {
+            state: queryPointerPublication?.state === 'error' ? 'error' : queryArtifactPublication.state,
+            saveMs: queryArtifactPublication.saveMs + (queryPointerPublication?.saveMs ?? 0),
+            ref: queryArtifactPublication.ref,
+            ...(queryPointerPublication?.error
+              ? { error: queryPointerPublication.error }
+              : queryArtifactPublication.error
+                ? { error: queryArtifactPublication.error }
+                : {}),
           },
         } satisfies CachedRepositoryGraph;
       }
@@ -354,6 +401,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           loadMs: 0,
           saveMs: 0,
         },
+        queryArtifacts: { state: 'not-configured', saveMs: 0, ref: null },
       } satisfies CachedRepositoryGraph;
     }).then(value => {
       created.value = value;
@@ -378,6 +426,122 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
       totalMs: elapsedMs(accessStarted),
       persistence: value.persistence,
     },
+  };
+}
+
+
+export async function loadCurrentQueryArtifacts(
+  project: string,
+  queries: string[],
+): Promise<QueryArtifactShadowLoad> {
+  const revision = await resolveProjectRevision(project);
+  const pointerLoad = await loadCanonicalQueryArtifactPointer({
+    project,
+    repository: revision.repository,
+    revision: revision.sha,
+  });
+  if (pointerLoad.state !== 'hit' || !pointerLoad.pointer) {
+    return {
+      state: pointerLoad.state === 'stale' ? 'miss' : pointerLoad.state,
+      loadMs: pointerLoad.loadMs,
+      bucketIds: [],
+      index: null,
+      shards: {},
+      ...(pointerLoad.error ? { reason: pointerLoad.error } : {}),
+    };
+  }
+  const pointer = pointerLoad.pointer;
+  if (pointer.analyzerVersion !== ANALYZER_VERSION || pointer.graphSchemaVersion !== 2) {
+    return {
+      state: 'invalid',
+      loadMs: pointerLoad.loadMs,
+      bucketIds: [],
+      index: null,
+      shards: {},
+      reason: 'current-query-pointer-analyzer-or-schema-is-stale',
+    };
+  }
+
+  const indexLoad = await loadCanonicalQueryArtifactsFromPointer(pointer);
+  if (indexLoad.state !== 'hit' || !indexLoad.index) {
+    return {
+      state: indexLoad.state,
+      loadMs: pointerLoad.loadMs + indexLoad.loadMs,
+      bucketIds: [],
+      index: indexLoad.index ?? null,
+      shards: indexLoad.shards ?? {},
+      ...(indexLoad.error ? { reason: indexLoad.error } : {}),
+    };
+  }
+  const bucketIds = [...new Set(
+    queries
+      .map(value => value.trim())
+      .filter(Boolean)
+      .flatMap(value => candidateQueryBuckets(indexLoad.index!, value)),
+  )].sort();
+  const detailLoad = await loadCanonicalQueryArtifactsFromPointer(pointer, bucketIds);
+  return {
+    state: detailLoad.state,
+    loadMs: pointerLoad.loadMs + indexLoad.loadMs + detailLoad.loadMs,
+    bucketIds,
+    index: detailLoad.index ?? indexLoad.index,
+    shards: detailLoad.shards ?? {},
+    ...(detailLoad.error ? { reason: detailLoad.error } : {}),
+  };
+}
+
+export async function loadQueryArtifactShadow(
+  project: string,
+  graph: IntelligenceGraph,
+  queries: string[],
+): Promise<QueryArtifactShadowLoad> {
+  const revision = graph.repositoryRevision;
+  if (!revision) return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'graph-has-no-exact-revision' };
+  const entry = repositoryCache.get(cacheKey(project, revision));
+  if (!entry) return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'canonical-cache-entry-unavailable' };
+  const cached = await entry.promise;
+  if (cached.graph.graphId !== graph.graphId || cached.graph.repositoryRevision !== revision) {
+    return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'canonical-cache-identity-mismatch' };
+  }
+  const ref = cached.queryArtifacts.ref;
+  if (!ref) {
+    return {
+      state: cached.queryArtifacts.state === 'not-configured' ? 'not-configured' : 'miss',
+      loadMs: 0,
+      bucketIds: [],
+      index: null,
+      shards: {},
+      reason: cached.queryArtifacts.error ?? 'canonical-query-artifact-generation-not-referenced',
+    };
+  }
+
+  const indexLoad = await loadCanonicalQueryArtifacts(graph, ref);
+  if (indexLoad.state !== 'hit' || !indexLoad.index) {
+    return {
+      state: indexLoad.state,
+      loadMs: indexLoad.loadMs,
+      bucketIds: [],
+      index: indexLoad.index ?? null,
+      shards: indexLoad.shards ?? {},
+      ...(indexLoad.error ? { reason: indexLoad.error } : {}),
+    };
+  }
+
+  const bucketIds = [...new Set(
+    queries
+      .map(value => value.trim())
+      .filter(Boolean)
+      .flatMap(value => candidateQueryBuckets(indexLoad.index!, value)),
+  )].sort();
+
+  const detailLoad = await loadCanonicalQueryArtifacts(graph, ref, bucketIds);
+  return {
+    state: detailLoad.state,
+    loadMs: indexLoad.loadMs + detailLoad.loadMs,
+    bucketIds,
+    index: detailLoad.index ?? indexLoad.index,
+    shards: detailLoad.shards ?? {},
+    ...(detailLoad.error ? { reason: detailLoad.error } : {}),
   };
 }
 
@@ -599,6 +763,7 @@ export async function graphStatus(project: string, ref?: string): Promise<Record
       coldBuild: repository.buildTiming,
       lastToolCall: toolExecutionDiagnostics(project),
       persistence: repository.accessTiming.persistence,
+      queryArtifacts: repository.queryArtifacts,
     },
   };
 }
