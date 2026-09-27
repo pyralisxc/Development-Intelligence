@@ -104,9 +104,7 @@ function sourceFile(locator: string): string | null {
   // Resolve identity to the physical source file before semantic grouping so
   // observations from one file cannot manufacture pseudo-file scopes.
   const physicalFile = /^(.+\.[A-Za-z0-9]+)(?::.*)?$/u.exec(clean)?.[1] ?? null;
-  if (physicalFile) return physicalFile;
-
-  return clean.includes('/') ? clean : null;
+  return physicalFile;
 }
 
 function stem(value: string): string {

@@ -392,3 +392,38 @@ test('generic support roots stay structural even when they contain strong techni
   assert.equal(result.capacity.rejectionReasons.genericSupportScope, 1);
   assert.equal(result.candidates.length, 0, 'shared is technical support structure, not product meaning');
 });
+
+
+test('logical graph locators without physical files cannot create semantic scopes', () => {
+  const fixture = graph();
+  fixture.nodes = [
+    {
+      id: 'route:logical',
+      sourceId: 'route:/account',
+      kind: 'route',
+      locator: 'route:/account',
+      name: '/account',
+      value: '/account',
+      raw: '/account',
+      layer: 'representation',
+      checkpoint: false,
+    },
+    {
+      id: 'api:logical',
+      sourceId: 'api:/api/account',
+      kind: 'api',
+      locator: 'api:/api/account',
+      name: '/api/account',
+      value: '/api/account',
+      raw: '/api/account',
+      layer: 'representation',
+      checkpoint: false,
+    },
+  ];
+  fixture.edges = [edge('route-api', 'route:logical', 'api:logical', 'calls')];
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  assert.equal(result.capacity.groupedScopeCount, 0);
+  assert.equal(result.capacity.eligibleCandidateCount, 0);
+  assert.equal(result.candidates.length, 0);
+});
