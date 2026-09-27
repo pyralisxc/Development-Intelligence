@@ -10,7 +10,8 @@ import { advanceRepositoryGraph, buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { toolExecutionDiagnostics } from '../observability.js';
 import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph, type CanonicalPersistenceDiagnostics, type CanonicalQueryArtifactGenerationRef } from './canonicalStore.js';
-import { publishCanonicalQueryArtifacts } from './queryArtifactStore.js';
+import { loadCanonicalQueryArtifacts, publishCanonicalQueryArtifacts, type CanonicalQueryArtifactLoadResult } from './queryArtifactStore.js';
+import { candidateQueryBuckets } from './queryArtifacts.js';
 
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_GRAPH_MAX_RUNTIME_BYTES ?? process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
 
@@ -51,6 +52,15 @@ export interface QueryArtifactPublicationDiagnostics {
   saveMs: number;
   ref: CanonicalQueryArtifactGenerationRef | null;
   error?: string;
+}
+
+export interface QueryArtifactShadowLoad {
+  state: 'hit' | 'unavailable' | 'miss' | 'invalid' | 'error' | 'not-configured';
+  loadMs: number;
+  bucketIds: string[];
+  index: CanonicalQueryArtifactLoadResult['index'] | null;
+  shards: NonNullable<CanonicalQueryArtifactLoadResult['shards']>;
+  reason?: string;
 }
 
 interface CachedRepositoryGraph {
@@ -402,6 +412,62 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
       totalMs: elapsedMs(accessStarted),
       persistence: value.persistence,
     },
+  };
+}
+
+
+export async function loadQueryArtifactShadow(
+  project: string,
+  graph: IntelligenceGraph,
+  queries: string[],
+): Promise<QueryArtifactShadowLoad> {
+  const revision = graph.repositoryRevision;
+  if (!revision) return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'graph-has-no-exact-revision' };
+  const entry = repositoryCache.get(cacheKey(project, revision));
+  if (!entry) return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'canonical-cache-entry-unavailable' };
+  const cached = await entry.promise;
+  if (cached.graph.graphId !== graph.graphId || cached.graph.repositoryRevision !== revision) {
+    return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'canonical-cache-identity-mismatch' };
+  }
+  const ref = cached.queryArtifacts.ref;
+  if (!ref) {
+    return {
+      state: cached.queryArtifacts.state === 'not-configured' ? 'not-configured' : 'miss',
+      loadMs: 0,
+      bucketIds: [],
+      index: null,
+      shards: {},
+      reason: cached.queryArtifacts.error ?? 'canonical-query-artifact-generation-not-referenced',
+    };
+  }
+
+  const indexLoad = await loadCanonicalQueryArtifacts(graph, ref);
+  if (indexLoad.state !== 'hit' || !indexLoad.index) {
+    return {
+      state: indexLoad.state,
+      loadMs: indexLoad.loadMs,
+      bucketIds: [],
+      index: indexLoad.index ?? null,
+      shards: indexLoad.shards ?? {},
+      ...(indexLoad.error ? { reason: indexLoad.error } : {}),
+    };
+  }
+
+  const bucketIds = [...new Set(
+    queries
+      .map(value => value.trim())
+      .filter(Boolean)
+      .flatMap(value => candidateQueryBuckets(indexLoad.index!, value)),
+  )].sort();
+
+  const detailLoad = await loadCanonicalQueryArtifacts(graph, ref, bucketIds);
+  return {
+    state: detailLoad.state,
+    loadMs: indexLoad.loadMs + detailLoad.loadMs,
+    bucketIds,
+    index: detailLoad.index ?? indexLoad.index,
+    shards: detailLoad.shards ?? {},
+    ...(detailLoad.error ? { reason: detailLoad.error } : {}),
   };
 }
 

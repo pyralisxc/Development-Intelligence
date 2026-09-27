@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { getProjectConfig } from '../config/registry.js';
 import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
-import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus } from '../types.js';
+import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus , EvidenceRecord} from '../types.js';
 import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
-import { currentGraph, graphContext, repositoryGraphs } from './service.js';
+import { currentGraph, graphContext, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 
@@ -323,7 +323,7 @@ interface SearchGraphInput {
   offset?: number | undefined;
 }
 
-function searchGraphResult(graph: IntelligenceGraph, input: SearchGraphInput, requestedQuery?: string): Record<string, unknown> {
+function searchGraphMatches(graph: IntelligenceGraph, input: SearchGraphInput, requestedQuery?: string): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const query = requestedQuery?.trim().toLowerCase();
   const kinds = new Set(input.kinds ?? []);
   const sourceIds = new Set(input.sourceIds ?? []);
@@ -342,6 +342,11 @@ function searchGraphResult(graph: IntelligenceGraph, input: SearchGraphInput, re
     if (query && !edgeText(edge).includes(query) && !(edge.from && nodeIds.has(edge.from)) && !(edge.to && nodeIds.has(edge.to))) return false;
     return true;
   });
+  return { nodes, edges };
+}
+
+function searchGraphResult(graph: IntelligenceGraph, input: SearchGraphInput, requestedQuery?: string): Record<string, unknown> {
+  const { nodes, edges } = searchGraphMatches(graph, input, requestedQuery);
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
   const offset = Math.max(input.offset ?? 0, 0);
   return {
@@ -350,6 +355,75 @@ function searchGraphResult(graph: IntelligenceGraph, input: SearchGraphInput, re
     edgeTotal: edges.length,
     nodes: nodes.slice(offset, offset + limit),
     edges: edges.slice(offset, offset + limit),
+  };
+}
+
+function partialGraphForSearch(graph: IntelligenceGraph, shards: Record<string, { nodes: GraphNode[]; edges: GraphEdge[]; evidence: EvidenceRecord[] }>): IntelligenceGraph {
+  const nodes = new Map<string, GraphNode>();
+  const edges = new Map<string, GraphEdge>();
+  const evidence = new Map<string, EvidenceRecord>();
+  for (const shard of Object.values(shards)) {
+    for (const node of shard.nodes) nodes.set(node.id, node);
+    for (const edge of shard.edges) edges.set(edge.id, edge);
+    for (const item of shard.evidence) evidence.set(item.id, item);
+  }
+  return {
+    ...graph,
+    nodes: [...nodes.values()],
+    edges: [...edges.values()],
+    evidence: [...evidence.values()],
+  };
+}
+
+function idSetEqual(left: Array<{ id: string }>, right: Array<{ id: string }>): boolean {
+  if (left.length !== right.length) return false;
+  const ids = new Set(left.map(item => item.id));
+  return right.every(item => ids.has(item.id));
+}
+
+async function adaptiveSearchShadow(
+  graph: IntelligenceGraph,
+  input: SearchGraphInput,
+  queries: string[],
+): Promise<Record<string, unknown>> {
+  if (input.ref || input.graphId) {
+    return { state: 'unavailable', parity: null, reason: 'shadow-mode-current-canonical-only' };
+  }
+  if (queries.some(query => !query.trim())) {
+    return { state: 'unavailable', parity: null, reason: 'broad-empty-query-requires-full-canonical' };
+  }
+  const loaded = await loadQueryArtifactShadow(input.project, graph, queries);
+  if (loaded.state !== 'hit' || !loaded.index) {
+    return {
+      state: loaded.state,
+      parity: null,
+      selectedBuckets: loaded.bucketIds.length,
+      loadMs: loaded.loadMs,
+      ...(loaded.reason ? { reason: loaded.reason } : {}),
+    };
+  }
+  const partial = partialGraphForSearch(graph, loaded.shards);
+  const comparisons = queries.map(query => {
+    const full = searchGraphMatches(graph, input, query);
+    const adaptive = searchGraphMatches(partial, input, query);
+    const nodesEqual = idSetEqual(full.nodes, adaptive.nodes);
+    const edgesEqual = idSetEqual(full.edges, adaptive.edges);
+    return {
+      query,
+      parity: nodesEqual && edgesEqual,
+      full: { nodes: full.nodes.length, edges: full.edges.length },
+      adaptive: { nodes: adaptive.nodes.length, edges: adaptive.edges.length },
+      missingNodes: full.nodes.filter(item => !adaptive.nodes.some(candidate => candidate.id === item.id)).map(item => item.id).slice(0, 20),
+      missingEdges: full.edges.filter(item => !adaptive.edges.some(candidate => candidate.id === item.id)).map(item => item.id).slice(0, 20),
+    };
+  });
+  return {
+    state: 'hit',
+    parity: comparisons.every(item => item.parity),
+    selectedBuckets: loaded.bucketIds.length,
+    bucketIds: loaded.bucketIds,
+    loadMs: loaded.loadMs,
+    comparisons,
   };
 }
 
@@ -367,9 +441,14 @@ export async function searchGraph(input: SearchGraphInput): Promise<Record<strin
   if (input.queries) {
     const queries = input.queries.map(query => query.trim()).filter(Boolean);
     if (!queries.length) throw new Error('queries must contain at least one non-empty string');
-    return { ...common, results: queries.map(query => searchGraphResult(graph, input, query)) };
+    const shadow = await adaptiveSearchShadow(graph, input, queries);
+    return { ...common, adaptiveShadow: shadow, results: queries.map(query => searchGraphResult(graph, input, query)) };
   }
-  return { ...common, ...searchGraphResult(graph, input, input.query) };
+  const requested = input.query?.trim();
+  const shadow = requested
+    ? await adaptiveSearchShadow(graph, input, [requested])
+    : { state: 'unavailable', parity: null, reason: 'broad-empty-query-requires-full-canonical' };
+  return { ...common, adaptiveShadow: shadow, ...searchGraphResult(graph, input, input.query) };
 }
 
 export async function traceGraph(input: {
