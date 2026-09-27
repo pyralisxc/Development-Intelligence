@@ -42,6 +42,7 @@ process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(temp, 'canonical');
 
 const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
+const { bootstrapSemanticCandidates } = await import('../dist/src/intelligence/semanticBootstrap.js');
 const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
@@ -103,6 +104,21 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+const semanticBootstrapStarted = process.hrtime.bigint();
+const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: 20 });
+const semanticBootstrapElapsedMs = Number(process.hrtime.bigint() - semanticBootstrapStarted) / 1_000_000;
+if (semanticBootstrap.zeroMetadata !== true) throw new Error('CardForge semantic-bootstrap benchmark must remain zero-metadata');
+if (semanticBootstrap.candidates.length < 3) throw new Error(`CardForge semantic bootstrap expected at least 3 candidates, got ${semanticBootstrap.candidates.length}`);
+if (semanticBootstrap.candidates.some(candidate => candidate.authority.persisted || candidate.authority.proofEligible || candidate.authority.accepted)) {
+  throw new Error('CardForge semantic candidates crossed the non-authoritative T1 boundary');
+}
+if (semanticBootstrap.candidates.some(candidate => candidate.provenance.origin !== 'intrinsic-derivation' || candidate.provenance.revision !== actualSha)) {
+  throw new Error('CardForge semantic candidates lost intrinsic proposal provenance');
+}
+if (!semanticBootstrap.candidates.some(candidate => candidate.support.evidenceFamilyCount >= 3)) {
+  throw new Error('CardForge semantic bootstrap expected at least one candidate with 3 independent evidence families');
+}
+if (semanticBootstrapElapsedMs > 1000) throw new Error(`CardForge semantic bootstrap exceeded 1000 ms budget: ${semanticBootstrapElapsedMs.toFixed(2)} ms`);
 const queryArtifacts = buildCanonicalQueryArtifacts(graph);
 const queryArtifactBytes = serializedQueryArtifactBytes(queryArtifacts);
 const fullGraphBytes = Buffer.byteLength(JSON.stringify(graph), 'utf8');
@@ -461,6 +477,22 @@ const report = {
     workflowQueries: workflowSearch.results.map(result => ({ query: result.query, nodeTotal: result.nodeTotal, edgeTotal: result.edgeTotal })),
   },
   sourceSearch: { total: sourceSearch.total ?? 0, sample: Array.isArray(sourceSearch.matches) ? sourceSearch.matches.slice(0, 5) : [] },
+  semanticBootstrap: {
+    stage: 'T1-derived-candidates',
+    zeroMetadata: semanticBootstrap.zeroMetadata,
+    declaredSemanticCount: semanticBootstrap.declaredSemanticCount,
+    candidateCount: semanticBootstrap.candidates.length,
+    elapsedMs: semanticBootstrapElapsedMs,
+    maxEvidenceFamilyCount: Math.max(0, ...semanticBootstrap.candidates.map(candidate => candidate.support.evidenceFamilyCount)),
+    sample: semanticBootstrap.candidates.slice(0, 8).map(candidate => ({
+      id: candidate.id,
+      name: candidate.proposal.name,
+      kind: candidate.proposal.kind,
+      scope: candidate.scope,
+      evidenceFamilies: candidate.provenance.evidenceFamilies,
+      authority: candidate.authority,
+    })),
+  },
   interfaceProjection: {
     scope: studioScope,
     baselineDecomposition: {
