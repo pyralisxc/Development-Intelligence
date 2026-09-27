@@ -84,7 +84,7 @@ async function fixture() {
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
   await fs.writeFile(path.join(source, 'src', 'value.ts'), "export const value = 1;\n");
   await fs.writeFile(path.join(source, 'src', 'use.ts'), "import { value } from './value.js';\nexport const doubled = value * 2;\n");
-  await fs.writeFile(path.join(source, 'src', 'outlier.ts'), "export const valueOutlier = 7;\n");
+  await fs.writeFile(path.join(source, 'src', 'outlier.ts'), "export function valueOutlier() { return 7; }\n");
   const firstSha = await commit(source, 'initial');
   await runChecked('git', ['-C', source, 'remote', 'add', 'origin', pathToFileURL(remote).href]);
   await runChecked('git', ['-C', source, 'push', '-u', 'origin', 'main']);
