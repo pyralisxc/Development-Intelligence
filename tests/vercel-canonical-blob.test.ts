@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
-import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
+import { clearGraphCache, graphStatus, scanGraph } from '../src/intelligence/service.js';
 import { searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
 import { runChecked } from '../src/util/process.js';
@@ -254,8 +254,12 @@ test('legacy canonical hits backfill query artifacts without rebuilding or touch
     assert.equal(firstSearch.queryPlane.mode, 'full', 'legacy record should fail closed for the request that discovers missing artifacts');
     assert.ok(firstSearch.nodes.some((node: any) => String(node.id).includes('outlier')));
 
+    const afterRead = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.equal(afterRead.queryArtifacts, undefined, 'read-only query must not backfill or persist derived artifacts');
+
+    await scanGraph(item.project);
     const migrated = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
-    assert.ok(migrated.queryArtifacts, 'canonical hit should be rewritten with the backfilled query generation reference');
+    assert.ok(migrated.queryArtifacts, 'explicit scan_graph should backfill the query generation from canonical W');
 
     clearGraphCache(item.project);
     const requestStart = item.blob.requests.length;
@@ -275,6 +279,47 @@ test('legacy canonical hits backfill query artifacts without rebuilding or touch
     assert.equal(status.observability.queryArtifacts.state, 'referenced');
     assert.equal(status.observability.coldBuild, null);
     assert.equal(status.revision, first.revision);
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('ordinary current-state reads never advance stale canonical truth', async () => {
+  const item = await fixture();
+  try {
+    const first = await graphStatus(item.project) as any;
+    const pathname = canonicalGraphBlobPath(item.project);
+    const storedBefore = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.equal(storedBefore.revision, first.revision);
+
+    await fs.writeFile(path.join(item.source, 'src', 'value.ts'), "export const value = 9;\n");
+    const nextSha = await commit(item.source, 'advance behind read plane');
+    await runChecked('git', ['-C', item.source, 'push', 'origin', 'main']);
+    clearGraphCache(item.project);
+
+    const requestStart = item.blob.requests.length;
+    await assert.rejects(
+      () => searchGraph({ project: item.project, query: 'value', limit: 100 }),
+      /Run scan_graph for the current revision before retrying this read-only operation/,
+    );
+    const readRequests = item.blob.requests.slice(requestStart);
+    assert.equal(
+      readRequests.some(request => request.method === 'PUT'),
+      false,
+      'ordinary read must not publish canonical state or query artifacts',
+    );
+    const stillStored = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.equal(stillStored.revision, first.revision, 'read-only query must not advance canonical W');
+
+    const materialized = await scanGraph(item.project);
+    assert.equal(materialized.repositoryRevision, nextSha, 'scan_graph explicitly advances canonical W');
+
+    clearGraphCache(item.project);
+    const after = await searchGraph({ project: item.project, query: 'value', limit: 100 }) as any;
+    assert.equal(after.revision, nextSha);
+    assert.equal(after.queryPlane.mode, 'adaptive');
+    const storedAfter = JSON.parse(item.blob.blobs.get(pathname)!.toString('utf8'));
+    assert.equal(storedAfter.revision, nextSha);
   } finally {
     cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
   }
