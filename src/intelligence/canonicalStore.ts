@@ -332,7 +332,32 @@ export async function readCanonicalDerivedObject(
   relativePath: string,
   maxBytes = MAX_DERIVED_OBJECT_BYTES,
 ): Promise<Uint8Array | null> {
-  return (await readCanonicalDerivedObjectVersioned(project, relativePath, maxBytes))?.body ?? null;
+  assertDerivedRelativePath(relativePath);
+  const selected = backend();
+  if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return null;
+  const bounded = Math.min(Math.max(maxBytes, 1), MAX_DERIVED_OBJECT_BYTES);
+  if (selected.kind === 'file') {
+    const target = canonicalDerivedObjectFilePath(project, relativePath)!;
+    const stat = await fs.stat(target).catch((error: any) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat) return null;
+    if (!stat.isFile() || stat.size > bounded) throw new Error('Canonical derived object is not a bounded regular file');
+    return new Uint8Array(await fs.readFile(target));
+  }
+
+  const response = await fetch(blobObjectUrl(selected, canonicalDerivedObjectBlobPath(project, relativePath)), {
+    headers: blobHeaders(selected),
+    cache: 'no-store',
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Vercel canonical derived object read failed with HTTP ${response.status}`);
+  const contentLength = Number(response.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.byteLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
+  return body;
 }
 
 export interface CanonicalDerivedConditionalWriteResult {
