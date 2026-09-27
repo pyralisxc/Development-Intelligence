@@ -13,7 +13,7 @@ import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, se
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools, toolContract } from '../src/mcp.js';
 import { runtimeIdentity } from '../src/runtimeIdentity.js';
-import { projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
+import { interfaceProjection, projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -438,6 +438,49 @@ test('multi-question investigation keeps one graph context and isolates question
   }
 });
 
+test('interface projection organizes UI interactions and effects without creating semantic authority', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+
+    const projection = await interfaceProjection({
+      project: fixture.project,
+      scope: 'src/panel.tsx',
+      limit: 20,
+    }) as any;
+    assert.equal(projection.scope.kind, 'file');
+    assert.equal(projection.policy.deterministic, true);
+    assert.equal(projection.policy.persisted, false);
+    assert.equal(projection.policy.semanticAuthority, false);
+    assert.ok(projection.surfaces.some((item: any) => item.kind === 'ui-element'));
+    assert.ok(projection.interactions.length > 0);
+    assert.ok(projection.effects.some((item: any) => item.kind === 'http-call'));
+    assert.ok(projection.transitions.some((item: any) => item.kind === 'navigation-call'));
+    assert.equal(projection.runtimeObservations.available, false);
+    assert.ok(projection.uncertainty.unknowns.some((value: string) => /runtime state transitions/i.test(value)));
+
+    const direct = await callTool('inspect_interface', {
+      project: fixture.project,
+      scope: 'src/panel.tsx',
+      limit: 20,
+    }) as any;
+    assert.equal(direct.scope.kind, 'file');
+    assert.equal(direct.policy.semanticAuthority, false);
+
+    const natural = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What changes when this control is activated?',
+      scope: 'src/panel.tsx',
+    }) as any;
+    assert.equal(natural.intent, 'interface');
+    assert.equal(natural.routing.tool, 'inspect_interface');
+    assert.equal(natural.result.scope.kind, 'file');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('scope orientation surfaces explainable local graph structure without an opaque importance score', async () => {
   const fixture = await makeFixture();
   try {
@@ -571,6 +614,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'project_overview',
     'investigate',
     'orient_scope',
+    'inspect_interface',
     'query_intelligence',
     'audit_repository',
     'inspect_portfolio',
@@ -602,6 +646,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(/Codebase Memory|CBM_CACHE_DIR|graph\.db\.zst/i.test(serialized), false);
   const byName = new Map(listed.map(tool => [tool.name, tool]));
   assert.equal(byName.get('scan_graph')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('inspect_interface')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('inspect_interface')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('query_source')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_parity')?.annotations?.openWorldHint, true);
@@ -613,7 +659,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 27, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 28, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -631,7 +677,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 27);
+  assert.equal(identity.mcp.toolCount, 28);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
@@ -699,6 +745,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'project_overview'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'investigate'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'orient_scope'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_interface'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_entity'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'query_source'));
     assert.equal(listBody.result.tools.some((tool: any) => tool.name === 'clear_cache'), false);

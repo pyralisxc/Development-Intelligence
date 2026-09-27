@@ -590,6 +590,242 @@ export async function scopeOrientation(input: {
   };
 }
 
+
+const INTERFACE_SURFACE_KINDS = new Set(['surface', 'route', 'ui-element']);
+const INTERFACE_STATE_KINDS = new Set(['state-binding', 'state-write']);
+const INTERFACE_INTERACTION_KINDS = new Set(['ui-element', 'component-prop-handler', 'component-prop-binding']);
+const INTERFACE_TRANSITION_KINDS = new Set(['navigation-call', 'route-reference', 'route']);
+const INTERFACE_EFFECT_KINDS = new Set(['http-call', 'rpc-call', 'sql-reference', 'mcp-tool']);
+const INTERFACE_REPRESENTATION_KINDS = new Set(['css-selector', 'css-at-rule', 'css-custom-property']);
+
+function interfaceProjectionItem(
+  node: GraphNode,
+  byId: Map<string, GraphNode>,
+  incident: GraphEdge[],
+): Record<string, unknown> {
+  const resolved = incident.filter(edge => edge.status === 'resolved');
+  const links = resolved.slice(0, 8).map(edge => {
+    const outbound = edge.from === node.id;
+    const neighborId = outbound ? edge.to : edge.from;
+    const neighbor = neighborId ? byId.get(neighborId) : undefined;
+    return {
+      edgeId: edge.id,
+      kind: edge.kind,
+      direction: outbound ? 'outbound' : 'inbound',
+      neighbor: neighborId ? {
+        id: neighborId,
+        name: displayName(neighbor, neighborId),
+        kind: neighbor?.kind ?? 'unknown',
+        locator: neighbor?.locator ?? null,
+      } : null,
+    };
+  });
+  return {
+    id: node.id,
+    name: displayName(node),
+    kind: node.kind,
+    layer: node.layer ?? 'structural',
+    locator: node.locator,
+    sourceFile: sourceFile(node.locator),
+    resolvedRelationshipCount: resolved.length,
+    links,
+  };
+}
+
+export async function interfaceProjection(input: {
+  project: string;
+  scope?: string | undefined;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  limit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+  const selected = scopeNodeIds(graph, input.scope);
+
+  if (selected.kind === 'ambiguous') {
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: true,
+      scope: { kind: selected.kind, value: selected.value },
+      candidates: selected.candidates.slice(0, 10).map(node => ({
+        id: node.id,
+        name: displayName(node),
+        kind: node.kind,
+        layer: node.layer ?? 'structural',
+        locator: node.locator,
+      })),
+      policy: { deterministic: true, persisted: false, semanticAuthority: false },
+    };
+  }
+  if (selected.kind === 'missing') {
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: false,
+      scope: { kind: selected.kind, value: selected.value },
+      summary: 'No graph scope matching "' + String(selected.value) + '" was observed.',
+      surfaces: [],
+      state: [],
+      interactions: [],
+      transitions: [],
+      effects: [],
+      representation: [],
+      coverage: compactCoverage(graph),
+      policy: { deterministic: true, persisted: false, semanticAuthority: false },
+    };
+  }
+
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  let scopedIds = selected.ids;
+  if (selected.kind === 'entity' && selected.entity) {
+    scopedIds = new Set([selected.entity.id]);
+    let frontier = [selected.entity.id];
+    for (let depth = 0; depth < 2 && frontier.length && scopedIds.size < 500; depth += 1) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const edge of graph.edges) {
+          if (edge.status !== 'resolved' || (edge.from !== id && edge.to !== id)) continue;
+          const neighbor = edge.from === id ? edge.to : edge.from;
+          if (neighbor && !scopedIds.has(neighbor) && scopedIds.size < 500) {
+            scopedIds.add(neighbor);
+            next.push(neighbor);
+          }
+        }
+      }
+      frontier = next;
+    }
+  }
+
+  const nodes = [...scopedIds].map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
+  const scopedSet = new Set(nodes.map(node => node.id));
+  const incidentByNode = new Map<string, GraphEdge[]>();
+  const touchingEdges: GraphEdge[] = [];
+  for (const edge of graph.edges) {
+    const touches = Boolean((edge.from && scopedSet.has(edge.from)) || (edge.to && scopedSet.has(edge.to)));
+    if (!touches) continue;
+    touchingEdges.push(edge);
+    if (edge.from && scopedSet.has(edge.from)) {
+      const current = incidentByNode.get(edge.from) ?? [];
+      current.push(edge);
+      incidentByNode.set(edge.from, current);
+    }
+    if (edge.to && scopedSet.has(edge.to) && edge.to !== edge.from) {
+      const current = incidentByNode.get(edge.to) ?? [];
+      current.push(edge);
+      incidentByNode.set(edge.to, current);
+    }
+  }
+
+  const projectNodes = (kinds: Set<string>) => nodes
+    .filter(node => kinds.has(node.kind))
+    .sort((a, b) =>
+      (incidentByNode.get(b.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
+      - (incidentByNode.get(a.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
+      || displayName(a).localeCompare(displayName(b)))
+    .slice(0, limit)
+    .map(node => interfaceProjectionItem(node, byId, incidentByNode.get(node.id) ?? []));
+
+  const surfaces = projectNodes(INTERFACE_SURFACE_KINDS);
+  const state = projectNodes(INTERFACE_STATE_KINDS);
+  const interactions = projectNodes(INTERFACE_INTERACTION_KINDS);
+  const transitions = projectNodes(INTERFACE_TRANSITION_KINDS);
+  const effects = projectNodes(INTERFACE_EFFECT_KINDS);
+  const representation = projectNodes(INTERFACE_REPRESENTATION_KINDS);
+
+  const uncertaintyEdges = touchingEdges.filter(edge => edge.status !== 'resolved');
+  const runtimeSources = graph.sources.filter(source => source.kind !== 'repository');
+  const observedKinds = new Set(nodes.map(node => node.kind));
+  const unknowns: string[] = [];
+  if (!runtimeSources.length) {
+    unknowns.push('Rendered visibility, geometry, stacking, scroll ownership, pointer/focus ownership, and actual runtime state transitions are not proven by source-only evidence.');
+  }
+  if (!state.length) unknowns.push('No source-derived state binding/write nodes were observed in this scope.');
+  if (!representation.length) unknowns.push('No CSS representation nodes were observed in this scope; layout/visibility behavior may require source or runtime inspection.');
+
+  const combined = [...surfaces, ...state, ...interactions, ...transitions, ...effects]
+    .filter((item, index, all) => all.findIndex(other => other.id === item.id) === index)
+    .sort((a: any, b: any) => Number(b.resolvedRelationshipCount ?? 0) - Number(a.resolvedRelationshipCount ?? 0));
+
+  return {
+    project: input.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    ambiguous: false,
+    scope: {
+      kind: selected.kind,
+      value: selected.value,
+      nodeCount: nodes.length,
+      neighborhoodDepth: selected.kind === 'entity' ? 2 : 0,
+    },
+    summary: [
+      surfaces.length ? String(surfaces.length) + ' surface/route item(s)' : 'no surface/route items',
+      state.length ? String(state.length) + ' state item(s)' : 'no state items',
+      interactions.length ? String(interactions.length) + ' interaction item(s)' : 'no interaction items',
+      transitions.length ? String(transitions.length) + ' transition item(s)' : 'no transition items',
+      effects.length ? String(effects.length) + ' external/persistence effect item(s)' : 'no external/persistence effects',
+    ].join('; ') + ' observed in the selected scope.',
+    capabilities: {
+      surfaces: surfaces.length > 0,
+      state: state.length > 0,
+      interactions: interactions.length > 0,
+      transitions: transitions.length > 0,
+      effects: effects.length > 0,
+      representation: representation.length > 0,
+      runtimeObservations: runtimeSources.length > 0,
+    },
+    surfaces,
+    state,
+    interactions,
+    transitions,
+    effects,
+    representation,
+    runtimeObservations: {
+      available: runtimeSources.length > 0,
+      sources: runtimeSources.map(source => ({
+        id: source.id,
+        kind: source.kind,
+        locator: source.locator,
+        revision: source.revision,
+        observedAt: source.observedAt,
+        available: source.available,
+      })),
+    },
+    uncertainty: {
+      candidateEdges: uncertaintyEdges.filter(edge => edge.status === 'candidate').length,
+      unresolvedEdges: uncertaintyEdges.filter(edge => edge.status === 'unresolved').length,
+      examples: uncertaintyEdges.slice(0, Math.min(limit, 12)).map(edge => ({
+        edgeId: edge.id,
+        kind: edge.kind,
+        status: edge.status,
+        from: edge.from,
+        to: edge.to,
+      })),
+      unknowns,
+    },
+    nextInspections: combined.slice(0, Math.min(8, limit)).map((item: any) => ({
+      id: item.id,
+      name: item.name,
+      kind: item.kind,
+      locator: item.locator,
+      reason: String(item.resolvedRelationshipCount ?? 0) + ' resolved relationship(s) in the interface projection.',
+    })),
+    coverage: compactCoverage(graph),
+    policy: {
+      deterministic: true,
+      evidenceLinked: true,
+      persisted: false,
+      semanticAuthority: false,
+      runtimeClaimsRequireObservation: true,
+      note: 'This is a derived interface/interaction view over the canonical graph. It does not create UI truth, semantic product intent, or runtime state.',
+    },
+    observedNodeKinds: [...observedKinds].sort(),
+  };
+}
+
 function querySubject(text: string, markers: RegExp[]): string {
   let value = text.trim();
   for (const marker of markers) value = value.replace(marker, ' ');
@@ -804,6 +1040,49 @@ export async function queryWorkbench(input: {
         result,
       };
     }
+  }
+
+  if (/\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/.test(lower)) {
+    let requestedScope = input.scope?.trim() || '';
+    if (!requestedScope) {
+      const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
+      if (pathMatch) requestedScope = pathMatch[0]!;
+    }
+    if (!requestedScope) {
+      const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|explain|interface|interaction|interactive|ui|state|owners?|controls?|changes?|when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?|major|in|of|for|the|this|page|feature|workspace)\b/gi]);
+      if (resolved.ambiguous) {
+        return {
+          intent: 'interface',
+          subject: subjectDescriptor(null, resolved.query, true, resolved.candidates),
+          routing: { tool: 'inspect_interface' },
+          answer: 'The interface subject is ambiguous; choose an exact scope or entity.',
+          result: { ambiguous: true, candidates: resolved.candidates },
+        };
+      }
+      if (resolved.node) requestedScope = resolved.node.id;
+    }
+    if (!requestedScope && /\b(this page|this feature|this workspace|this panel|this screen)\b/i.test(text)) {
+      return {
+        intent: 'interface',
+        subject: null,
+        routing: { tool: 'inspect_interface', scopeRequired: true },
+        answer: 'A concrete file, path, route, feature, or entity scope is required for this interface question.',
+        result: { scopeRequired: true, supportedScopes: ['repository','path','file','entity','feature/route'] },
+      };
+    }
+    const result = await interfaceProjection({
+      project: input.project,
+      scope: requestedScope || undefined,
+      ref: input.ref,
+      graphId: input.graphId,
+    });
+    return {
+      intent: 'interface',
+      subject: requestedScope ? { query: requestedScope } : null,
+      routing: { tool: 'inspect_interface' },
+      answer: String((result as any).summary ?? 'Interface / interaction projection complete.'),
+      result,
+    };
   }
 
   if (/\b(main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|overview of|what does .+ do)\b/.test(lower)) {
