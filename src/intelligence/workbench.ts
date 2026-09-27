@@ -175,7 +175,6 @@ export async function semanticAudit(input: {
   return {
     project: input.project,
     graphId: graph.graphId,
-    revision: graph.repositoryRevision,
     summary: `${audit.candidateUniverse.eligible} evidence-qualified semantic candidate(s); ${core} of ${reviewed} audited candidate(s) satisfy the explicit core-candidate facets and ${needsReview} require factuality review.`,
     ...audit,
     coverage: compactCoverage(graph),

@@ -175,7 +175,8 @@ export function applySemanticReviewAction(
     };
   }
 
-  const evidenceIds = [...new Set(action.evidenceIds.map(value => value.trim()).filter(Boolean))].sort();
+  if (action.kind !== 'verify') throw new Error('unsupported semantic review action');
+  const evidenceIds = [...new Set(action.evidenceIds.map((value: string) => value.trim()).filter(Boolean))].sort();
   if (!evidenceIds.length) throw new Error('semantic verification requires at least one evidence id');
   return {
     ...current,
