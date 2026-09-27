@@ -45,12 +45,14 @@ public sealed class ArchitectureAggregateProbe
 }
 `);
   await fs.writeFile(path.join(source, 'src', 'interaction.tsx'), `
-function handlePointerMove() {}
-function handleDrop() {}
-function handleClick() {}
-function handleFocus() {}
-function handleCustomSignal() {}
+import { useState } from 'react';
 export function InteractionFixture() {
+  const [active, setActive] = useState(false);
+  function handlePointerMove() { setActive(true); }
+  function handleDrop() { void fetch('/api/drop', { method: 'POST' }); }
+  function handleClick() {}
+  function handleFocus() { window.location.assign('/focused'); }
+  function handleCustomSignal() {}
   return <CanvasWidget
     onPointerMove={handlePointerMove}
     onDrop={handleDrop}
@@ -520,9 +522,19 @@ test('interface projection groups exact source-observed event mechanisms without
     assert.equal(pointer.component, 'CanvasWidget');
     assert.equal(pointer.declaredHandler, 'handlePointerMove');
     assert.equal(pointer.resolvedHandler?.name, 'handlePointerMove');
+    assert.ok(pointer.directConsequences.some((item: any) => item.kind === 'state-write' && item.name === 'active' && item.proof === 'resolved-handler-direct-edge'));
     const drop = (groups.get('drop') as any).items.find((item: any) => item.prop === 'onDrop');
     assert.equal(drop.declaredHandler, 'handleDrop');
     assert.equal(drop.resolvedHandler?.name, 'handleDrop');
+    assert.ok(drop.directConsequences.some((item: any) => item.kind === 'http-call' && item.name === 'POST /api/drop'));
+    const focus = (groups.get('focus') as any).items.find((item: any) => item.prop === 'onFocus');
+    assert.ok(focus.directConsequences.some((item: any) => item.kind === 'navigation-call' && item.name === '/focused'));
+    const click = (groups.get('click') as any).items.find((item: any) => item.prop === 'onClick');
+    assert.deepEqual(click.directConsequences, []);
+    assert.equal(projection.interactionMechanisms.resolvedHandlerCount, 4);
+    assert.equal(projection.interactionMechanisms.directConsequenceMechanismCount, 3);
+    assert.equal(projection.interactionMechanisms.policy.directConsequencesRequireResolvedHandler, true);
+    assert.equal(projection.interactionMechanisms.policy.directConsequencesRequireResolvedInvokesEdge, true);
     const allItems = projection.interactionMechanisms.families.flatMap((group: any) => group.items);
     assert.equal(allItems.some((item: any) => item.prop === 'dataAction'), false);
   } finally {

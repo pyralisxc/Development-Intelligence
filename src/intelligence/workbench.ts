@@ -598,6 +598,7 @@ const INTERFACE_TRANSITION_KINDS = new Set(['navigation-call', 'route-reference'
 const INTERFACE_EFFECT_KINDS = new Set(['http-call', 'rpc-call', 'sql-reference', 'mcp-tool']);
 const INTERFACE_REPRESENTATION_KINDS = new Set(['css-class-reference', 'css-selector', 'css-at-rule', 'css-custom-property']);
 const INTERACTION_MECHANISM_NODE_KINDS = new Set(['component-prop-binding', 'component-prop-handler']);
+const DIRECT_CONSEQUENCE_KINDS = new Set(['state-write', 'navigation-call', 'http-call', 'rpc-call']);
 const INTERACTION_FAMILY_ORDER = ['pointer', 'drop', 'drag', 'scroll', 'click', 'focus', 'keyboard', 'input', 'submit', 'context-menu', 'touch', 'mouse'] as const;
 type InteractionFamily = typeof INTERACTION_FAMILY_ORDER[number];
 
@@ -609,7 +610,7 @@ function interactionFamily(prop: string): InteractionFamily | null {
   if (/^on(?:Double)?Click$/u.test(prop)) return 'click';
   if (prop === 'onFocus' || prop === 'onBlur') return 'focus';
   if (/^onKey[A-Z]/u.test(prop)) return 'keyboard';
-  if (['onChange', 'onInput', 'onBeforeInput'].includes(prop)) return 'input';
+  if (['onChange', 'onInput', 'onBeforeInput'].includes(prop) || /^on[A-Za-z0-9]*Change$/u.test(prop)) return 'input';
   if (prop === 'onSubmit') return 'submit';
   if (prop === 'onContextMenu') return 'context-menu';
   if (/^onTouch[A-Z]/u.test(prop)) return 'touch';
@@ -827,6 +828,28 @@ export async function interfaceProjection(input: {
       const handlerEdge = (incidentByNode.get(node.id) ?? []).find(edge =>
         edge.status === 'resolved' && edge.from === node.id && edge.kind === 'binds_to' && Boolean(edge.to));
       const handlerNode = handlerEdge?.to ? byId.get(handlerEdge.to) : undefined;
+      const directConsequences = handlerNode ? graph.edges
+        .filter(edge =>
+          edge.status === 'resolved'
+          && edge.from === handlerNode.id
+          && edge.kind === 'invokes'
+          && Boolean(edge.to)
+          && DIRECT_CONSEQUENCE_KINDS.has(byId.get(edge.to!)?.kind ?? ''))
+        .slice(0, 20)
+        .map(edge => {
+          const consequence = byId.get(edge.to!);
+          return {
+            edgeId: edge.id,
+            relationshipKind: edge.kind,
+            id: consequence!.id,
+            kind: consequence!.kind,
+            name: displayName(consequence!),
+            locator: consequence!.locator,
+            value: consequence!.value ?? null,
+            evidence: edge.evidence ?? [],
+            proof: 'resolved-handler-direct-edge',
+          };
+        }) : [];
       return {
         id: node.id,
         family,
@@ -839,6 +862,7 @@ export async function interfaceProjection(input: {
           kind: handlerNode.kind,
           locator: handlerNode.locator,
         } : null,
+        directConsequences,
         evidence: {
           nodeId: node.id,
           nodeKind: node.kind,
@@ -855,8 +879,15 @@ export async function interfaceProjection(input: {
       || a.prop.localeCompare(b.prop)
       || a.id.localeCompare(b.id));
   const mechanismSampleLimit = Math.min(limit, 20);
+  const resolvedHandlerCount = mechanismItems.filter(item => item.resolvedHandler).length;
+  const directConsequenceMechanismCount = mechanismItems.filter(item => item.directConsequences.length > 0).length;
+  const directConsequenceCount = mechanismItems.reduce((sum, item) => sum + item.directConsequences.length, 0);
   const interactionMechanisms = {
     total: mechanismItems.length,
+    resolvedHandlerCount,
+    unresolvedHandlerCount: mechanismItems.length - resolvedHandlerCount,
+    directConsequenceMechanismCount,
+    directConsequenceCount,
     families: INTERACTION_FAMILY_ORDER
       .map(family => {
         const familyItems = mechanismItems.filter(item => item.family === family);
@@ -872,6 +903,8 @@ export async function interfaceProjection(input: {
       declaredHandlerIsNotResolvedHandler: true,
       runtimeOccurrenceProven: false,
       stateEffectsInferred: false,
+      directConsequencesRequireResolvedHandler: true,
+      directConsequencesRequireResolvedInvokesEdge: true,
     },
   };
 
