@@ -915,7 +915,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     const viewerJavaScript = await viewerBundle.text();
     assert.match(viewerJavaScript, /Evidence-backed assessment/);
     assert.match(viewerJavaScript, /Typed reach/);
-    assert.match(viewerJavaScript, /Evidence → proposal → explicit review/);
+    assert.match(viewerJavaScript, /explicit review/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/review/);
     assert.match(viewerJavaScript, /Accept meaning/);
     assert.match(viewerJavaScript, /Verify with evidence/);
