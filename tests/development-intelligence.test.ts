@@ -200,7 +200,8 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     clearGraphCache(fixture.project);
 
     const stale = await graphStatus(fixture.project) as any;
-    assert.equal(stale.accepted.current, false, 'A is not accepted-current for a different source fingerprint until B is sealed');
+    assert.equal(stale.accepted.current, true, 'representation-only source churn must preserve accepted semantic A when topology is unchanged');
+    assert.equal(stale.currentness.acceptedSemanticCurrent, true);
     assert.equal(stale.currentness.sourceCurrent, false);
     assert.equal(stale.currentness.topologyCurrent, true, 'representation-only churn must not manufacture semantic topology drift');
     const delta = await diffAcceptedToWorking(fixture.project) as any;

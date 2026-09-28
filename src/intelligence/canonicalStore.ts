@@ -239,15 +239,16 @@ function validateRecord(record: unknown, expected: { project: string; repository
   }
   assertGraphIntegrity(working);
   if (value.accepted) {
-    if (value.accepted.schemaVersion !== 2 || value.accepted.project !== expected.project || value.accepted.repositoryRevision !== expected.revision) {
-      throw new Error('Canonical accepted graph identity is stale or malformed');
+    if (value.accepted.schemaVersion !== 2 || value.accepted.project !== expected.project) {
+      throw new Error('Canonical accepted graph identity is malformed');
     }
+    if (value.accepted.repositoryRevision !== null) assertExactRevision(value.accepted.repositoryRevision);
     assertGraphIntegrity(value.accepted);
   }
   return value;
 }
 
-function classifyRecordForBlob(parsed: unknown, expected: { project: string; repository: string; revision: string }):
+function classifyCanonicalRecord(parsed: unknown, expected: { project: string; repository: string; revision: string }):
   | { state: 'hit'; record: CanonicalGraphRecord }
   | { state: 'stale'; record: CanonicalGraphRecord } {
   const identity = recordIdentity(parsed);
@@ -476,15 +477,34 @@ async function loadFromFile(
   expected: { project: string; repository: string; revision: string },
   diagnostics: CanonicalPersistenceDiagnostics,
 ): Promise<CanonicalLoadResult> {
-  const target = path.join(selected.root, canonicalProjectStorageKey(expected.project), `${expected.revision}.json`);
-  const stat = await fs.stat(target).catch((error: any) => {
-    if (error?.code === 'ENOENT') return null;
-    throw error;
-  });
-  if (!stat) return { diagnostics };
-  if (!stat.isFile() || stat.size > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record is not a bounded regular file');
-  const parsed = JSON.parse(await fs.readFile(target, 'utf8'));
-  return { diagnostics: { ...diagnostics, loadState: 'hit' }, record: validateRecord(parsed, expected) };
+  const directory = path.join(selected.root, canonicalProjectStorageKey(expected.project));
+  const exact = path.join(directory, `${expected.revision}.json`);
+  const current = path.join(directory, 'current.json');
+
+  const readBounded = async (target: string): Promise<unknown | null> => {
+    const stat = await fs.stat(target).catch((error: any) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat) return null;
+    if (!stat.isFile() || stat.size > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record is not a bounded regular file');
+    return JSON.parse(await fs.readFile(target, 'utf8'));
+  };
+
+  const exactParsed = await readBounded(exact);
+  if (exactParsed) {
+    return { diagnostics: { ...diagnostics, loadState: 'hit' }, record: validateRecord(exactParsed, expected) };
+  }
+
+  // Mirror the Blob backend's current-record semantics so local/file
+  // persistence can carry accepted A forward while W advances to a new
+  // exact Git revision. Revision snapshots remain available beside it.
+  const currentParsed = await readBounded(current);
+  if (!currentParsed) return { diagnostics };
+  const classified = classifyCanonicalRecord(currentParsed, expected);
+  return classified.state === 'stale'
+    ? { diagnostics: { ...diagnostics, loadState: 'stale' }, staleRecord: classified.record }
+    : { diagnostics: { ...diagnostics, loadState: 'hit' }, record: classified.record };
 }
 
 async function loadFromBlob(
@@ -504,7 +524,7 @@ async function loadFromBlob(
   const body = await response.arrayBuffer();
   if (body.byteLength > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record exceeds the bounded storage size');
   const parsed = JSON.parse(new TextDecoder().decode(body));
-  const classified = classifyRecordForBlob(parsed, expected);
+  const classified = classifyCanonicalRecord(parsed, expected);
   if (classified.state === 'stale') {
     return { diagnostics: { ...diagnostics, loadState: 'stale' }, staleRecord: classified.record };
   }
@@ -533,12 +553,22 @@ export async function loadCanonicalGraph(expected: { project: string; repository
 }
 
 async function saveToFile(selected: FileBackend, record: CanonicalGraphRecord, payload: string): Promise<void> {
-  const target = path.join(selected.root, canonicalProjectStorageKey(record.project), `${record.revision}.json`);
-  const directory = path.dirname(target);
+  const directory = path.join(selected.root, canonicalProjectStorageKey(record.project));
+  const revisionTarget = path.join(directory, `${record.revision}.json`);
+  const currentTarget = path.join(directory, 'current.json');
   await fs.mkdir(directory, { recursive: true });
-  const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
-  await fs.writeFile(temporary, payload, { encoding: 'utf8', mode: 0o600 });
-  await fs.rename(temporary, target);
+
+  const atomicWrite = async (target: string): Promise<void> => {
+    const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.${stableHash([record.revision, target]).slice(0, 8)}.tmp`;
+    await fs.writeFile(temporary, payload, { encoding: 'utf8', mode: 0o600 });
+    await fs.rename(temporary, target);
+  };
+
+  // Keep immutable exact-revision evidence and a current pointer/copy. The
+  // latter provides the same stale-record handoff that hosted Blob already
+  // provides when the repository advances.
+  await atomicWrite(revisionTarget);
+  await atomicWrite(currentTarget);
 }
 
 async function saveToBlob(selected: BlobBackend, record: CanonicalGraphRecord, payload: string): Promise<void> {

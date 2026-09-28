@@ -59,7 +59,7 @@ export interface SemanticMeaningReview {
     verificationRequiresEvidence: true;
     proposalProvenancePreserved: true;
     stableMeaningIdentityDistinctFromCandidateIdentity: true;
-    persisted: false;
+    persisted: boolean;
     acceptedGraphAffected: false;
   };
 }
