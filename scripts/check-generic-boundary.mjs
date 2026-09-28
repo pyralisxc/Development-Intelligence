@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = new URL('../src/', import.meta.url);
 const forbiddenProjectCoupling = [
+  /\bpyralisxc\b/i,
   /cardforge/i,
   /\bdesk\b/i,
   /pipeline[-_ ](?:submission|contributor|registry|asset|program)/i,

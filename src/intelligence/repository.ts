@@ -14,12 +14,12 @@ import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.7.0-interface-css-linkage';
+export const ANALYZER_VERSION = '2.8.0-go-structural';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
-const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py']);
+const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py', '.go']);
 const UNITY_SERIALIZED_EXTENSIONS = new Set(['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer']);
 const UNITY_JSON_EXTENSIONS = new Set(['.asmdef', '.asmref', '.inputactions']);
 const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, ...UNITY_SERIALIZED_EXTENSIONS, ...UNITY_JSON_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm', '.css', '.sql']);
@@ -339,7 +339,7 @@ function resolveUnityGraph(input: {
 }
 
 interface PolyglotSymbolValue {
-  language: 'csharp' | 'java' | 'python';
+  language: 'csharp' | 'java' | 'python' | 'go';
   qualifiedName?: string;
   signature?: string;
   baseTypes?: string[];
@@ -355,7 +355,7 @@ interface CSharpReferenceValue {
 }
 
 interface PolyglotImportValue {
-  language: 'csharp' | 'java' | 'python';
+  language: 'csharp' | 'java' | 'python' | 'go';
   module: string;
   imported: string;
   local: string;
@@ -366,7 +366,7 @@ interface PolyglotImportValue {
 function polyglotSymbolValue(value: unknown): value is PolyglotSymbolValue {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
-  return ['csharp', 'java', 'python'].includes(String(candidate.language))
+  return ['csharp', 'java', 'python', 'go'].includes(String(candidate.language))
     && (candidate.qualifiedName === undefined || typeof candidate.qualifiedName === 'string');
 }
 
@@ -381,7 +381,7 @@ function csharpReferenceValue(value: unknown): value is CSharpReferenceValue {
 function polyglotImportValue(value: unknown): value is PolyglotImportValue {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
-  return ['csharp', 'java', 'python'].includes(String(candidate.language))
+  return ['csharp', 'java', 'python', 'go'].includes(String(candidate.language))
     && typeof candidate.module === 'string'
     && typeof candidate.imported === 'string'
     && typeof candidate.local === 'string'
@@ -395,6 +395,17 @@ function pythonModuleAliases(file: string): string[] {
   const aliases: string[] = [];
   for (let index = 0; index < parts.length; index += 1) {
     const alias = parts.slice(index).join('.');
+    if (alias) aliases.push(alias);
+  }
+  return aliases;
+}
+
+function goModuleAliases(file: string): string[] {
+  if (!file.endsWith('.go')) return [];
+  const parts = file.split('/').slice(0, -1).filter(Boolean);
+  const aliases: string[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const alias = parts.slice(index).join('/');
     if (alias) aliases.push(alias);
   }
   return aliases;
@@ -454,6 +465,10 @@ function resolvePolyglotModules(input: {
   for (const file of input.fileNodes.keys()) {
     if (!file.endsWith('.py')) continue;
     for (const alias of pythonModuleAliases(file)) addModuleFile('python', alias, file);
+  }
+  for (const file of input.fileNodes.keys()) {
+    if (!file.endsWith('.go')) continue;
+    for (const alias of goModuleAliases(file)) addModuleFile('go', alias, file);
   }
 
   const moduleNode = (language: string, module: string): GraphNode => {
@@ -541,6 +556,16 @@ function resolvePolyglotModules(input: {
         exactCandidates = symbolsByQualifiedName.get(`java:${value.module}.${value.imported}`) ?? [];
       }
       targetFiles = [...(moduleFiles.get(`java:${moduleName}`) ?? [])].sort();
+    } else if (value.language === 'go') {
+      const parts = value.module.split('/').filter(Boolean);
+      for (let index = 0; index < Math.max(0, parts.length - 1); index += 1) {
+        const alias = parts.slice(index).join('/');
+        const localFiles = [...(moduleFiles.get(`go:${alias}`) ?? [])].sort();
+        if (!localFiles.length) continue;
+        moduleName = alias;
+        targetFiles = localFiles;
+        break;
+      }
     } else {
       if (value.mode === 'symbol' || value.mode === 'static') {
         exactCandidates = symbolsByQualifiedName.get(`csharp:${value.module}`) ?? [];

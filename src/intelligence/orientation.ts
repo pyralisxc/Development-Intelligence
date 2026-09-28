@@ -68,7 +68,7 @@ function sourceScope(path: string | null, node: GraphNode | undefined): SourceSc
     || /\.(?:meta|unity|prefab|asset|mat|anim|controller|mixer)$/u.test(normalized)) return 'serialized-asset';
   if (/\.(?:json|asmdef|asmref|inputactions|ya?ml|toml|ini)$/u.test(normalized)
     || /(^|\/)(?:tsconfig|manifest|package)\.json$/u.test(normalized)) return 'structured-data-or-configuration';
-  if (/\.(?:ts|tsx|js|jsx|mjs|cjs|cs|java|py|css|sql|html|htm)$/u.test(normalized)) return 'implementation';
+  if (/\.(?:ts|tsx|js|jsx|mjs|cjs|cs|java|py|go|css|sql|html|htm)$/u.test(normalized)) return 'implementation';
   return 'unknown';
 }
 
@@ -76,13 +76,13 @@ function analyzerDepth(technology: string): AnalyzerDepth {
   if (technology === 'TypeScript/JavaScript') return 'behavioral';
   if (technology === 'Unity serialized assets') return 'serialized';
   if (technology === 'structured text' || technology === 'Unity structured configuration') return 'format';
-  if (technology === 'C#' || technology === 'Java' || technology === 'Python' || technology === 'CSS' || technology === 'SQL') return 'structural';
+  if (technology === 'C#' || technology === 'Java' || technology === 'Python' || technology === 'Go' || technology === 'CSS' || technology === 'SQL') return 'structural';
   return 'unknown';
 }
 
 function analyzerLimitations(technology: string | null, depth: AnalyzerDepth): string[] {
   if (!technology) return ['No registered analyzer precision profile applies to the selected source path.'];
-  if (technology === 'C#' || technology === 'Java' || technology === 'Python') {
+  if (technology === 'C#' || technology === 'Java' || technology === 'Python' || technology === 'Go') {
     return [
       'General cross-file call binding and runtime execution order are not proven by this analyzer profile.',
       'Reflection, dependency injection behavior, and dynamically selected implementations require additional evidence.',
