@@ -97,6 +97,44 @@ def main() -> None:
   assert.ok(result.resolutions.some(edge => edge.from === run.id && edge.to === normalize.id && edge.kind === 'contains'));
 });
 
+test('Go analysis preserves package, type, function, method, import, and containment identities', () => {
+  const result = analyze('internal/web/router.go', `package web
+
+import (
+  "net/http"
+  jsoncodec "example.com/project/internal/json"
+)
+
+type Router struct {
+  engine *http.ServeMux
+}
+
+type Handler interface {
+  Handle()
+}
+
+type Mode string
+
+func NewRouter() *Router { return &Router{} }
+func (r *Router) Run(addr string) error { return nil }
+`);
+
+  const pkg = symbol(result, 'package', 'web');
+  const router = symbol(result, 'struct', 'Router');
+  const handler = symbol(result, 'interface', 'Handler');
+  const mode = symbol(result, 'type', 'Mode');
+  const factory = symbol(result, 'function', 'NewRouter');
+  const run = symbol(result, 'method', 'Run');
+  const jsonImport = result.observations.find(item => item.kind === 'import-binding' && item.name === 'jsoncodec');
+
+  assert.equal(result.coverage?.status, 'complete');
+  assert.ok(pkg && router && handler && mode && factory && run && jsonImport);
+  assert.equal((run.value as any).receiverType, 'Router');
+  assert.equal((jsonImport.value as any).module, 'example.com/project/internal/json');
+  assert.ok(result.resolutions.some(edge => edge.from === pkg.id && edge.to === router.id && edge.kind === 'contains'));
+  assert.ok(result.resolutions.some(edge => edge.from === pkg.id && edge.to === run.id && edge.kind === 'contains'));
+});
+
 test('repository coverage treats supported polyglot source as eligible and parser recovery as partial', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-polyglot-coverage-'));
   await runChecked('git', ['init', '--initial-branch=main', root]);
@@ -104,6 +142,7 @@ test('repository coverage treats supported polyglot source as eligible and parse
     await fs.writeFile(path.join(root, 'Worker.cs'), 'public class Worker { public void Run() {} }');
     await fs.writeFile(path.join(root, 'Worker.java'), 'public class Worker { public void run() {} }');
     await fs.writeFile(path.join(root, 'worker.py'), 'def run():\n    return True\n');
+    await fs.writeFile(path.join(root, 'worker.go'), 'package fixture\nfunc Run() bool { return true }\n');
     await fs.writeFile(path.join(root, 'Broken.java'), 'public class Broken { public void run( }');
     await fs.writeFile(path.join(root, 'Worker.class'), 'binary placeholder');
     await runChecked('git', ['-C', root, 'add', '.']);
@@ -111,8 +150,8 @@ test('repository coverage treats supported polyglot source as eligible and parse
     const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
     const graph = await buildRepositoryGraph({ project: 'PolyglotFixture', repository: root, revision, root, role: 'W' });
 
-    assert.equal(graph.coverage?.eligibleFiles, 4);
-    assert.equal(graph.coverage?.completeFiles, 3);
+    assert.equal(graph.coverage?.eligibleFiles, 5);
+    assert.equal(graph.coverage?.completeFiles, 4);
     assert.equal(graph.coverage?.partialFiles, 1);
     assert.equal(graph.coverage?.unsupportedFiles, 1);
     assert.equal(graph.coverage?.files.find(file => file.path === 'Broken.java')?.status, 'partial');
@@ -130,12 +169,16 @@ test('polyglot imports resolve modules and exact local symbols without inventing
     await fs.mkdir(path.join(root, 'java', 'demo', 'app'), { recursive: true });
     await fs.mkdir(path.join(root, 'java', 'demo', 'core'), { recursive: true });
     await fs.mkdir(path.join(root, 'python', 'demo'), { recursive: true });
+    await fs.mkdir(path.join(root, 'project', 'core'), { recursive: true });
+    await fs.mkdir(path.join(root, 'project', 'app'), { recursive: true });
     await fs.writeFile(path.join(root, 'csharp', 'Core.cs'), 'namespace Demo.Core; public sealed class Worker { }\n');
     await fs.writeFile(path.join(root, 'csharp', 'App.cs'), 'using Demo.Core; using WorkerAlias = Demo.Core.Worker; namespace Demo.App; public sealed class App { }\n');
     await fs.writeFile(path.join(root, 'java', 'demo', 'core', 'Worker.java'), 'package demo.core; public final class Worker { }\n');
     await fs.writeFile(path.join(root, 'java', 'demo', 'app', 'App.java'), 'package demo.app; import demo.core.Worker; import java.util.List; public final class App { }\n');
     await fs.writeFile(path.join(root, 'python', 'demo', 'services.py'), 'class Worker:\n    pass\n\ndef helper():\n    pass\n');
     await fs.writeFile(path.join(root, 'python', 'app.py'), 'from demo.services import Worker\n');
+    await fs.writeFile(path.join(root, 'project', 'core', 'worker.go'), 'package core\ntype Worker struct{}\n');
+    await fs.writeFile(path.join(root, 'project', 'app', 'app.go'), 'package app\nimport core "example.com/project/core"\nfunc Start() {}\n');
     await runChecked('git', ['-C', root, 'add', '.']);
     await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
     const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
@@ -145,8 +188,9 @@ test('polyglot imports resolve modules and exact local symbols without inventing
     const javaWorker = graph.nodes.find(node => node.kind === 'import-binding' && node.sourceId === 'repo:java/demo/app/App.java' && node.name === 'Worker');
     const pythonWorker = graph.nodes.find(node => node.kind === 'import-binding' && node.sourceId === 'repo:python/app.py' && node.name === 'Worker');
     const externalJava = graph.nodes.find(node => node.id === 'module:java:java.util');
+    const goCore = graph.nodes.find(node => node.kind === 'import-binding' && node.sourceId === 'repo:project/app/app.go' && node.name === 'core');
 
-    assert.ok(csharpAlias && javaWorker && pythonWorker);
+    assert.ok(csharpAlias && javaWorker && pythonWorker && goCore);
     assert.ok(graph.nodes.some(node => node.id === 'module:csharp:Demo.Core' && node.tags?.includes('local-source')));
     assert.ok(graph.nodes.some(node => node.id === 'module:java:demo.core' && node.tags?.includes('local-source')));
     assert.ok(graph.nodes.some(node => node.id === 'module:python:demo.services' && node.tags?.includes('local-source')));
@@ -155,6 +199,9 @@ test('polyglot imports resolve modules and exact local symbols without inventing
     assert.ok(graph.edges.some(edge => edge.from === javaWorker.id && edge.to?.includes('#class:demo.core.Worker') && edge.kind === 'resolves_to'));
     assert.ok(graph.edges.some(edge => edge.from === pythonWorker.id && edge.to?.includes('#class:Worker') && edge.kind === 'resolves_to'));
     assert.ok(graph.edges.some(edge => edge.from === 'file:python/app.py' && edge.to === 'file:python/demo/services.py' && edge.kind === 'imports-file'));
+    assert.ok(graph.nodes.some(node => node.id === 'module:go:project/core' && node.tags?.includes('local-source')));
+    assert.ok(graph.edges.some(edge => edge.from === 'file:project/app/app.go' && edge.to === 'module:go:project/core' && edge.kind === 'imports'));
+
     assert.ok(!graph.edges.some(edge => edge.status === 'candidate' && (edge.from === javaWorker.id || edge.to === javaWorker.id)), 'dedicated import resolution must not be diluted by generic same-name candidates');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
