@@ -9,6 +9,7 @@ import { listTechnicalSources, queryTechnicalSource } from './technicalSources.j
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
+import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -463,6 +464,133 @@ function orientationReason(metrics: ReturnType<typeof orientationMetric>, rankBy
   return String(metrics.crossFileReach) + ' neighboring file(s) and ' + String(metrics.crossAreaReach) + ' neighboring area(s) through resolved relationships.';
 }
 
+function semanticNameList(names: string[], limit: number): string {
+  const unique = [...new Set(names.filter(Boolean))];
+  const shown = unique.slice(0, limit);
+  if (!shown.length) return '';
+  if (shown.length === 1) return shown[0]!;
+  const suffix = unique.length > shown.length ? ` and ${unique.length - shown.length} more` : '';
+  if (shown.length === 2) return shown.join(' and ') + suffix;
+  return shown.slice(0, -1).join(', ') + ', and ' + shown[shown.length - 1] + suffix;
+}
+
+async function repositorySemanticUnderstanding(
+  project: string,
+  graph: IntelligenceGraph,
+  limit: number,
+): Promise<Record<string, unknown>> {
+  const authority = await loadSemanticAuthority(project);
+  const accepted = latestAcceptedMeanings(authority.ledger);
+  if (accepted.length) {
+    const meanings = accepted.slice(0, limit).map(meaning => ({
+      meaningId: meaning.meaningId,
+      name: meaning.proposal.name,
+      description: meaning.proposal.description,
+      kind: meaning.proposal.kind,
+      scope: meaning.scope,
+      acceptedBy: meaning.acceptance?.actor ?? null,
+      verified: Boolean(meaning.verification),
+      verification: meaning.verification
+        ? { actor: meaning.verification.actor, evidenceCount: meaning.verification.evidenceIds.length }
+        : null,
+    }));
+    const features = accepted.filter(meaning => meaning.proposal.kind === 'feature').map(meaning => meaning.proposal.name);
+    const capabilities = accepted.filter(meaning => meaning.proposal.kind === 'capability').map(meaning => meaning.proposal.name);
+    const allNames = accepted.map(meaning => meaning.proposal.name);
+    const verifiedCount = accepted.filter(meaning => Boolean(meaning.verification)).length;
+    const lead = features.length
+      ? `${project} is represented by accepted semantic feature${features.length === 1 ? '' : 's'} ${semanticNameList(features, 3)}.`
+      : `DI's accepted semantic authority for ${project} includes ${semanticNameList(allNames, 5)}.`;
+    const capabilitySentence = capabilities.length
+      ? ` Connected accepted capabilities include ${semanticNameList(capabilities, 6)}.`
+      : '';
+    return {
+      source: 'accepted-authority',
+      summary: `${lead}${capabilitySentence} ${accepted.length} accepted meaning${accepted.length === 1 ? '' : 's'} are recorded; ${verifiedCount} have separate evidence verification.`,
+      authority: {
+        storageState: authority.state,
+        durable: authority.durable,
+        acceptedCount: accepted.length,
+        verifiedCount,
+        acceptanceImpliesVerification: false,
+      },
+      meanings,
+    };
+  }
+
+  const observed = graph.nodes
+    .filter(node => node.layer === 'semantic' && ['feature', 'capability', 'domain', 'surface'].includes(node.kind))
+    .sort((a, b) => a.kind.localeCompare(b.kind) || displayName(a).localeCompare(displayName(b)));
+  if (observed.length) {
+    const features = observed.filter(node => node.kind === 'feature').map(node => displayName(node));
+    const capabilities = observed.filter(node => node.kind === 'capability').map(node => displayName(node));
+    const lead = features.length
+      ? `${project} is currently represented semantically by ${semanticNameList(features, 3)}.`
+      : `${project} currently has observed semantic concepts including ${semanticNameList(observed.map(node => displayName(node)), 5)}.`;
+    const capabilitySentence = capabilities.length
+      ? ` Connected capabilities include ${semanticNameList(capabilities, 6)}.`
+      : '';
+    return {
+      source: 'observed-semantic-graph',
+      summary: lead + capabilitySentence,
+      authority: {
+        storageState: authority.state,
+        durable: authority.durable,
+        acceptedCount: 0,
+        verifiedCount: 0,
+        acceptanceImpliesVerification: false,
+      },
+      concepts: observed.slice(0, limit).map(node => ({
+        id: node.id,
+        name: displayName(node),
+        kind: node.kind,
+        locator: node.locator,
+        declared: Boolean(node.tags?.includes('declared')),
+      })),
+      note: 'Observed semantic graph concepts are evidence-backed graph meaning, but are not being represented here as human acceptance unless the semantic authority ledger says so.',
+    };
+  }
+
+  const bootstrap = bootstrapSemanticCandidates(graph, { limit });
+  const candidates = bootstrap.candidates.map(candidate => ({
+    id: candidate.id,
+    name: candidate.proposal.name,
+    description: candidate.proposal.description,
+    kind: candidate.proposal.kind,
+    scope: candidate.scope,
+    evidenceFamilies: candidate.provenance.evidenceFamilies,
+    accepted: false,
+    reviewed: false,
+  }));
+  if (candidates.length) {
+    return {
+      source: 'derived-candidates',
+      summary: `No accepted or declared semantic meaning is available yet. Evidence-derived candidates currently suggest ${semanticNameList(candidates.map(candidate => candidate.name), 6)}. These remain proposals requiring explicit review before becoming authority.`,
+      authority: {
+        storageState: authority.state,
+        durable: authority.durable,
+        acceptedCount: 0,
+        verifiedCount: 0,
+        acceptanceImpliesVerification: false,
+      },
+      candidates,
+      zeroMetadata: bootstrap.zeroMetadata,
+    };
+  }
+
+  return {
+    source: 'structural-only',
+    summary: 'No semantic meaning has been accepted or evidence-qualified yet. DI can describe repository structure, but it should not invent product intent from topology alone.',
+    authority: {
+      storageState: authority.state,
+      durable: authority.durable,
+      acceptedCount: 0,
+      verifiedCount: 0,
+      acceptanceImpliesVerification: false,
+    },
+  };
+}
+
 export async function scopeOrientation(input: {
   project: string;
   scope?: string | undefined;
@@ -587,6 +715,10 @@ export async function scopeOrientation(input: {
     .slice(0, Math.min(limit, 10))
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
+  const semanticUnderstanding = selected.kind === 'repository'
+    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12))
+    : null;
+
   return {
     project: input.project,
     graphId: graph.graphId,
@@ -599,7 +731,10 @@ export async function scopeOrientation(input: {
       resolvedBoundaryCount: boundary.length,
     },
     rankBy,
-    summary: String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; key entities are ordered by ' + rankBy + '.',
+    summary: semanticUnderstanding
+      ? String(semanticUnderstanding.summary)
+      : String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; key entities are ordered by ' + rankBy + '.',
+    semanticUnderstanding,
     nodeKinds: Object.entries(nodeKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
     relationshipKinds: Object.entries(relationshipKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
     keyEntities,
