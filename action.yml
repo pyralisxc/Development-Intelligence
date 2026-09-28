@@ -1,12 +1,12 @@
-name: Development Intelligence checkpoint
-description: Build Development Intelligence and check or seal the caller repository's accepted semantic checkpoint.
+name: Development Intelligence
+description: Analyze a caller repository without owning its semantics, or use legacy check/seal checkpoint compatibility during migration.
 
 inputs:
   project:
     description: Stable project identifier recorded in graph operations.
     required: true
   mode:
-    description: Check the accepted checkpoint or seal a new candidate. The action never commits or pushes.
+    description: analyze performs checkpointless read-only analysis; check/seal are legacy checkpoint migration modes. The action never commits or pushes.
     required: false
     default: check
 
@@ -23,12 +23,12 @@ runs:
     - name: Build Development Intelligence
       run: npm run build --prefix "$GITHUB_ACTION_PATH"
       shell: bash
-    - name: Run checkpoint operation
+    - name: Run Development Intelligence operation
       run: |
         set -euo pipefail
         case "$DEVINT_CHECKPOINT_MODE" in
-          check|seal) ;;
-          *) echo "mode must be check or seal" >&2; exit 2 ;;
+          analyze|check|seal) ;;
+          *) echo "mode must be analyze, check, or seal" >&2; exit 2 ;;
         esac
         node "$GITHUB_ACTION_PATH/dist/src/graphCli.js" "$DEVINT_CHECKPOINT_MODE" \
           --repo-path "$GITHUB_WORKSPACE" \
