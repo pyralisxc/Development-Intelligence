@@ -221,6 +221,44 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+
+  external-amux-benchmark:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AMUX_BENCHMARK_SHA: 7f87c55cd3e99642c4ca9ca5df54bfd663a2f097
+      DEVINT_GRAPH_MAX_FILES: 5000
+      DEVINT_GRAPH_MAX_FILE_BYTES: 5000000
+    steps:
+      - name: Check out Development Intelligence candidate
+        uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Check out pinned external Rust specimen
+        uses: actions/checkout@v7
+        with:
+          repository: mixpeek/amux
+          ref: 7f87c55cd3e99642c4ca9ca5df54bfd663a2f097
+          path: benchmark/amux
+          persist-credentials: false
+      - name: Replay external Rust specimen
+        run: |
+          node scripts/benchmark-amux.mjs benchmark/amux
+          cat benchmark-amux.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload external Rust benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-external-amux-benchmark
+          path: |
+            benchmark-amux.json
+            benchmark-amux.md
+          if-no-files-found: error
+          retention-days: 14
+
   capacity-benchmark:
     needs: verify
     runs-on: ubuntu-latest
