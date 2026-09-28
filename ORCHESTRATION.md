@@ -19,9 +19,9 @@ Do not copy volatile URLs, SHAs, secrets, deployment IDs, issue state, or provid
 
 ### Accepted main
 
-`main` is the accepted source branch. The accepted Development Intelligence checkpoint is whatever valid `/.development-intelligence/` state is committed with that exact Git revision.
+`main` is the accepted source branch. DI canonical persistence owns accepted semantic A and review history for inspected projects; Git owns their accepted source/history. Development Intelligence's own repository may carry an internal self-seal checkpoint as release-integrity evidence, but that file format is not the semantic authority model for inspected repositories.
 
-A clean `main` must pass the repository's normal verification and accepted-checkpoint checks. Provider/runtime state is separate and must be read from the provider when current deployment fact matters.
+A clean `main` must pass the repository's normal verification plus DI's exact-candidate semantic/self-integrity gates. Provider/runtime state is separate and must be read from the provider when current deployment fact matters.
 
 ### Preview integration
 
