@@ -1,6 +1,6 @@
 import { loadCanonicalGraph } from './canonicalStore.js';
 import { authorizedInstallationPortfolio } from './installationPortfolio.js';
-import { inspectGithubRepositoryPathAtDefaultBranch } from '../source/repositoryCredential.js';
+import { inspectGithubRepositoryPathAtDefaultBranch, inspectGithubRepositoryPathAtRevision } from '../source/repositoryCredential.js';
 
 const LEGACY_AUTHORITY_PATH = '.development-intelligence';
 
@@ -52,9 +52,14 @@ export async function auditSemanticAuthorityPortfolio(
 
     try {
       const inspected = await inspectGithubRepositoryPathAtDefaultBranch(repository, LEGACY_AUTHORITY_PATH);
-      const entries = inspected.entries;
-      const hasManifest = entries.some(entry => entry.path === `${LEGACY_AUTHORITY_PATH}/manifest.json`);
-      const shardCount = entries.filter(entry => /^\.development-intelligence\/graph\/[0-9a-f]\.ndjson$/u.test(entry.path)).length;
+      const graphDirectory = inspected.entries.find(entry => entry.type === 'dir' && entry.path === `${LEGACY_AUTHORITY_PATH}/graph`);
+      const graphEntries = graphDirectory
+        ? (await inspectGithubRepositoryPathAtRevision(repository, graphDirectory.path, inspected.revision)).entries
+        : [];
+      const entries = [...inspected.entries, ...graphEntries].sort((a, b) => a.path.localeCompare(b.path));
+      const fileEntries = entries.filter(entry => entry.type === 'file');
+      const hasManifest = fileEntries.some(entry => entry.path === `${LEGACY_AUTHORITY_PATH}/manifest.json`);
+      const shardCount = fileEntries.filter(entry => /^\.development-intelligence\/graph\/[0-9a-f]\.ndjson$/u.test(entry.path)).length;
       let canonical = {
         durable: false,
         loadState: 'not-required',
@@ -101,6 +106,7 @@ export async function auditSemanticAuthorityPortfolio(
         repositoryOwnedAuthority: {
           path: LEGACY_AUTHORITY_PATH,
           entryCount: entries.length,
+          fileCount: fileEntries.length,
           hasManifest,
           shardCount,
           paths: entries.map(entry => entry.path),

@@ -285,22 +285,18 @@ function safeRepositoryPath(value: string): string {
   return normalized;
 }
 
-export async function inspectGithubRepositoryPathAtDefaultBranch(
+export async function inspectGithubRepositoryPathAtRevision(
   repository: GithubInstallationRepository,
   relativePath: string,
+  revision: string,
 ): Promise<{ revision: string; entries: GithubRepositoryPathEntry[] }> {
+  const exactRevision = revision.trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/u.test(exactRevision)) throw new Error('GitHub repository path inspection requires an exact 40-character Git revision');
   const credential = await githubOwnerCredential(repository.owner);
-  const branch = await githubJson<{ commit?: { sha?: string } }>(
-    `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/branches/${encodeURIComponent(repository.defaultBranch)}`,
-    { headers: { authorization: `Bearer ${credential.token}` } },
-  );
-  const revision = branch.commit?.sha?.toLowerCase();
-  if (!revision || !/^[0-9a-f]{40}$/u.test(revision)) throw new Error(`GitHub returned an invalid default-branch revision for ${repository.fullName}`);
-
   const path = safeRepositoryPath(relativePath);
   const encodedPath = path.split('/').map(segment => encodeURIComponent(segment)).join('/');
   const response = await fetch(
-    `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/contents/${encodedPath}?ref=${encodeURIComponent(revision)}`,
+    `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/contents/${encodedPath}?ref=${encodeURIComponent(exactRevision)}`,
     {
       headers: {
         accept: 'application/vnd.github+json',
@@ -311,7 +307,7 @@ export async function inspectGithubRepositoryPathAtDefaultBranch(
       redirect: 'error',
     },
   );
-  if (response.status === 404) return { revision, entries: [] };
+  if (response.status === 404) return { revision: exactRevision, entries: [] };
   if (!response.ok) {
     const requestId = response.headers.get('x-github-request-id');
     throw new Error(`GitHub repository path inspection failed: HTTP ${response.status}${requestId ? ` (request ${requestId})` : ''}`);
@@ -335,7 +331,21 @@ export async function inspectGithubRepositoryPathAtDefaultBranch(
       sha: typeof value.sha === 'string' ? value.sha : null,
     }];
   }).sort((a, b) => a.path.localeCompare(b.path));
-  return { revision, entries };
+  return { revision: exactRevision, entries };
+}
+
+export async function inspectGithubRepositoryPathAtDefaultBranch(
+  repository: GithubInstallationRepository,
+  relativePath: string,
+): Promise<{ revision: string; entries: GithubRepositoryPathEntry[] }> {
+  const credential = await githubOwnerCredential(repository.owner);
+  const branch = await githubJson<{ commit?: { sha?: string } }>(
+    `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/branches/${encodeURIComponent(repository.defaultBranch)}`,
+    { headers: { authorization: `Bearer ${credential.token}` } },
+  );
+  const revision = branch.commit?.sha?.toLowerCase();
+  if (!revision || !/^[0-9a-f]{40}$/u.test(revision)) throw new Error(`GitHub returned an invalid default-branch revision for ${repository.fullName}`);
+  return await inspectGithubRepositoryPathAtRevision(repository, relativePath, revision);
 }
 
 export async function resolveRepositoryCredential(config: ProjectConfig): Promise<ResolvedRepositoryCredential | null> {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import test from 'node:test';
-import { clearRepositoryCredentialCacheForTests, inspectGithubRepositoryPathAtDefaultBranch, listGithubInstallationRepositories, resolveRepositoryCredential } from '../src/source/repositoryCredential.js';
+import { clearRepositoryCredentialCacheForTests, inspectGithubRepositoryPathAtDefaultBranch, inspectGithubRepositoryPathAtRevision, listGithubInstallationRepositories, resolveRepositoryCredential } from '../src/source/repositoryCredential.js';
 import type { ProjectConfig } from '../src/types.js';
 
 test('dedicated GitHub App mints single-repository read-only installation credentials', async () => {
@@ -165,6 +165,13 @@ test('GitHub App enumerates every readable repository for an authorized owner wi
         { name: 'graph', path: '.development-intelligence/graph', type: 'dir', size: 0, sha: 'graph-sha' },
       ]);
     }
+    if (url.endsWith('/repos/pyralisxc/CardForge/contents/.development-intelligence/graph?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')) {
+      assert.equal(String(init.headers?.authorization ?? ''), 'Bearer owner-read-token');
+      return Response.json([
+        { name: '0.ndjson', path: '.development-intelligence/graph/0.ndjson', type: 'file', size: 100, sha: 'shard-0' },
+        { name: 'f.ndjson', path: '.development-intelligence/graph/f.ndjson', type: 'file', size: 120, sha: 'shard-f' },
+      ]);
+    }
     throw new Error(`Unexpected request: ${url}`);
   };
 
@@ -179,6 +186,11 @@ test('GitHub App enumerates every readable repository for an authorized owner wi
     assert.deepEqual(inspected.entries.map(item => item.path), [
       '.development-intelligence/graph',
       '.development-intelligence/manifest.json',
+    ]);
+    const shards = await inspectGithubRepositoryPathAtRevision(cardForge, '.development-intelligence/graph', inspected.revision);
+    assert.deepEqual(shards.entries.map(item => item.path), [
+      '.development-intelligence/graph/0.ndjson',
+      '.development-intelligence/graph/f.ndjson',
     ]);
     assert.equal(requests.filter(url => url.endsWith('/app/installations/42/access_tokens')).length, 1, 'owner installation token should be cached');
   } finally {
