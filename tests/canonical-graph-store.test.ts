@@ -4,8 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { canonicalGraphFilePath } from '../src/intelligence/canonicalStore.js';
-import { clearGraphCache, graphStatus } from '../src/intelligence/service.js';
+import {
+  canonicalGraphFilePath,
+  loadCanonicalGraph,
+  makeCanonicalGraphRecord,
+  saveCanonicalGraph,
+} from '../src/intelligence/canonicalStore.js';
+import { workingToAcceptedGraph } from '../src/intelligence/checkpoint.js';
+import { clearGraphCache, graphStatus, repositoryGraphs } from '../src/intelligence/service.js';
 import { runChecked } from '../src/util/process.js';
 
 async function commit(repo: string, message: string): Promise<string> {
@@ -45,7 +51,7 @@ async function fixture() {
   process.env.DEVINT_CANONICAL_GRAPH_DIR = canonical;
   process.env.DEVINT_GRAPH_CACHE_SIZE = '1';
   clearGraphCache();
-  return { root, project, canonical };
+  return { root, source, remote, project, canonical };
 }
 
 function cleanupEnv() {
@@ -123,6 +129,84 @@ test('historical exact-SHA requests do not create durable canonical artifacts', 
     assert.equal(historical.observability.persistence.durable, false);
     assert.equal(historical.observability.persistence.loadState, 'not-configured');
     await assert.rejects(fs.stat(historicalPath), /ENOENT/);
+  } finally {
+    cleanupEnv();
+    await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+
+test('DI canonical accepted A survives a source-only default-branch advance without a repository checkpoint', async () => {
+  const item = await fixture();
+  try {
+    const firstStatus = await graphStatus(item.project) as any;
+    const firstRevision = firstStatus.revision as string;
+    const firstGraphs = await repositoryGraphs(item.project);
+    const accepted = workingToAcceptedGraph({
+      graph: firstGraphs.working,
+      repository: pathToFileURL(item.remote).href,
+      acceptedAt: '2026-09-28T00:00:00.000Z',
+    });
+    const loaded = await loadCanonicalGraph({
+      project: item.project,
+      repository: pathToFileURL(item.remote).href,
+      revision: firstRevision,
+    });
+    assert.ok(loaded.record, 'default revision should already have durable canonical W');
+    const acceptedRecord = makeCanonicalGraphRecord({
+      project: item.project,
+      repository: pathToFileURL(item.remote).href,
+      revision: firstRevision,
+      working: loaded.record!.working,
+      accepted,
+      currentness: {
+        acceptedSemanticCurrent: true,
+        sourceCurrent: true,
+        topologyCurrent: true,
+        evidenceCurrent: true,
+        analyzerCurrent: true,
+        schemaSupported: true,
+        integrityCurrent: true,
+        checkpointError: null,
+      },
+      queryArtifacts: loaded.record!.queryArtifacts ?? null,
+    });
+    assert.equal((await saveCanonicalGraph(acceptedRecord)).saveState, 'stored');
+
+    // Change exact Git/source identity without changing the observed semantic
+    // topology. There is intentionally no .development-intelligence checkpoint.
+    await fs.writeFile(path.join(item.source, 'src', 'value.ts'), "export const value = 1; // implementation-only movement\n");
+    const secondRevision = await commit(item.source, 'source-only change');
+    await runChecked('git', ['-C', item.source, 'push', 'origin', 'main']);
+    assert.notEqual(secondRevision, firstRevision);
+    await assert.rejects(
+      fs.stat(path.join(item.source, '.development-intelligence', 'manifest.json')),
+      /ENOENT/,
+    );
+
+    clearGraphCache(item.project);
+    const advanced = await graphStatus(item.project) as any;
+    assert.equal(advanced.revision, secondRevision);
+    assert.equal(advanced.accepted?.current, true);
+    assert.equal(advanced.currentness.acceptedSemanticCurrent, true);
+    assert.equal(advanced.currentness.topologyCurrent, true);
+    assert.equal(advanced.currentness.sourceCurrent, false);
+    assert.equal(advanced.accepted?.sourceFingerprint, accepted.sourceFingerprint);
+    assert.notEqual(advanced.working.sourceFingerprint, accepted.sourceFingerprint);
+    assert.equal(advanced.accepted?.topologyFingerprint, advanced.working.topologyFingerprint);
+    assert.equal(
+      advanced.observability.coldBuild.checkpointReadMs,
+      0,
+      'canonical accepted A must bypass repository checkpoint reads once DI owns acceptance',
+    );
+
+    const persistedAtNewRevision = await loadCanonicalGraph({
+      project: item.project,
+      repository: pathToFileURL(item.remote).href,
+      revision: secondRevision,
+    });
+    assert.equal(persistedAtNewRevision.record?.accepted?.repositoryRevision, firstRevision);
+    assert.equal(persistedAtNewRevision.record?.currentness.acceptedSemanticCurrent, true);
   } finally {
     cleanupEnv();
     await fs.rm(item.root, { recursive: true, force: true });
