@@ -364,7 +364,9 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean)
   const evidenceIds = candidate.provenance?.evidenceIds ?? [];
   const evidenceFamilies = candidate.provenance?.evidenceFamilies ?? [];
   const alternatives = Array.isArray(proposal.alternatives) ? proposal.alternatives.join('\n') : '';
-  const disabled = writable ? '' : ' disabled';
+  const continuity = candidate.continuity ?? { state: 'new', sourceMeaningIds: [] };
+  const candidateWritable = writable && continuity.state !== 'ambiguous';
+  const disabled = candidateWritable ? '' : ' disabled';
   const actor = review?.acceptance?.actor ?? review?.verification?.actor;
   const authorityLine = actor ? `${actor.kind ?? 'reviewer'} · ${actor.id ?? 'unknown'}` : 'No accepted authority recorded';
   return `<article class="card semantic-card" data-semantic-candidate="${esc(candidate.id)}">
@@ -374,7 +376,7 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean)
         <h2>${esc(proposal.name ?? candidate.proposal?.name ?? candidate.id)}</h2>
         <p>${esc(proposal.description ?? candidate.proposal?.description ?? '')}</p>
       </div>
-      <div class="semantic-meta"><strong>${esc(candidate.scope)}</strong><span>${esc(candidate.provenance?.origin ?? 'intrinsic-derivation')}</span></div>
+      <div class="semantic-meta"><strong>${esc(candidate.scope)}</strong><span>${esc(candidate.provenance?.origin ?? 'intrinsic-derivation')}</span><span>identity · ${esc(continuity.state)}${continuity.meaningId ? ` · ${esc(continuity.meaningId)}` : ''}</span></div>
     </div>
     <div class="semantic-proof">
       <span>${esc(evidenceFamilies.length)} evidence families</span>
@@ -383,6 +385,7 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean)
       <span>${esc(evidenceIds.length)} evidence records</span>
     </div>
     <p class="muted">Revision ${esc(candidate.provenance?.revision ?? 'unknown')} · ${esc(authorityLine)}. Acceptance and verification are independent.</p>
+    ${continuity.state === 'ambiguous' ? `<p class="status-warn">Identity continuity is ambiguous. Review is read-only until explicit split/merge/replacement lineage resolves it.</p>` : continuity.state === 'inherited' ? `<p class="status-good">Stable semantic identity inherited from ${esc(continuity.sourceRevision ?? 'an earlier accepted revision')}.</p>` : ''}
     <details class="semantic-editor">
       <summary>Edit / review meaning</summary>
       <div class="semantic-form">
