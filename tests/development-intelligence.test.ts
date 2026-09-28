@@ -899,6 +899,8 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     const html = await workbench.text();
     assert.match(html, /Overview/);
     assert.match(html, /Explore/);
+    assert.match(html, /Semantics/);
+    assert.match(html, /data-section="semantics"/);
     assert.match(html, /Parity/);
     assert.match(html, /Query/);
     assert.match(html, /Sources/);
@@ -913,8 +915,21 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     const viewerJavaScript = await viewerBundle.text();
     assert.match(viewerJavaScript, /Evidence-backed assessment/);
     assert.match(viewerJavaScript, /Typed reach/);
+    assert.match(viewerJavaScript, /explicit review/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/review/);
+    assert.match(viewerJavaScript, /Accept meaning/);
+    assert.match(viewerJavaScript, /Verify with evidence/);
     assert.match(viewerJavaScript, /reach describes connection, not impact severity/i);
     assert.match(viewerJavaScript, /Claims and proof/);
+
+    const semanticsParams = new URLSearchParams({ project: fixture.project, action: 'semantics', limit: '20' });
+    const semantics = await fetch(`${origin}/workbench/data?${semanticsParams}`);
+    assert.equal(semantics.status, 200);
+    const semanticsBody = await semantics.json() as any;
+    assert.ok(Array.isArray(semanticsBody.candidates));
+    assert.equal(semanticsBody.policy.candidatesRemainNonAuthoritativeUntilReviewed, true);
+    assert.equal(semanticsBody.policy.acceptanceImpliesVerification, false);
+    assert.equal(semanticsBody.policy.ownerWriteSurfaceSeparate, true);
 
     const intelligenceQuery = await fetch(`${origin}/workbench/query`, {
       method: 'POST',
