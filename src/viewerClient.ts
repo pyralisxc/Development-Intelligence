@@ -409,7 +409,7 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean)
 }
 
 function semanticLines(value: string): string[] {
-  return [...new Set(value.split(/\\r?\n|,/u).map(item => item.trim()).filter(Boolean))];
+  return [...new Set(value.split(/\r?\n|,/u).map(item => item.trim()).filter(Boolean))];
 }
 
 async function renderSemantics(epoch: number): Promise<void> {
