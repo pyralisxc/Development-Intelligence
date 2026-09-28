@@ -9,6 +9,7 @@ import { analyzeUnityMeta, analyzeUnitySerialized } from './unity.js';
 import { analyzeCss } from './css.js';
 import { analyzeSql } from './sql.js';
 import { analyzeGo } from './go.js';
+import { analyzeRust } from './rust.js';
 
 const EMPTY: AnalyzeResult = { observations: [], resolutions: [] };
 
@@ -27,6 +28,11 @@ export const SOURCE_ANALYSIS_SUPPORT = [
     technology: 'Java',
     extensions: ['.java'],
     precision: 'tree-sitter declarations, overload-aware identities, lexical containment, packages, and import bindings',
+  },
+  {
+    technology: 'Rust',
+    extensions: ['.rs'],
+    precision: 'module, struct/enum/trait/type, function/method identities, use bindings, source containment, and conservative module relationships',
   },
   {
     technology: 'Go',
@@ -75,6 +81,7 @@ export function analyzeByTechnology(context: AnalyzeContext): AnalyzeResult {
     if (ext === '.css') return analyzeCss(context);
     if (ext === '.sql') return analyzeSql(context);
     if (ext === '.go') return analyzeGo(context);
+    if (ext === '.rs') return analyzeRust(context);
     if (['.cs', '.java', '.py'].includes(ext)) return analyzePolyglot(context, ext);
     if (ext === '.meta') return analyzeUnityMeta(context);
     if (['.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer'].includes(ext)) return analyzeUnitySerialized(context);
