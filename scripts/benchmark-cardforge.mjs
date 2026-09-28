@@ -45,6 +45,8 @@ const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
 const { bootstrapSemanticCandidates } = await import('../dist/src/intelligence/semanticBootstrap.js');
 const { auditSemanticCandidates } = await import('../dist/src/intelligence/semanticAudit.js');
+const { semanticMeaningReview, applySemanticReviewAction } = await import('../dist/src/intelligence/semanticReview.js');
+const { evaluateSemanticEvolution } = await import('../dist/src/intelligence/semanticEvolution.js');
 const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
@@ -164,6 +166,50 @@ if (semanticAudit.counts.factualityNeedsReview !== 0) throw new Error(`CardForge
 if (semanticAudit.counts.coreCandidates < 1 || semanticAudit.counts.supportingCandidates < 1) throw new Error('CardForge semantic audit must distinguish both core and supporting semantic candidates');
 if (semanticAudit.policy.authorityUnaffected !== true || semanticAudit.policy.verificationUnaffected !== true || semanticAudit.policy.subjectiveGlobalScore !== false) {
   throw new Error('CardForge semantic audit crossed the derived-assessment boundary');
+}
+const semanticEvolutionScopes = [
+  'src/features/account',
+  'src/features/card-generator',
+  'src/features/creator-workbench',
+  'src/features/storage-management',
+  'src/features/template-editor',
+];
+const parentWorktree = path.join(temp, 'cardforge-parent');
+execFileSync('git', ['-C', cardForgeRoot, 'worktree', 'add', '--detach', parentWorktree, temporalParentSha], { stdio: 'ignore' });
+let semanticEvolutionResults = [];
+let semanticEvolutionElapsedMs = 0;
+try {
+  const evolutionStarted = process.hrtime.bigint();
+  const parentGraph = await buildLocalGraph(parentWorktree, project);
+  const parentBootstrap = bootstrapSemanticCandidates(parentGraph, { limit: 1000 });
+  for (const scope of semanticEvolutionScopes) {
+    const before = parentBootstrap.candidates.find(candidate => candidate.scope === scope);
+    const after = semanticBootstrap.candidates.find(candidate => candidate.scope === scope);
+    if (!before) throw new Error(`CardForge semantic evolution benchmark lost reviewed parent concept ${scope}`);
+    if (!after) throw new Error(`CardForge semantic evolution benchmark lost reviewed head concept ${scope}`);
+    const reviewed = applySemanticReviewAction(semanticMeaningReview(before), {
+      kind: 'accept',
+      actor: { kind: 'imported-assertion', id: 'benchmark:reviewed-semantic-universe' },
+      at: '2026-09-27T00:00:00.000Z',
+      rationale: 'Ephemeral benchmark acceptance over independently reviewed semantic ground truth.',
+    });
+    const evolution = evaluateSemanticEvolution(reviewed, semanticBootstrap.candidates, actualSha);
+    if (['unsupported', 'ambiguous', 'weakened'].includes(evolution.status)) {
+      throw new Error(`CardForge semantic identity regression for ${scope}: ${JSON.stringify(evolution)}`);
+    }
+    if (evolution.meaningId !== reviewed.meaningId) throw new Error(`CardForge stable semantic meaning identity changed for ${scope}`);
+    semanticEvolutionResults.push({
+      scope,
+      meaningId: reviewed.meaningId,
+      status: evolution.status,
+      reviewRequired: evolution.reviewRequired,
+      matchedCandidateId: evolution.matchedCandidate?.id ?? null,
+      supportDelta: evolution.supportDelta,
+    });
+  }
+  semanticEvolutionElapsedMs = Number(process.hrtime.bigint() - evolutionStarted) / 1_000_000;
+} finally {
+  try { execFileSync('git', ['-C', cardForgeRoot, 'worktree', 'remove', '--force', parentWorktree], { stdio: 'ignore' }); } catch {}
 }
 const semanticAccuracyUniverse = [
   'src/features/account',
@@ -579,6 +625,18 @@ const report = {
     workflowQueries: workflowSearch.results.map(result => ({ query: result.query, nodeTotal: result.nodeTotal, edgeTotal: result.edgeTotal })),
   },
   sourceSearch: { total: sourceSearch.total ?? 0, sample: Array.isArray(sourceSearch.matches) ? sourceSearch.matches.slice(0, 5) : [] },
+  semanticEvolution: {
+    baseSha: temporalParentSha,
+    headSha: actualSha,
+    elapsedMs: Number(semanticEvolutionElapsedMs.toFixed(3)),
+    reviewedConceptCount: semanticEvolutionResults.length,
+    results: semanticEvolutionResults,
+    policy: {
+      ephemeralBenchmarkAcceptance: true,
+      persisted: false,
+      acceptedGraphAffected: false,
+    },
+  },
   semanticAccuracy: {
     caseId: semanticAccuracy.caseId,
     reviewedUniverseScopes: semanticAccuracyUniverse,
@@ -738,6 +796,7 @@ const summary = [
   `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; full exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id)}; 100→full stable=${semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
   `- Semantic factuality/core audit: **${semanticAudit.counts.factualitySupported} factuality-supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core-candidate / ${semanticAudit.counts.supportingCandidates} supporting-candidate / ${semanticAuditElapsedMs.toFixed(3)} ms**`,
+  `- Semantic identity evolution: **${semanticEvolutionResults.length} reviewed parent concepts → head; ${semanticEvolutionResults.filter(item => item.status === 'preserved').length} preserved / ${semanticEvolutionResults.filter(item => item.status === 'realization-changed').length} realization-changed / ${semanticEvolutionResults.filter(item => item.status === 'renamed').length} renamed / ${semanticEvolutionResults.filter(item => item.reviewRequired).length} require review / ${semanticEvolutionElapsedMs.toFixed(3)} ms**`,
   `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,
