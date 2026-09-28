@@ -185,6 +185,42 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+
+  external-gin-benchmark:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GIN_BENCHMARK_SHA: bae9b98d8d60fde4aa55a83185ba15a922f98bd7
+    steps:
+      - name: Check out Development Intelligence candidate
+        uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Check out pinned external Go specimen
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/DI-Benchmark-Gin
+          ref: bae9b98d8d60fde4aa55a83185ba15a922f98bd7
+          path: benchmark/di-benchmark-gin
+          persist-credentials: false
+      - name: Replay external Go specimen
+        run: |
+          node scripts/benchmark-gin.mjs benchmark/di-benchmark-gin
+          cat benchmark-gin.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload external Go benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-external-gin-benchmark
+          path: |
+            benchmark-gin.json
+            benchmark-gin.md
+          if-no-files-found: error
+          retention-days: 14
+
   capacity-benchmark:
     needs: verify
     runs-on: ubuntu-latest
