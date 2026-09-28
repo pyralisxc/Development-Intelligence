@@ -589,6 +589,19 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.equal(missingScope.intent, 'orientation');
     assert.equal(missingScope.result.scopeRequired, true, 'deictic scope should remain explicit instead of guessing');
 
+    const projectQuestion = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do?',
+    }) as any;
+    assert.equal(projectQuestion.intent, 'orientation');
+    assert.equal(projectQuestion.routing.tool, 'orient_scope');
+    assert.equal(projectQuestion.result.scope.kind, 'repository');
+    assert.ok(projectQuestion.result.semanticUnderstanding);
+    assert.ok(['accepted-authority', 'observed-semantic-graph', 'derived-candidates', 'structural-only'].includes(projectQuestion.result.semanticUnderstanding.source));
+    assert.equal(projectQuestion.answer, projectQuestion.result.semanticUnderstanding.summary);
+    assert.equal(/^\d+ graph entities/u.test(projectQuestion.answer), false, 'general project questions should lead with semantic understanding rather than topology counts');
+    assert.equal(projectQuestion.result.semanticUnderstanding.authority.acceptanceImpliesVerification, false);
+
 
     const scopedSpecific = await callTool('investigate', {
       project: fixture.project,
