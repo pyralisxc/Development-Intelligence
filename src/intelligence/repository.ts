@@ -14,12 +14,12 @@ import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.8.0-go-structural';
+export const ANALYZER_VERSION = '2.9.0-rust-structural';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
-const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py', '.go']);
+const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py', '.go', '.rs']);
 const UNITY_SERIALIZED_EXTENSIONS = new Set(['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer']);
 const UNITY_JSON_EXTENSIONS = new Set(['.asmdef', '.asmref', '.inputactions']);
 const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, ...UNITY_SERIALIZED_EXTENSIONS, ...UNITY_JSON_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm', '.css', '.sql']);
@@ -339,7 +339,7 @@ function resolveUnityGraph(input: {
 }
 
 interface PolyglotSymbolValue {
-  language: 'csharp' | 'java' | 'python' | 'go';
+  language: 'csharp' | 'java' | 'python' | 'go' | 'rust';
   qualifiedName?: string;
   signature?: string;
   baseTypes?: string[];
@@ -355,7 +355,7 @@ interface CSharpReferenceValue {
 }
 
 interface PolyglotImportValue {
-  language: 'csharp' | 'java' | 'python' | 'go';
+  language: 'csharp' | 'java' | 'python' | 'go' | 'rust';
   module: string;
   imported: string;
   local: string;
@@ -366,7 +366,7 @@ interface PolyglotImportValue {
 function polyglotSymbolValue(value: unknown): value is PolyglotSymbolValue {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
-  return ['csharp', 'java', 'python', 'go'].includes(String(candidate.language))
+  return ['csharp', 'java', 'python', 'go', 'rust'].includes(String(candidate.language))
     && (candidate.qualifiedName === undefined || typeof candidate.qualifiedName === 'string');
 }
 
@@ -381,7 +381,7 @@ function csharpReferenceValue(value: unknown): value is CSharpReferenceValue {
 function polyglotImportValue(value: unknown): value is PolyglotImportValue {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
-  return ['csharp', 'java', 'python', 'go'].includes(String(candidate.language))
+  return ['csharp', 'java', 'python', 'go', 'rust'].includes(String(candidate.language))
     && typeof candidate.module === 'string'
     && typeof candidate.imported === 'string'
     && typeof candidate.local === 'string'
@@ -409,6 +409,28 @@ function goModuleAliases(file: string): string[] {
     if (alias) aliases.push(alias);
   }
   return aliases;
+}
+
+function rustModuleAliases(file: string): string[] {
+  if (!file.endsWith('.rs')) return [];
+  const parts = file.replace(/\.rs$/u, '').split('/').filter(Boolean);
+  const srcIndex = parts.lastIndexOf('src');
+  let moduleParts = srcIndex >= 0 ? parts.slice(srcIndex + 1) : parts;
+  const leaf = moduleParts.at(-1);
+  if (leaf === 'lib' || leaf === 'main' || leaf === 'mod') moduleParts = moduleParts.slice(0, -1);
+  const aliases: string[] = [];
+  for (let index = 0; index < moduleParts.length; index += 1) {
+    const alias = moduleParts.slice(index).join('::');
+    if (alias) aliases.push(alias);
+  }
+  return aliases;
+}
+
+function normalizeRustModule(module: string): string {
+  return module
+    .replace(/^::/u, '')
+    .replace(/^(?:crate|self)::/u, '')
+    .replace(/^(?:super::)+/u, '');
 }
 
 function relativePythonModule(fromFile: string, module: string): string | null {
@@ -469,6 +491,10 @@ function resolvePolyglotModules(input: {
   for (const file of input.fileNodes.keys()) {
     if (!file.endsWith('.go')) continue;
     for (const alias of goModuleAliases(file)) addModuleFile('go', alias, file);
+  }
+  for (const file of input.fileNodes.keys()) {
+    if (!file.endsWith('.rs')) continue;
+    for (const alias of rustModuleAliases(file)) addModuleFile('rust', alias, file);
   }
 
   const moduleNode = (language: string, module: string): GraphNode => {
@@ -565,6 +591,12 @@ function resolvePolyglotModules(input: {
         moduleName = alias;
         targetFiles = localFiles;
         break;
+      }
+    } else if (value.language === 'rust') {
+      moduleName = normalizeRustModule(value.module);
+      targetFiles = [...(moduleFiles.get(`rust:${moduleName}`) ?? [])].sort();
+      if (value.imported !== '*' && targetFiles.length) {
+        exactCandidates = targetFiles.flatMap(file => symbolsByFile.get(file)?.get(value.imported) ?? []);
       }
     } else {
       if (value.mode === 'symbol' || value.mode === 'static') {
