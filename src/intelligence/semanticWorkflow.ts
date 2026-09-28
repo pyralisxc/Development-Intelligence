@@ -73,21 +73,22 @@ export type SemanticReviewContinuity =
       reason: string;
     };
 
-function priorAcceptedMeanings(
+export function acceptedMeaningsForContinuity(
   ledger: SemanticAuthorityLedger | null,
   targetRevision: string | null,
 ): SemanticMeaningReview[] {
   const latest = new Map<string, { storedAt: string; review: SemanticMeaningReview }>();
   for (const record of ledger?.records ?? []) {
     if (record.revision === targetRevision) continue;
-    const review = record.review;
-    if (!review.accepted || ['superseded', 'split', 'merged'].includes(review.state)) continue;
-    const current = latest.get(review.meaningId);
+    const current = latest.get(record.meaningId);
     if (!current || current.storedAt.localeCompare(record.storedAt) < 0) {
-      latest.set(review.meaningId, { storedAt: record.storedAt, review });
+      latest.set(record.meaningId, { storedAt: record.storedAt, review: record.review });
     }
   }
-  return [...latest.values()].map(item => item.review).sort((a, b) => a.meaningId.localeCompare(b.meaningId));
+  return [...latest.values()]
+    .map(item => item.review)
+    .filter(review => review.accepted && !['superseded', 'split', 'merged'].includes(review.state))
+    .sort((a, b) => a.meaningId.localeCompare(b.meaningId));
 }
 
 export function semanticReviewContinuity(
@@ -238,7 +239,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
   const authority = await loadSemanticAuthority(input.project);
   const reviews = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision);
   const reviewsByCandidate = new Map(reviews.map(review => [review.candidateId, review]));
-  const acceptedMeanings = priorAcceptedMeanings(authority.ledger, graph.repositoryRevision);
+  const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
 
   return {
     version: 1,
@@ -295,7 +296,7 @@ export async function reviewSemanticMeaning(input: ReviewSemanticMeaningInput): 
 
   const existing = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision)
     .find(review => review.candidateId === candidate.id);
-  const acceptedMeanings = priorAcceptedMeanings(authority.ledger, graph.repositoryRevision);
+  const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
   const continuity = semanticReviewContinuity(candidate, bootstrap.candidates, acceptedMeanings);
   if (continuity.state === 'ambiguous') {
     throw new Error(`Semantic candidate ${candidate.id} has ambiguous accepted-meaning continuity; explicit lineage review is required before semantic authority can change`);

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { initialSemanticReview, parseSemanticReviewCommand, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
+import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticReviewCommand, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
 
 import type { SemanticCandidate } from '../src/intelligence/semanticBootstrap.js';
 import { applySemanticReviewAction, semanticMeaningReview, type SemanticMeaningReview } from '../src/intelligence/semanticReview.js';
+import { supersedeSemanticMeaning } from '../src/intelligence/semanticEvolution.js';
 
 function candidate(input: { id: string; scope: string; name: string; revision: string; files?: number }): SemanticCandidate {
   return {
@@ -151,4 +152,51 @@ test('genuinely new semantic candidates receive a new meaning identity', () => {
   assert.equal(continuity.state, 'new');
   const review = initialSemanticReview(preview, [preview], []);
   assert.match(review.meaningId, /^semantic-meaning:/u);
+});
+
+
+test('continuity authority does not resurrect an older accepted record after the meaning is superseded', () => {
+  const originalCandidate = candidate({
+    id: 'candidate:retired',
+    scope: 'src/features/retired',
+    name: 'Retired capability',
+    revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  });
+  const original = accepted(originalCandidate);
+  const superseded = supersedeSemanticMeaning(
+    original,
+    ['semantic-meaning:successor'],
+    { kind: 'human', id: 'human:owner' },
+    '2026-09-28T19:00:00.000Z',
+    'Replaced by a more precise concept.',
+  );
+  const ledger = {
+    formatVersion: 1 as const,
+    project: 'fixture',
+    generation: 2,
+    updatedAt: '2026-09-28T19:00:00.000Z',
+    records: [
+      {
+        recordId: 'record:accepted',
+        meaningId: original.meaningId,
+        revision: original.proposalRevision,
+        candidateId: original.candidateId,
+        storedAt: '2026-09-28T18:00:00.000Z',
+        review: original,
+      },
+      {
+        recordId: 'record:superseded',
+        meaningId: superseded.meaningId,
+        revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        candidateId: superseded.candidateId,
+        storedAt: '2026-09-28T19:00:00.000Z',
+        review: { ...superseded, proposalRevision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    acceptedMeaningsForContinuity(ledger, 'cccccccccccccccccccccccccccccccccccccccc'),
+    [],
+  );
 });
