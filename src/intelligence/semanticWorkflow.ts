@@ -3,8 +3,10 @@ import {
   loadSemanticAuthority,
   persistSemanticReview,
   semanticReviewsAtRevision,
+  type SemanticAuthorityLedger,
   type SemanticAuthorityLoad,
 } from './semanticAuthorityStore.js';
+import { evaluateSemanticEvolution } from './semanticEvolution.js';
 import {
   applySemanticReviewAction,
   semanticMeaningReview,
@@ -46,6 +48,109 @@ export interface ReviewSemanticMeaningInput extends SemanticReviewSurfaceInput {
 }
 
 const CANDIDATE_KINDS = new Set<SemanticCandidateKind>(['feature', 'capability', 'surface', 'domain']);
+
+
+export type SemanticReviewContinuity =
+  | {
+      state: 'new';
+      meaningId: null;
+      sourceRevision: null;
+      sourceMeaningIds: [];
+      reason: string;
+    }
+  | {
+      state: 'inherited';
+      meaningId: string;
+      sourceRevision: string | null;
+      sourceMeaningIds: [string];
+      reason: string;
+    }
+  | {
+      state: 'ambiguous';
+      meaningId: null;
+      sourceRevision: null;
+      sourceMeaningIds: string[];
+      reason: string;
+    };
+
+export function acceptedMeaningsForContinuity(
+  ledger: SemanticAuthorityLedger | null,
+  targetRevision: string | null,
+): SemanticMeaningReview[] {
+  const latest = new Map<string, { storedAt: string; review: SemanticMeaningReview }>();
+  for (const record of ledger?.records ?? []) {
+    if (record.revision === targetRevision) continue;
+    const current = latest.get(record.meaningId);
+    if (!current || current.storedAt.localeCompare(record.storedAt) < 0) {
+      latest.set(record.meaningId, { storedAt: record.storedAt, review: record.review });
+    }
+  }
+  return [...latest.values()]
+    .map(item => item.review)
+    .filter(review => review.accepted && !['superseded', 'split', 'merged'].includes(review.state))
+    .sort((a, b) => a.meaningId.localeCompare(b.meaningId));
+}
+
+export function semanticReviewContinuity(
+  candidate: SemanticCandidate,
+  candidates: SemanticCandidate[],
+  acceptedMeanings: SemanticMeaningReview[],
+): SemanticReviewContinuity {
+  const targetRevision = candidate.provenance.revision;
+  const assessments = acceptedMeanings.map(review => ({
+    review,
+    evolution: evaluateSemanticEvolution(review, candidates, targetRevision),
+  }));
+  const ambiguous = assessments.filter(item =>
+    item.evolution.status === 'ambiguous'
+    && item.evolution.alternatives.some(alternative => alternative.id === candidate.id)
+  );
+  const direct = assessments.filter(item => item.evolution.matchedCandidate?.id === candidate.id);
+  const sourceMeaningIds = [...new Set([...ambiguous, ...direct].map(item => item.review.meaningId))].sort();
+
+  if (ambiguous.length > 0 || sourceMeaningIds.length > 1) {
+    return {
+      state: 'ambiguous',
+      meaningId: null,
+      sourceRevision: null,
+      sourceMeaningIds,
+      reason: ambiguous.length > 0
+        ? 'The candidate participates in an ambiguous accepted-meaning evolution; explicit split/merge/replacement lineage is required.'
+        : 'Multiple accepted meanings map to this candidate; explicit merge/replacement lineage is required.',
+    };
+  }
+
+  if (direct.length === 1) {
+    const source = direct[0]!.review;
+    return {
+      state: 'inherited',
+      meaningId: source.meaningId,
+      sourceRevision: source.proposalRevision,
+      sourceMeaningIds: [source.meaningId],
+      reason: 'Exactly one accepted meaning from another revision maps unambiguously to this candidate, so its stable semantic identity is preserved.',
+    };
+  }
+
+  return {
+    state: 'new',
+    meaningId: null,
+    sourceRevision: null,
+    sourceMeaningIds: [],
+    reason: 'No accepted meaning from another revision maps to this candidate; a new semantic identity will be proposed.',
+  };
+}
+
+export function initialSemanticReview(
+  candidate: SemanticCandidate,
+  candidates: SemanticCandidate[],
+  acceptedMeanings: SemanticMeaningReview[],
+): SemanticMeaningReview {
+  const continuity = semanticReviewContinuity(candidate, candidates, acceptedMeanings);
+  if (continuity.state === 'ambiguous') {
+    throw new Error(`Semantic candidate ${candidate.id} has ambiguous accepted-meaning continuity; explicit lineage review is required before semantic authority can change`);
+  }
+  return semanticMeaningReview(candidate, continuity.state === 'inherited' ? { meaningId: continuity.meaningId } : {});
+}
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -134,6 +239,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
   const authority = await loadSemanticAuthority(input.project);
   const reviews = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision);
   const reviewsByCandidate = new Map(reviews.map(review => [review.candidateId, review]));
+  const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
 
   return {
     version: 1,
@@ -146,6 +252,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
     candidates: bootstrap.candidates.map(candidate => ({
       ...candidate,
       review: reviewsByCandidate.get(candidate.id) ?? null,
+      continuity: semanticReviewContinuity(candidate, bootstrap.candidates, acceptedMeanings),
     })),
     capacity: bootstrap.capacity,
     authority: authoritySummary(authority),
@@ -157,6 +264,8 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       mcpSurfaceReadOnly: true,
       ownerWriteSurfaceSeparate: true,
       persistedAuthorityOwnedByDI: true,
+      stableMeaningIdentityInheritedAcrossRevisions: true,
+      ambiguousContinuityRequiresExplicitLineage: true,
       acceptedGraphAffected: false,
     },
   };
@@ -171,6 +280,7 @@ export async function reviewSemanticMeaning(input: ReviewSemanticMeaningInput): 
   meaningId: string;
   etag: string | null;
   generation: number;
+  continuity: SemanticReviewContinuity;
   review: SemanticMeaningReview;
 }> {
   const { graph } = await graphContext(input.project, {
@@ -186,7 +296,15 @@ export async function reviewSemanticMeaning(input: ReviewSemanticMeaningInput): 
 
   const existing = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision)
     .find(review => review.candidateId === candidate.id);
-  const current = existing ?? semanticMeaningReview(candidate);
+  const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
+  const continuity = semanticReviewContinuity(candidate, bootstrap.candidates, acceptedMeanings);
+  if (continuity.state === 'ambiguous') {
+    throw new Error(`Semantic candidate ${candidate.id} has ambiguous accepted-meaning continuity; explicit lineage review is required before semantic authority can change`);
+  }
+  if (existing && continuity.state === 'inherited' && existing.meaningId !== continuity.meaningId) {
+    throw new Error(`Existing semantic review for ${candidate.id} does not preserve accepted meaning identity ${continuity.meaningId}; explicit semantic authority migration is required`);
+  }
+  const current = existing ?? initialSemanticReview(candidate, bootstrap.candidates, acceptedMeanings);
   const next = applySemanticReviewAction(current, semanticReviewAction(input.command, input.actor, input.at));
   const expectedEtag = input.expectedEtag === undefined ? authority.etag : input.expectedEtag;
   const written = await persistSemanticReview(input.project, next, expectedEtag);
@@ -202,6 +320,7 @@ export async function reviewSemanticMeaning(input: ReviewSemanticMeaningInput): 
     meaningId: persisted.meaningId,
     etag: written.etag,
     generation: written.ledger?.generation ?? authority.ledger?.generation ?? 0,
+    continuity,
     review: persisted,
   };
 }
