@@ -4,6 +4,8 @@ import type { IntelligenceGraph } from '../types.js';
 import { buildRepositoryGraph } from './repository.js';
 import { checkpointAnalyzerCurrent, readCheckpoint, writeCheckpoint } from './checkpoint.js';
 import { assertGraphIntegrity } from './integrity.js';
+import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
+import { auditSemanticCandidates } from './semanticAudit.js';
 
 async function gitValue(root: string, args: string[]): Promise<string> {
   return (await runChecked('git', ['-C', root, ...args])).stdout.trim();
@@ -57,5 +59,71 @@ export async function checkLocalGraph(root: string, project?: string): Promise<R
     expectedAnalyzerVersion: graph.analyzerVersion,
     checkpointAnalyzerVersion: checkpoint.meta.schemaVersion === 2 ? checkpoint.meta.analyzerVersion : 'legacy-1',
     checkpointSummary: checkpoint.meta.summary,
+  };
+}
+
+
+export async function analyzeLocalGraph(root: string, project?: string): Promise<Record<string, unknown>> {
+  const graph = await buildLocalGraph(root, project, 'W');
+  const coverage = graph.coverage ?? null;
+  const eligibleComplete = Boolean(
+    coverage
+    && coverage.analyzedFiles === coverage.eligibleFiles
+    && coverage.completeFiles === coverage.eligibleFiles
+    && coverage.partialFiles === 0
+    && coverage.failedFiles === 0
+    && coverage.skippedFiles === 0
+  );
+
+  const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: 1000 });
+  const semanticAudit = auditSemanticCandidates(graph, semanticBootstrap, {
+    limit: semanticBootstrap.candidates.length || 1,
+  });
+  const authoritySafe = semanticBootstrap.candidates.every(candidate =>
+    !candidate.authority.accepted
+    && !candidate.authority.persisted
+    && !candidate.authority.proofEligible
+  );
+  const factualityClean = semanticAudit.counts.factualityNeedsReview === 0;
+  const valid = eligibleComplete && authoritySafe && factualityClean;
+
+  return {
+    valid,
+    mode: 'analysis-only',
+    project: graph.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    sourceFingerprint: graph.sourceFingerprint,
+    topologyFingerprint: graph.topologyFingerprint,
+    evidenceFingerprint: graph.evidenceFingerprint,
+    coverage: coverage ? {
+      trackedFiles: coverage.trackedFiles,
+      eligibleFiles: coverage.eligibleFiles,
+      analyzedFiles: coverage.analyzedFiles,
+      completeFiles: coverage.completeFiles,
+      partialFiles: coverage.partialFiles,
+      failedFiles: coverage.failedFiles,
+      skippedFiles: coverage.skippedFiles,
+      unsupportedFiles: coverage.unsupportedFiles,
+      completeForEligibleSources: eligibleComplete,
+    } : null,
+    semantic: {
+      candidateCount: semanticBootstrap.candidates.length,
+      groupedScopeCount: semanticBootstrap.capacity.groupedScopeCount,
+      rejectedScopeCount: semanticBootstrap.capacity.rejectedScopeCount,
+      exhausted: semanticBootstrap.capacity.exhausted,
+      factualitySupported: semanticAudit.counts.factualitySupported,
+      factualityNeedsReview: semanticAudit.counts.factualityNeedsReview,
+      coreCandidates: semanticAudit.counts.coreCandidates,
+      supportingCandidates: semanticAudit.counts.supportingCandidates,
+      authoritySafe,
+    },
+    policy: {
+      checkpointRead: false,
+      checkpointWritten: false,
+      acceptedGraphAffected: false,
+      semanticAuthorityChanged: false,
+      canonicalAuthorityOwner: 'Development Intelligence',
+    },
   };
 }
