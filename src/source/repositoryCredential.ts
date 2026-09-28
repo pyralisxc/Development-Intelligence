@@ -269,6 +269,61 @@ export async function listGithubInstallationRepositories(owner: string): Promise
   return repositories.sort((a, b) => a.fullName.localeCompare(b.fullName));
 }
 
+export interface GithubInstallationRepositoryTree {
+  repository: string;
+  defaultBranch: string;
+  revision: string;
+  treeSha: string;
+  truncated: boolean;
+  entries: Array<{ path: string; type: string; size?: number }>;
+}
+
+export async function inspectGithubInstallationRepositoryTree(
+  repository: GithubInstallationRepository,
+): Promise<GithubInstallationRepositoryTree> {
+  const credential = await githubOwnerCredential(repository.owner);
+  const owner = encodeURIComponent(repository.owner);
+  const name = encodeURIComponent(repository.name);
+  const ref = encodeURIComponent(repository.defaultBranch);
+  const commit = await githubJson<{
+    sha?: string;
+    commit?: { tree?: { sha?: string } };
+  }>(
+    `https://api.github.com/repos/${owner}/${name}/commits/${ref}`,
+    { headers: { authorization: `Bearer ${credential.token}` } },
+  );
+  const revision = commit.sha?.toLowerCase();
+  const treeSha = commit.commit?.tree?.sha?.toLowerCase();
+  if (!revision || !/^[0-9a-f]{40}$/u.test(revision) || !treeSha || !/^[0-9a-f]{40}$/u.test(treeSha)) {
+    throw new Error(`GitHub returned an invalid default-branch commit/tree for ${repository.fullName}`);
+  }
+
+  const tree = await githubJson<{
+    truncated?: boolean;
+    tree?: Array<{ path?: string; type?: string; size?: number }>;
+  }>(
+    `https://api.github.com/repos/${owner}/${name}/git/trees/${treeSha}?recursive=1`,
+    { headers: { authorization: `Bearer ${credential.token}` } },
+  );
+  const entries = (Array.isArray(tree.tree) ? tree.tree : [])
+    .filter(entry => typeof entry.path === 'string' && entry.path.length > 0 && typeof entry.type === 'string' && entry.type.length > 0)
+    .map(entry => ({
+      path: entry.path!,
+      type: entry.type!,
+      ...(typeof entry.size === 'number' && Number.isFinite(entry.size) ? { size: entry.size } : {}),
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  return {
+    repository: repository.fullName,
+    defaultBranch: repository.defaultBranch,
+    revision,
+    treeSha,
+    truncated: tree.truncated === true,
+    entries,
+  };
+}
+
 export async function resolveRepositoryCredential(config: ProjectConfig): Promise<ResolvedRepositoryCredential | null> {
   const credential = config.credential ?? { type: 'none' as const };
   if (credential.type === 'none') return null;
