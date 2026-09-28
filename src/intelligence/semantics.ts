@@ -164,6 +164,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       relationships: [
         { kind: 'automated-by', to: 'mcp:inspect_portfolio' },
         { kind: 'automated-by', to: 'mcp:trace_portfolio' },
+        { kind: 'automated-by', to: 'mcp:inventory_semantic_authority' },
       ],
     },
   },
@@ -180,6 +181,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
   },
   ...[
     'list_projects',
+    'inventory_semantic_authority',
     'resolve_revision',
     'project_status',
     'project_overview',

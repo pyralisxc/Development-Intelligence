@@ -11,6 +11,7 @@ import { evaluateParityContract } from './intelligence/parityContract.js';
 import { verifyTransition } from './intelligence/temporalVerification.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import { inspectPortfolio, tracePortfolio, type PortfolioParticipantInput } from './intelligence/portfolio.js';
+import { inventorySemanticAuthority } from './intelligence/semanticAuthorityInventory.js';
 import { stableHash } from './util/hash.js';
 import { recordToolExecution } from './observability.js';
 import type { GraphNodeLayer, GraphCoverageStatus, RelationshipStatus, TechnicalSourceCapability } from './types.js';
@@ -275,6 +276,13 @@ export const tools: ToolDefinition[] = [
       access: 'read-only',
     })),
   }) },
+  { name: 'inventory_semantic_authority', description: 'Inventory repository-local machine semantic-authority remnants across the GitHub App installation scope. Binds each inspected repository to its exact default-branch commit, separates Development Intelligence self-metadata from product-repository authority, reports truncated/error coverage explicitly, and never migrates or deletes repository content.', inputSchema: objectSchema({ owners: strings, repositories: strings, includeArchived: boolean, offset: integer, limit: integer }), handler: async args => await inventorySemanticAuthority({
+    ...(Array.isArray(args.owners) ? { owners: args.owners.filter((value): value is string => typeof value === 'string') } : {}),
+    ...(Array.isArray(args.repositories) ? { repositories: args.repositories.filter((value): value is string => typeof value === 'string') } : {}),
+    ...(typeof args.includeArchived === 'boolean' ? { includeArchived: args.includeArchived } : {}),
+    ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+  }), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'resolve_revision', description: 'Resolve a repository revision selector to one immutable Git object id without building a graph. Historical selectors are commit:<full-sha>, branch:<name>, tag:<name>, pr:<number>/head, pr:<number>/base, and pr:<number>/result. Pull-request result exists only for merged PRs.', inputSchema: objectSchema({ project: string, ref: string }, ['project']), handler: async args => {
     const revision = await resolveProjectRevision(s(args, 'project'), optString(args, 'ref'));
     return { project: revision.project, repository: revision.repository, identity: revisionIdentity(revision) };

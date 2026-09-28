@@ -742,6 +742,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   const names = listed.map(tool => tool.name);
   assert.deepEqual(names, [
     'list_projects',
+    'inventory_semantic_authority',
     'resolve_revision',
     'project_status',
     'project_overview',
@@ -780,6 +781,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(/Codebase Memory|CBM_CACHE_DIR|graph\.db\.zst/i.test(serialized), false);
   const byName = new Map(listed.map(tool => [tool.name, tool]));
   assert.equal(byName.get('scan_graph')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('inventory_semantic_authority')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('inventory_semantic_authority')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('inspect_interface')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('inspect_interface')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('audit_semantics')?.annotations?.readOnlyHint, true);
@@ -795,7 +798,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 29, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 30, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -813,7 +816,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 29);
+  assert.equal(identity.mcp.toolCount, 30);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
