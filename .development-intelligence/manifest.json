@@ -3,9 +3,9 @@
   "schemaVersion": 2,
   "format": "sharded-ndjson",
   "analyzerVersion": "2.9.0-rust-structural",
-  "sourceFingerprint": "3ff5fe511b371cc8bc13c866870bb688eca44f32369b7100bd6e9eb457a59379",
-  "topologyFingerprint": "ba6e889cf7f775471c2ef7738a0c2b1058708ec6125d6f16b78cf85f47ca8f91",
-  "evidenceFingerprint": "518e0434b2c6d8f9d2233472acaafa625358bef6884130f2b627cb957a6714a1",
+  "sourceFingerprint": "3a60b65749df23d263b0e10832489f659770506cfd44335301f781a1fb8cf35e",
+  "topologyFingerprint": "5be8838d7b7e353db625436a8c52e537944be3eb1d9c54b910ecf0748765e13a",
+  "evidenceFingerprint": "1cf32278931a1faeba4ecde8339a052b56e6e65c4ce01ce88950c24242717e9e",
   "shards": [
     "0.ndjson",
     "1.ndjson",
@@ -25,14 +25,14 @@
     "f.ndjson"
   ],
   "summary": {
-    "nodes": 44,
-    "edges": 45,
+    "nodes": 45,
+    "edges": 46,
     "unresolved": 0,
     "candidate": 0,
     "kinds": {
       "capability": 10,
       "feature": 1,
-      "mcp": 29,
+      "mcp": 30,
       "provider": 2,
       "surface": 2
     }
