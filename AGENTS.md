@@ -38,13 +38,11 @@ Keep each truth in its owner. Update an existing living document when its truth 
 12. MCP, the Workbench, AI Systems Control, and future clients must project the same canonical DI intelligence rather than create client-specific intelligence backends.
 13. The Workbench is a specialist diagnostic/reference surface. Do not add control-plane ownership or duplicate ASC product responsibilities merely to preserve it as a competing primary website.
 
-## Accepted checkpoint
+## Accepted semantic authority
 
-The portable accepted graph lives under:
+Git remains source/history authority. Durable accepted semantic A, semantic-review history, and canonical current W for inspected projects live in Development Intelligence canonical persistence, keyed to exact project revisions. Inspected repositories must not maintain a second machine semantic authority.
 
-`/.development-intelligence/`
-
-with a deterministic `manifest.json` and hexadecimal NDJSON shards under `graph/`. The checkpoint belongs to the inspected project repository; Git owns accepted history. The source fingerprint excludes the generated directory itself.
+The `/.development-intelligence/` checkpoint format remains implementation/compatibility machinery for DI's own self-seal and legacy migration tests. Do not introduce or reseal that directory in inspected product repositories as their semantic authority.
 
 ## Verification
 

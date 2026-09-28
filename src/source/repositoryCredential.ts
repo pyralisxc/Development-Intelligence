@@ -269,6 +269,85 @@ export async function listGithubInstallationRepositories(owner: string): Promise
   return repositories.sort((a, b) => a.fullName.localeCompare(b.fullName));
 }
 
+export interface GithubRepositoryPathEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'dir' | 'symlink' | 'submodule' | 'unknown';
+  size: number | null;
+  sha: string | null;
+}
+
+function safeRepositoryPath(value: string): string {
+  const normalized = value.trim().replace(/^\/+|\/+$/gu, '');
+  if (!normalized || normalized.split('/').some(segment => segment === '.' || segment === '..' || !segment)) {
+    throw new Error('GitHub repository path must be a normalized repository-relative path');
+  }
+  return normalized;
+}
+
+export async function inspectGithubRepositoryPathAtRevision(
+  repository: GithubInstallationRepository,
+  relativePath: string,
+  revision: string,
+): Promise<{ revision: string; entries: GithubRepositoryPathEntry[] }> {
+  const exactRevision = revision.trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/u.test(exactRevision)) throw new Error('GitHub repository path inspection requires an exact 40-character Git revision');
+  const credential = await githubOwnerCredential(repository.owner);
+  const path = safeRepositoryPath(relativePath);
+  const encodedPath = path.split('/').map(segment => encodeURIComponent(segment)).join('/');
+  const response = await fetch(
+    `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/contents/${encodedPath}?ref=${encodeURIComponent(exactRevision)}`,
+    {
+      headers: {
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+        'user-agent': 'development-intelligence',
+        authorization: `Bearer ${credential.token}`,
+      },
+      redirect: 'error',
+    },
+  );
+  if (response.status === 404) return { revision: exactRevision, entries: [] };
+  if (!response.ok) {
+    const requestId = response.headers.get('x-github-request-id');
+    throw new Error(`GitHub repository path inspection failed: HTTP ${response.status}${requestId ? ` (request ${requestId})` : ''}`);
+  }
+  const raw = await response.json() as unknown;
+  const records = Array.isArray(raw) ? raw : [raw];
+  const entries = records.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const value = item as Record<string, unknown>;
+    if (typeof value.name !== 'string' || typeof value.path !== 'string') return [];
+    const rawType = typeof value.type === 'string' ? value.type : 'unknown';
+    const type: GithubRepositoryPathEntry['type'] =
+      rawType === 'file' || rawType === 'dir' || rawType === 'symlink' || rawType === 'submodule'
+        ? rawType
+        : 'unknown';
+    return [{
+      name: value.name,
+      path: value.path,
+      type,
+      size: typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : null,
+      sha: typeof value.sha === 'string' ? value.sha : null,
+    }];
+  }).sort((a, b) => a.path.localeCompare(b.path));
+  return { revision: exactRevision, entries };
+}
+
+export async function inspectGithubRepositoryPathAtDefaultBranch(
+  repository: GithubInstallationRepository,
+  relativePath: string,
+): Promise<{ revision: string; entries: GithubRepositoryPathEntry[] }> {
+  const credential = await githubOwnerCredential(repository.owner);
+  const branch = await githubJson<{ commit?: { sha?: string } }>(
+    `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/branches/${encodeURIComponent(repository.defaultBranch)}`,
+    { headers: { authorization: `Bearer ${credential.token}` } },
+  );
+  const revision = branch.commit?.sha?.toLowerCase();
+  if (!revision || !/^[0-9a-f]{40}$/u.test(revision)) throw new Error(`GitHub returned an invalid default-branch revision for ${repository.fullName}`);
+  return await inspectGithubRepositoryPathAtRevision(repository, relativePath, revision);
+}
+
 export async function resolveRepositoryCredential(config: ProjectConfig): Promise<ResolvedRepositoryCredential | null> {
   const credential = config.credential ?? { type: 'none' as const };
   if (credential.type === 'none') return null;

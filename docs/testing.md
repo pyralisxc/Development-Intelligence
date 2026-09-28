@@ -18,17 +18,17 @@ Parity Contract tests protect the boundary between caller intent and observed tr
 
 ### Git-owned A/W/B lifecycle
 
-A committed checkpoint is accepted semantic topology for its source state. Currentness is dimensional: source/topology integrity controls accepted semantic currency while evidence/analyzer drift is reported separately rather than automatically manufacturing product drift.
+Accepted semantic A and review history live in DI canonical persistence for inspected projects. Currentness is dimensional: semantic topology can remain accepted across implementation-only source movement while evidence/analyzer drift is reported separately rather than manufacturing product drift.
 
-### No durable service database
+### Durable canonical authority, disposable compute
 
-Remote analysis uses disposable exact-revision checkouts. Scratch state is removed after use. Losing service-local files/caches must not lose accepted intelligence.
+Remote analysis uses disposable exact-revision checkouts. Scratch files/caches are removed after use. Losing local process state must not lose accepted intelligence; hosted canonical persistence is the durable DI authority layer and Git remains the reconstructable source/history layer.
 
-### Deterministic and tamper-evident checkpoint
+### Deterministic compatibility/self-seal checkpoint
 
-`/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/` excludes its own directory from source fingerprinting. Checkpoint reads recompute semantic topology from shard contents rather than trusting manifest counts/fingerprints alone. The same semantic topology must produce byte-identical checkpoint content.
+The legacy/self-test `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards remains covered for tamper evidence, deterministic serialization, migration fallback, and DI's own Seal B packaging tests. Checkpoint reads recompute semantic topology from shard contents rather than trusting manifest counts/fingerprints alone.
 
-The `action-smoke` GitHub Actions job invokes the repository's root composite action against Development Intelligence itself. This proves the published packaging path can install, build, and enforce the accepted checkpoint independently of the ordinary repository verification command.
+The `action-smoke` GitHub Actions job invokes the repository's root composite action against Development Intelligence itself. This proves the published packaging path can install, build, and enforce DI's self-seal release contract independently of the ordinary repository verification command; it does not make repository-local checkpoints the authority model for inspected projects.
 
 ### Source provenance and safety
 
