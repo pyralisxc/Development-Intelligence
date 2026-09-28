@@ -602,6 +602,31 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.equal(/^\d+ graph entities/u.test(projectQuestion.answer), false, 'general project questions should lead with semantic understanding rather than topology counts');
     assert.equal(projectQuestion.result.semanticUnderstanding.authority.acceptanceImpliesVerification, false);
 
+    const semanticLifecycle = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How are accepted semantic meanings preserved, evolved, superseded, split, merged, and prevented from silently changing across revisions?',
+    }) as any;
+    assert.equal(semanticLifecycle.intent, 'semantic-lifecycle');
+    assert.equal(semanticLifecycle.routing.projection, 'semantic-lifecycle');
+    assert.match(semanticLifecycle.answer, /proposal.*review.*acceptance.*verification.*stable meaning identity.*Preview→Main/u);
+    assert.equal(semanticLifecycle.result.policy.acceptanceImpliesVerification, false);
+    assert.equal(semanticLifecycle.result.policy.verificationImpliesAcceptance, false);
+    assert.equal(semanticLifecycle.result.policy.verificationRequiresEvidence, true);
+    assert.equal(semanticLifecycle.result.policy.acceptedMeaningCannotBeSilentlyAmended, true);
+    assert.equal(semanticLifecycle.result.policy.previousRevisionApprovalDoesNotApprovePreviewDelta, true);
+    assert.deepEqual(
+      semanticLifecycle.result.policy.promotionApprovalAlternatives,
+      ['human-accepted', 'human-verified', 'ai-verified'],
+    );
+
+    const proposalToAuthority = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How does semantic meaning move from an AI proposal to accepted authority and verification?',
+    }) as any;
+    assert.equal(proposalToAuthority.intent, 'semantic-lifecycle');
+    assert.equal(proposalToAuthority.result.stages[0].stage, 'proposal');
+    assert.equal(proposalToAuthority.result.stages.at(-1).stage, 'promotion');
+
 
     const scopedSpecific = await callTool('investigate', {
       project: fixture.project,
