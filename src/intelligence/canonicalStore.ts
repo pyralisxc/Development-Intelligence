@@ -239,9 +239,10 @@ function validateRecord(record: unknown, expected: { project: string; repository
   }
   assertGraphIntegrity(working);
   if (value.accepted) {
-    if (value.accepted.schemaVersion !== 2 || value.accepted.project !== expected.project || value.accepted.repositoryRevision !== expected.revision) {
-      throw new Error('Canonical accepted graph identity is stale or malformed');
+    if (value.accepted.schemaVersion !== 2 || value.accepted.project !== expected.project) {
+      throw new Error('Canonical accepted graph identity is malformed');
     }
+    if (value.accepted.repositoryRevision !== null) assertExactRevision(value.accepted.repositoryRevision);
     assertGraphIntegrity(value.accepted);
   }
   return value;

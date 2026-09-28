@@ -312,27 +312,35 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
 
           let checkpoint = null;
           let checkpointError: string | null = null;
-          const checkpointReadStarted = Date.now();
-          try {
-            checkpoint = await readCheckpoint(checkout.root);
-          } catch (error) {
-            checkpointError = error instanceof Error ? error.message : String(error);
+          let accepted = loaded.staleRecord?.accepted ?? null;
+
+          // DI canonical A is authoritative once it exists. Repository-local
+          // checkpoints are read only as a one-way migration fallback.
+          if (!accepted) {
+            const checkpointReadStarted = Date.now();
+            try {
+              checkpoint = await readCheckpoint(checkout.root);
+            } catch (error) {
+              checkpointError = error instanceof Error ? error.message : String(error);
+            }
+            checkpointReadMs = elapsedMs(checkpointReadStarted);
+            accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
           }
-          checkpointReadMs = elapsedMs(checkpointReadStarted);
 
           const acceptedProjectionStarted = Date.now();
-          const accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
           if (accepted) assertGraphIntegrity(accepted);
           let currentness = emptyCurrentness(checkpointError);
-          if (checkpoint) {
-            const sourceCurrent = checkpoint.meta.sourceFingerprint === graph.sourceFingerprint;
-            const analyzerCurrent = checkpointAnalyzerCurrent(checkpoint.meta);
-            const topologyCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.topologyFingerprint === graph.topologyFingerprint;
-            const evidenceCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.evidenceFingerprint === graph.evidenceFingerprint;
-            const schemaSupported = checkpoint.meta.schemaVersion === 2;
-            const integrityCurrent = checkpoint.integrity.countsValid && checkpoint.integrity.topologyValid !== false;
+          if (accepted) {
+            const sourceCurrent = accepted.sourceFingerprint === graph.sourceFingerprint;
+            const analyzerCurrent = accepted.analyzerVersion === graph.analyzerVersion;
+            const topologyCurrent = accepted.topologyFingerprint === graph.topologyFingerprint;
+            const evidenceCurrent = accepted.evidenceFingerprint === graph.evidenceFingerprint;
+            const schemaSupported = accepted.schemaVersion === 2;
+            const integrityCurrent = true;
             currentness = {
-              acceptedSemanticCurrent: sourceCurrent && topologyCurrent && schemaSupported && integrityCurrent,
+              // Semantic acceptance survives source/evidence-only movement when
+              // the accepted semantic topology itself is preserved.
+              acceptedSemanticCurrent: topologyCurrent && schemaSupported && integrityCurrent,
               sourceCurrent,
               topologyCurrent,
               evidenceCurrent,
@@ -444,7 +452,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           const schemaSupported = checkpoint.meta.schemaVersion === 2;
           const integrityCurrent = checkpoint.integrity.countsValid && checkpoint.integrity.topologyValid !== false;
           currentness = {
-            acceptedSemanticCurrent: sourceCurrent && topologyCurrent && schemaSupported && integrityCurrent,
+            acceptedSemanticCurrent: topologyCurrent && schemaSupported && integrityCurrent,
             sourceCurrent,
             topologyCurrent,
             evidenceCurrent,
