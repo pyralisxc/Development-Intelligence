@@ -75,6 +75,20 @@ test('private auth separates owner browser sessions from agent bearer access', a
     const body = await agentAllowed.json() as any;
     assert.equal(body.result.serverInfo.name, 'Development Intelligence');
 
+    const agentSemanticWrite = await fetch(`${origin}/workbench/semantics/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer agent-test-token' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(agentSemanticWrite.status, 403, 'agent bearer access must not authorize semantic authority writes');
+
+    const ownerSemanticWrite = await fetch(`${origin}/workbench/semantics/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: cookie!.split(';')[0]! },
+      body: JSON.stringify({}),
+    });
+    assert.equal(ownerSemanticWrite.status, 400, 'owner session should pass write auth before semantic request validation');
+
     const logout = await fetch(`${origin}/logout`, { redirect: 'manual', headers: { cookie: cookie!.split(';')[0]! } });
     assert.equal(logout.status, 303);
     assert.equal(logout.headers.get('location'), '/login');

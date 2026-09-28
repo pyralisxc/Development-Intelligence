@@ -172,6 +172,21 @@ export function authorize(req: IncomingMessage, res: ServerResponse, options: { 
   return false;
 }
 
+export function authorizeOwnerWrite(req: IncomingMessage, res: ServerResponse, options: { interactive?: boolean } = {}): boolean {
+  const mode = authMode();
+  if (mode === 'private' || mode === 'oauth') {
+    if (ownerSessionValid(req)) return true;
+    if (options.interactive) return interactiveLogin(req, res);
+    res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Owner session required for semantic authority writes' }));
+    return false;
+  }
+  if (mode === 'none') return authorize(req, res, options);
+  res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify({ error: 'Owner-authenticated browser session required for semantic authority writes' }));
+  return false;
+}
+
 function normalizedHostname(value: string | undefined): string | null {
   const hostname = value?.trim().toLowerCase() ?? '';
   if (!hostname || hostname.startsWith('.') || hostname.endsWith('.') || hostname.includes('..') || !/^[a-z0-9.-]+$/.test(hostname)) return null;
