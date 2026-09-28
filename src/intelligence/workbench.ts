@@ -591,6 +591,81 @@ async function repositorySemanticUnderstanding(
   };
 }
 
+
+async function semanticLifecycleOverview(project: string): Promise<Record<string, unknown>> {
+  const authority = await loadSemanticAuthority(project);
+  const latestByMeaning = new Map<string, NonNullable<typeof authority.ledger>['records'][number]['review']>();
+  for (const record of authority.ledger?.records ?? []) latestByMeaning.set(record.meaningId, record.review);
+  const reviews = [...latestByMeaning.values()];
+  const active = reviews.filter(review => !['superseded', 'split', 'merged'].includes(review.state));
+  const accepted = active.filter(review => review.accepted);
+  const verified = active.filter(review => Boolean(review.verification));
+  const humanAccepted = accepted.filter(review => review.acceptance?.actor.kind === 'human');
+  const humanVerified = verified.filter(review => review.verification?.actor.kind === 'human');
+  const aiVerified = verified.filter(review => review.verification?.actor.kind === 'ai-model');
+
+  return {
+    summary: 'Semantic meaning moves from evidence-backed proposal → shared AI/human review → independent acceptance and/or evidence-backed verification → stable meaning identity across revisions → explicit lineage for replacement, supersession, split, or merge → current-revision approval at the Preview→Main boundary. Acceptance never implies verification, and verification never implies acceptance.',
+    stages: [
+      {
+        stage: 'proposal',
+        authority: false,
+        description: 'Intrinsic graph evidence can propose feature/capability/surface/domain meaning. A proposal is not accepted authority and requires explicit review.',
+      },
+      {
+        stage: 'review',
+        authority: false,
+        description: 'AI or human reviewers can amend the same proposal while its original provenance is preserved.',
+      },
+      {
+        stage: 'acceptance',
+        authority: true,
+        description: 'Acceptance records who accepted the meaning and why. Acceptance is independent from semantic verification; human acceptance can approve the current Preview semantic delta.',
+      },
+      {
+        stage: 'verification',
+        authority: false,
+        description: 'Verification requires explicit evidence IDs and may be performed independently of acceptance. Human or AI verification can approve the current Preview semantic delta.',
+      },
+      {
+        stage: 'evolution',
+        authority: 'preserved-unless-explicitly-replaced',
+        description: 'Accepted meaning keeps a stable meaning identity across implementation realization changes. Unsupported, ambiguous, weakened, renamed, replacement, supersession, split, and merge cases remain explicit review/lineage events rather than silent rewrites.',
+      },
+      {
+        stage: 'promotion',
+        authority: 'preview-gate',
+        description: 'Only approval attached to the current Preview revision satisfies a changed semantic promotion item. Previous-revision approval does not silently approve a new semantic delta.',
+      },
+    ],
+    authority: {
+      storageState: authority.state,
+      durable: authority.durable,
+      storedRecords: authority.ledger?.records.length ?? 0,
+      latestMeanings: reviews.length,
+      activeMeanings: active.length,
+      acceptedMeanings: accepted.length,
+      verifiedMeanings: verified.length,
+      humanAcceptedMeanings: humanAccepted.length,
+      humanVerifiedMeanings: humanVerified.length,
+      aiVerifiedMeanings: aiVerified.length,
+    },
+    policy: {
+      sharedHumanAiReviewSurface: true,
+      acceptanceImpliesVerification: false,
+      verificationImpliesAcceptance: false,
+      verificationRequiresEvidence: true,
+      proposalProvenancePreserved: true,
+      acceptedMeaningCannotBeSilentlyAmended: true,
+      lineageRequiredForReplacementSplitMergeSupersession: true,
+      promotionApprovalAlternatives: ['human-accepted', 'human-verified', 'ai-verified'],
+      previousRevisionApprovalDoesNotApprovePreviewDelta: true,
+      projection: 'read-only-explanation',
+      persisted: false,
+    },
+  };
+}
+
 export async function scopeOrientation(input: {
   project: string;
   scope?: string | undefined;
@@ -1419,6 +1494,20 @@ export async function queryWorkbench(input: {
       subject: requestedScope ? { query: requestedScope } : null,
       routing: { tool: 'inspect_interface' },
       answer: String((result as any).summary ?? 'Interface / interaction projection complete.'),
+      result,
+    };
+  }
+
+  const semanticLifecycleIntent =
+    /\b(semantic|meaning|meanings)\b/.test(lower)
+    && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/.test(lower);
+  if (semanticLifecycleIntent) {
+    const result = await semanticLifecycleOverview(input.project);
+    return {
+      intent: 'semantic-lifecycle',
+      subject: null,
+      routing: { tool: 'investigate', projection: 'semantic-lifecycle' },
+      answer: String((result as any).summary),
       result,
     };
   }
