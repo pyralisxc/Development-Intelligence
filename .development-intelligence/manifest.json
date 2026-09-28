@@ -2,8 +2,8 @@
   "type": "meta",
   "schemaVersion": 2,
   "format": "sharded-ndjson",
-  "analyzerVersion": "2.7.0-interface-css-linkage",
-  "sourceFingerprint": "82c45a71f554386934dccc69b67bab750bc91f9fae0550a3eb7ac8ca74fef507",
+  "analyzerVersion": "2.8.0-go-structural",
+  "sourceFingerprint": "30dc24cb7e1af48c12fb42305860db92ba89ddc08cdd7ab99f1e2c09452b9df4",
   "topologyFingerprint": "ba6e889cf7f775471c2ef7738a0c2b1058708ec6125d6f16b78cf85f47ca8f91",
   "evidenceFingerprint": "518e0434b2c6d8f9d2233472acaafa625358bef6884130f2b627cb957a6714a1",
   "shards": [
