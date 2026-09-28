@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "format": "sharded-ndjson",
   "analyzerVersion": "2.9.0-rust-structural",
-  "sourceFingerprint": "e05b1405071b0c2f51ca3b11b6588b34619f93e2668789f6ad6e142c9c18bfcd",
+  "sourceFingerprint": "3ff5fe511b371cc8bc13c866870bb688eca44f32369b7100bd6e9eb457a59379",
   "topologyFingerprint": "ba6e889cf7f775471c2ef7738a0c2b1058708ec6125d6f16b78cf85f47ca8f91",
   "evidenceFingerprint": "518e0434b2c6d8f9d2233472acaafa625358bef6884130f2b627cb957a6714a1",
   "shards": [
