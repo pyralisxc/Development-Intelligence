@@ -360,56 +360,56 @@ function proposalName(candidate: any): string {
 function semanticCandidateCard(candidate: any, index: number, writable: boolean): string {
   const proposal = semanticProposal(candidate);
   const review = candidate.review;
-  const prefix = \`semantic-\${index}\`;
+  const prefix = `semantic-${index}`;
   const evidenceIds = candidate.provenance?.evidenceIds ?? [];
   const evidenceFamilies = candidate.provenance?.evidenceFamilies ?? [];
-  const alternatives = Array.isArray(proposal.alternatives) ? proposal.alternatives.join('\\n') : '';
+  const alternatives = Array.isArray(proposal.alternatives) ? proposal.alternatives.join('\n') : '';
   const disabled = writable ? '' : ' disabled';
   const actor = review?.acceptance?.actor ?? review?.verification?.actor;
-  const authorityLine = actor ? \`\${actor.kind ?? 'reviewer'} · \${actor.id ?? 'unknown'}\` : 'No accepted authority recorded';
-  return \`<article class="card semantic-card" data-semantic-candidate="\${esc(candidate.id)}">
+  const authorityLine = actor ? `${actor.kind ?? 'reviewer'} · ${actor.id ?? 'unknown'}` : 'No accepted authority recorded';
+  return `<article class="card semantic-card" data-semantic-candidate="${esc(candidate.id)}">
     <div class="semantic-card-head">
       <div>
-        <div><span class="badge">\${esc(proposal.kind ?? candidate.proposal?.kind ?? 'candidate')}</span> <span class="badge \${semanticStateClass(review)}">\${esc(semanticStateLabel(review))}</span></div>
-        <h2>\${esc(proposal.name ?? candidate.proposal?.name ?? candidate.id)}</h2>
-        <p>\${esc(proposal.description ?? candidate.proposal?.description ?? '')}</p>
+        <div><span class="badge">${esc(proposal.kind ?? candidate.proposal?.kind ?? 'candidate')}</span> <span class="badge ${semanticStateClass(review)}">${esc(semanticStateLabel(review))}</span></div>
+        <h2>${esc(proposal.name ?? candidate.proposal?.name ?? candidate.id)}</h2>
+        <p>${esc(proposal.description ?? candidate.proposal?.description ?? '')}</p>
       </div>
-      <div class="semantic-meta"><strong>\${esc(candidate.scope)}</strong><span>\${esc(candidate.provenance?.origin ?? 'intrinsic-derivation')}</span></div>
+      <div class="semantic-meta"><strong>${esc(candidate.scope)}</strong><span>${esc(candidate.provenance?.origin ?? 'intrinsic-derivation')}</span></div>
     </div>
     <div class="semantic-proof">
-      <span>\${esc(evidenceFamilies.length)} evidence families</span>
-      <span>\${esc(candidate.provenance?.nodeIds?.length ?? 0)} nodes</span>
-      <span>\${esc(candidate.provenance?.edgeIds?.length ?? 0)} relationships</span>
-      <span>\${esc(evidenceIds.length)} evidence records</span>
+      <span>${esc(evidenceFamilies.length)} evidence families</span>
+      <span>${esc(candidate.provenance?.nodeIds?.length ?? 0)} nodes</span>
+      <span>${esc(candidate.provenance?.edgeIds?.length ?? 0)} relationships</span>
+      <span>${esc(evidenceIds.length)} evidence records</span>
     </div>
-    <p class="muted">Revision \${esc(candidate.provenance?.revision ?? 'unknown')} · \${esc(authorityLine)}. Acceptance and verification are independent.</p>
+    <p class="muted">Revision ${esc(candidate.provenance?.revision ?? 'unknown')} · ${esc(authorityLine)}. Acceptance and verification are independent.</p>
     <details class="semantic-editor">
       <summary>Edit / review meaning</summary>
       <div class="semantic-form">
-        <label>Name<input id="\${prefix}-name" class="semantic-input" value="\${esc(proposal.name ?? '')}"\${disabled}></label>
-        <label>Kind<select id="\${prefix}-kind" class="semantic-input"\${disabled}>
-          \${(['feature','capability','surface','domain'] as const).map(kind => \`<option value="\${kind}"\${proposal.kind === kind ? ' selected' : ''}>\${kind}</option>\`).join('')}
+        <label>Name<input id="${prefix}-name" class="semantic-input" value="${esc(proposal.name ?? '')}"${disabled}></label>
+        <label>Kind<select id="${prefix}-kind" class="semantic-input"${disabled}>
+          ${(['feature','capability','surface','domain'] as const).map(kind => `<option value="${kind}"${proposal.kind === kind ? ' selected' : ''}>${kind}</option>`).join('')}
         </select></label>
-        <label class="semantic-wide">Description<textarea id="\${prefix}-description" class="semantic-input" rows="3"\${disabled}>\${esc(proposal.description ?? '')}</textarea></label>
-        <label class="semantic-wide">Alternatives <span class="muted">(one per line)</span><textarea id="\${prefix}-alternatives" class="semantic-input" rows="2"\${disabled}>\${esc(alternatives)}</textarea></label>
-        <label class="semantic-wide">Review rationale <span class="muted">(optional)</span><textarea id="\${prefix}-rationale" class="semantic-input" rows="2"\${disabled}></textarea></label>
+        <label class="semantic-wide">Description<textarea id="${prefix}-description" class="semantic-input" rows="3"${disabled}>${esc(proposal.description ?? '')}</textarea></label>
+        <label class="semantic-wide">Alternatives <span class="muted">(one per line)</span><textarea id="${prefix}-alternatives" class="semantic-input" rows="2"${disabled}>${esc(alternatives)}</textarea></label>
+        <label class="semantic-wide">Review rationale <span class="muted">(optional)</span><textarea id="${prefix}-rationale" class="semantic-input" rows="2"${disabled}></textarea></label>
       </div>
       <div class="semantic-actions">
-        <button class="primary" type="button" data-semantic-action="amend" data-semantic-index="\${index}"\${disabled}>Save amendment</button>
-        <button class="primary" type="button" data-semantic-action="accept" data-semantic-index="\${index}"\${disabled}>Accept meaning</button>
-        <button class="semantic-danger" type="button" data-semantic-action="reject" data-semantic-index="\${index}"\${disabled}>Reject proposal</button>
+        <button class="primary" type="button" data-semantic-action="amend" data-semantic-index="${index}"${disabled}>Save amendment</button>
+        <button class="primary" type="button" data-semantic-action="accept" data-semantic-index="${index}"${disabled}>Accept meaning</button>
+        <button class="semantic-danger" type="button" data-semantic-action="reject" data-semantic-index="${index}"${disabled}>Reject proposal</button>
       </div>
       <div class="semantic-verify">
-        <label>Evidence IDs used for independent verification<textarea id="\${prefix}-evidence" class="semantic-input" rows="3"\${disabled}>\${esc(evidenceIds.join('\\n'))}</textarea></label>
-        <button class="primary" type="button" data-semantic-action="verify" data-semantic-index="\${index}"\${disabled}>Verify with evidence</button>
+        <label>Evidence IDs used for independent verification<textarea id="${prefix}-evidence" class="semantic-input" rows="3"${disabled}>${esc(evidenceIds.join('\n'))}</textarea></label>
+        <button class="primary" type="button" data-semantic-action="verify" data-semantic-index="${index}"${disabled}>Verify with evidence</button>
       </div>
-      <details><summary class="muted">Candidate provenance</summary><pre class="raw">\${esc(JSON.stringify(candidate.provenance ?? {}, null, 2))}</pre></details>
+      <details><summary class="muted">Candidate provenance</summary><pre class="raw">${esc(JSON.stringify(candidate.provenance ?? {}, null, 2))}</pre></details>
     </details>
-  </article>\`;
+  </article>`;
 }
 
 function semanticLines(value: string): string[] {
-  return [...new Set(value.split(/\\r?\\n|,/u).map(item => item.trim()).filter(Boolean))];
+  return [...new Set(value.split(/\\r?\n|,/u).map(item => item.trim()).filter(Boolean))];
 }
 
 async function renderSemantics(epoch: number): Promise<void> {
@@ -428,48 +428,48 @@ async function renderSemantics(epoch: number): Promise<void> {
   const storageMessage = authority.state === 'not-configured'
     ? 'Semantic authority storage is not configured for this deployment. Candidates remain inspectable, but review writes are disabled.'
     : authority.state === 'invalid'
-      ? \`Semantic authority is invalid: \${authority.error ?? 'unknown error'}. Writes are disabled until repaired.\`
-      : \`DI semantic authority: \${authority.state ?? 'unknown'} · generation \${authority.generation ?? 0} · \${authority.durable ? 'durable' : 'non-durable'}.\`;
-  content.innerHTML = \`\${flash ? \`<div class="card semantic-flash"><strong>\${esc(flash)}</strong></div>\` : ''}
+      ? `Semantic authority is invalid: ${authority.error ?? 'unknown error'}. Writes are disabled until repaired.`
+      : `DI semantic authority: ${authority.state ?? 'unknown'} · generation ${authority.generation ?? 0} · ${authority.durable ? 'durable' : 'non-durable'}.`;
+  content.innerHTML = `${flash ? `<div class="card semantic-flash"><strong>${esc(flash)}</strong></div>` : ''}
     <div class="hero-grid">
       <div class="card">
         <h3>Semantic authority</h3>
         <h2>Evidence → proposal → explicit review</h2>
-        <p>\${esc(storageMessage)}</p>
-        <p class="muted">This workspace never silently promotes a proposal. Acceptance records human authority; verification separately records evidence support. Current revision: \${esc(data.revision ?? 'unknown')}.</p>
+        <p>${esc(storageMessage)}</p>
+        <p class="muted">This workspace never silently promotes a proposal. Acceptance records human authority; verification separately records evidence support. Current revision: ${esc(data.revision ?? 'unknown')}.</p>
       </div>
       <div class="card">
         <h3>Current review state</h3>
         <div class="metric-grid">
-          \${metric('candidates', candidates.length)}
-          \${metric('reviewed', reviewed)}
-          \${metric('accepted', accepted)}
-          \${metric('verified', verified)}
+          ${metric('candidates', candidates.length)}
+          ${metric('reviewed', reviewed)}
+          ${metric('accepted', accepted)}
+          ${metric('verified', verified)}
         </div>
-        <p class="muted">\${data.zeroMetadata ? 'Zero-metadata semantic bootstrap' : 'Repository semantic evidence present'} · \${esc(data.declaredSemanticCount ?? 0)} declared semantic concept(s).</p>
+        <p class="muted">${data.zeroMetadata ? 'Zero-metadata semantic bootstrap' : 'Repository semantic evidence present'} · ${esc(data.declaredSemanticCount ?? 0)} declared semantic concept(s).</p>
       </div>
     </div>
-    \${!writable ? \`<div class="card" style="margin-top:13px;border-color:#6d5130"><h3>Read-only review state</h3><p class="status-warn">\${esc(storageMessage)}</p></div>\` : ''}
+    ${!writable ? `<div class="card" style="margin-top:13px;border-color:#6d5130"><h3>Read-only review state</h3><p class="status-warn">${esc(storageMessage)}</p></div>` : ''}
     <div class="semantic-grid" style="margin-top:13px">
-      \${candidates.map((candidate: any, index: number) => semanticCandidateCard(candidate, index, writable)).join('') || empty('No semantic candidates', 'This revision did not produce evidence-qualified semantic candidates.')}
-    </div>\`;
+      ${candidates.map((candidate: any, index: number) => semanticCandidateCard(candidate, index, writable)).join('') || empty('No semantic candidates', 'This revision did not produce evidence-qualified semantic candidates.')}
+    </div>`;
 
   const runAction = async (button: HTMLButtonElement) => {
     const index = Number(button.dataset.semanticIndex);
     const candidate = candidates[index];
     if (!candidate) return;
-    const prefix = \`semantic-\${index}\`;
+    const prefix = `semantic-${index}`;
     const action = button.dataset.semanticAction;
-    const rationale = (document.getElementById(\`\${prefix}-rationale\`) as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    const rationale = (document.getElementById(`${prefix}-rationale`) as HTMLTextAreaElement | null)?.value.trim() ?? '';
     let command: Record<string, unknown>;
     if (action === 'amend') {
-      const name = (document.getElementById(\`\${prefix}-name\`) as HTMLInputElement).value.trim();
-      const kind = (document.getElementById(\`\${prefix}-kind\`) as HTMLSelectElement).value;
-      const description = (document.getElementById(\`\${prefix}-description\`) as HTMLTextAreaElement).value.trim();
-      const alternatives = semanticLines((document.getElementById(\`\${prefix}-alternatives\`) as HTMLTextAreaElement).value);
+      const name = (document.getElementById(`${prefix}-name`) as HTMLInputElement).value.trim();
+      const kind = (document.getElementById(`${prefix}-kind`) as HTMLSelectElement).value;
+      const description = (document.getElementById(`${prefix}-description`) as HTMLTextAreaElement).value.trim();
+      const alternatives = semanticLines((document.getElementById(`${prefix}-alternatives`) as HTMLTextAreaElement).value);
       command = { kind: 'amend', proposal: { name, kind, description, alternatives }, ...(rationale ? { rationale } : {}) };
     } else if (action === 'verify') {
-      const evidenceIds = semanticLines((document.getElementById(\`\${prefix}-evidence\`) as HTMLTextAreaElement).value);
+      const evidenceIds = semanticLines((document.getElementById(`${prefix}-evidence`) as HTMLTextAreaElement).value);
       if (!evidenceIds.length) {
         semanticFlash = 'Verification requires at least one explicit evidence ID.';
         await renderSemantics(epoch);
@@ -490,11 +490,11 @@ async function renderSemantics(epoch: number): Promise<void> {
         expectedEtag: authority.etag ?? null,
       });
       if (!sectionIsCurrent(epoch, 'semantics')) return;
-      semanticFlash = \`\${proposalName(candidate)}: \${result.review?.state ?? result.state}. Semantic authority generation \${result.generation ?? authority.generation ?? 0}.\`;
+      semanticFlash = `${proposalName(candidate)}: ${result.review?.state ?? result.state}. Semantic authority generation ${result.generation ?? authority.generation ?? 0}.`;
       await renderSemantics(epoch);
     } catch (error) {
       if (!sectionIsCurrent(epoch, 'semantics')) return;
-      semanticFlash = \`Semantic review failed: \${error instanceof Error ? error.message : String(error)}\`;
+      semanticFlash = `Semantic review failed: ${error instanceof Error ? error.message : String(error)}`;
       await renderSemantics(epoch);
     }
   };
