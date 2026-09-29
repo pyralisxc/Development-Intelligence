@@ -11,7 +11,7 @@ import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
-import { parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface } from './intelligence/semanticWorkflow.js';
+import { parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface } from './intelligence/semanticWorkflow.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { withVercelRequestContext } from './vercelRequestContext.js';
 
@@ -339,6 +339,32 @@ export function createDevelopmentIntelligenceServer() {
           command: parseSemanticReviewCommand(body.command),
           actor: { kind: 'human', id: 'human:owner' },
           at: new Date().toISOString(),
+          ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
+        });
+        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
+      } catch (error) {
+        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (requestUrl.pathname === '/workbench/semantics/ai-proposal' && req.method === 'POST') {
+      if (!authorizeOwnerWrite(req, res)) return;
+      try {
+        const body = await readJson(req);
+        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
+        if (typeof body.candidateId !== 'string' || !body.candidateId) throw Object.assign(new Error('candidateId must be non-empty'), { status: 400 });
+        const ref = typeof body.ref === 'string' && body.ref ? body.ref : undefined;
+        const graphId = typeof body.graphId === 'string' && body.graphId ? body.graphId : undefined;
+        if (ref && graphId) throw Object.assign(new Error('Use either ref or graphId, not both'), { status: 400 });
+        if (body.expectedEtag !== undefined && body.expectedEtag !== null && typeof body.expectedEtag !== 'string') {
+          throw Object.assign(new Error('expectedEtag must be a string or null'), { status: 400 });
+        }
+        const result = await reviewSemanticAiProposal({
+          project: body.project,
+          ...(ref ? { ref } : {}),
+          ...(graphId ? { graphId } : {}),
+          candidateId: body.candidateId,
+          draft: parseSemanticAiProposal(body.draft),
           ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
         });
         json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);

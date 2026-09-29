@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticLineageCommand, parseSemanticReviewCommand, semanticLineageTransaction, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
+import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, semanticAiProposalPacket, semanticAiProposalReview, semanticLineageTransaction, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
 
 import type { SemanticCandidate } from '../src/intelligence/semanticBootstrap.js';
 import { applySemanticReviewAction, semanticMeaningReview, type SemanticMeaningReview } from '../src/intelligence/semanticReview.js';
@@ -86,6 +86,84 @@ test('semantic review parser rejects empty amendments and unknown authority acti
   assert.throws(() => parseSemanticReviewCommand({ kind: 'promote' }), /amend, accept, reject, or verify/i);
 });
 
+
+test('bounded AI semantic proposals preserve evidence provenance but never gain authority', () => {
+  const base = candidate({
+    id: 'candidate:auth',
+    scope: 'src/features/auth',
+    name: 'Auth',
+    revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  });
+  const draft = parseSemanticAiProposal({
+    model: { provider: 'openai', id: 'gpt-example' },
+    proposal: {
+      name: 'Authentication',
+      description: 'Handles login and session establishment.',
+      kind: 'capability',
+      alternatives: ['Sign in', 'Sign in'],
+      grouping: ['Identity', 'Access'],
+    },
+    rationale: 'The packet contains API, state and relationship evidence around login/session behavior.',
+  });
+  assert.deepEqual(draft.proposal.alternatives, ['Sign in']);
+  assert.deepEqual(draft.proposal.grouping, ['Identity', 'Access']);
+
+  const packet = semanticAiProposalPacket(base);
+  assert.equal(packet.policy.modelOutputAcceptedAutomatically, false);
+  assert.equal(packet.policy.productIntentMustNotBeInvented, true);
+  assert.ok(packet.evidence.representativeNodes.length <= 12);
+  assert.ok(packet.evidence.representativeEdges.length <= 12);
+
+  const proposed = semanticAiProposalReview(base, [base], [], draft);
+  assert.equal(proposed.review.state, 'proposed');
+  assert.equal(proposed.review.accepted, false);
+  assert.equal(proposed.review.verification, null);
+  assert.equal(proposed.review.proposalProvenance.origin, 'ai-model');
+  assert.equal(proposed.review.proposalProvenance.producer, 'openai/gpt-example');
+  assert.equal(proposed.review.proposalProvenance.sourceCandidateId, base.id);
+  assert.deepEqual(proposed.review.proposalProvenance.evidenceFamilies, base.provenance.evidenceFamilies);
+  assert.deepEqual(proposed.review.proposal.grouping, ['Identity', 'Access']);
+});
+
+test('AI semantic proposal preserves inherited meaning identity and fails closed on ambiguous lineage', () => {
+  const acceptedBase = accepted(candidate({
+    id: 'candidate:studio',
+    scope: 'src/features/studio',
+    name: 'Studio',
+    revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  }));
+  const current = candidate({
+    id: 'candidate:studio',
+    scope: 'src/features/studio',
+    name: 'Studio',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+  const draft = parseSemanticAiProposal({
+    model: { id: 'model:semantic-writer' },
+    proposal: { name: 'Studio', description: 'Studio', kind: 'capability', alternatives: [] },
+    rationale: 'Evidence packet preserves the same semantic scope.',
+  });
+  const inherited = semanticAiProposalReview(current, [current], [acceptedBase], draft);
+  assert.equal(inherited.continuity.state, 'inherited');
+  assert.equal(inherited.review.meaningId, acceptedBase.meaningId);
+
+  const left = candidate({
+    id: 'candidate:left',
+    scope: 'src/features/studio',
+    name: 'Studio Left',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+  const right = candidate({
+    id: 'candidate:right',
+    scope: 'src/features/studio',
+    name: 'Studio Right',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+  assert.throws(
+    () => semanticAiProposalReview(left, [left, right], [acceptedBase], draft),
+    /explicit lineage review is required/i,
+  );
+});
 
 test('semantic lineage commands are bounded and normalize explicit lineage identities', () => {
   assert.deepEqual(parseSemanticLineageCommand({

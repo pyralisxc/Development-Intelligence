@@ -364,6 +364,8 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean,
   const evidenceIds = candidate.provenance?.evidenceIds ?? [];
   const evidenceFamilies = candidate.provenance?.evidenceFamilies ?? [];
   const alternatives = Array.isArray(proposal.alternatives) ? proposal.alternatives.join('\n') : '';
+  const grouping = Array.isArray(proposal.grouping) ? proposal.grouping.join('\n') : '';
+  const aiWritable = candidateWritable && !review;
   const continuity = candidate.continuity ?? { state: 'new', sourceMeaningIds: [] };
   const sourceMeaningIds = Array.isArray(continuity.sourceMeaningIds) ? continuity.sourceMeaningIds : [];
   const sourceMeaningSet = new Set(sourceMeaningIds);
@@ -418,6 +420,7 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean,
         </select></label>
         <label class="semantic-wide">Description<textarea id="${prefix}-description" class="semantic-input" rows="3"${disabled}>${esc(proposal.description ?? '')}</textarea></label>
         <label class="semantic-wide">Alternatives <span class="muted">(one per line)</span><textarea id="${prefix}-alternatives" class="semantic-input" rows="2"${disabled}>${esc(alternatives)}</textarea></label>
+        <label class="semantic-wide">Grouping / ownership suggestions <span class="muted">(one per line)</span><textarea id="${prefix}-grouping" class="semantic-input" rows="2"${disabled}>${esc(grouping)}</textarea></label>
         <label class="semantic-wide">Review rationale <span class="muted">(optional)</span><textarea id="${prefix}-rationale" class="semantic-input" rows="2"${disabled}></textarea></label>
       </div>
       <div class="semantic-actions">
@@ -429,7 +432,18 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean,
         <label>Evidence IDs used for independent verification<textarea id="${prefix}-evidence" class="semantic-input" rows="3"${disabled}>${esc(evidenceIds.join('\n'))}</textarea></label>
         <button class="primary" type="button" data-semantic-action="verify" data-semantic-index="${index}"${disabled}>Verify with evidence</button>
       </div>
-      <details><summary class="muted">Candidate provenance</summary><pre class="raw">${esc(JSON.stringify(candidate.provenance ?? {}, null, 2))}</pre></details>
+      <details class="semantic-ai-proposal">
+        <summary>AI proposal packet / import</summary>
+        <p class="muted">DI supplies bounded evidence; the model supplies wording/grouping. Importing the result records `ai-model` provenance but does not accept or verify it.</p>
+        <details><summary class="muted">Bounded AI proposal packet</summary><pre class="raw">${esc(JSON.stringify(candidate.aiProposalPacket ?? {}, null, 2))}</pre></details>
+        <div class="semantic-form">
+          <label>Model provider<input id="${prefix}-ai-provider" class="semantic-input" placeholder="openai / anthropic / local"${aiWritable ? '' : ' disabled'}></label>
+          <label>Model ID<input id="${prefix}-ai-model" class="semantic-input" placeholder="model identifier"${aiWritable ? '' : ' disabled'}></label>
+          <label class="semantic-wide">AI rationale tied to the packet<textarea id="${prefix}-ai-rationale" class="semantic-input" rows="3"${aiWritable ? '' : ' disabled'}></textarea></label>
+        </div>
+        <button type="button" data-semantic-ai-proposal data-semantic-index="${index}"${aiWritable ? '' : ' disabled'}>Record AI proposal from these editable fields</button>
+      </details>
+            <details><summary class="muted">Candidate provenance</summary><pre class="raw">${esc(JSON.stringify(candidate.provenance ?? {}, null, 2))}</pre></details>
     </details>
   </article>`;
 }
@@ -493,7 +507,8 @@ async function renderSemantics(epoch: number): Promise<void> {
       const kind = (document.getElementById(`${prefix}-kind`) as HTMLSelectElement).value;
       const description = (document.getElementById(`${prefix}-description`) as HTMLTextAreaElement).value.trim();
       const alternatives = semanticLines((document.getElementById(`${prefix}-alternatives`) as HTMLTextAreaElement).value);
-      command = { kind: 'amend', proposal: { name, kind, description, alternatives }, ...(rationale ? { rationale } : {}) };
+      const grouping = semanticLines((document.getElementById(`${prefix}-grouping`) as HTMLTextAreaElement).value);
+      command = { kind: 'amend', proposal: { name, kind, description, alternatives, grouping }, ...(rationale ? { rationale } : {}) };
     } else if (action === 'verify') {
       const evidenceIds = semanticLines((document.getElementById(`${prefix}-evidence`) as HTMLTextAreaElement).value);
       if (!evidenceIds.length) {
@@ -521,6 +536,45 @@ async function renderSemantics(epoch: number): Promise<void> {
     } catch (error) {
       if (!sectionIsCurrent(epoch, 'semantics')) return;
       semanticFlash = `Semantic review failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
+
+  const runAiProposal = async (button: HTMLButtonElement) => {
+    const index = Number(button.dataset.semanticIndex);
+    const candidate = candidates[index];
+    if (!candidate) return;
+    const prefix = `semantic-${index}`;
+    const provider = (document.getElementById(`${prefix}-ai-provider`) as HTMLInputElement | null)?.value.trim() ?? '';
+    const modelId = (document.getElementById(`${prefix}-ai-model`) as HTMLInputElement | null)?.value.trim() ?? '';
+    const rationale = (document.getElementById(`${prefix}-ai-rationale`) as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    const name = (document.getElementById(`${prefix}-name`) as HTMLInputElement).value.trim();
+    const kind = (document.getElementById(`${prefix}-kind`) as HTMLSelectElement).value;
+    const description = (document.getElementById(`${prefix}-description`) as HTMLTextAreaElement).value.trim();
+    const alternatives = semanticLines((document.getElementById(`${prefix}-alternatives`) as HTMLTextAreaElement).value);
+    const grouping = semanticLines((document.getElementById(`${prefix}-grouping`) as HTMLTextAreaElement).value);
+    if (!modelId || !rationale) {
+      semanticFlash = 'AI proposal import requires a model ID and evidence-tied rationale.';
+      await renderSemantics(epoch);
+      return;
+    }
+    for (const current of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-ai-proposal],[data-semantic-lineage-action],[data-semantic-action]'))) current.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/ai-proposal', {
+        candidateId: candidate.id,
+        draft: {
+          model: { id: modelId, ...(provider ? { provider } : {}) },
+          proposal: { name, kind, description, alternatives, grouping },
+          rationale,
+        },
+        expectedEtag: authority.etag ?? null,
+      });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `${proposalName(candidate)}: AI proposal recorded from ${result.review?.proposalProvenance?.producer ?? modelId}; it remains unaccepted.`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `AI semantic proposal failed: ${error instanceof Error ? error.message : String(error)}`;
       await renderSemantics(epoch);
     }
   };
@@ -582,6 +636,9 @@ async function renderSemantics(epoch: number): Promise<void> {
 
   for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-lineage-action]'))) {
     button.addEventListener('click', () => void runLineage(button));
+  }
+  for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-ai-proposal]'))) {
+    button.addEventListener('click', () => void runAiProposal(button));
   }
 }
 

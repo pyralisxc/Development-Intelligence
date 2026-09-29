@@ -102,7 +102,11 @@ export function normalizeSemanticReviewRationale(value: string | null | undefine
 }
 
 function cloneProposal(value: SemanticCandidate['proposal']): SemanticCandidate['proposal'] {
-  return { ...value, alternatives: [...value.alternatives] };
+  return {
+    ...value,
+    alternatives: [...value.alternatives],
+    ...(value.grouping ? { grouping: [...value.grouping] } : {}),
+  };
 }
 
 function cloneSupport(value: SemanticCandidate['support']): SemanticCandidate['support'] {

@@ -38,6 +38,21 @@ export type SemanticReviewCommand =
       rationale?: string | null;
     };
 
+export interface SemanticAiProposalDraft {
+  model: {
+    id: string;
+    provider?: string;
+  };
+  proposal: SemanticCandidate['proposal'];
+  rationale: string;
+}
+
+export interface ReviewSemanticAiProposalInput extends SemanticReviewSurfaceInput {
+  candidateId: string;
+  draft: SemanticAiProposalDraft;
+  expectedEtag?: string | null;
+}
+
 export type SemanticLineageCommand =
   | {
       kind: 'replace';
@@ -233,6 +248,10 @@ export function parseSemanticReviewCommand(value: unknown): SemanticReviewComman
       if (!Array.isArray(proposalInput.alternatives)) throw new Error('proposal.alternatives must be an array');
       proposal.alternatives = [...new Set(proposalInput.alternatives.map((item, index) => nonEmptyString(item, `proposal.alternatives[${index}]`)))];
     }
+    if ('grouping' in proposalInput) {
+      if (!Array.isArray(proposalInput.grouping)) throw new Error('proposal.grouping must be an array');
+      proposal.grouping = [...new Set(proposalInput.grouping.map((item, index) => nonEmptyString(item, `proposal.grouping[${index}]`)))];
+    }
     if (!Object.keys(proposal).length) throw new Error('semantic amendment must change at least one proposal field');
     return { kind, proposal, ...(rationale === undefined ? {} : { rationale }) };
   }
@@ -246,6 +265,121 @@ function boundedUniqueStrings(value: unknown, label: string, minimum: number, ma
   if (items.length < minimum) throw new Error(`${label} requires at least ${minimum} unique value${minimum === 1 ? '' : 's'}`);
   if (items.length > maximum) throw new Error(`${label} exceeds the bounded limit of ${maximum}`);
   return items;
+}
+
+function boundedText(value: unknown, label: string, maximum: number): string {
+  const text = nonEmptyString(value, label);
+  if (text.length > maximum) throw new Error(`${label} exceeds the bounded limit of ${maximum} characters`);
+  return text;
+}
+
+function boundedProposalList(value: unknown, label: string, maximumItems = 20): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  const items = [...new Set(value.map((item, index) => boundedText(item, `${label}[${index}]`, 240)))];
+  if (items.length > maximumItems) throw new Error(`${label} exceeds the bounded limit of ${maximumItems} items`);
+  return items;
+}
+
+export function parseSemanticAiProposal(value: unknown): SemanticAiProposalDraft {
+  const input = record(value, 'semantic AI proposal');
+  const modelInput = record(input.model, 'semantic AI proposal model');
+  const proposalInput = record(input.proposal, 'semantic AI proposal content');
+  const kind = proposalInput.kind;
+  if (typeof kind !== 'string' || !CANDIDATE_KINDS.has(kind as SemanticCandidateKind)) {
+    throw new Error('proposal.kind must be one of feature, capability, surface, domain');
+  }
+  const provider = modelInput.provider === undefined ? undefined : boundedText(modelInput.provider, 'model.provider', 100);
+  const grouping = boundedProposalList(proposalInput.grouping, 'proposal.grouping');
+  return {
+    model: {
+      id: boundedText(modelInput.id, 'model.id', 200),
+      ...(provider ? { provider } : {}),
+    },
+    proposal: {
+      name: boundedText(proposalInput.name, 'proposal.name', 200),
+      description: boundedText(proposalInput.description, 'proposal.description', 4000),
+      kind: kind as SemanticCandidateKind,
+      alternatives: boundedProposalList(proposalInput.alternatives, 'proposal.alternatives'),
+      ...(grouping.length ? { grouping } : {}),
+    },
+    rationale: boundedText(input.rationale, 'rationale', 4000),
+  };
+}
+
+export function semanticAiProposalPacket(candidate: SemanticCandidate) {
+  return {
+    version: 1 as const,
+    candidateId: candidate.id,
+    revision: candidate.provenance.revision,
+    scope: candidate.scope,
+    intrinsicProposal: {
+      ...candidate.proposal,
+      alternatives: [...candidate.proposal.alternatives],
+      ...(candidate.proposal.grouping ? { grouping: [...candidate.proposal.grouping] } : {}),
+    },
+    support: {
+      ...candidate.support,
+      motifKinds: [...candidate.support.motifKinds],
+    },
+    evidence: {
+      representativeNodes: candidate.evidencePacket.representativeNodes.map(item => ({ ...item })),
+      representativeEdges: candidate.evidencePacket.representativeEdges.map(item => ({ ...item })),
+      evidenceFamilies: [...candidate.provenance.evidenceFamilies],
+      evidenceIds: candidate.provenance.evidenceIds.slice(0, 32),
+    },
+    outputContract: {
+      fields: ['name', 'description', 'kind', 'alternatives', 'grouping', 'rationale'],
+      allowedKinds: [...CANDIDATE_KINDS].sort(),
+      alternativesMaximum: 20,
+      groupingMaximum: 20,
+    },
+    policy: {
+      boundedEvidencePacket: true,
+      productIntentMustNotBeInvented: true,
+      modelOutputAcceptedAutomatically: false,
+      importedProposalRemainsEditable: true,
+      explicitHumanReviewRequiredForAcceptance: true,
+      persistedAsAcceptedAuthority: false,
+    },
+  };
+}
+
+export function semanticAiProposalReview(
+  candidate: SemanticCandidate,
+  candidates: SemanticCandidate[],
+  acceptedMeanings: SemanticMeaningReview[],
+  draft: SemanticAiProposalDraft,
+): { continuity: SemanticReviewContinuity; review: SemanticMeaningReview } {
+  const continuity = semanticReviewContinuity(candidate, candidates, acceptedMeanings);
+  if (continuity.state === 'ambiguous') {
+    throw new Error(`Semantic candidate ${candidate.id} has ambiguous accepted-meaning continuity; explicit lineage review is required before importing an AI proposal`);
+  }
+  const producer = draft.model.provider ? `${draft.model.provider}/${draft.model.id}` : draft.model.id;
+  const proposedCandidate: SemanticCandidate = {
+    ...candidate,
+    proposal: {
+      ...draft.proposal,
+      alternatives: [...draft.proposal.alternatives],
+      ...(draft.proposal.grouping ? { grouping: [...draft.proposal.grouping] } : {}),
+    },
+    provenance: {
+      ...candidate.provenance,
+      origin: 'ai-model',
+      producer,
+      rationale: draft.rationale,
+      sourceCandidateId: candidate.id,
+      evidenceFamilies: [...candidate.provenance.evidenceFamilies],
+      nodeIds: [...candidate.provenance.nodeIds],
+      edgeIds: [...candidate.provenance.edgeIds],
+      evidenceIds: [...candidate.provenance.evidenceIds],
+    },
+  };
+  const review = semanticMeaningReview(
+    proposedCandidate,
+    continuity.state === 'inherited' ? { meaningId: continuity.meaningId } : {},
+  );
+  return { continuity, review };
 }
 
 export function parseSemanticLineageCommand(value: unknown): SemanticLineageCommand {
@@ -388,6 +522,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       ...candidate,
       review: reviewsByCandidate.get(candidate.id) ?? null,
       continuity: semanticReviewContinuity(candidate, bootstrap.candidates, acceptedMeanings),
+      aiProposalPacket: semanticAiProposalPacket(candidate),
     })),
     capacity: bootstrap.capacity,
     authority: authoritySummary(authority),
@@ -401,8 +536,57 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       persistedAuthorityOwnedByDI: true,
       stableMeaningIdentityInheritedAcrossRevisions: true,
       ambiguousContinuityRequiresExplicitLineage: true,
+      aiProposalProviderNeutral: true,
+      aiProposalRequiresOwnerImport: true,
+      modelOutputAcceptedAutomatically: false,
       acceptedGraphAffected: false,
     },
+  };
+}
+
+export async function reviewSemanticAiProposal(input: ReviewSemanticAiProposalInput): Promise<{
+  state: 'stored' | 'conflict' | 'not-configured';
+  project: string;
+  graphId: string;
+  revision: string | null;
+  candidateId: string;
+  meaningId: string;
+  etag: string | null;
+  generation: number;
+  continuity: SemanticReviewContinuity;
+  review: SemanticMeaningReview;
+  packet: ReturnType<typeof semanticAiProposalPacket>;
+}> {
+  const { graph } = await graphContext(input.project, {
+    ...(input.ref ? { ref: input.ref } : {}),
+    ...(input.graphId ? { graphId: input.graphId } : {}),
+  });
+  const authority = await loadSemanticAuthority(input.project);
+  if (authority.state === 'invalid') throw new Error(authority.error ?? 'Semantic authority ledger is invalid');
+  const bootstrap = bootstrapSemanticCandidates(graph, { limit: 1000 });
+  const candidate = bootstrap.candidates.find(item => item.id === input.candidateId);
+  if (!candidate) throw new Error(`Semantic candidate ${input.candidateId} is not present in the selected revision`);
+  const existing = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision)
+    .find(review => review.candidateId === candidate.id);
+  if (existing) throw new Error(`Semantic candidate ${candidate.id} already has a review at the selected revision; amend or review that authority record instead of overwriting it with an AI proposal`);
+  const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
+  const proposed = semanticAiProposalReview(candidate, bootstrap.candidates, acceptedMeanings, input.draft);
+  const expectedEtag = input.expectedEtag === undefined ? authority.etag : input.expectedEtag;
+  const written = await persistSemanticReview(input.project, proposed.review, expectedEtag);
+  const persisted = semanticReviewsAtRevision(written.ledger, graph.repositoryRevision)
+    .find(review => review.candidateId === candidate.id) ?? proposed.review;
+  return {
+    state: written.state,
+    project: input.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    candidateId: candidate.id,
+    meaningId: persisted.meaningId,
+    etag: written.etag,
+    generation: written.ledger?.generation ?? authority.ledger?.generation ?? 0,
+    continuity: proposed.continuity,
+    review: persisted,
+    packet: semanticAiProposalPacket(candidate),
   };
 }
 

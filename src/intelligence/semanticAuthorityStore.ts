@@ -59,7 +59,11 @@ function recordId(review: SemanticMeaningReview): string {
 function persistedReview(review: SemanticMeaningReview): SemanticMeaningReview {
   return {
     ...review,
-    proposal: { ...review.proposal, alternatives: [...review.proposal.alternatives] },
+    proposal: {
+      ...review.proposal,
+      alternatives: [...review.proposal.alternatives],
+      ...(review.proposal.grouping ? { grouping: [...review.proposal.grouping] } : {}),
+    },
     proposalProvenance: {
       ...review.proposalProvenance,
       evidenceFamilies: [...review.proposalProvenance.evidenceFamilies],
