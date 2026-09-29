@@ -196,7 +196,7 @@ function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph): { fami
   const text = group.nodes.map(nodeSearchText).join('\n');
   if (group.nodes.some(node => /(?:ui-element|component-prop|navigation-call|html-element|css-class-reference|route)/u.test(node.kind))) families.add('interface');
   if (group.nodes.some(node => /state/u.test(node.kind)) || resolvedEdges.some(edge => /^(?:state-write|reads|writes)$/u.test(edge.kind))) families.add('state');
-  if (group.nodes.some(node => /(?:api|http-call|rpc)/u.test(node.kind)) || /\b(?:api|endpoint|route|request|response)\b/u.test(text)) families.add('api');
+  if (group.nodes.some(node => /(?:api|http-call|rpc)/u.test(node.kind)) || /\b(?:api|http|endpoint|route|request|response)\b/u.test(text)) families.add('api');
   if (group.nodes.some(node => /(?:sql-|database|storage|persistence)/u.test(node.kind)) || /\b(?:database|storage|persist|supabase|postgres|redis|sql)\b/u.test(text)) families.add('persistence');
 
   const motifKinds = new Set<DerivedMotifKind>();
