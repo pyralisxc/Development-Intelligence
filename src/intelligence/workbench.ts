@@ -1521,6 +1521,9 @@ export async function queryWorkbench(input: {
   if (!text) throw new Error('text must be non-empty');
   const lower = text.toLowerCase();
   const interfaceIntent = /\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/.test(lower);
+  const semanticLifecycleIntent =
+    /\b(semantic|meaning|meanings)\b/.test(lower)
+    && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/.test(lower);
 
   if (input.sourceId) {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
@@ -1530,7 +1533,7 @@ export async function queryWorkbench(input: {
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
 
-  if (implementationExplorationIntent(text)) {
+  if (!interfaceIntent && !semanticLifecycleIntent && implementationExplorationIntent(text)) {
     const pattern = implementationExplorationPattern(text);
     const result = await searchCode({
       project: input.project,
@@ -1663,9 +1666,6 @@ export async function queryWorkbench(input: {
     };
   }
 
-  const semanticLifecycleIntent =
-    /\b(semantic|meaning|meanings)\b/.test(lower)
-    && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/.test(lower);
   if (semanticLifecycleIntent) {
     const result = await semanticLifecycleOverview(input.project);
     return {

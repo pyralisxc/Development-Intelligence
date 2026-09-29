@@ -463,6 +463,19 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(mechanism.routing.questionPlan.subjectStrategy, 'source-keyword-evidence');
     assert.ok(mechanism.result.matches.length > 0, 'mechanism questions should search bounded source evidence rather than collapse into a generic evidence assessment');
 
+    const lifecycleControl = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How are accepted semantic meanings preserved, evolved, superseded, split, merged, and prevented from silently changing across revisions?',
+    }) as any;
+    assert.equal(lifecycleControl.intent, 'semantic-lifecycle', 'semantic lifecycle must outrank generic implementation-mechanism planning');
+
+    const interfaceControl = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How does src/panel.tsx handle click interactions and navigation?',
+    }) as any;
+    assert.equal(interfaceControl.intent, 'interface', 'interface planning must outrank generic implementation-mechanism planning');
+    assert.equal(interfaceControl.routing.tool, 'inspect_interface');
+
     const independentQuestions = [
       'What is Panel?',
       'Where is helper implemented?',
