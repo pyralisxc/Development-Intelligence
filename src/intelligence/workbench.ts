@@ -1606,9 +1606,16 @@ export async function queryWorkbench(input: {
     };
   }
 
+  const repositorySemanticOrientationIntent =
+    /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text)
+    && /\b(main|major|moving parts|wide view|orientation|orient|overview|what does .+ do)\b/u.test(lower);
+
   if (
-    /\b(semantic factuality|semantic meaning|semantic meanings|semantic candidate|semantic candidates|over[- ]?deriv|over[- ]?expand|core capabilities|core concepts|core meanings|supporting meanings|supporting capabilities)\b/.test(lower)
-    || (/\bsemantic\b/.test(lower) && /\b(core|supporting|factual|factuality|audit|meaning|candidate|candidates)\b/.test(lower))
+    !repositorySemanticOrientationIntent
+    && (
+      /\b(semantic factuality|semantic meaning|semantic meanings|semantic candidate|semantic candidates|over[- ]?deriv|over[- ]?expand|core capabilities|core concepts|core meanings|supporting meanings|supporting capabilities)\b/.test(lower)
+      || (/\bsemantic\b/.test(lower) && /\b(core|supporting|factual|factuality|audit|meaning|candidate|candidates)\b/.test(lower))
+    )
   ) {
     const result = await semanticAudit({
       project: input.project,
