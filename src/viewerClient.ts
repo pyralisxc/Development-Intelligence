@@ -365,7 +365,6 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean,
   const evidenceFamilies = candidate.provenance?.evidenceFamilies ?? [];
   const alternatives = Array.isArray(proposal.alternatives) ? proposal.alternatives.join('\n') : '';
   const grouping = Array.isArray(proposal.grouping) ? proposal.grouping.join('\n') : '';
-  const aiWritable = candidateWritable && !review;
   const continuity = candidate.continuity ?? { state: 'new', sourceMeaningIds: [] };
   const sourceMeaningIds = Array.isArray(continuity.sourceMeaningIds) ? continuity.sourceMeaningIds : [];
   const sourceMeaningSet = new Set(sourceMeaningIds);
@@ -378,6 +377,7 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean,
         .sort()
     : [];
   const candidateWritable = writable && continuity.state !== 'ambiguous';
+  const aiWritable = candidateWritable && !review;
   const lineageWritable = writable && continuity.state === 'ambiguous';
   const disabled = candidateWritable ? '' : ' disabled';
   const lineageDisabled = lineageWritable ? '' : ' disabled';
@@ -434,7 +434,7 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean,
       </div>
       <details class="semantic-ai-proposal">
         <summary>AI proposal packet / import</summary>
-        <p class="muted">DI supplies bounded evidence; the model supplies wording/grouping. Importing the result records `ai-model` provenance but does not accept or verify it.</p>
+        <p class="muted">DI supplies bounded evidence; the model supplies wording/grouping. Importing the result records ai-model provenance but does not accept or verify it.</p>
         <details><summary class="muted">Bounded AI proposal packet</summary><pre class="raw">${esc(JSON.stringify(candidate.aiProposalPacket ?? {}, null, 2))}</pre></details>
         <div class="semantic-form">
           <label>Model provider<input id="${prefix}-ai-provider" class="semantic-input" placeholder="openai / anthropic / local"${aiWritable ? '' : ' disabled'}></label>
