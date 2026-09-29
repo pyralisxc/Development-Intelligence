@@ -567,6 +567,7 @@ async function implementationMechanismProjection(input: {
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const pattern = implementationExplorationPattern(input.text);
+  const queryTerms = implementationExplorationTerms(input.text);
   const explicitScope = input.scope?.trim() ?? '';
   const rankedFiles = explicitScope ? [] : rankedMechanismSourceFiles(graph, input.text, 12);
   const rankedFilePattern = rankedFiles.length
@@ -599,6 +600,27 @@ async function implementationMechanismProjection(input: {
     fileMap.set(file, items);
   }
   const matchedFiles = new Set(fileMap.keys());
+  const matchedSourceLines = new Map<string, Set<number>>();
+  for (const match of matches) {
+    const file = String(match.file ?? '').trim();
+    const line = Number(match.line ?? 0);
+    if (!file || !Number.isFinite(line) || line <= 0) continue;
+    const lines = matchedSourceLines.get(file) ?? new Set<number>();
+    lines.add(line);
+    matchedSourceLines.set(file, lines);
+  }
+  const endpointRelevance = (node: GraphNode | undefined): { queryTermHits: number; sourceMatch: boolean } => {
+    if (!node) return { queryTermHits: 0, sourceMatch: false };
+    const name = String(node.name ?? '').toLowerCase();
+    const queryTermHits = queryTerms.filter(term => name.includes(term)).length;
+    const file = sourceFile(node.locator)?.replace(/^\.\//u, '') ?? '';
+    const lineMatch = node.locator.match(/:(\d+)(?::|$)/u);
+    const line = Number(lineMatch?.[1] ?? 0);
+    return {
+      queryTermHits,
+      sourceMatch: Boolean(file && line > 0 && matchedSourceLines.get(file)?.has(line)),
+    };
+  };
   const scopedNodes = graph.nodes.filter(node => {
     const file = sourceFile(node.locator)?.replace(/^\.\//u, '');
     return Boolean(file && matchedFiles.has(file));
@@ -613,7 +635,11 @@ async function implementationMechanismProjection(input: {
     .map(edge => {
       const from = edge.from ? byId.get(edge.from) : undefined;
       const to = edge.to ? byId.get(edge.to) : undefined;
+      const fromRelevance = endpointRelevance(from);
+      const toRelevance = endpointRelevance(to);
       return {
+        queryTermHits: fromRelevance.queryTermHits + toRelevance.queryTermHits,
+        sourceMatchEndpointCount: Number(fromRelevance.sourceMatch) + Number(toRelevance.sourceMatch),
         edgeId: edge.id,
         kind: edge.kind,
         status: edge.status,
@@ -636,6 +662,8 @@ async function implementationMechanismProjection(input: {
     })
     .sort((a, b) =>
       Number(b.status === 'resolved') - Number(a.status === 'resolved')
+      || b.sourceMatchEndpointCount - a.sourceMatchEndpointCount
+      || b.queryTermHits - a.queryTermHits
       || Number(b.bothEndpointsInMatchedFiles) - Number(a.bothEndpointsInMatchedFiles)
       || a.kind.localeCompare(b.kind)
       || String(a.edgeId).localeCompare(String(b.edgeId)));
@@ -655,11 +683,15 @@ async function implementationMechanismProjection(input: {
       kind: node.kind,
       layer: node.layer ?? 'structural',
       locator: node.locator,
+      queryTermHits: endpointRelevance(node).queryTermHits,
+      sourceMatch: endpointRelevance(node).sourceMatch,
       resolvedRelationshipCount: resolvedDegree.get(node.id) ?? 0,
       evidenceCount: (node.evidenceIds ?? []).length,
     }))
     .sort((a, b) =>
-      b.resolvedRelationshipCount - a.resolvedRelationshipCount
+      Number(b.sourceMatch) - Number(a.sourceMatch)
+      || b.queryTermHits - a.queryTermHits
+      || b.resolvedRelationshipCount - a.resolvedRelationshipCount
       || b.evidenceCount - a.evidenceCount
       || a.name.localeCompare(b.name)
       || a.id.localeCompare(b.id))

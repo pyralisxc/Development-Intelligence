@@ -495,6 +495,7 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.ok(mechanism.result.mechanism.selection.candidateFiles.some((item: any) => item.file === 'src/panel.tsx'), 'graph-guided source selection must keep the known fixture implementation file');
     assert.ok(mechanism.result.mechanism.keyEntities.length > 0, 'mechanism projection must identify evidence-linked entities in matched files');
     assert.ok(mechanism.result.mechanism.relationships.length > 0, 'mechanism projection must expose resolved graph relationships instead of only raw text hits');
+    assert.ok(mechanism.result.mechanism.relationships.some((edge: any) => edge.sourceMatchEndpointCount > 0 || edge.queryTermHits > 0), 'bounded mechanism relationships must prioritize endpoints tied to the query or matched source');
     assert.ok(mechanism.result.mechanism.decisionEvidence.length > 0, 'mechanism projection must expose bounded decision evidence when source contains decision/control terms');
     assert.equal(mechanism.result.mechanism.policy.sourceObservedOnly, true);
     assert.equal(mechanism.result.mechanism.policy.runtimeExecutionProven, false);
