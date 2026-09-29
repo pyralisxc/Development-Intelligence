@@ -91,7 +91,8 @@ test('ASC private evidence read derives repository from delegation and keeps cre
 
     assert.deepEqual(repository, {
       owner: 'pyralisxc',
-      name: 'Private-Project'
+      name: 'Private-Project',
+      fullName: 'pyralisxc/Private-Project'
     });
     assert.equal(path, 'README.md');
     assert.equal(revision, 'b'.repeat(40));
