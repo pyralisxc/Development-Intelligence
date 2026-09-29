@@ -127,29 +127,43 @@ export async function loadSemanticAuthority(project: string): Promise<SemanticAu
   }
 }
 
-export async function persistSemanticReview(
+export async function persistSemanticReviews(
   project: string,
-  review: SemanticMeaningReview,
+  reviews: SemanticMeaningReview[],
   expectedEtag: string | null,
 ): Promise<SemanticAuthorityWrite> {
-  validateReview(review);
+  if (!Array.isArray(reviews) || !reviews.length) throw new Error('Semantic authority transaction requires at least one review');
+  reviews.forEach(validateReview);
   const current = await loadSemanticAuthority(project);
   if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
   if (current.state === 'invalid') throw new Error(current.error ?? 'Semantic authority ledger is invalid');
   if (current.etag !== expectedEtag) return { state: 'conflict', etag: current.etag, ledger: current.ledger };
 
   const now = new Date().toISOString();
-  const nextReview = persistedReview(review);
-  const nextRecord: StoredSemanticAuthorityRecord = {
-    recordId: recordId(nextReview),
-    meaningId: nextReview.meaningId,
-    revision: nextReview.proposalRevision,
-    candidateId: nextReview.candidateId,
-    storedAt: now,
-    review: nextReview,
-  };
-  const records = [...(current.ledger?.records ?? []).filter(item => item.recordId !== nextRecord.recordId), nextRecord]
-    .sort((a, b) => a.meaningId.localeCompare(b.meaningId) || String(a.revision).localeCompare(String(b.revision)) || a.candidateId.localeCompare(b.candidateId));
+  const nextRecords = reviews.map(review => {
+    const nextReview = persistedReview(review);
+    return {
+      recordId: recordId(nextReview),
+      meaningId: nextReview.meaningId,
+      revision: nextReview.proposalRevision,
+      candidateId: nextReview.candidateId,
+      storedAt: now,
+      review: nextReview,
+    } satisfies StoredSemanticAuthorityRecord;
+  });
+  const incomingIds = new Set<string>();
+  for (const record of nextRecords) {
+    if (incomingIds.has(record.recordId)) throw new Error('Semantic authority transaction contains duplicate review identities');
+    incomingIds.add(record.recordId);
+  }
+  const records = [
+    ...(current.ledger?.records ?? []).filter(item => !incomingIds.has(item.recordId)),
+    ...nextRecords,
+  ].sort((a, b) =>
+    a.meaningId.localeCompare(b.meaningId)
+    || String(a.revision).localeCompare(String(b.revision))
+    || a.candidateId.localeCompare(b.candidateId)
+  );
   if (records.length > MAX_AUTHORITY_RECORDS) throw new Error('Semantic authority ledger exceeds the bounded record limit');
 
   const ledger: SemanticAuthorityLedger = {
@@ -163,6 +177,14 @@ export async function persistSemanticReview(
   if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');
   const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
   return { state: written.state, etag: written.etag, ledger: written.state === 'stored' ? ledger : current.ledger };
+}
+
+export async function persistSemanticReview(
+  project: string,
+  review: SemanticMeaningReview,
+  expectedEtag: string | null,
+): Promise<SemanticAuthorityWrite> {
+  return persistSemanticReviews(project, [review], expectedEtag);
 }
 
 export function semanticReviewsAtRevision(

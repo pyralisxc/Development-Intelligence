@@ -2,11 +2,17 @@ import { bootstrapSemanticCandidates, type SemanticCandidate, type SemanticCandi
 import {
   loadSemanticAuthority,
   persistSemanticReview,
+  persistSemanticReviews,
   semanticReviewsAtRevision,
   type SemanticAuthorityLedger,
   type SemanticAuthorityLoad,
 } from './semanticAuthorityStore.js';
-import { evaluateSemanticEvolution } from './semanticEvolution.js';
+import {
+  evaluateSemanticEvolution,
+  mergeSemanticMeanings,
+  replaceSemanticMeaning,
+  splitSemanticMeaning,
+} from './semanticEvolution.js';
 import {
   applySemanticReviewAction,
   semanticMeaningReview,
@@ -32,6 +38,26 @@ export type SemanticReviewCommand =
       rationale?: string | null;
     };
 
+export type SemanticLineageCommand =
+  | {
+      kind: 'replace';
+      sourceMeaningId: string;
+      successorCandidateId: string;
+      rationale?: string | null;
+    }
+  | {
+      kind: 'split';
+      sourceMeaningId: string;
+      successorCandidateIds: string[];
+      rationale?: string | null;
+    }
+  | {
+      kind: 'merge';
+      sourceMeaningIds: string[];
+      successorCandidateId: string;
+      rationale?: string | null;
+    };
+
 export interface SemanticReviewSurfaceInput {
   project: string;
   ref?: string;
@@ -42,6 +68,13 @@ export interface SemanticReviewSurfaceInput {
 export interface ReviewSemanticMeaningInput extends SemanticReviewSurfaceInput {
   candidateId: string;
   command: SemanticReviewCommand;
+  actor: SemanticReviewActor;
+  at: string;
+  expectedEtag?: string | null;
+}
+
+export interface ReviewSemanticLineageInput extends SemanticReviewSurfaceInput {
+  command: SemanticLineageCommand;
   actor: SemanticReviewActor;
   at: string;
   expectedEtag?: string | null;
@@ -207,6 +240,44 @@ export function parseSemanticReviewCommand(value: unknown): SemanticReviewComman
   throw new Error('semantic review command kind must be amend, accept, reject, or verify');
 }
 
+function boundedUniqueStrings(value: unknown, label: string, minimum: number, maximum = 32): string[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  const items = [...new Set(value.map((item, index) => nonEmptyString(item, `${label}[${index}]`)))].sort();
+  if (items.length < minimum) throw new Error(`${label} requires at least ${minimum} unique value${minimum === 1 ? '' : 's'}`);
+  if (items.length > maximum) throw new Error(`${label} exceeds the bounded limit of ${maximum}`);
+  return items;
+}
+
+export function parseSemanticLineageCommand(value: unknown): SemanticLineageCommand {
+  const input = record(value, 'semantic lineage command');
+  const rationale = optionalRationale(input.rationale);
+  if (input.kind === 'replace') {
+    return {
+      kind: 'replace',
+      sourceMeaningId: nonEmptyString(input.sourceMeaningId, 'sourceMeaningId'),
+      successorCandidateId: nonEmptyString(input.successorCandidateId, 'successorCandidateId'),
+      ...(rationale === undefined ? {} : { rationale }),
+    };
+  }
+  if (input.kind === 'split') {
+    return {
+      kind: 'split',
+      sourceMeaningId: nonEmptyString(input.sourceMeaningId, 'sourceMeaningId'),
+      successorCandidateIds: boundedUniqueStrings(input.successorCandidateIds, 'successorCandidateIds', 2),
+      ...(rationale === undefined ? {} : { rationale }),
+    };
+  }
+  if (input.kind === 'merge') {
+    return {
+      kind: 'merge',
+      sourceMeaningIds: boundedUniqueStrings(input.sourceMeaningIds, 'sourceMeaningIds', 2),
+      successorCandidateId: nonEmptyString(input.successorCandidateId, 'successorCandidateId'),
+      ...(rationale === undefined ? {} : { rationale }),
+    };
+  }
+  throw new Error('semantic lineage command kind must be replace, split, or merge');
+}
+
 export function semanticReviewAction(
   command: SemanticReviewCommand,
   actor: SemanticReviewActor,
@@ -215,6 +286,70 @@ export function semanticReviewAction(
   if (command.kind === 'amend') return { kind: 'amend', actor, at, proposal: command.proposal, ...(command.rationale === undefined ? {} : { rationale: command.rationale }) };
   if (command.kind === 'verify') return { kind: 'verify', actor, at, evidenceIds: command.evidenceIds, ...(command.rationale === undefined ? {} : { rationale: command.rationale }) };
   return { kind: command.kind, actor, at, ...(command.rationale === undefined ? {} : { rationale: command.rationale }) };
+}
+
+export function semanticLineageTransaction(
+  command: SemanticLineageCommand,
+  candidates: SemanticCandidate[],
+  acceptedMeanings: SemanticMeaningReview[],
+  actor: SemanticReviewActor,
+  at: string,
+): {
+  kind: SemanticLineageCommand['kind'];
+  sourceMeaningIds: string[];
+  successorMeaningIds: string[];
+  reviews: SemanticMeaningReview[];
+} {
+  const candidateById = new Map(candidates.map(candidate => [candidate.id, candidate]));
+  const acceptedByMeaning = new Map(acceptedMeanings.map(review => [review.meaningId, review]));
+  const candidate = (candidateId: string): SemanticCandidate => {
+    const found = candidateById.get(candidateId);
+    if (!found) throw new Error(`Semantic lineage successor candidate ${candidateId} is not present in the selected revision`);
+    return found;
+  };
+  const source = (meaningId: string): SemanticMeaningReview => {
+    const found = acceptedByMeaning.get(meaningId);
+    if (!found) throw new Error(`Semantic lineage source meaning ${meaningId} is not an active accepted meaning from an earlier revision`);
+    return found;
+  };
+
+  if (command.kind === 'replace') {
+    const result = replaceSemanticMeaning(source(command.sourceMeaningId), candidate(command.successorCandidateId), actor, at, command.rationale);
+    return {
+      kind: command.kind,
+      sourceMeaningIds: [result.source.meaningId],
+      successorMeaningIds: result.successors.map(item => item.meaningId),
+      reviews: [result.source, ...result.successors],
+    };
+  }
+  if (command.kind === 'split') {
+    const result = splitSemanticMeaning(
+      source(command.sourceMeaningId),
+      command.successorCandidateIds.map(candidate),
+      actor,
+      at,
+      command.rationale,
+    );
+    return {
+      kind: command.kind,
+      sourceMeaningIds: [result.source.meaningId],
+      successorMeaningIds: result.successors.map(item => item.meaningId).sort(),
+      reviews: [result.source, ...result.successors],
+    };
+  }
+  const result = mergeSemanticMeanings(
+    command.sourceMeaningIds.map(source),
+    candidate(command.successorCandidateId),
+    actor,
+    at,
+    command.rationale,
+  );
+  return {
+    kind: command.kind,
+    sourceMeaningIds: result.sources.map(item => item.meaningId).sort(),
+    successorMeaningIds: [result.successor.meaningId],
+    reviews: [...result.sources, result.successor],
+  };
 }
 
 function authoritySummary(authority: SemanticAuthorityLoad) {
@@ -324,3 +459,60 @@ export async function reviewSemanticMeaning(input: ReviewSemanticMeaningInput): 
     review: persisted,
   };
 }
+
+export async function reviewSemanticLineage(input: ReviewSemanticLineageInput): Promise<{
+  state: 'stored' | 'conflict' | 'not-configured';
+  project: string;
+  graphId: string;
+  revision: string | null;
+  operation: SemanticLineageCommand['kind'];
+  sourceMeaningIds: string[];
+  successorMeaningIds: string[];
+  etag: string | null;
+  generation: number;
+  reviews: SemanticMeaningReview[];
+}> {
+  const { graph } = await graphContext(input.project, {
+    ...(input.ref ? { ref: input.ref } : {}),
+    ...(input.graphId ? { graphId: input.graphId } : {}),
+  });
+  const authority = await loadSemanticAuthority(input.project);
+  if (authority.state === 'invalid') throw new Error(authority.error ?? 'Semantic authority ledger is invalid');
+
+  const bootstrap = bootstrapSemanticCandidates(graph, { limit: 1000 });
+  const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
+  const transaction = semanticLineageTransaction(input.command, bootstrap.candidates, acceptedMeanings, input.actor, input.at);
+  const currentReviews = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision);
+  const currentCandidateIds = new Set(currentReviews.map(review => review.candidateId));
+  for (const review of transaction.reviews) {
+    if (review.proposalRevision === graph.repositoryRevision && currentCandidateIds.has(review.candidateId)) {
+      throw new Error(`Semantic lineage successor candidate ${review.candidateId} already has a review at the selected revision`);
+    }
+  }
+
+  const expectedEtag = input.expectedEtag === undefined ? authority.etag : input.expectedEtag;
+  const written = await persistSemanticReviews(input.project, transaction.reviews, expectedEtag);
+  const persistedReviews = written.state === 'stored'
+    ? transaction.reviews.map(review =>
+        written.ledger?.records.find(record =>
+          record.meaningId === review.meaningId
+          && record.candidateId === review.candidateId
+          && record.revision === review.proposalRevision
+        )?.review ?? review
+      )
+    : transaction.reviews;
+
+  return {
+    state: written.state,
+    project: input.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    operation: transaction.kind,
+    sourceMeaningIds: transaction.sourceMeaningIds,
+    successorMeaningIds: transaction.successorMeaningIds,
+    etag: written.etag,
+    generation: written.ledger?.generation ?? authority.ledger?.generation ?? 0,
+    reviews: persistedReviews,
+  };
+}
+

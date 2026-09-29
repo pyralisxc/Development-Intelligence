@@ -10,6 +10,7 @@ import {
   latestAcceptedMeanings,
   loadSemanticAuthority,
   persistSemanticReview,
+  persistSemanticReviews,
   promoteCanonicalAcceptedGraph,
   semanticReviewsAtRevision,
 } from '../src/intelligence/semanticAuthorityStore.js';
@@ -91,6 +92,37 @@ test('semantic review history persists in DI canonical derived storage with opti
     assert.equal(loaded.state, 'hit');
     assert.equal(semanticReviewsAtRevision(loaded.ledger, revision).length, 1);
     assert.deepEqual(latestAcceptedMeanings(loaded.ledger).map(item => item.meaningId), [accepted.meaningId]);
+  } finally {
+    delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('semantic lineage reviews persist atomically with one etag check and generation increment', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-authority-batch-'));
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const revision = '1212121212121212121212121212121212121212';
+    const first = applySemanticReviewAction(semanticMeaningReview(candidate('candidate:first', revision)), {
+      kind: 'accept',
+      actor: { kind: 'human', id: 'human:owner' },
+      at: '2026-09-29T00:00:00.000Z',
+    });
+    const second = semanticMeaningReview(candidate('candidate:second', revision));
+    const empty = await loadSemanticAuthority('fixture/batch');
+    const stored = await persistSemanticReviews('fixture/batch', [first, second], empty.etag);
+    assert.equal(stored.state, 'stored');
+    assert.equal(stored.ledger?.generation, 1);
+    assert.equal(stored.ledger?.records.length, 2);
+    assert.ok(stored.ledger?.records.every(record => record.review.policy.persisted === true));
+
+    const conflict = await persistSemanticReviews('fixture/batch', [first, second], empty.etag);
+    assert.equal(conflict.state, 'conflict');
+    assert.equal(conflict.ledger?.generation, 1, 'conflict must not partially advance lineage authority');
+    await assert.rejects(
+      persistSemanticReviews('fixture/batch', [second, second], stored.etag),
+      /duplicate review identities/i,
+    );
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });

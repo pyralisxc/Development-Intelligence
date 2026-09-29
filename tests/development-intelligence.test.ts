@@ -1159,8 +1159,12 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(viewerJavaScript, /Typed reach/);
     assert.match(viewerJavaScript, /explicit review/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/review/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/lineage/);
     assert.match(viewerJavaScript, /Accept meaning/);
     assert.match(viewerJavaScript, /Verify with evidence/);
+    assert.match(viewerJavaScript, /Resolve semantic lineage/);
+    assert.match(viewerJavaScript, /Split source across candidate group/);
+    assert.match(viewerJavaScript, /Merge sources into this candidate/);
     assert.match(viewerJavaScript, /reach describes connection, not impact severity/i);
     assert.match(viewerJavaScript, /Claims and proof/);
 
