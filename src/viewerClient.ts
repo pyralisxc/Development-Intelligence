@@ -452,6 +452,40 @@ function semanticLines(value: string): string[] {
   return [...new Set(value.split(/\r?\n|,/u).map(item => item.trim()).filter(Boolean))];
 }
 
+function semanticAuditSnapshot(snapshot: any): string {
+  if (!snapshot) return 'none';
+  return `${snapshot.name ?? snapshot.candidateId ?? 'unnamed'} · ${snapshot.kind ?? 'semantic'} · ${snapshot.scope ?? 'unknown scope'} · ${snapshot.revision ?? 'unknown revision'}`;
+}
+
+function semanticChangeAuditCard(item: any): string {
+  const reasons = Array.isArray(item.reasons) ? item.reasons : [];
+  const alternatives = Array.isArray(item.alternatives) ? item.alternatives : [];
+  return `<article class="card semantic-change-audit" data-semantic-change-ref="${esc(item.auditRef ?? '')}">
+    <div class="semantic-card-head">
+      <div>
+        <div><span class="badge">${esc(item.auditRef ?? ('SEM-' + String(item.ordinal ?? '?')))}</span> <span class="badge">${esc(item.changeKind ?? 'change')}</span> <span class="badge ${item.approved ? 'status-good' : 'status-warn'}">${item.approved ? 'cleared' : 'review required'}</span></div>
+        <h2>${esc(item.summary ?? item.name ?? item.changeId ?? 'Semantic change')}</h2>
+      </div>
+      <div class="semantic-meta"><strong>#${esc(item.ordinal ?? '?')}</strong><span>${esc(item.scope ?? '')}</span></div>
+    </div>
+    <p><strong>Before:</strong> ${esc(semanticAuditSnapshot(item.before))}</p>
+    <p><strong>After:</strong> ${esc(semanticAuditSnapshot(item.after))}</p>
+    ${reasons.length ? `<div><strong>Why DI says this changed</strong><ul>${reasons.map((reason: string) => `<li>${esc(reason)}</li>`).join('')}</ul></div>` : ''}
+    ${alternatives.length ? `<div><strong>Competing current candidates</strong><ul>${alternatives.map((alternative: any) => `<li>${esc(semanticAuditSnapshot(alternative))}</li>`).join('')}</ul></div>` : ''}
+    <details><summary class="muted">Exact audit identity / evidence delta</summary><pre class="raw">${esc(JSON.stringify({
+      auditRef: item.auditRef,
+      ordinal: item.ordinal,
+      changeId: item.changeId,
+      meaningId: item.meaningId,
+      candidateId: item.candidateId,
+      sourceRevision: item.sourceRevision,
+      targetRevision: item.targetRevision,
+      approvalBases: item.approvalBases,
+      evolution: item.evolution,
+    }, null, 2))}</pre></details>
+  </article>`;
+}
+
 async function renderSemantics(epoch: number): Promise<void> {
   setHead();
   content.innerHTML = empty('Loading semantic meaning', 'Loading evidence-derived candidates and DI-owned review authority…');
@@ -459,6 +493,8 @@ async function renderSemantics(epoch: number): Promise<void> {
   if (!sectionIsCurrent(epoch, 'semantics')) return;
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
   const authority = data.authority ?? {};
+  const promotionAudit = data.promotionAudit ?? null;
+  const promotionItems = Array.isArray(promotionAudit?.items) ? promotionAudit.items : [];
   const writable = authority.state !== 'not-configured' && authority.state !== 'invalid';
   const accepted = candidates.filter((candidate: any) => candidate.review?.accepted).length;
   const verified = candidates.filter((candidate: any) => Boolean(candidate.review?.verification)).length;
@@ -490,6 +526,17 @@ async function renderSemantics(epoch: number): Promise<void> {
       </div>
     </div>
     ${!writable ? `<div class="card" style="margin-top:13px;border-color:#6d5130"><h3>Read-only review state</h3><p class="status-warn">${esc(storageMessage)}</p></div>` : ''}
+    ${promotionAudit ? `<section class="semantic-change-manifest" style="margin-top:13px">
+      <div class="card">
+        <h3>Semantic change audit</h3>
+        <h2>${esc(promotionAudit.semanticDeltaCount ?? 0)} individually addressable change(s)</h2>
+        <p>Reference a change by its stable SEM ID when auditing with an agent. These items report what DI observes between accepted meaning and this revision; they do not infer whether the change was desirable.</p>
+        <p class="muted">Baseline ${esc(data.promotionAuditBasis?.currentDefaultRevision ?? 'none')} → target ${esc(data.promotionAuditBasis?.targetRevision ?? data.revision ?? 'unknown')} · full candidate census ${data.promotionAuditBasis?.candidateUniverseExhausted ? 'exhausted' : 'bounded'}.</p>
+      </div>
+      <div class="semantic-grid" style="margin-top:13px">
+        ${promotionItems.map((item: any) => semanticChangeAuditCard(item)).join('') || empty('No semantic delta', 'DI found no semantic change requiring an audit item for this target revision.')}
+      </div>
+    </section>` : ''}
     <div class="semantic-grid" style="margin-top:13px">
       ${candidates.map((candidate: any, index: number) => semanticCandidateCard(candidate, index, writable, candidates)).join('') || empty('No semantic candidates', 'This revision did not produce evidence-qualified semantic candidates.')}
     </div>`;
