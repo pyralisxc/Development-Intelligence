@@ -289,16 +289,14 @@ function semanticCorrectionBurden(score) {
   };
 }
 
-function semanticUnderstandingNames(investigation) {
+function derivedScopes(investigation) {
   const understanding = investigation?.result?.semanticUnderstanding ?? {};
-  return [
-    ...(understanding.meanings ?? []),
-    ...(understanding.concepts ?? []),
-    ...(understanding.candidates ?? []),
-  ].map(item => String(item?.name ?? '').trim()).filter(Boolean);
+  return (understanding.layers?.derived?.items ?? understanding.candidates ?? [])
+    .map(item => String(item?.scope ?? '').trim())
+    .filter(Boolean);
 }
 
-async function generalSemanticQuestion(question, reviewedNames) {
+async function generalSemanticQuestion(question, expectedDepth, options = {}) {
   const started = process.hrtime.bigint();
   const result = await callTool('investigate', { project, graphId: scan.graphId, question });
   const elapsedMs = Number(process.hrtime.bigint() - started) / 1_000_000;
@@ -310,23 +308,34 @@ async function generalSemanticQuestion(question, reviewedNames) {
   if (!understanding || understanding.source === 'structural-only') {
     throw new Error(`CardForge general semantic question fell back to structural-only understanding: ${question}`);
   }
+  if (result.routing?.semanticDepth !== expectedDepth || understanding.depth !== expectedDepth) {
+    throw new Error(`CardForge semantic depth mismatch: expected ${expectedDepth}, got routing=${result.routing?.semanticDepth} understanding=${understanding.depth}`);
+  }
   if (/^\d+ graph entities/u.test(String(result.answer ?? ''))) {
     throw new Error(`CardForge general semantic question regressed to topology-count prose: ${question}`);
   }
-  const names = semanticUnderstandingNames(result);
-  const searchable = [String(result.answer ?? ''), ...names].join(' ').toLowerCase();
-  const surfacedReviewed = reviewedNames.filter(name => searchable.includes(name.toLowerCase()));
-  if (surfacedReviewed.length < 3) {
-    throw new Error(`CardForge general semantic question surfaced fewer than 3/5 reviewed concepts: ${question} → ${JSON.stringify(surfacedReviewed)}`);
+  if (understanding.completeness?.repositoryOmissionMeansAbsent !== false) {
+    throw new Error(`CardForge semantic answer must not equate omission with repository absence: ${question}`);
+  }
+  const scopes = derivedScopes(result);
+  const requiredScopes = options.requiredDerivedScopes ?? [];
+  const missingRequiredScopes = requiredScopes.filter(scope => !scopes.includes(scope));
+  if (missingRequiredScopes.length) {
+    throw new Error(`CardForge ${expectedDepth} semantic query missed reviewed derived scopes: ${JSON.stringify(missingRequiredScopes)}`);
+  }
+  if (options.requireExhausted && understanding.completeness?.semanticCandidateUniverseExhausted !== true) {
+    throw new Error(`CardForge exhaustive semantic query did not exhaust the evidence-qualified candidate census: ${question}`);
   }
   if (elapsedMs > 2000) throw new Error(`CardForge general semantic question exceeded 2000 ms budget: ${question} → ${elapsedMs.toFixed(2)} ms`);
   return {
     question,
     answer: result.answer,
     semanticSource: understanding.source,
-    semanticItemCount: names.length,
-    surfacedReviewedConcepts: surfacedReviewed,
-    reviewedConceptRecall: surfacedReviewed.length / Math.max(reviewedNames.length, 1),
+    semanticDepth: understanding.depth,
+    derivedReturned: understanding.layers?.derived?.returned ?? 0,
+    derivedEligible: understanding.layers?.derived?.eligibleCount ?? 0,
+    semanticCandidateUniverseExhausted: understanding.completeness?.semanticCandidateUniverseExhausted ?? false,
+    reviewedDerivedRecall: requiredScopes.length ? (requiredScopes.length - missingRequiredScopes.length) / requiredScopes.length : null,
     routingTool: result.routing?.tool ?? null,
     externalToolCalls: 1,
     elapsedMs: Number(elapsedMs.toFixed(3)),
@@ -337,10 +346,19 @@ const semanticCorrection = semanticCorrectionBurden(semanticAccuracy.semanticCan
 if (semanticCorrection.affectedScopeCount !== 0) {
   throw new Error(`CardForge reviewed semantic universe requires human correction: ${JSON.stringify(semanticCorrection)}`);
 }
-const reviewedSemanticNames = semanticAccuracyCase.groundTruth.semanticCandidates.required.map(item => item.name);
+const reviewedSemanticScopes = semanticAccuracyCase.groundTruth.semanticCandidates.required.map(item => item.scope);
 const generalSemanticQuestions = [
-  await generalSemanticQuestion('What does this project do?', reviewedSemanticNames),
-  await generalSemanticQuestion('What are this project\'s major capabilities?', reviewedSemanticNames),
+  await generalSemanticQuestion('What does this project do?', 'nucleus'),
+  await generalSemanticQuestion(
+    'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
+    'expanded',
+    { requiredDerivedScopes: reviewedSemanticScopes },
+  ),
+  await generalSemanticQuestion(
+    'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+    'exhaustive',
+    { requiredDerivedScopes: reviewedSemanticScopes, requireExhausted: true },
+  ),
 ];
 
 const queryArtifacts = buildCanonicalQueryArtifacts(graph);
@@ -741,12 +759,16 @@ const report = {
   generalSemanticQuestions: {
     stage: 'T3-general-questions',
     probes: generalSemanticQuestions,
-    minReviewedConceptsPerProbe: 3,
+    supportedDepths: ['nucleus', 'expanded', 'exhaustive'],
     latencyBudgetMs: 2000,
     policy: {
       semanticRatherThanTopologyCount: true,
       structuralOnlyFallbackAllowed: false,
       productIntentInferred: false,
+      nucleusMayBeNonExhaustive: true,
+      expandedMustExposeReviewedSemanticUniverse: true,
+      exhaustiveCandidateCensusMustReachFullReviewedRecall: true,
+      omissionOutsideDeclaredCompleteScopeMeansAbsence: false,
     },
   },
   competitorReference: {
@@ -768,7 +790,9 @@ const report = {
       reviewedSemanticRecall: semanticAccuracy.semanticCandidateScore.recall,
       reviewedSemanticFalsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
       reviewedSemanticCorrectionScopeCount: semanticCorrection.affectedScopeCount,
-      generalQuestionMinReviewedConceptRecall: Math.min(...generalSemanticQuestions.map(item => item.reviewedConceptRecall)),
+      expandedReviewedSemanticRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? null,
+      exhaustiveReviewedSemanticRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? null,
+      exhaustiveCandidateUniverseExhausted: generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted ?? false,
       generalQuestionMaxLatencyMs: Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)),
       generalQuestionExternalToolCallsEach: 1,
     },
@@ -907,7 +931,7 @@ const summary = [
   `- Semantic derivation accuracy (full-capacity census, 7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Reviewed semantic correction burden: **${semanticCorrection.affectedScopeCount} affected scope(s) / ${semanticCorrection.reviewedRequiredCount} required concepts (${(semanticCorrection.rate * 100).toFixed(0)}%)**`,
-  `- T3 general questions: **${generalSemanticQuestions.length} semantic answers / min reviewed-concept recall ${(Math.min(...generalSemanticQuestions.map(item => item.reviewedConceptRecall)) * 100).toFixed(0)}% / max ${Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)).toFixed(3)} ms / 1 external DI call each**`,
+  `- T3 semantic query depth: **nucleus + expanded + exhaustive / expanded reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive census=${generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted === true} / max ${Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)).toFixed(3)} ms / 1 external DI call each**`,
   `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; full exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id)}; 100→full stable=${semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
   `- Semantic factuality/core audit: **${semanticAudit.counts.factualitySupported} factuality-supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core-candidate / ${semanticAudit.counts.supportingCandidates} supporting-candidate / ${semanticAuditElapsedMs.toFixed(3)} ms**`,
   `- Semantic identity evolution: **${semanticEvolutionResults.length} reviewed parent concepts → head; ${semanticEvolutionResults.filter(item => item.status === 'preserved').length} preserved / ${semanticEvolutionResults.filter(item => item.status === 'realization-changed').length} realization-changed / ${semanticEvolutionResults.filter(item => item.status === 'renamed').length} renamed / ${semanticEvolutionResults.filter(item => item.reviewRequired).length} require review / ${semanticEvolutionElapsedMs.toFixed(3)} ms**`,

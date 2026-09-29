@@ -60,6 +60,18 @@ Generic module resolution must represent file imports, dynamic `import()` depend
 
 Grouped search/parity tests protect the one-graph/many-independent-queries contract so exploratory agent work does not require one network round trip per term.
 
+### Semantic query depth
+
+Repository semantic questions are conversational projections over one evidence graph, not lookup-table prompts with one mandatory prose answer. DI supports three explicit semantic depths:
+
+- **nucleus**: the smallest honest semantic answer supported by the strongest available authority/evidence layer; omission is not absence;
+- **expanded**: the nucleus plus supporting accepted, observed, and evidence-derived semantic layers, with authority and uncertainty preserved;
+- **exhaustive**: a census of the current evidence-qualified semantic candidate universe up to the declared operational limit, with an explicit exhausted/truncated completeness statement.
+
+Natural-language questions infer depth independently, while agents may explicitly set `semanticDepth`. Batched questions continue to share one immutable graph context, so one request may mix nucleus, expanded, and exhaustive questions across different lanes.
+
+A benchmark may require 100% recall only against an independently established **complete scope**. A broad explanatory question must not be failed merely because it omits an item from a different complete census, and DI must never treat an omitted concept as disproven outside a declared complete scope. Accepted meaning, observed semantics, and derived proposals remain separate at every depth.
+
 ### Evidence and conflict discipline
 
 Independent agreeing observations may accumulate evidence for one stable identity. Contradictory semantic assertions remain explicit conflicts. Syntax-proven relationships may be resolved; heuristic cross-source matches remain candidates; unresolved relationships remain explicit.

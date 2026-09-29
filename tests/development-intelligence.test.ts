@@ -595,12 +595,56 @@ test('scope orientation surfaces explainable local graph structure without an op
     }) as any;
     assert.equal(projectQuestion.intent, 'orientation');
     assert.equal(projectQuestion.routing.tool, 'orient_scope');
+    assert.equal(projectQuestion.routing.semanticDepth, 'nucleus');
     assert.equal(projectQuestion.result.scope.kind, 'repository');
     assert.ok(projectQuestion.result.semanticUnderstanding);
     assert.ok(['accepted-authority', 'observed-semantic-graph', 'derived-candidates', 'structural-only'].includes(projectQuestion.result.semanticUnderstanding.source));
+    assert.equal(projectQuestion.result.semanticUnderstanding.depth, 'nucleus');
     assert.equal(projectQuestion.answer, projectQuestion.result.semanticUnderstanding.summary);
     assert.equal(/^\d+ graph entities/u.test(projectQuestion.answer), false, 'general project questions should lead with semantic understanding rather than topology counts');
     assert.equal(projectQuestion.result.semanticUnderstanding.authority.acceptanceImpliesVerification, false);
+    assert.equal(projectQuestion.result.semanticUnderstanding.completeness.repositoryOmissionMeansAbsent, false);
+    assert.equal(projectQuestion.result.semanticUnderstanding.expansion.nextDepth, 'expanded');
+
+    const expandedProject = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do? Go deep across the supporting systems, semantic layers, substrates, and evidence.',
+    }) as any;
+    assert.equal(expandedProject.routing.semanticDepth, 'expanded');
+    assert.equal(expandedProject.result.semanticUnderstanding.depth, 'expanded');
+    assert.ok(expandedProject.result.semanticUnderstanding.layers.derived.returned > 0);
+    assert.equal(expandedProject.result.semanticUnderstanding.completeness.claim, 'non-exhaustive-semantic-answer');
+
+    const exhaustiveProject = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+    }) as any;
+    assert.equal(exhaustiveProject.routing.semanticDepth, 'exhaustive');
+    assert.equal(exhaustiveProject.result.semanticUnderstanding.depth, 'exhaustive');
+    assert.equal(exhaustiveProject.result.semanticUnderstanding.completeness.semanticCandidateUniverseExhausted, true);
+    assert.equal(exhaustiveProject.result.semanticUnderstanding.completeness.candidateOmissionWithinExhaustedCensusMeansAbsent, true);
+
+    const explicitExpanded = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do?',
+      semanticDepth: 'expanded',
+    }) as any;
+    assert.equal(explicitExpanded.routing.semanticDepth, 'expanded');
+
+    const semanticDepthBatch = await callTool('investigate', {
+      project: fixture.project,
+      questions: [
+        'What does this project do?',
+        'What does this project do? Go deep across supporting semantic layers and substrates.',
+        'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate.',
+      ],
+    }) as any;
+    assert.deepEqual(
+      semanticDepthBatch.items.map((item: any) => item.routing.semanticDepth),
+      ['nucleus', 'expanded', 'exhaustive'],
+      'each batch question should infer semantic depth independently while sharing one graph context',
+    );
+    assert.ok(semanticDepthBatch.items.every((item: any) => item.result.graphId === semanticDepthBatch.graphId));
 
     const semanticLifecycle = await callTool('investigate', {
       project: fixture.project,
