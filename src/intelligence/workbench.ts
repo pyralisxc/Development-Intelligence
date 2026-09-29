@@ -512,6 +512,162 @@ function implementationExplorationPattern(text: string): string {
   }).join('|');
 }
 
+
+async function implementationMechanismProjection(input: {
+  project: string;
+  text: string;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  limit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const pattern = implementationExplorationPattern(input.text);
+  const source = await searchCode({
+    project: input.project,
+    ref: input.ref,
+    graphId: graph.graphId,
+    pattern,
+    regex: true,
+    context: 3,
+    limit: Math.min(Math.max(input.limit ?? 100, 1), 250),
+  }) as any;
+
+  const matches = Array.isArray(source.matches) ? source.matches : [];
+  const fileMap = new Map<string, any[]>();
+  for (const match of matches) {
+    const file = String(match.file ?? '').trim();
+    if (!file) continue;
+    const items = fileMap.get(file) ?? [];
+    items.push(match);
+    fileMap.set(file, items);
+  }
+  const matchedFiles = new Set(fileMap.keys());
+  const scopedNodes = graph.nodes.filter(node => {
+    const file = sourceFile(node.locator)?.replace(/^\.\//u, '');
+    return Boolean(file && matchedFiles.has(file));
+  });
+  const scopedIds = new Set(scopedNodes.map(node => node.id));
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+
+  const touching = graph.edges.filter(edge =>
+    Boolean(edge.from && scopedIds.has(edge.from))
+    || Boolean(edge.to && scopedIds.has(edge.to)));
+  const relationshipItems = touching
+    .map(edge => {
+      const from = edge.from ? byId.get(edge.from) : undefined;
+      const to = edge.to ? byId.get(edge.to) : undefined;
+      return {
+        edgeId: edge.id,
+        kind: edge.kind,
+        status: edge.status,
+        confidence: edge.confidence,
+        from: edge.from ? {
+          id: edge.from,
+          name: displayName(from, edge.from),
+          kind: from?.kind ?? 'unknown',
+          locator: from?.locator ?? null,
+        } : null,
+        to: edge.to ? {
+          id: edge.to,
+          name: displayName(to, edge.to),
+          kind: to?.kind ?? 'unknown',
+          locator: to?.locator ?? null,
+        } : null,
+        evidenceIds: edge.evidenceIds ?? [],
+        bothEndpointsInMatchedFiles: Boolean(edge.from && edge.to && scopedIds.has(edge.from) && scopedIds.has(edge.to)),
+      };
+    })
+    .sort((a, b) =>
+      Number(b.status === 'resolved') - Number(a.status === 'resolved')
+      || Number(b.bothEndpointsInMatchedFiles) - Number(a.bothEndpointsInMatchedFiles)
+      || a.kind.localeCompare(b.kind)
+      || String(a.edgeId).localeCompare(String(b.edgeId)));
+
+  const resolved = relationshipItems.filter(item => item.status === 'resolved');
+  const unresolved = relationshipItems.filter(item => item.status !== 'resolved');
+  const resolvedDegree = new Map<string, number>();
+  for (const edge of resolved) {
+    if (edge.from?.id && scopedIds.has(edge.from.id)) resolvedDegree.set(edge.from.id, (resolvedDegree.get(edge.from.id) ?? 0) + 1);
+    if (edge.to?.id && scopedIds.has(edge.to.id)) resolvedDegree.set(edge.to.id, (resolvedDegree.get(edge.to.id) ?? 0) + 1);
+  }
+
+  const keyEntities = scopedNodes
+    .map(node => ({
+      id: node.id,
+      name: displayName(node),
+      kind: node.kind,
+      layer: node.layer ?? 'structural',
+      locator: node.locator,
+      resolvedRelationshipCount: resolvedDegree.get(node.id) ?? 0,
+      evidenceCount: (node.evidenceIds ?? []).length,
+    }))
+    .sort((a, b) =>
+      b.resolvedRelationshipCount - a.resolvedRelationshipCount
+      || b.evidenceCount - a.evidenceCount
+      || a.name.localeCompare(b.name)
+      || a.id.localeCompare(b.id))
+    .slice(0, 20);
+
+  const decisionEvidence = matches
+    .filter((match: any) => /\b(if|else|switch|case|return|fallback|strategy|mode|select|choose|plan|shard|index|cache|exact)\b/iu.test(String(match.text ?? '')))
+    .slice(0, 30)
+    .map((match: any) => ({
+      file: match.file,
+      line: match.line,
+      text: match.text,
+      before: match.before,
+      after: match.after,
+    }));
+
+  const files = [...fileMap.entries()]
+    .map(([file, items]) => ({
+      file,
+      matchCount: items.length,
+      sample: items.slice(0, 5).map((match: any) => ({
+        line: match.line,
+        text: match.text,
+        before: match.before,
+        after: match.after,
+      })),
+    }))
+    .sort((a, b) => b.matchCount - a.matchCount || a.file.localeCompare(b.file))
+    .slice(0, 20);
+
+  const fileNames = files.slice(0, 4).map(item => item.file);
+  const summary = matches.length
+    ? String(matches.length) + ' bounded source match(es) across ' + String(fileMap.size) + ' file(s); '
+      + String(resolved.length) + ' resolved graph relationship(s) connect entities in or directly adjacent to those files'
+      + (fileNames.length ? ', led by ' + semanticNameList(fileNames, 4) : '') + '.'
+    : 'No bounded source evidence matched the requested implementation mechanism in this graph context.';
+
+  return {
+    ...source,
+    summary,
+    mechanism: {
+      pattern,
+      files,
+      keyEntities,
+      relationships: resolved.slice(0, 50),
+      decisionEvidence,
+      uncertainty: {
+        candidateRelationships: unresolved.filter(item => item.status === 'candidate').length,
+        unresolvedRelationships: unresolved.filter(item => item.status === 'unresolved').length,
+        examples: unresolved.slice(0, 20),
+      },
+      policy: {
+        deterministic: true,
+        sourceObservedOnly: true,
+        graphRelationshipsRequireObservedEdges: true,
+        runtimeExecutionProven: false,
+        productIntentInferred: false,
+        semanticAuthority: false,
+        persisted: false,
+      },
+    },
+    coverage: compactCoverage(graph),
+  };
+}
+
 export type InvestigationQuestionLane =
   | 'source-query'
   | 'interface'
@@ -1789,14 +1945,11 @@ export async function queryWorkbench(input: {
   if (sourceFallback) return sourceFallback;
 
   if (plan.lane === 'implementation-explanation') {
-    const pattern = implementationExplorationPattern(text);
-    const result = await searchCode({
+    const result = await implementationMechanismProjection({
       project: input.project,
+      text,
       ref: input.ref,
       graphId: input.graphId,
-      pattern,
-      regex: true,
-      context: 3,
       limit: 100,
     }) as any;
     return {
@@ -1804,9 +1957,9 @@ export async function queryWorkbench(input: {
       subject: null,
       routing: {
         tool: 'search_code',
-
+        projection: 'implementation-mechanism',
       },
-      answer: `${result.matches?.length ?? 0} bounded source match(es) found for the requested implementation mechanism.`,
+      answer: String(result.summary ?? 'Implementation mechanism evidence loaded.'),
       result,
     };
   }

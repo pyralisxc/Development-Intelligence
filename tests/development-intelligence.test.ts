@@ -488,7 +488,15 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(mechanism.routing.tool, 'search_code');
     assert.equal(mechanism.routing.questionPlan.lane, 'implementation-explanation');
     assert.equal(mechanism.routing.questionPlan.subjectStrategy, 'source-keyword-evidence');
+    assert.equal(mechanism.routing.projection, 'implementation-mechanism');
     assert.ok(mechanism.result.matches.length > 0, 'mechanism questions should search bounded source evidence rather than collapse into a generic evidence assessment');
+    assert.ok(mechanism.result.mechanism.files.length > 0, 'mechanism projection must group bounded source evidence by file');
+    assert.ok(mechanism.result.mechanism.keyEntities.length > 0, 'mechanism projection must identify evidence-linked entities in matched files');
+    assert.ok(mechanism.result.mechanism.relationships.length > 0, 'mechanism projection must expose resolved graph relationships instead of only raw text hits');
+    assert.ok(mechanism.result.mechanism.decisionEvidence.length > 0, 'mechanism projection must expose bounded decision evidence when source contains decision/control terms');
+    assert.equal(mechanism.result.mechanism.policy.sourceObservedOnly, true);
+    assert.equal(mechanism.result.mechanism.policy.runtimeExecutionProven, false);
+    assert.equal(mechanism.result.mechanism.policy.semanticAuthority, false);
 
     const lifecycleControl = await callTool('investigate', {
       project: fixture.project,
