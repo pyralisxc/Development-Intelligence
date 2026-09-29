@@ -395,6 +395,35 @@ if (!generalSemanticBatch.items.some(item => item.intent === 'interface') || !ge
 }
 if (semanticBatchElapsedMs > 5000) throw new Error(`CardForge five-question semantic batch exceeded 5000 ms budget: ${semanticBatchElapsedMs.toFixed(2)} ms`);
 
+const standaloneByDepth = new Map(generalSemanticQuestions.map(item => [item.semanticDepth, item]));
+for (const item of generalSemanticBatch.items.filter(item => item.intent === 'orientation')) {
+  const standalone = standaloneByDepth.get(item.routing?.semanticDepth);
+  if (!standalone) throw new Error(`CardForge batch emitted unexpected orientation depth: ${item.routing?.semanticDepth}`);
+  const batchUnderstanding = item.result?.semanticUnderstanding;
+  const batchScopes = (batchUnderstanding?.layers?.derived?.items ?? batchUnderstanding?.candidates ?? [])
+    .map(candidate => String(candidate?.scope ?? '').trim())
+    .filter(Boolean);
+  const standaloneResult = await callTool('investigate', { project, graphId: scan.graphId, question: standalone.question });
+  const standaloneUnderstanding = standaloneResult?.result?.semanticUnderstanding;
+  const standaloneScopes = (standaloneUnderstanding?.layers?.derived?.items ?? standaloneUnderstanding?.candidates ?? [])
+    .map(candidate => String(candidate?.scope ?? '').trim())
+    .filter(Boolean);
+  if (JSON.stringify(batchScopes) !== JSON.stringify(standaloneScopes)) {
+    throw new Error(`CardForge batching changed semantic content at ${item.routing?.semanticDepth} depth`);
+  }
+  if (batchUnderstanding?.source !== standaloneUnderstanding?.source) {
+    throw new Error(`CardForge batching changed semantic authority source at ${item.routing?.semanticDepth} depth`);
+  }
+}
+
+const expandedStandalone = generalSemanticBatch.items.find(item => item.routing?.semanticDepth === 'expanded');
+const exhaustiveStandalone = generalSemanticBatch.items.find(item => item.routing?.semanticDepth === 'exhaustive');
+const expandedBatchScopes = derivedScopes(expandedStandalone);
+const exhaustiveBatchScopes = new Set(derivedScopes(exhaustiveStandalone));
+if (expandedBatchScopes.some(scope => !exhaustiveBatchScopes.has(scope))) {
+  throw new Error('CardForge exhaustive batch projection must monotonically contain expanded derived scopes');
+}
+
 const queryArtifacts = buildCanonicalQueryArtifacts(graph);
 const queryArtifactBytes = serializedQueryArtifactBytes(queryArtifacts);
 const fullGraphBytes = Buffer.byteLength(JSON.stringify(graph), 'utf8');
