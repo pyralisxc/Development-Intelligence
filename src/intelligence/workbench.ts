@@ -483,6 +483,34 @@ function semanticDepthForQuestion(text: string, explicit?: SemanticQueryDepth): 
   return 'nucleus';
 }
 
+function implementationExplorationIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const asksMechanism = /\b(how|where)\b/u.test(lower);
+  const mechanism = /\b(?:rout\w*|choos\w*|select\w*|dispatch\w*|decompos\w*|inherit\w*|prevent\w*|contaminat\w*|handl\w*|resolv\w*|plann\w*|shard\w*|index\w*|load\w*|map\w*|correlat\w*)\b/u.test(lower);
+  return asksMechanism && mechanism;
+}
+
+function implementationExplorationPattern(text: string): string {
+  const stop = new Set([
+    'about', 'against', 'also', 'another', 'between', 'broader', 'choice', 'current', 'does', 'doing',
+    'evidence', 'exact', 'explain', 'from', 'graph', 'into', 'other', 'question', 'questions', 'read',
+    'reads', 'request', 'requests', 'system', 'that', 'their', 'them', 'then', 'there', 'these', 'they',
+    'this', 'those', 'what', 'when', 'where', 'which', 'with', 'without',
+  ]);
+  const words = text.match(/[A-Za-z][A-Za-z0-9_-]{3,}/gu) ?? [];
+  const stems = words
+    .map(word => word.replace(/(?:ing|edly|ed|es|s)$/iu, ''))
+    .map(word => word.length >= 5 ? word : '')
+    .filter(Boolean)
+    .filter(word => !stop.has(word.toLowerCase()));
+  const terms = [...new Set(stems)].slice(0, 10);
+  if (!terms.length) return '.+';
+  return terms.flatMap(term => {
+    const lower = term.toLowerCase();
+    const capitalized = lower.charAt(0).toUpperCase() + lower.slice(1);
+    return lower === capitalized ? [lower + '[A-Za-z0-9_-]*'] : [lower + '[A-Za-z0-9_-]*', capitalized + '[A-Za-z0-9_-]*'];
+  }).join('|');
+}
 async function repositorySemanticUnderstanding(
   project: string,
   graph: IntelligenceGraph,
@@ -1493,6 +1521,9 @@ export async function queryWorkbench(input: {
   if (!text) throw new Error('text must be non-empty');
   const lower = text.toLowerCase();
   const interfaceIntent = /\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/.test(lower);
+  const semanticLifecycleIntent =
+    /\b(semantic|meaning|meanings)\b/.test(lower)
+    && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/.test(lower);
 
   if (input.sourceId) {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
@@ -1501,6 +1532,33 @@ export async function queryWorkbench(input: {
 
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
+
+  if (!interfaceIntent && !semanticLifecycleIntent && implementationExplorationIntent(text)) {
+    const pattern = implementationExplorationPattern(text);
+    const result = await searchCode({
+      project: input.project,
+      ref: input.ref,
+      graphId: input.graphId,
+      pattern,
+      regex: true,
+      context: 3,
+      limit: 100,
+    }) as any;
+    return {
+      intent: 'implementation-explanation',
+      subject: null,
+      routing: {
+        tool: 'search_code',
+        questionPlan: {
+          lane: 'implementation-explanation',
+          semanticDepth: semanticDepthForQuestion(text, input.semanticDepth),
+          subjectStrategy: 'source-keyword-evidence',
+        },
+      },
+      answer: `${result.matches?.length ?? 0} bounded source match(es) found for the requested implementation mechanism.`,
+      result,
+    };
+  }
 
   if (/\b(what changed|changes?|diff|delta)\b/.test(lower) && !interfaceIntent) {
     const result = await diffAcceptedToWorking(input.project, input.ref);
@@ -1608,9 +1666,6 @@ export async function queryWorkbench(input: {
     };
   }
 
-  const semanticLifecycleIntent =
-    /\b(semantic|meaning|meanings)\b/.test(lower)
-    && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/.test(lower);
   if (semanticLifecycleIntent) {
     const result = await semanticLifecycleOverview(input.project);
     return {
@@ -1761,7 +1816,10 @@ function decomposeQuestionText(text: string): string[] {
     start = index + 1;
   }
   const remainder = trimmed.slice(start).trim();
-  if (pieces.length > 1 && !remainder) return pieces;
+  if (remainder && pieces.length && /^(?:(?:and|also)\s+)?(?:what|which|where|when|why|how|who|show|find|inspect|tell|explain|trace|list|does|do|is|are|can|could|would)\b/iu.test(remainder)) {
+    pieces.push(remainder);
+  }
+  if (pieces.length > 1) return pieces;
   return [trimmed];
 }
 
@@ -1835,6 +1893,7 @@ export async function queryWorkbenchRequest(input: {
   let inheritedSubjectId: string | null = null;
   for (const [index, originalQuestion] of questions.entries()) {
     const inherited = inheritedQuestion(originalQuestion, inheritedSubjectId);
+    const inheritedFromSubjectId = inherited.inherited ? inheritedSubjectId : null;
     try {
       const result = await queryWorkbench({
         project: input.project,
@@ -1854,7 +1913,7 @@ export async function queryWorkbenchRequest(input: {
         index,
         question: originalQuestion,
         resolvedQuestion: inherited.text,
-        inheritedSubject: inherited.inherited ? inheritedSubjectId : null,
+        inheritedSubject: inheritedFromSubjectId,
         status: 'ok',
         intent: result.intent ?? null,
         subject: result.subject ?? null,
@@ -1868,7 +1927,7 @@ export async function queryWorkbenchRequest(input: {
         index,
         question: originalQuestion,
         resolvedQuestion: inherited.text,
-        inheritedSubject: inherited.inherited ? inheritedSubjectId : null,
+        inheritedSubject: inheritedFromSubjectId,
         status: 'error',
         error: error instanceof Error ? error.message : String(error),
       });
