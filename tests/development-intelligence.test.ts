@@ -444,6 +444,29 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(explicit.graphId, batch.graphId);
     assert.deepEqual(explicit.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
 
+    const independentQuestions = [
+      'What is Panel?',
+      'Where is helper implemented?',
+      'What evidence supports Panel?',
+    ];
+    const independentBatch = await callTool('investigate', {
+      project: fixture.project,
+      questions: independentQuestions,
+    }) as any;
+    const independentSingles = await Promise.all(independentQuestions.map(question => callTool('investigate', {
+      project: fixture.project,
+      question,
+      graphId: independentBatch.graphId,
+    }) as any));
+    assert.equal(independentBatch.counts.error, 0);
+    for (const [index, single] of independentSingles.entries()) {
+      const item = independentBatch.items[index];
+      assert.equal(item.intent, single.intent, `batch intent drifted for independent question ${index}`);
+      assert.equal(item.routing?.tool, single.routing?.tool, `batch routing drifted for independent question ${index}`);
+      assert.equal(item.subject?.id ?? null, single.subject?.id ?? null, `batch subject drifted for independent question ${index}`);
+      assert.equal(item.answer, single.answer, `batch answer drifted for independent question ${index}`);
+    }
+
     const isolated = await queryWorkbenchRequest({
       project: fixture.project,
       questions: ['What is Panel?', 'What does definitely-not-real depend on?', 'What evidence supports it?'],
@@ -451,6 +474,9 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(isolated.items[0].status, 'ok');
     assert.equal(isolated.items[1].status, 'error');
     assert.equal(isolated.items[2].status, 'ok', 'one failed question must not poison later questions');
+    assert.equal(isolated.items[2].inheritedSubject, null, 'a failed intervening question must break stale pronoun inheritance');
+    assert.equal(isolated.items[2].resolvedQuestion, 'What evidence supports it?', 'later pronouns must remain unresolved instead of silently jumping over a failed question');
+    assert.notEqual(isolated.items[2].subject?.id ?? null, isolated.items[0].subject?.id ?? null, 'an older exact subject must not leak across a failed question');
     assert.equal(isolated.counts.error, 1);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
@@ -623,6 +649,27 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.equal(exhaustiveProject.result.semanticUnderstanding.depth, 'exhaustive');
     assert.equal(exhaustiveProject.result.semanticUnderstanding.completeness.semanticCandidateUniverseExhausted, true);
     assert.equal(exhaustiveProject.result.semanticUnderstanding.completeness.candidateOmissionWithinExhaustedCensusMeansAbsent, true);
+
+    const expandedDerived = expandedProject.result.semanticUnderstanding.layers.derived.items;
+    const exhaustiveDerived = exhaustiveProject.result.semanticUnderstanding.layers.derived.items;
+    const exhaustiveDerivedIds = new Set(exhaustiveDerived.map((item: any) => item.id));
+    assert.ok(
+      expandedDerived.every((item: any) => exhaustiveDerivedIds.has(item.id)),
+      'exhaustive depth must monotonically contain every semantic candidate surfaced by expanded depth',
+    );
+    const expandedCoreIds = expandedDerived
+      .filter((item: any) => item.coreness === 'core-candidate' && item.factuality === 'supported')
+      .map((item: any) => item.id);
+    assert.equal(
+      expandedProject.result.semanticUnderstanding.layers.derived.coreReturned,
+      expandedCoreIds.length,
+      'expanded core-return accounting must match the surfaced evidence-qualified core set',
+    );
+    assert.equal(
+      expandedProject.result.semanticUnderstanding.completeness.expandedCoreCoverageComplete,
+      true,
+      'small complete fixtures should prove expanded core coverage rather than merely imply it',
+    );
 
     const explicitExpanded = await callTool('investigate', {
       project: fixture.project,
