@@ -639,6 +639,49 @@ test('scope orientation surfaces explainable local graph structure without an op
   }
 });
 
+
+test('repository-deictic project questions outrank a colliding Project entity name', async () => {
+  const fixture = await makeFixture();
+  try {
+    await fs.writeFile(path.join(fixture.source, 'src', 'project.ts'), `
+export class Project {
+  describe() { return 'feature project'; }
+}
+`);
+    await commit(fixture.source, 'add colliding Project entity');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project);
+    assert.ok(graph.nodes.some(node => node.name === 'Project'), 'fixture must contain an entity named Project');
+
+    const general = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do?',
+    }) as any;
+    assert.equal(general.intent, 'orientation');
+    assert.equal(general.result.scope.kind, 'repository');
+    assert.ok(general.result.semanticUnderstanding);
+
+    const possessive = await callTool('investigate', {
+      project: fixture.project,
+      question: "What are this project's major capabilities?",
+    }) as any;
+    assert.equal(possessive.intent, 'orientation');
+    assert.equal(possessive.result.scope.kind, 'repository');
+    assert.ok(possessive.result.semanticUnderstanding);
+
+    const explicitEntity = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does Project do?',
+    }) as any;
+    assert.equal(explicitEntity.intent, 'orientation');
+    assert.equal(explicitEntity.result.scope.kind, 'entity', 'an explicit Project entity question must remain entity-scoped');
+    assert.equal(explicitEntity.result.scope.value, graph.nodes.find(node => node.name === 'Project')?.id);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('semantic audit exposes factuality and core facets without changing semantic authority', async () => {
   const fixture = await makeFixture();
   try {

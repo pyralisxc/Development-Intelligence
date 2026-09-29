@@ -1538,7 +1538,9 @@ export async function queryWorkbench(input: {
       const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
       if (pathMatch) requestedScope = pathMatch[0]!;
     }
-    if (!requestedScope) {
+    const repositoryDeictic = !requestedScope
+      && /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text);
+    if (!requestedScope && !repositoryDeictic) {
       const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi]);
       if (!resolved.ambiguous && resolved.node) requestedScope = resolved.node.id;
     }
