@@ -17,8 +17,13 @@ interface CachedAppToken {
 const appTokenCache = new Map<string, CachedAppToken>();
 const ownerAppTokenCache = new Map<string, CachedAppToken>();
 
-export interface GithubInstallationRepository {
+export interface GithubRepositoryIdentity {
   owner: string;
+  name: string;
+}
+
+export interface GithubInstallationRepository
+  extends GithubRepositoryIdentity {
   name: string;
   fullName: string;
   defaultBranch: string;
@@ -286,7 +291,7 @@ function safeRepositoryPath(value: string): string {
 }
 
 export async function inspectGithubRepositoryPathAtRevision(
-  repository: GithubInstallationRepository,
+  repository: GithubRepositoryIdentity,
   relativePath: string,
   revision: string,
 ): Promise<{ revision: string; entries: GithubRepositoryPathEntry[] }> {

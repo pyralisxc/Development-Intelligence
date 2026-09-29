@@ -14,6 +14,7 @@ import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.j
 import { parseSemanticReviewCommand, reviewSemanticMeaning, semanticReviewSurface } from './intelligence/semanticWorkflow.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { withVercelRequestContext } from './vercelRequestContext.js';
+import { handleAscEvidenceBridgeRequest } from './ascAuthority.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
@@ -170,6 +171,7 @@ export function createDevelopmentIntelligenceServer() {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;
     }
+    if (await handleAscEvidenceBridgeRequest(req, res, requestUrl)) return;
     if (await handleOAuthHttpRequest(req, res, requestUrl)) return;
     if (requestUrl.pathname === '/login' && (authMode() === 'private' || authMode() === 'oauth')) {
       const returnTo = normalizeReturnTo(requestUrl.searchParams.get('returnTo'));
