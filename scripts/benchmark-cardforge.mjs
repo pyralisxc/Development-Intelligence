@@ -361,6 +361,37 @@ const generalSemanticQuestions = [
   ),
 ];
 
+const semanticBatchQuestions = [
+  'What does this project do?',
+  'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
+  'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+  'What changes when this Studio control is activated in src/features/creator-workbench?',
+  'How is feature:card-generator capability realized?',
+];
+const semanticBatchStarted = process.hrtime.bigint();
+const generalSemanticBatch = await callTool('investigate', {
+  project,
+  graphId: scan.graphId,
+  questions: semanticBatchQuestions,
+});
+const semanticBatchElapsedMs = Number(process.hrtime.bigint() - semanticBatchStarted) / 1_000_000;
+if (generalSemanticBatch.intent !== 'batch' || generalSemanticBatch.request?.questionCount !== semanticBatchQuestions.length) {
+  throw new Error(`CardForge semantic batch did not preserve the requested question set: ${JSON.stringify(generalSemanticBatch.request)}`);
+}
+if (generalSemanticBatch.graphId !== scan.graphId || generalSemanticBatch.items.some(item => item.status !== 'ok')) {
+  throw new Error(`CardForge semantic batch did not stay on one successful graph context: ${JSON.stringify(generalSemanticBatch.counts)}`);
+}
+const batchOrientationDepths = generalSemanticBatch.items
+  .filter(item => item.intent === 'orientation')
+  .map(item => item.routing?.semanticDepth);
+if (JSON.stringify(batchOrientationDepths) !== JSON.stringify(['nucleus', 'expanded', 'exhaustive'])) {
+  throw new Error(`CardForge semantic batch lost per-question depth: ${JSON.stringify(batchOrientationDepths)}`);
+}
+if (!generalSemanticBatch.items.some(item => item.intent === 'interface') || !generalSemanticBatch.items.some(item => item.intent === 'intelligence')) {
+  throw new Error(`CardForge semantic batch did not preserve mixed investigation lanes: ${JSON.stringify(generalSemanticBatch.items.map(item => item.intent))}`);
+}
+if (semanticBatchElapsedMs > 5000) throw new Error(`CardForge five-question semantic batch exceeded 5000 ms budget: ${semanticBatchElapsedMs.toFixed(2)} ms`);
+
 const queryArtifacts = buildCanonicalQueryArtifacts(graph);
 const queryArtifactBytes = serializedQueryArtifactBytes(queryArtifacts);
 const fullGraphBytes = Buffer.byteLength(JSON.stringify(graph), 'utf8');
@@ -759,6 +790,14 @@ const report = {
   generalSemanticQuestions: {
     stage: 'T3-general-questions',
     probes: generalSemanticQuestions,
+    batch: {
+      questionCount: semanticBatchQuestions.length,
+      elapsedMs: Number(semanticBatchElapsedMs.toFixed(3)),
+      graphId: generalSemanticBatch.graphId,
+      errorCount: generalSemanticBatch.counts.error,
+      intents: generalSemanticBatch.items.map(item => item.intent),
+      orientationDepths: batchOrientationDepths,
+    },
     supportedDepths: ['nucleus', 'expanded', 'exhaustive'],
     latencyBudgetMs: 2000,
     policy: {
@@ -932,6 +971,7 @@ const summary = [
   `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Reviewed semantic correction burden: **${semanticCorrection.affectedScopeCount} affected scope(s) / ${semanticCorrection.reviewedRequiredCount} required concepts (${(semanticCorrection.rate * 100).toFixed(0)}%)**`,
   `- T3 semantic query depth: **nucleus + expanded + exhaustive / expanded reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive census=${generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted === true} / max ${Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)).toFixed(3)} ms / 1 external DI call each**`,
+  `- Mixed semantic batch: **${semanticBatchQuestions.length} questions / one graph context / intents ${[...new Set(generalSemanticBatch.items.map(item => item.intent))].join(', ')} / depths ${batchOrientationDepths.join(' → ')} / ${semanticBatchElapsedMs.toFixed(3)} ms / errors ${generalSemanticBatch.counts.error}**`,
   `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; full exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id)}; 100→full stable=${semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
   `- Semantic factuality/core audit: **${semanticAudit.counts.factualitySupported} factuality-supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core-candidate / ${semanticAudit.counts.supportingCandidates} supporting-candidate / ${semanticAuditElapsedMs.toFixed(3)} ms**`,
   `- Semantic identity evolution: **${semanticEvolutionResults.length} reviewed parent concepts → head; ${semanticEvolutionResults.filter(item => item.status === 'preserved').length} preserved / ${semanticEvolutionResults.filter(item => item.status === 'realization-changed').length} realization-changed / ${semanticEvolutionResults.filter(item => item.status === 'renamed').length} renamed / ${semanticEvolutionResults.filter(item => item.reviewRequired).length} require review / ${semanticEvolutionElapsedMs.toFixed(3)} ms**`,
