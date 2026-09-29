@@ -58,7 +58,7 @@
       "product": "AI Code Review",
       "category": "code-review",
       "sourceUrl": "https://www.greptile.com/benchmarks",
-      "publishedDate": "2025-07-01",
+      "evaluationPeriod": "2025-07",
       "observedDate": "2026-09-28",
       "claim": {
         "summary": "Greptile reports an 82% bug-catch rate on 50 real-world bugs across five public repositories.",
