@@ -511,6 +511,115 @@ function implementationExplorationPattern(text: string): string {
     return lower === capitalized ? [lower + '[A-Za-z0-9_-]*'] : [lower + '[A-Za-z0-9_-]*', capitalized + '[A-Za-z0-9_-]*'];
   }).join('|');
 }
+
+export type InvestigationQuestionLane =
+  | 'source-query'
+  | 'interface'
+  | 'semantic-lifecycle'
+  | 'implementation-explanation'
+  | 'change'
+  | 'coverage'
+  | 'parity'
+  | 'implementation-claim'
+  | 'code'
+  | 'semantic-audit'
+  | 'orientation'
+  | 'trace'
+  | 'evidence'
+  | 'overview'
+  | 'entity';
+
+export type InvestigationQuestionProofMode = 'descriptive' | 'evidence' | 'claim';
+export type InvestigationQuestionSubjectStrategy =
+  | 'external-source'
+  | 'repository'
+  | 'scope-or-entity'
+  | 'source-keyword-evidence'
+  | 'entity-or-query';
+
+export interface InvestigationQuestionPlan {
+  lane: InvestigationQuestionLane;
+  semanticDepth: SemanticQueryDepth;
+  proofMode: InvestigationQuestionProofMode;
+  subjectStrategy: InvestigationQuestionSubjectStrategy;
+  completeness: 'bounded' | SemanticQueryDepth;
+  continuity: 'immediate-exact-pronoun-only';
+}
+
+export function planInvestigationQuestion(input: {
+  text: string;
+  sourceId?: string;
+  semanticDepth?: SemanticQueryDepth;
+}): InvestigationQuestionPlan {
+  const text = input.text.trim();
+  if (!text) throw new Error('text must be non-empty');
+  const lower = text.toLowerCase();
+  const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
+  const interfaceIntent = /\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/u.test(lower);
+  const semanticLifecycleIntent =
+    /\b(semantic|meaning|meanings)\b/u.test(lower)
+    && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/u.test(lower);
+  const repositorySemanticOrientationIntent =
+    /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text)
+    && /\b(main|major|moving parts|wide view|orientation|orient|overview|what does .+ do)\b/u.test(lower);
+  const semanticAuditIntent =
+    !repositorySemanticOrientationIntent
+    && (
+      /\b(semantic factuality|semantic meaning|semantic meanings|semantic candidate|semantic candidates|over[- ]?deriv|over[- ]?expand|core capabilities|core concepts|core meanings|supporting meanings|supporting capabilities)\b/u.test(lower)
+      || (/\bsemantic\b/u.test(lower) && /\b(core|supporting|factual|factuality|audit|meaning|candidate|candidates)\b/u.test(lower))
+    );
+  const orientationIntent = /\b(main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|overview of|what does .+ do)\b/u.test(lower);
+  const implementationClaimIntent = /\b(write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|write back|accepted graph|accepted checkpoint)\b/u.test(lower);
+  const codeIntent = /\b(code|source|implementation|implemented)\b/u.test(lower);
+  const traceIntent = /\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/u.test(lower);
+  const evidenceIntent = /\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/u.test(lower);
+  const claimIntent = /\b(no|none|not|only|second|absent|missing|without|actually|whether|cannot|can't)\b/u.test(lower);
+
+  let lane: InvestigationQuestionLane;
+  if (input.sourceId) lane = 'source-query';
+  else if (interfaceIntent) lane = 'interface';
+  else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
+  else if (implementationExplorationIntent(text)) lane = 'implementation-explanation';
+  else if (/\b(what changed|changes?|diff|delta)\b/u.test(lower)) lane = 'change';
+  else if (/\bcoverage\b/u.test(lower)) lane = 'coverage';
+  else if (/\bparity\b/u.test(lower)) lane = 'parity';
+  else if (implementationClaimIntent) lane = 'implementation-claim';
+  else if (codeIntent) lane = 'code';
+  else if (semanticAuditIntent) lane = 'semantic-audit';
+  else if (orientationIntent) lane = 'orientation';
+  else if (traceIntent) lane = 'trace';
+  else if (evidenceIntent) lane = 'evidence';
+  else if (/\b(overview|summary|summarize|project status|what is this project)\b/u.test(lower)) lane = 'overview';
+  else lane = 'entity';
+
+  const proofMode: InvestigationQuestionProofMode =
+    lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
+      ? 'claim'
+      : lane === 'evidence'
+        ? 'evidence'
+        : 'descriptive';
+
+  const subjectStrategy: InvestigationQuestionSubjectStrategy =
+    lane === 'source-query'
+      ? 'external-source'
+      : lane === 'implementation-explanation'
+        ? 'source-keyword-evidence'
+        : lane === 'interface' || lane === 'orientation'
+          ? 'scope-or-entity'
+          : ['semantic-lifecycle', 'semantic-audit', 'change', 'coverage', 'overview'].includes(lane)
+            ? 'repository'
+            : 'entity-or-query';
+
+  return {
+    lane,
+    semanticDepth,
+    proofMode,
+    subjectStrategy,
+    completeness: lane === 'orientation' ? semanticDepth : 'bounded',
+    continuity: 'immediate-exact-pronoun-only',
+  };
+}
+
 async function repositorySemanticUnderstanding(
   project: string,
   graph: IntelligenceGraph,
@@ -1520,10 +1629,12 @@ export async function queryWorkbench(input: {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
   const lower = text.toLowerCase();
-  const interfaceIntent = /\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/.test(lower);
-  const semanticLifecycleIntent =
-    /\b(semantic|meaning|meanings)\b/.test(lower)
-    && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/.test(lower);
+  const plan = planInvestigationQuestion({
+    text,
+    ...(input.sourceId ? { sourceId: input.sourceId } : {}),
+    ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
+  });
+  const result = await (async (): Promise<Record<string, unknown>> => {
 
   if (input.sourceId) {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
@@ -1533,7 +1644,7 @@ export async function queryWorkbench(input: {
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
 
-  if (!interfaceIntent && !semanticLifecycleIntent && implementationExplorationIntent(text)) {
+  if (plan.lane === 'implementation-explanation') {
     const pattern = implementationExplorationPattern(text);
     const result = await searchCode({
       project: input.project,
@@ -1560,19 +1671,19 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (/\b(what changed|changes?|diff|delta)\b/.test(lower) && !interfaceIntent) {
+  if (plan.lane === 'change') {
     const result = await diffAcceptedToWorking(input.project, input.ref);
     const counts = semanticDiffCounts(result);
     return { intent: 'change', subject: null, routing: { tool: 'diff_graph' }, answer: `Accepted → working semantic change: ${counts.added} added, ${counts.removed} removed, ${counts.changed} changed records.`, result };
   }
 
-  if (/\bcoverage\b/.test(lower)) {
+  if (plan.lane === 'coverage') {
     const result = await graphCoverage(input.project, input.ref, input.graphId);
     const coverage = result as any;
     return { intent: 'coverage', subject: null, routing: { tool: 'check_graph_coverage' }, answer: `Coverage: ${coverage.completeFiles ?? '?'} complete, ${coverage.partialFiles ?? '?'} partial, ${coverage.failedFiles ?? '?'} failed, ${coverage.skippedFiles ?? '?'} skipped files.`, result };
   }
 
-  if (/\bparity\b/.test(lower)) {
+  if (plan.lane === 'parity') {
     const resolved = await resolveInvestigationSubject(input, text, [/\b(show|find|inspect|query|parity|for|of|what|is|the)\b/gi]);
     const subject = resolved.node?.id ?? resolved.query ?? undefined;
     const result = await parityLens({ project: input.project, ref: input.ref, graphId: input.graphId, query: subject, limit: 100 }) as any;
@@ -1585,7 +1696,7 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (/\b(code|source|implementation|implemented)\b/.test(lower)) {
+  if (plan.lane === 'code') {
     const resolved = await resolveInvestigationSubject(input, text, [/\b(show|show me|find|search|code|source|implementation|implemented|for|of|where|is|the)\b/gi]);
     if (resolved.ambiguous) {
       return { intent: 'code', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'get_code_snippet' }, answer: 'The requested implementation subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
@@ -1605,7 +1716,7 @@ export async function queryWorkbench(input: {
     }
   }
 
-  if (/\b(write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|write back|accepted graph|accepted checkpoint)\b/.test(lower)) {
+  if (plan.lane === 'implementation-claim') {
     const resolved = await resolveInvestigationSubject(input, text, [/\b(where|what|which|how|does|do|is|are|write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|back|into|the|an|a)\b/gi]);
     if (!resolved.ambiguous && resolved.node) {
       const terms = [resolved.node.name ?? '', 'writeCheckpoint', 'sealLocalGraph', 'accepted', 'persist']
@@ -1623,7 +1734,7 @@ export async function queryWorkbench(input: {
     }
   }
 
-  if (interfaceIntent) {
+  if (plan.lane === 'interface') {
     let requestedScope = input.scope?.trim() || '';
     if (!requestedScope) {
       const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
@@ -1666,7 +1777,7 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (semanticLifecycleIntent) {
+  if (plan.lane === 'semantic-lifecycle') {
     const result = await semanticLifecycleOverview(input.project);
     return {
       intent: 'semantic-lifecycle',
@@ -1677,17 +1788,7 @@ export async function queryWorkbench(input: {
     };
   }
 
-  const repositorySemanticOrientationIntent =
-    /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text)
-    && /\b(main|major|moving parts|wide view|orientation|orient|overview|what does .+ do)\b/u.test(lower);
-
-  if (
-    !repositorySemanticOrientationIntent
-    && (
-      /\b(semantic factuality|semantic meaning|semantic meanings|semantic candidate|semantic candidates|over[- ]?deriv|over[- ]?expand|core capabilities|core concepts|core meanings|supporting meanings|supporting capabilities)\b/.test(lower)
-      || (/\bsemantic\b/.test(lower) && /\b(core|supporting|factual|factuality|audit|meaning|candidate|candidates)\b/.test(lower))
-    )
-  ) {
+  if (plan.lane === 'semantic-audit') {
     const result = await semanticAudit({
       project: input.project,
       ref: input.ref,
@@ -1704,7 +1805,7 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (/\b(main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|overview of|what does .+ do)\b/.test(lower)) {
+  if (plan.lane === 'orientation') {
     let requestedScope = input.scope?.trim() || '';
     if (!requestedScope) {
       const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
@@ -1743,7 +1844,7 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (/\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/.test(lower)) {
+  if (plan.lane === 'trace') {
     const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi]);
     if (resolved.ambiguous) {
       return { intent: 'trace', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'trace_path' }, answer: 'The relationship subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
@@ -1764,9 +1865,9 @@ export async function queryWorkbench(input: {
     }
   }
 
-  if (/\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/.test(lower)) {
+  if (plan.lane === 'evidence') {
     const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi]);
-    const claimNeedsAssessment = /\b(no|none|not|only|second|absent|missing|without|actually|whether|cannot|can't)\b/.test(lower);
+    const claimNeedsAssessment = plan.proofMode === 'claim';
     if (!claimNeedsAssessment && !resolved.ambiguous && resolved.node && /\b(evidence|supports?|supporting|proof|prove)\b/.test(lower)) {
       const result = await inspectEntity({ project: input.project, node: resolved.node.id, ref: input.ref, graphId: input.graphId });
       return { intent: 'evidence', subject: subjectDescriptor(resolved.node, resolved.query), routing: { tool: 'inspect_entity' }, answer: `Evidence and resolved context loaded for “${displayName(resolved.node)}”.`, result };
@@ -1781,7 +1882,7 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (/\b(overview|summary|summarize|project status|what is this project)\b/.test(lower)) {
+  if (plan.lane === 'overview') {
     const result = await projectOverview(input.project, input.ref, input.graphId);
     return { intent: 'overview', subject: null, routing: { tool: 'project_overview' }, answer: String(result.summary ?? `${input.project} overview`), result };
   }
@@ -1801,6 +1902,17 @@ export async function queryWorkbench(input: {
     return { intent: 'inspect', subject: subjectDescriptor(result.nodes[0], query), routing: { tool: 'inspect_entity' }, answer: String(inspected.summary ?? `Found ${query}.`), result: inspected };
   }
   return { intent: 'search', subject: subjectDescriptor(null, query), routing: { tool: 'search_graph' }, answer: `${result.nodeTotal ?? result.nodes?.length ?? 0} entities match “${query}”.`, result };
+  })();
+  const routing = result.routing && typeof result.routing === 'object'
+    ? result.routing as Record<string, unknown>
+    : {};
+  return {
+    ...result,
+    routing: {
+      ...routing,
+      questionPlan: plan,
+    },
+  };
 }
 
 
