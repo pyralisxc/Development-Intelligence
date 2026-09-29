@@ -392,7 +392,7 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
 
 function orientationMetric(
   node: GraphNode,
-  graph: IntelligenceGraph,
+  byId: ReadonlyMap<string, GraphNode>,
   incident: GraphEdge[],
   rankBy: ScopeRankBy,
 ): {
@@ -409,7 +409,6 @@ function orientationMetric(
   callees: number;
   rankValue: number;
 } {
-  const byId = new Map(graph.nodes.map(item => [item.id, item]));
   const resolved = incident.filter(edge => edge.status === 'resolved');
   const neighborFiles = new Set<string>();
   const neighborAreas = new Set<string>();
@@ -743,7 +742,7 @@ export async function scopeOrientation(input: {
 
   const preferredKinds = new Set(['feature','capability','route','api','mcp','provider','file','function','method','class','interface','constructor']);
   const ranked = nodes
-    .map(node => ({ node, metrics: orientationMetric(node, graph, incidentByNode.get(node.id) ?? [], rankBy) }))
+    .map(node => ({ node, metrics: orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy) }))
     .sort((a, b) =>
       b.metrics.rankValue - a.metrics.rankValue
       || Number(preferredKinds.has(b.node.kind)) - Number(preferredKinds.has(a.node.kind))
