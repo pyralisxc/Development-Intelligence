@@ -1849,7 +1849,7 @@ export async function queryWorkbenchRequest(input: {
       const subjectId = result?.subject && result.subject.ambiguous !== true && typeof result.subject.id === 'string'
         ? result.subject.id
         : null;
-      if (subjectId) inheritedSubjectId = subjectId;
+      inheritedSubjectId = subjectId;
       items.push({
         index,
         question: originalQuestion,
@@ -1863,6 +1863,7 @@ export async function queryWorkbenchRequest(input: {
         result: result.result ?? null,
       });
     } catch (error) {
+      inheritedSubjectId = null;
       items.push({
         index,
         question: originalQuestion,
@@ -1894,10 +1895,11 @@ export async function queryWorkbenchRequest(input: {
     },
     policy: {
       deterministicDecomposition: true,
-      inheritedSubjectOnlyFromExactPriorResult: true,
+      inheritedSubjectOnlyFromImmediateExactPriorResult: true,
+      failedOrSubjectlessQuestionClearsInheritance: true,
       failureIsolation: true,
       persisted: false,
-      note: 'Each question is routed independently over one pinned graph context. Prior exact subjects may resolve simple pronouns; ambiguous or failed questions never become graph authority.',
+      note: 'Each question is routed independently over one pinned graph context. Only the immediately prior successful exact subject may resolve simple pronouns; failed, ambiguous, repository-level, and other subjectless questions clear inheritance.',
     },
   };
 }
