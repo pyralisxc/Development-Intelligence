@@ -21,6 +21,8 @@ import {
   type SemanticReviewActor,
 } from './semanticReview.js';
 import { graphContext } from './service.js';
+import { resolveProjectRevision } from '../source/git.js';
+import { buildSemanticPromotionGate } from './semanticPromotion.js';
 
 export type SemanticReviewCommand =
   | {
@@ -505,10 +507,24 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
     ...(input.graphId ? { graphId: input.graphId } : {}),
   });
   const bootstrap = bootstrapSemanticCandidates(graph, { limit });
+  const fullBootstrap = limit === 1000 ? bootstrap : bootstrapSemanticCandidates(graph, { limit: 1000 });
   const authority = await loadSemanticAuthority(input.project);
   const reviews = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision);
   const reviewsByCandidate = new Map(reviews.map(review => [review.candidateId, review]));
   const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
+  const defaultRevision = await resolveProjectRevision(input.project);
+  const targetIsCurrentAcceptedAuthority = defaultRevision.sha === graph.repositoryRevision
+    && reviews.some(review => review.accepted)
+    && acceptedMeanings.length === 0;
+  const promotionAudit = targetIsCurrentAcceptedAuthority
+    ? null
+    : buildSemanticPromotionGate({
+        baseMeanings: acceptedMeanings,
+        previewCandidates: fullBootstrap.candidates,
+        previewReviews: reviews,
+        baseRevision: defaultRevision.sha === graph.repositoryRevision ? null : defaultRevision.sha,
+        previewRevision: graph.repositoryRevision,
+      });
 
   return {
     version: 1,
@@ -521,10 +537,18 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
     candidates: bootstrap.candidates.map(candidate => ({
       ...candidate,
       review: reviewsByCandidate.get(candidate.id) ?? null,
-      continuity: semanticReviewContinuity(candidate, bootstrap.candidates, acceptedMeanings),
+      continuity: semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings),
       aiProposalPacket: semanticAiProposalPacket(candidate),
     })),
     capacity: bootstrap.capacity,
+    promotionAudit,
+    promotionAuditBasis: {
+      currentDefaultRevision: defaultRevision.sha,
+      targetRevision: graph.repositoryRevision,
+      targetIsCurrentAcceptedAuthority,
+      candidateUniverseEligible: fullBootstrap.capacity.eligibleCandidateCount,
+      candidateUniverseExhausted: fullBootstrap.capacity.exhausted,
+    },
     authority: authoritySummary(authority),
     policy: {
       stage: 'T2-review-surface',
@@ -539,6 +563,8 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       aiProposalProviderNeutral: true,
       aiProposalRequiresOwnerImport: true,
       modelOutputAcceptedAutomatically: false,
+      promotionAuditItemized: true,
+      promotionAuditDesiredOutcomeInferred: false,
       acceptedGraphAffected: false,
     },
   };
