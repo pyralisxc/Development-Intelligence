@@ -140,7 +140,7 @@ test('old Main human acceptance does not approve a new Preview semantic change',
   assert.equal(gate.policy.previousRevisionApprovalDoesNotApprovePreviewDelta, true);
 });
 
-test('AI verification can approve a Preview semantic delta without becoming acceptance', () => {
+test('AI verification strengthens evidence but does not approve a Preview semantic delta', () => {
   const main = accepted(candidate({
     id: 'candidate:studio',
     scope: 'src/features/studio',
@@ -171,12 +171,13 @@ test('AI verification can approve a Preview semantic delta without becoming acce
   });
 
   assert.equal(verified.accepted, false);
-  assert.equal(gate.items[0]?.approved, true);
+  assert.equal(gate.items[0]?.approved, false);
   assert.deepEqual(gate.items[0]?.approvalBases, ['ai-verified']);
-  assert.equal(gate.readyForMainSemanticPromotion, true);
+  assert.equal(gate.readyForMainSemanticPromotion, false);
+  assert.equal(gate.policy.verificationDoesNotApprovePromotion, true);
 });
 
-test('human acceptance or human verification independently satisfy Preview semantic promotion', () => {
+test('current-revision human acceptance satisfies Preview semantic promotion while verification alone does not', () => {
   const newAcceptedCandidate = candidate({
     id: 'candidate:new-accepted',
     scope: 'src/features/new-accepted',
@@ -210,8 +211,10 @@ test('human acceptance or human verification independently satisfy Preview seman
     previewRevision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   });
 
-  assert.equal(gate.pendingCount, 0);
-  assert.equal(gate.readyForMainSemanticPromotion, true);
+  assert.equal(gate.pendingCount, 1);
+  assert.equal(gate.readyForMainSemanticPromotion, false);
+  assert.equal(gate.items.find(item => item.name === 'New Accepted')?.approved, true);
+  assert.equal(gate.items.find(item => item.name === 'New Verified')?.approved, false);
   assert.deepEqual(
     gate.items.flatMap(item => item.approvalBases).sort(),
     ['human-accepted', 'human-verified'],

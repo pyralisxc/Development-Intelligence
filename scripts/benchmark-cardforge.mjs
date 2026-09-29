@@ -185,9 +185,8 @@ try {
   const parentBootstrap = bootstrapSemanticCandidates(parentGraph, { limit: 1000 });
   for (const scope of semanticEvolutionScopes) {
     const before = parentBootstrap.candidates.find(candidate => candidate.scope === scope);
-    const after = semanticBootstrap.candidates.find(candidate => candidate.scope === scope);
+    const after = semanticBootstrap.candidates.find(candidate => candidate.scope === scope) ?? null;
     if (!before) throw new Error(`CardForge semantic evolution benchmark lost reviewed parent concept ${scope}`);
-    if (!after) throw new Error(`CardForge semantic evolution benchmark lost reviewed head concept ${scope}`);
     const reviewed = applySemanticReviewAction(semanticMeaningReview(before), {
       kind: 'accept',
       actor: { kind: 'imported-assertion', id: 'benchmark:reviewed-semantic-universe' },
@@ -195,15 +194,23 @@ try {
       rationale: 'Ephemeral benchmark acceptance over independently reviewed semantic ground truth.',
     });
     const evolution = evaluateSemanticEvolution(reviewed, semanticBootstrap.candidates, actualSha);
-    if (['unsupported', 'ambiguous', 'weakened'].includes(evolution.status)) {
-      throw new Error(`CardForge semantic identity regression for ${scope}: ${JSON.stringify(evolution)}`);
+    const allowedStatuses = new Set(['preserved', 'realization-changed', 'renamed', 'weakened', 'unsupported', 'ambiguous']);
+    if (!allowedStatuses.has(evolution.status)) {
+      throw new Error(`CardForge semantic evolution produced an unknown status for ${scope}: ${JSON.stringify(evolution)}`);
     }
-    if (evolution.meaningId !== reviewed.meaningId) throw new Error(`CardForge stable semantic meaning identity changed for ${scope}`);
+    if (evolution.matchedCandidate && !semanticBootstrap.candidates.some(candidate => candidate.id === evolution.matchedCandidate?.id)) {
+      throw new Error(`CardForge semantic evolution returned a candidate outside current head truth for ${scope}`);
+    }
+    if (evolution.status === 'unsupported' && (evolution.matchedCandidate !== null || evolution.reviewRequired !== true)) {
+      throw new Error(`CardForge unsupported semantic transition must be explicit and reviewable for ${scope}: ${JSON.stringify(evolution)}`);
+    }
     semanticEvolutionResults.push({
       scope,
       meaningId: reviewed.meaningId,
       status: evolution.status,
       reviewRequired: evolution.reviewRequired,
+      parentCandidateId: before.id,
+      headCandidateId: after?.id ?? null,
       matchedCandidateId: evolution.matchedCandidate?.id ?? null,
       supportDelta: evolution.supportDelta,
     });
@@ -1048,7 +1055,7 @@ const summary = [
   `- Mixed semantic batch: **${semanticBatchQuestions.length} questions / one graph context / intents ${[...new Set(generalSemanticBatch.items.map(item => item.intent))].join(', ')} / depths ${batchOrientationDepths.join(' → ')} / ${semanticBatchElapsedMs.toFixed(3)} ms / errors ${generalSemanticBatch.counts.error}**`,
   `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; full exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id)}; 100→full stable=${semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
   `- Semantic factuality/core audit: **${semanticAudit.counts.factualitySupported} factuality-supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core-candidate / ${semanticAudit.counts.supportingCandidates} supporting-candidate / ${semanticAuditElapsedMs.toFixed(3)} ms**`,
-  `- Semantic identity evolution: **${semanticEvolutionResults.length} reviewed parent concepts → head; ${semanticEvolutionResults.filter(item => item.status === 'preserved').length} preserved / ${semanticEvolutionResults.filter(item => item.status === 'realization-changed').length} realization-changed / ${semanticEvolutionResults.filter(item => item.status === 'renamed').length} renamed / ${semanticEvolutionResults.filter(item => item.reviewRequired).length} require review / ${semanticEvolutionElapsedMs.toFixed(3)} ms**`,
+  `- Semantic revision interpretation: **${semanticEvolutionResults.length} reviewed parent concepts independently evaluated against head; ${semanticEvolutionResults.map(item => item.status).join(' / ')} / ${semanticEvolutionResults.filter(item => item.reviewRequired).length} require review / ${semanticEvolutionElapsedMs.toFixed(3)} ms**`,
   `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,

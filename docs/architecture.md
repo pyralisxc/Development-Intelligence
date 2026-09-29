@@ -143,6 +143,8 @@ Canonical persistence records exact revision identity and independent currentnes
 
 Accepted semantic A can remain semantically current across implementation-only movement when topology remains equivalent; source/evidence/analyzer movement is reported independently. A current revision with a changed semantic delta requires current-revision review before promotion.
 
+Semantic review persistence is a current-authority working set, not a historical warehouse. Preview may temporarily hold base + candidate review/lineage records while deciding the next accepted state. Successful semantic promotion compacts those records to the latest active accepted meanings and removes transition event history/lineage scaffolding. Exact historical understanding comes from replaying the requested Git revision and, when needed, comparing immutable revisions ephemerally.
+
 The deterministic `.development-intelligence/` manifest/shard format remains an internal self-seal and legacy migration/compatibility format. Its content-integrity checks are still tested, but inspected repositories must not use it as a parallel machine semantic authority.
 
 ## Exact revision context

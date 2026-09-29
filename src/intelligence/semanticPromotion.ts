@@ -36,7 +36,8 @@ export interface SemanticPromotionGate {
     stableMeaningsOmitted: true;
     previousRevisionApprovalDoesNotApprovePreviewDelta: true;
     acceptedIsNotVerified: true;
-    approvalAlternatives: readonly ['ai-verified', 'human-accepted', 'human-verified'];
+    approvalAlternatives: readonly ['human-accepted'];
+    verificationDoesNotApprovePromotion: true;
     persisted: false;
     acceptedGraphAffected: false;
   };
@@ -90,6 +91,7 @@ export function buildSemanticPromotionGate(input: {
     const candidate = evolution.matchedCandidate;
     const review = previewReviewForMeaning(previewReviews, base.meaningId, candidate?.id ?? null);
     const approvalBases = reviewApprovalBases(review, input.previewRevision);
+    const approved = approvalBases.includes('human-accepted');
     items.push({
       changeId: changeId(evolution.status, base.meaningId, input.previewRevision),
       changeKind: evolution.status,
@@ -102,7 +104,7 @@ export function buildSemanticPromotionGate(input: {
       reviewRequired: true,
       approvalRequired: true,
       approvalBases,
-      approved: approvalBases.length > 0,
+      approved,
       reasons: evolution.reasons,
       evolution,
     });
@@ -116,6 +118,7 @@ export function buildSemanticPromotionGate(input: {
     );
     const review = existingReview ?? semanticMeaningReview(candidate);
     const approvalBases = reviewApprovalBases(existingReview, input.previewRevision);
+    const approved = approvalBases.includes('human-accepted');
     items.push({
       changeId: changeId('added', review.meaningId, input.previewRevision),
       changeKind: 'added',
@@ -128,7 +131,7 @@ export function buildSemanticPromotionGate(input: {
       reviewRequired: true,
       approvalRequired: true,
       approvalBases,
-      approved: approvalBases.length > 0,
+      approved,
       reasons: ['New evidence-qualified semantic candidate exists on Preview but was not matched to an accepted Main meaning'],
       evolution: null,
     });
@@ -156,7 +159,8 @@ export function buildSemanticPromotionGate(input: {
       stableMeaningsOmitted: true,
       previousRevisionApprovalDoesNotApprovePreviewDelta: true,
       acceptedIsNotVerified: true,
-      approvalAlternatives: ['ai-verified', 'human-accepted', 'human-verified'],
+      approvalAlternatives: ['human-accepted'],
+      verificationDoesNotApprovePromotion: true,
       persisted: false,
       acceptedGraphAffected: false,
     },

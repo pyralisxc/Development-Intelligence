@@ -18,7 +18,7 @@ Parity Contract tests protect the boundary between caller intent and observed tr
 
 ### Git-owned A/W/B lifecycle
 
-Accepted semantic A and review history live in DI canonical persistence for inspected projects. Currentness is dimensional: semantic topology can remain accepted across implementation-only source movement while evidence/analyzer drift is reported separately rather than manufacturing product drift.
+Current accepted semantic A and the temporary Preview review state needed to establish it live in DI canonical persistence for inspected projects. Successful promotion compacts that review working set back to current accepted meaning; historical semantic audits are reconstructed from exact Git revisions rather than retained as an ever-growing semantic ledger. Currentness is dimensional: semantic topology may remain accepted across implementation-only source movement when current evidence supports continuity, while evidence/analyzer drift is reported separately rather than manufacturing product drift.
 
 ### Durable canonical authority, disposable compute
 
@@ -163,6 +163,8 @@ Repository visibility is not an authentication mechanism. Public source must rem
 Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, and the intrinsic public tool listing.
 
 ## CardForge evidence strategy
+
+Reviewed repository truth in benchmarks is always scoped to the exact immutable specimen revision. Changing a pinned benchmark SHA invalidates any human-reviewed semantic oracle until that new specimen is reviewed; tests must never carry yesterday's repository meaning forward merely to preserve a score. Temporal benchmarks evaluate each endpoint and whether DI correctly describes the observed transition, not whether a semantic identity stayed the same.
 
 The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It also protects three agent-workflow concerns observed in real CardForge tasks: one-call grouped exploration, stateless reconstruction of canonical graph IDs, and searchable CSS structure for camera/responsive/layout evidence. Assessment calibration additionally proves natural feature phrasing, present-symbol existence questions, and subject-scoped audits without manufacturing undeclared capability semantics. Scoped audits declare their resolved relationship radius, group findings by observed cause, and retain the underlying evidence rather than treating a raw count as an intrinsic quality judgment. It does not depend on the retired Product Reality oracle, interpret Product Reality metadata as DI semantics, or write a DI checkpoint into CardForge.
 

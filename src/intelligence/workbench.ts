@@ -1121,17 +1121,17 @@ async function semanticLifecycleOverview(project: string): Promise<Record<string
       {
         stage: 'verification',
         authority: false,
-        description: 'Verification requires explicit evidence IDs and may be performed independently of acceptance. Human or AI verification can approve the current Preview semantic delta.',
+        description: 'Verification requires explicit evidence IDs and remains independent from acceptance. Verification can strengthen evidence, but only current-revision human acceptance approves a semantic change for Main promotion.',
       },
       {
         stage: 'evolution',
-        authority: 'preserved-unless-explicitly-replaced',
-        description: 'Accepted meaning keeps a stable meaning identity across implementation realization changes. Unsupported, ambiguous, weakened, renamed, replacement, supersession, split, and merge cases remain explicit review/lineage events rather than silent rewrites.',
+        authority: 'evidence-led-current-meaning',
+        description: 'A meaning identity may carry forward when current evidence supports continuity, but continuity is not a goal by itself. Changed, unsupported, ambiguous, split, merged, or replaced meaning is handled as a Preview transition rather than forcing yesterday\'s interpretation onto the current revision.',
       },
       {
         stage: 'promotion',
         authority: 'preview-gate',
-        description: 'Only approval attached to the current Preview revision satisfies a changed semantic promotion item. Previous-revision approval does not silently approve a new semantic delta.',
+        description: 'Only current-revision human acceptance satisfies a changed semantic promotion item. Previous acceptance and verification alone never silently approve a new semantic delta.',
       },
     ],
     authority: {
