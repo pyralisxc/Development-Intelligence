@@ -7,6 +7,7 @@ import test from 'node:test';
 import type { SemanticCandidate } from '../src/intelligence/semanticBootstrap.js';
 import { semanticMeaningReview, applySemanticReviewAction } from '../src/intelligence/semanticReview.js';
 import {
+  compactSemanticAuthorityToCurrentAccepted,
   latestAcceptedMeanings,
   loadSemanticAuthority,
   persistSemanticReview,
@@ -65,7 +66,7 @@ function graph(project: string, revision: string, source: string): IntelligenceG
   };
 }
 
-test('semantic review history persists in DI canonical derived storage with optimistic concurrency', async () => {
+test('semantic authority persists the current review working set with optimistic concurrency', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-authority-'));
   process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
   try {
@@ -92,6 +93,53 @@ test('semantic review history persists in DI canonical derived storage with opti
     assert.equal(loaded.state, 'hit');
     assert.equal(semanticReviewsAtRevision(loaded.ledger, revision).length, 1);
     assert.deepEqual(latestAcceptedMeanings(loaded.ledger).map(item => item.meaningId), [accepted.meaningId]);
+  } finally {
+    delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('semantic authority compaction keeps only current accepted meanings and drops transition history', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-authority-compact-'));
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const project = 'fixture/compact';
+    const baseRevision = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const previewRevision = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const baseAccepted = applySemanticReviewAction(semanticMeaningReview(candidate('candidate:base', baseRevision)), {
+      kind: 'accept',
+      actor: { kind: 'human', id: 'human:owner' },
+      at: '2026-09-29T00:00:00.000Z',
+      rationale: 'Base accepted meaning.',
+    });
+    const previewCandidate = candidate('candidate:preview', previewRevision);
+    const previewAccepted = applySemanticReviewAction(
+      semanticMeaningReview(previewCandidate, { meaningId: baseAccepted.meaningId }),
+      {
+        kind: 'accept',
+        actor: { kind: 'human', id: 'human:owner' },
+        at: '2026-09-29T01:00:00.000Z',
+        rationale: 'Current Preview meaning.',
+      },
+    );
+    const rejected = applySemanticReviewAction(semanticMeaningReview(candidate('candidate:rejected', previewRevision)), {
+      kind: 'reject',
+      actor: { kind: 'human', id: 'human:owner' },
+      at: '2026-09-29T01:01:00.000Z',
+    });
+
+    const empty = await loadSemanticAuthority(project);
+    const first = await persistSemanticReview(project, baseAccepted, empty.etag);
+    const staged = await persistSemanticReviews(project, [previewAccepted, rejected], first.etag);
+    assert.equal(staged.ledger?.records.length, 3, 'Preview may temporarily retain base + current review state');
+
+    const compacted = await compactSemanticAuthorityToCurrentAccepted(project);
+    assert.equal(compacted.state, 'stored');
+    assert.equal(compacted.ledger?.records.length, 1);
+    assert.equal(compacted.ledger?.records[0]?.revision, previewRevision);
+    assert.equal(compacted.ledger?.records[0]?.review.accepted, true);
+    assert.deepEqual(compacted.ledger?.records[0]?.review.history, []);
+    assert.deepEqual(compacted.ledger?.records[0]?.review.lineage, { predecessorMeaningIds: [], successorMeaningIds: [] });
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });
@@ -150,6 +198,15 @@ test('canonical semantic promotion requires a revision-bound ready gate and stor
     });
     assert.equal((await saveCanonicalGraph(initial)).saveState, 'stored');
 
+    const acceptedMeaning = applySemanticReviewAction(semanticMeaningReview(candidate('candidate:promote', revision)), {
+      kind: 'accept',
+      actor: { kind: 'human', id: 'human:owner' },
+      at: '2026-09-29T02:00:00.000Z',
+    });
+    const authorityEmpty = await loadSemanticAuthority(project);
+    const stagedAuthority = await persistSemanticReview(project, acceptedMeaning, authorityEmpty.etag);
+    assert.equal(stagedAuthority.state, 'stored');
+
     const blockedGate: any = {
       version: 1, baseRevision: null, previewRevision: revision, semanticDeltaCount: 1, approvedCount: 0,
       pendingCount: 1, readyForMainSemanticPromotion: false, items: [], policy: {},
@@ -167,6 +224,9 @@ test('canonical semantic promotion requires a revision-bound ready gate and stor
     assert.equal(loaded.record?.accepted?.role, 'A');
     assert.equal(loaded.record?.accepted?.repositoryRevision, revision);
     assert.equal(loaded.record?.currentness.acceptedSemanticCurrent, true);
+    const compactedAuthority = await loadSemanticAuthority(project);
+    assert.equal(compactedAuthority.ledger?.records.length, 1);
+    assert.deepEqual(compactedAuthority.ledger?.records[0]?.review.history, []);
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });

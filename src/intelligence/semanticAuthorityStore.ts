@@ -200,6 +200,53 @@ export function semanticReviewsAtRevision(
     .map(record => record.review);
 }
 
+function currentAcceptedAuthorityRecords(ledger: SemanticAuthorityLedger | null): StoredSemanticAuthorityRecord[] {
+  const latestAccepted = new Map<string, StoredSemanticAuthorityRecord>();
+  for (const record of ledger?.records ?? []) {
+    const review = record.review;
+    if (!review.accepted || ['superseded', 'split', 'merged'].includes(review.state)) continue;
+    const current = latestAccepted.get(record.meaningId);
+    if (!current || current.storedAt.localeCompare(record.storedAt) < 0) latestAccepted.set(record.meaningId, record);
+  }
+  return [...latestAccepted.values()]
+    .map(record => ({
+      ...record,
+      review: {
+        ...persistedReview(record.review),
+        history: [],
+        lineage: { predecessorMeaningIds: [], successorMeaningIds: [] },
+      },
+    }))
+    .sort((a, b) => a.meaningId.localeCompare(b.meaningId));
+}
+
+export async function compactSemanticAuthorityToCurrentAccepted(
+  project: string,
+): Promise<SemanticAuthorityWrite> {
+  const current = await loadSemanticAuthority(project);
+  if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
+  if (current.state === 'invalid') throw new Error(current.error ?? 'Semantic authority ledger is invalid');
+  if (current.state === 'miss' || !current.ledger) return { state: 'stored', etag: current.etag, ledger: current.ledger };
+
+  const records = currentAcceptedAuthorityRecords(current.ledger);
+  const now = new Date().toISOString();
+  const ledger: SemanticAuthorityLedger = {
+    formatVersion: 1,
+    project,
+    generation: current.ledger.generation + 1,
+    updatedAt: now,
+    records,
+  };
+  const body = JSON.stringify(ledger);
+  if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');
+  const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', current.etag);
+  return {
+    state: written.state,
+    etag: written.etag,
+    ledger: written.state === 'stored' ? ledger : current.ledger,
+  };
+}
+
 export function latestAcceptedMeanings(ledger: SemanticAuthorityLedger | null): SemanticMeaningReview[] {
   const latest = new Map<string, StoredSemanticAuthorityRecord>();
   for (const record of ledger?.records ?? []) {
@@ -250,9 +297,17 @@ export async function promoteCanonicalAcceptedGraph(input: {
     queryArtifacts: loaded.record.queryArtifacts ?? null,
   });
   const saved = await saveCanonicalGraph(next);
-  return saved.saveState === 'stored'
-    ? { state: 'stored' }
-    : saved.saveState === 'not-configured'
-      ? { state: 'not-configured' }
-      : { state: 'error', ...(saved.error ? { error: saved.error } : {}) };
+  if (saved.saveState === 'not-configured') return { state: 'not-configured' };
+  if (saved.saveState !== 'stored') return { state: 'error', ...(saved.error ? { error: saved.error } : {}) };
+
+  // Main promotion is the retention boundary: temporary Preview review/lineage history
+  // has served its purpose. Keep only the latest active accepted meaning records.
+  // Exact historical understanding remains reconstructable from Git revisions.
+  const compacted = await compactSemanticAuthorityToCurrentAccepted(input.project);
+  if (compacted.state === 'conflict') {
+    // A concurrent review won the authority CAS after graph promotion. Do not delete
+    // that newer state; the next successful promotion/maintenance pass can compact it.
+    return { state: 'stored' };
+  }
+  return { state: 'stored' };
 }
