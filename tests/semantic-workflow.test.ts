@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticReviewCommand, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
+import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticLineageCommand, parseSemanticReviewCommand, semanticLineageTransaction, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
 
 import type { SemanticCandidate } from '../src/intelligence/semanticBootstrap.js';
 import { applySemanticReviewAction, semanticMeaningReview, type SemanticMeaningReview } from '../src/intelligence/semanticReview.js';
@@ -86,6 +86,98 @@ test('semantic review parser rejects empty amendments and unknown authority acti
   assert.throws(() => parseSemanticReviewCommand({ kind: 'promote' }), /amend, accept, reject, or verify/i);
 });
 
+
+test('semantic lineage commands are bounded and normalize explicit lineage identities', () => {
+  assert.deepEqual(parseSemanticLineageCommand({
+    kind: 'split',
+    sourceMeaningId: ' semantic-meaning:source ',
+    successorCandidateIds: ['candidate:right', 'candidate:left', 'candidate:right'],
+  }), {
+    kind: 'split',
+    sourceMeaningId: 'semantic-meaning:source',
+    successorCandidateIds: ['candidate:left', 'candidate:right'],
+  });
+  assert.deepEqual(parseSemanticLineageCommand({
+    kind: 'merge',
+    sourceMeaningIds: ['semantic-meaning:b', 'semantic-meaning:a', 'semantic-meaning:a'],
+    successorCandidateId: 'candidate:merged',
+  }), {
+    kind: 'merge',
+    sourceMeaningIds: ['semantic-meaning:a', 'semantic-meaning:b'],
+    successorCandidateId: 'candidate:merged',
+  });
+  assert.throws(
+    () => parseSemanticLineageCommand({ kind: 'split', sourceMeaningId: 'semantic-meaning:a', successorCandidateIds: ['candidate:only'] }),
+    /at least 2 unique values/i,
+  );
+});
+
+test('semantic lineage transaction reuses evolution primitives and never accepts successors implicitly', () => {
+  const source = accepted(candidate({
+    id: 'candidate:old',
+    scope: 'src/features/old',
+    name: 'Old',
+    revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  }));
+  const left = candidate({
+    id: 'candidate:left',
+    scope: 'src/features/new/left',
+    name: 'Left',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+  const right = candidate({
+    id: 'candidate:right',
+    scope: 'src/features/new/right',
+    name: 'Right',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+  const split = semanticLineageTransaction(
+    { kind: 'split', sourceMeaningId: source.meaningId, successorCandidateIds: [left.id, right.id] },
+    [left, right],
+    [source],
+    { kind: 'human', id: 'human:owner' },
+    '2026-09-29T01:00:00.000Z',
+  );
+  assert.equal(split.kind, 'split');
+  assert.equal(split.reviews[0]?.state, 'split');
+  assert.equal(split.successorMeaningIds.length, 2);
+  assert.ok(split.reviews.slice(1).every(review => review.accepted === false));
+  assert.ok(split.reviews.slice(1).every(review => review.lineage.predecessorMeaningIds.includes(source.meaningId)));
+
+  const sourceB = accepted(candidate({
+    id: 'candidate:old-b',
+    scope: 'src/features/old-b',
+    name: 'Old B',
+    revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  }));
+  const merged = candidate({
+    id: 'candidate:merged',
+    scope: 'src/features/merged',
+    name: 'Merged',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+  const merge = semanticLineageTransaction(
+    { kind: 'merge', sourceMeaningIds: [source.meaningId, sourceB.meaningId], successorCandidateId: merged.id },
+    [merged],
+    [source, sourceB],
+    { kind: 'human', id: 'human:owner' },
+    '2026-09-29T01:01:00.000Z',
+  );
+  assert.ok(merge.reviews.slice(0, 2).every(review => review.state === 'merged'));
+  assert.equal(merge.reviews.at(-1)?.accepted, false);
+  assert.deepEqual(merge.reviews.at(-1)?.lineage.predecessorMeaningIds, [source.meaningId, sourceB.meaningId].sort());
+
+  assert.throws(
+    () => semanticLineageTransaction(
+      { kind: 'replace', sourceMeaningId: 'semantic-meaning:missing', successorCandidateId: left.id },
+      [left],
+      [source],
+      { kind: 'human', id: 'human:owner' },
+      '2026-09-29T01:02:00.000Z',
+    ),
+    /not an active accepted meaning/i,
+  );
+});
 
 test('semantic review preserves one accepted meaning identity across a changed realization', () => {
   const base = accepted(candidate({
