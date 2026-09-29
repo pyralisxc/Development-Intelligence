@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "snapshotDate": "2026-09-28",
+  "policy": {
+    "vendorPublishedClaims": true,
+    "independentlyVerifiedByDevelopmentIntelligence": false,
+    "directCrossBenchmarkRankingAllowed": false,
+    "rule": "External claims are reference targets only unless DI runs the same dataset, grader, product configuration, and metric definition. Nearby DI metrics must be labeled as different tasks when those conditions are not met."
+  },
+  "references": [
+    {
+      "id": "augment-context-engine-mcp-2026-06",
+      "vendor": "Augment Code",
+      "product": "Context Engine MCP",
+      "category": "agent-context",
+      "sourceUrl": "https://www.augmentcode.com/blog/context-engine-mcp-now-live",
+      "publishedDate": "2026-02-06",
+      "lastUpdatedDate": "2026-06-18",
+      "claim": {
+        "summary": "Augment reports 30–80% quality improvement when its Context Engine MCP is added to leading coding agents.",
+        "metric": "relative-agent-quality-improvement",
+        "rangePercent": [
+          30,
+          80
+        ],
+        "dataset": {
+          "pullRequests": 300,
+          "attempts": 900,
+          "repositoryFamily": "Elasticsearch"
+        }
+      },
+      "nearestDiDimension": "T3 semantic question quality, correction burden, tool-call reduction",
+      "directlyComparableToDI": false,
+      "comparabilityReason": "Augment measures end-to-end PR task quality with model/agent graders; DI's current benchmark measures deterministic repository intelligence and semantic retrieval."
+    },
+    {
+      "id": "augment-code-review-2025",
+      "vendor": "Augment Code",
+      "product": "Augment Code Review",
+      "category": "code-review",
+      "sourceUrl": "https://www.augmentcode.com/blog/we-benchmarked-7-ai-code-review-tools-on-real-world-prs-here-are-the-results",
+      "publishedDate": "2025-12-11",
+      "lastUpdatedDate": "2026-06-18",
+      "claim": {
+        "summary": "Augment reports 65% precision, 55% recall, and 59% F-score on its public AI code-review benchmark.",
+        "metric": "code-review-precision-recall",
+        "precision": 0.65,
+        "recall": 0.55,
+        "fScore": 0.59
+      },
+      "nearestDiDimension": "semantic candidate precision/recall",
+      "directlyComparableToDI": false,
+      "comparabilityReason": "The tasks and labels differ: bug-review comments versus evidence-derived semantic concepts."
+    },
+    {
+      "id": "greptile-review-benchmark-2025",
+      "vendor": "Greptile",
+      "product": "AI Code Review",
+      "category": "code-review",
+      "sourceUrl": "https://www.greptile.com/benchmarks",
+      "publishedDate": "2025-07-01",
+      "observedDate": "2026-09-28",
+      "claim": {
+        "summary": "Greptile reports an 82% bug-catch rate on 50 real-world bugs across five public repositories.",
+        "metric": "bug-catch-rate",
+        "value": 0.82,
+        "dataset": {
+          "bugs": 50,
+          "repositories": 5
+        }
+      },
+      "nearestDiDimension": "repository audit and change intelligence",
+      "directlyComparableToDI": false,
+      "comparabilityReason": "DI does not currently run Greptile's 50-bug PR-review protocol and therefore must not turn semantic/audit metrics into a bug-catch claim."
+    },
+    {
+      "id": "cursorbench-4-2026-09-28",
+      "vendor": "Cursor",
+      "product": "CursorBench 4.0",
+      "category": "agent-task",
+      "sourceUrl": "https://cursor.com/cursorbench",
+      "observedDate": "2026-09-28",
+      "claim": {
+        "summary": "CursorBench 4.0 reports a current top score of 57.8% for ambiguous multi-file tasks from real Cursor sessions.",
+        "metric": "agent-task-score",
+        "topScore": 0.578,
+        "topEntry": {
+          "model": "Opus 5.5 Max",
+          "costUsd": 13.43,
+          "tokens": 218363,
+          "steps": 185
+        }
+      },
+      "nearestDiDimension": "multi-file natural-language investigation and tool-call count",
+      "directlyComparableToDI": false,
+      "comparabilityReason": "CursorBench grades end-to-end coding-agent outcomes on private real-session tasks; DI's repository-intelligence probes are not that task set."
+    },
+    {
+      "id": "sourcegraph-evaluation-guidance-2026-07",
+      "vendor": "Sourcegraph",
+      "product": "Code Search / Deep Search",
+      "category": "evaluation-methodology",
+      "sourceUrl": "https://sourcegraph.com/blog/how-to-evaluate-sourcegraph-on-your-own-codebase",
+      "publishedDate": "2026-07-31",
+      "claim": {
+        "summary": "Sourcegraph recommends measuring retrieval, agent task performance, and cost separately and warns that a public benchmark cannot determine performance on every codebase.",
+        "metric": "evaluation-principle"
+      },
+      "nearestDiDimension": "benchmark methodology",
+      "directlyComparableToDI": false,
+      "comparabilityReason": "This is methodological guidance rather than a numeric performance result."
+    }
+  ]
+}

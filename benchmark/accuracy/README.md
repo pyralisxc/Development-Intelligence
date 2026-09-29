@@ -112,3 +112,22 @@ Semantic precision is reported only for complete ground truth. `universeScopes` 
 A required semantic candidate is matched by exact scope plus any optional constraints supplied by the case: name, kind, evidence families, minimum evidence-family count, provenance origin, and authority fields. This lets the benchmark detect both concept errors and authority drift (for example a derived proposal becoming `accepted:true` without review).
 
 The CardForge benchmark uses a pinned seven-scope reviewed universe to produce real-repository semantic-candidate precision, recall, and false-positive rate while preserving the broader repository as unjudged evidence. This is deliberately narrower than claiming repository-wide semantic precision before exhaustive independent ground truth exists.
+
+
+## Human correction burden and general-question quality
+
+Semantic accuracy is not complete if a candidate set scores well but still forces a reviewer to repair obvious concepts, or if ordinary questions fall back to graph-count prose.
+
+The CardForge real-repository benchmark therefore also reports:
+
+- **correction burden** — the number of reviewed semantic scopes implicated by missing required concepts, forbidden concepts, or false observed concepts inside the complete reviewed universe;
+- **T3 general-question grounding** — natural repository questions such as “What does this project do?” must route through repository orientation, use semantic understanding rather than structural-only fallback, avoid topology-count prose, and surface multiple independently reviewed concepts;
+- **external tool-call count and latency** for each general question.
+
+A correction burden of zero is meaningful only for the declared reviewed universe. It must not be generalized to the entire repository without exhaustive ground truth.
+
+## Competitor reference snapshots
+
+`benchmark/competitor-reference.json` records dated claims from official competitor sources. The snapshot exists to make market claims visible next to DI's own reproducible measurements, not to create an apples-to-oranges ranking.
+
+Every external numeric claim is marked non-comparable until DI can replay the same dataset, grader, configuration, and metric definition. Competitor output is never benchmark ground truth merely because the vendor published it.

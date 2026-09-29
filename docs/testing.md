@@ -84,6 +84,12 @@ Portfolio testing must remain read-only and SHA-pinned. When a replay discovers 
 
 Useful portfolio feedback includes orientation call count, warm/cold latency, evidence depth, uncertainty honesty, fix-surface quality, and whether an agent can act without manually rediscovering the codebase. Recurring weaknesses become DI work items backed by real-repository evidence. External repositories do not need to adopt DI-specific product semantics in order to serve as benchmark evidence.
 
+### Published competitor reference discipline
+
+The benchmark may carry a dated snapshot of competitors' own published claims so DI's measured dimensions are visible beside the market's stated targets. These references are **not** ground truth and are never converted into a synthetic leaderboard. A direct DI-vs-competitor performance conclusion requires the same task corpus, product configuration, grader, and metric definition.
+
+The checked-in competitor snapshot is validated to use official vendor sources and to mark numeric claims non-comparable by default. CardForge's benchmark currently pairs those references with DI-owned measurements for semantic precision/recall, reviewed correction burden, T3 general-question grounding, tool-call count, latency, and evidence discipline. Bug-catch rate, end-to-end PR quality, and private-session agent scores remain explicitly unmeasured unless DI replays the corresponding protocol.
+
 ### Human Workbench over agent truth
 
 The human Workbench is a client of the same Development Intelligence services agents use. Durable UI acceptance covers:
