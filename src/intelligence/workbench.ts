@@ -1563,6 +1563,53 @@ async function unsupportedPathSourceFallback(
   };
 }
 
+type InvestigationTargetMode =
+  | 'external-source'
+  | 'repository'
+  | 'source-keywords'
+  | 'scope'
+  | 'entity'
+  | 'query'
+  | 'scope-required';
+
+interface InvestigationTargetResolution {
+  strategy: InvestigationQuestionSubjectStrategy;
+  mode: InvestigationTargetMode;
+  query: string | null;
+  scope: string | null;
+  node: GraphNode | null;
+  ambiguous: boolean;
+  candidates: GraphNode[];
+}
+
+function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
+  switch (lane) {
+    case 'parity':
+      return [/\b(show|find|inspect|query|parity|for|of|what|is|the)\b/gi];
+    case 'code':
+      return [/\b(show|show me|find|search|code|source|implementation|implemented|for|of|where|is|the)\b/gi];
+    case 'implementation-claim':
+      return [/\b(where|what|which|how|does|do|is|are|write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|back|into|the|an|a)\b/gi];
+    case 'interface':
+      return [/\b(what|which|show|find|explain|interface|interaction|interactive|ui|state|owners?|controls?|changes?|when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?|major|in|of|for|the|this|page|feature|workspace)\b/gi];
+    case 'orientation':
+      return [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi];
+    case 'trace':
+      return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi];
+    case 'evidence':
+      return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi];
+    case 'entity':
+      return [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i];
+    default:
+      return [];
+  }
+}
+
+function explicitInvestigationScope(text: string): string | null {
+  const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
+  return pathMatch?.[0] ?? null;
+}
+
 async function resolveInvestigationSubject(
   input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
   text: string,
@@ -1615,6 +1662,102 @@ async function resolveInvestigationSubject(
   return { query: cleaned || null, node: null, ambiguous: true, candidates: tied.map(item => item.node) };
 }
 
+async function resolveInvestigationTarget(
+  input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
+  text: string,
+  plan: InvestigationQuestionPlan,
+): Promise<InvestigationTargetResolution> {
+  const base = {
+    strategy: plan.subjectStrategy,
+    query: null,
+    scope: null,
+    node: null,
+    ambiguous: false,
+    candidates: [] as GraphNode[],
+  };
+
+  if (plan.subjectStrategy === 'external-source') return { ...base, mode: 'external-source' };
+  if (plan.subjectStrategy === 'repository') return { ...base, mode: 'repository' };
+  if (plan.subjectStrategy === 'source-keyword-evidence') return { ...base, mode: 'source-keywords' };
+
+  if (plan.subjectStrategy === 'scope-or-entity') {
+    const explicitScope = input.scope?.trim() || explicitInvestigationScope(text);
+    if (explicitScope) return { ...base, mode: 'scope', scope: explicitScope, query: explicitScope };
+
+    const repositoryDeictic = plan.lane === 'orientation'
+      && /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text);
+    if (repositoryDeictic) return { ...base, mode: 'repository' };
+
+    const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
+    if (resolved.node) {
+      return {
+        strategy: plan.subjectStrategy,
+        mode: 'entity',
+        query: resolved.query,
+        scope: resolved.node.id,
+        node: resolved.node,
+        ambiguous: false,
+        candidates: resolved.candidates,
+      };
+    }
+    if (resolved.ambiguous) {
+      return {
+        strategy: plan.subjectStrategy,
+        mode: 'query',
+        query: resolved.query,
+        scope: null,
+        node: null,
+        ambiguous: true,
+        candidates: resolved.candidates,
+      };
+    }
+
+    const scopeRequired = plan.lane === 'interface'
+      ? /\b(this page|this feature|this workspace|this panel|this screen)\b/iu.test(text)
+      : /\b(this page|this file|this module|this feature|this area)\b/iu.test(text);
+    if (scopeRequired) return { ...base, mode: 'scope-required', query: resolved.query };
+
+    return { ...base, mode: 'repository', query: resolved.query };
+  }
+
+  const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
+  return {
+    strategy: plan.subjectStrategy,
+    mode: resolved.node ? 'entity' : 'query',
+    query: resolved.query,
+    scope: resolved.node?.id ?? null,
+    node: resolved.node,
+    ambiguous: resolved.ambiguous,
+    candidates: resolved.candidates,
+  };
+}
+
+function targetResolutionForRouting(target: InvestigationTargetResolution): Record<string, unknown> {
+  return {
+    strategy: target.strategy,
+    mode: target.mode,
+    query: target.query,
+    scope: target.scope,
+    ambiguous: target.ambiguous,
+    node: target.node
+      ? {
+          id: target.node.id,
+          name: displayName(target.node),
+          kind: target.node.kind,
+          layer: target.node.layer ?? 'structural',
+          locator: target.node.locator,
+        }
+      : null,
+    candidates: target.candidates.slice(0, 10).map(item => ({
+      id: item.id,
+      name: displayName(item),
+      kind: item.kind,
+      layer: item.layer ?? 'structural',
+      locator: item.locator,
+    })),
+  };
+}
+
 export async function queryWorkbench(input: {
   project: string;
   text: string;
@@ -1634,6 +1777,7 @@ export async function queryWorkbench(input: {
     ...(input.sourceId ? { sourceId: input.sourceId } : {}),
     ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
   });
+  const target = await resolveInvestigationTarget(input, text, plan);
   const result = await (async (): Promise<Record<string, unknown>> => {
 
   if (input.sourceId) {
@@ -1660,11 +1804,7 @@ export async function queryWorkbench(input: {
       subject: null,
       routing: {
         tool: 'search_code',
-        questionPlan: {
-          lane: 'implementation-explanation',
-          semanticDepth: semanticDepthForQuestion(text, input.semanticDepth),
-          subjectStrategy: 'source-keyword-evidence',
-        },
+
       },
       answer: `${result.matches?.length ?? 0} bounded source match(es) found for the requested implementation mechanism.`,
       result,
@@ -1684,7 +1824,7 @@ export async function queryWorkbench(input: {
   }
 
   if (plan.lane === 'parity') {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(show|find|inspect|query|parity|for|of|what|is|the)\b/gi]);
+    const resolved = target;
     const subject = resolved.node?.id ?? resolved.query ?? undefined;
     const result = await parityLens({ project: input.project, ref: input.ref, graphId: input.graphId, query: subject, limit: 100 }) as any;
     return {
@@ -1697,7 +1837,7 @@ export async function queryWorkbench(input: {
   }
 
   if (plan.lane === 'code') {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(show|show me|find|search|code|source|implementation|implemented|for|of|where|is|the)\b/gi]);
+    const resolved = target;
     if (resolved.ambiguous) {
       return { intent: 'code', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'get_code_snippet' }, answer: 'The requested implementation subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
     }
@@ -1717,7 +1857,7 @@ export async function queryWorkbench(input: {
   }
 
   if (plan.lane === 'implementation-claim') {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(where|what|which|how|does|do|is|are|write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|back|into|the|an|a)\b/gi]);
+    const resolved = target;
     if (!resolved.ambiguous && resolved.node) {
       const terms = [resolved.node.name ?? '', 'writeCheckpoint', 'sealLocalGraph', 'accepted', 'persist']
         .filter(Boolean)
@@ -1735,25 +1875,16 @@ export async function queryWorkbench(input: {
   }
 
   if (plan.lane === 'interface') {
-    let requestedScope = input.scope?.trim() || '';
-    if (!requestedScope) {
-      const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
-      if (pathMatch) requestedScope = pathMatch[0]!;
+    if (target.ambiguous) {
+      return {
+        intent: 'interface',
+        subject: subjectDescriptor(null, target.query, true, target.candidates),
+        routing: { tool: 'inspect_interface' },
+        answer: 'The interface subject is ambiguous; choose an exact scope or entity.',
+        result: { ambiguous: true, candidates: target.candidates },
+      };
     }
-    if (!requestedScope) {
-      const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|explain|interface|interaction|interactive|ui|state|owners?|controls?|changes?|when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?|major|in|of|for|the|this|page|feature|workspace)\b/gi]);
-      if (resolved.ambiguous) {
-        return {
-          intent: 'interface',
-          subject: subjectDescriptor(null, resolved.query, true, resolved.candidates),
-          routing: { tool: 'inspect_interface' },
-          answer: 'The interface subject is ambiguous; choose an exact scope or entity.',
-          result: { ambiguous: true, candidates: resolved.candidates },
-        };
-      }
-      if (resolved.node) requestedScope = resolved.node.id;
-    }
-    if (!requestedScope && /\b(this page|this feature|this workspace|this panel|this screen)\b/i.test(text)) {
+    if (target.mode === 'scope-required') {
       return {
         intent: 'interface',
         subject: null,
@@ -1762,6 +1893,7 @@ export async function queryWorkbench(input: {
         result: { scopeRequired: true, supportedScopes: ['repository','path','file','entity','feature/route'] },
       };
     }
+    const requestedScope = target.scope ?? '';
     const result = await interfaceProjection({
       project: input.project,
       scope: requestedScope || undefined,
@@ -1806,18 +1938,7 @@ export async function queryWorkbench(input: {
   }
 
   if (plan.lane === 'orientation') {
-    let requestedScope = input.scope?.trim() || '';
-    if (!requestedScope) {
-      const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
-      if (pathMatch) requestedScope = pathMatch[0]!;
-    }
-    const repositoryDeictic = !requestedScope
-      && /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text);
-    if (!requestedScope && !repositoryDeictic) {
-      const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi]);
-      if (!resolved.ambiguous && resolved.node) requestedScope = resolved.node.id;
-    }
-    if (!requestedScope && /\b(this page|this file|this module|this feature|this area)\b/i.test(text)) {
+    if (target.mode === 'scope-required') {
       return {
         intent: 'orientation',
         subject: null,
@@ -1826,6 +1947,7 @@ export async function queryWorkbench(input: {
         result: { scopeRequired: true, supportedScopes: ['repository','path','file','entity','feature/route/api'] },
       };
     }
+    const requestedScope = target.ambiguous ? '' : (target.scope ?? '');
     const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
     const result = await scopeOrientation({
       project: input.project,
@@ -1845,7 +1967,7 @@ export async function queryWorkbench(input: {
   }
 
   if (plan.lane === 'trace') {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi]);
+    const resolved = target;
     if (resolved.ambiguous) {
       return { intent: 'trace', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'trace_path' }, answer: 'The relationship subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
     }
@@ -1866,7 +1988,7 @@ export async function queryWorkbench(input: {
   }
 
   if (plan.lane === 'evidence') {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi]);
+    const resolved = target;
     const claimNeedsAssessment = plan.proofMode === 'claim';
     if (!claimNeedsAssessment && !resolved.ambiguous && resolved.node && /\b(evidence|supports?|supporting|proof|prove)\b/.test(lower)) {
       const result = await inspectEntity({ project: input.project, node: resolved.node.id, ref: input.ref, graphId: input.graphId });
@@ -1887,7 +2009,7 @@ export async function queryWorkbench(input: {
     return { intent: 'overview', subject: null, routing: { tool: 'project_overview' }, answer: String(result.summary ?? `${input.project} overview`), result };
   }
 
-  const resolved = await resolveInvestigationSubject(input, text, [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i]);
+  const resolved = target;
   if (resolved.ambiguous) {
     return { intent: 'search', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'search_graph' }, answer: 'The requested subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
   }
@@ -1911,6 +2033,7 @@ export async function queryWorkbench(input: {
     routing: {
       ...routing,
       questionPlan: plan,
+      targetResolution: targetResolutionForRouting(target),
     },
   };
 }

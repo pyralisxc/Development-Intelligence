@@ -459,6 +459,7 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.ok(batch.items.slice(1).every((item: any) => item.resolvedQuestion.includes(batch.items[0].subject.id)), 'follow-up pronouns should inherit only the exact first subject');
     assert.ok(batch.items.every((item: any) => item.status === 'ok'));
     assert.ok(batch.items.every((item: any) => item.routing?.questionPlan?.lane), 'every ordinary routed question should expose its pure question plan');
+    assert.ok(batch.items.every((item: any) => item.routing?.targetResolution?.mode), 'every ordinary routed question should expose one normalized target-resolution record');
 
     const explicit = await callTool('investigate', {
       project: fixture.project,
@@ -501,6 +502,40 @@ test('multi-question investigation keeps one graph context and isolates question
     }) as any;
     assert.equal(interfaceControl.intent, 'interface', 'interface planning must outrank generic implementation-mechanism planning');
     assert.equal(interfaceControl.routing.tool, 'inspect_interface');
+
+    const traceParaphrases = await Promise.all([
+      'What does Panel depend on?',
+      'Show dependencies of Panel',
+      'Show relationships connected to Panel',
+    ].map(question => callTool('investigate', { project: fixture.project, question }) as any));
+    const traceSubjectIds = traceParaphrases.map(item => item.routing?.targetResolution?.node?.id ?? null);
+    assert.ok(traceSubjectIds[0], 'trace paraphrases must resolve one concrete subject');
+    assert.ok(traceSubjectIds.every(id => id === traceSubjectIds[0]), 'trace paraphrases must preserve the same resolved subject');
+    assert.ok(traceParaphrases.every(item => item.routing?.questionPlan?.lane === 'trace'));
+
+    const codeParaphrases = await Promise.all([
+      'Where is Panel implemented?',
+      'Show source implementation for Panel',
+    ].map(question => callTool('investigate', { project: fixture.project, question }) as any));
+    const codeSubjectIds = codeParaphrases.map(item => item.routing?.targetResolution?.node?.id ?? null);
+    assert.ok(codeSubjectIds[0]);
+    assert.ok(codeSubjectIds.every(id => id === codeSubjectIds[0]), 'code paraphrases must preserve the same resolved subject');
+
+    const ordinaryEvidence = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What evidence supports Panel?',
+    }) as any;
+    const negativeEvidence = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Prove Panel is the only composition root.',
+    }) as any;
+    assert.equal(ordinaryEvidence.routing.questionPlan.proofMode, 'evidence');
+    assert.equal(negativeEvidence.routing.questionPlan.proofMode, 'claim');
+    assert.equal(
+      ordinaryEvidence.routing.targetResolution.node.id,
+      negativeEvidence.routing.targetResolution.node.id,
+      'proof burden must not silently change the resolved subject',
+    );
 
     const independentQuestions = [
       'What is Panel?',
