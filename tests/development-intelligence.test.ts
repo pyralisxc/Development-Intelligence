@@ -13,7 +13,7 @@ import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, se
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools, toolContract } from '../src/mcp.js';
 import { runtimeIdentity } from '../src/runtimeIdentity.js';
-import { interfaceProjection, projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
+import { interfaceProjection, planInvestigationQuestion, projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -419,6 +419,31 @@ test('shared investigation router maps ordinary questions to existing DI primiti
   }
 });
 
+test('question planning separates lane, subject strategy, depth, and proof burden before execution', () => {
+  const cases = [
+    { question: 'How is the Workbench interface implemented in source?', lane: 'interface', subjectStrategy: 'scope-or-entity' },
+    { question: 'Where in source is accepted semantic meaning persisted and evolved?', lane: 'semantic-lifecycle', subjectStrategy: 'repository' },
+    { question: 'How does the adaptive query planner choose between indexed and sharded reads, and what evidence exposes that choice?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'How does Panel implementation persist accepted state?', lane: 'implementation-claim', proofMode: 'claim' },
+    { question: 'Where is Panel implemented?', lane: 'code' },
+    { question: 'What does Panel depend on?', lane: 'trace' },
+    { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
+    { question: 'What does this project do? Go deep across supporting systems and semantic layers.', lane: 'orientation', semanticDepth: 'expanded', completeness: 'expanded' },
+    { question: 'Give me a project status summary.', lane: 'overview', subjectStrategy: 'repository' },
+    { question: 'Show graph coverage.', lane: 'coverage', subjectStrategy: 'repository' },
+  ] as const;
+
+  for (const expected of cases) {
+    const plan = planInvestigationQuestion({ text: expected.question });
+    assert.equal(plan.lane, expected.lane, expected.question);
+    if ('subjectStrategy' in expected) assert.equal(plan.subjectStrategy, expected.subjectStrategy, expected.question);
+    if ('proofMode' in expected) assert.equal(plan.proofMode, expected.proofMode, expected.question);
+    if ('semanticDepth' in expected) assert.equal(plan.semanticDepth, expected.semanticDepth, expected.question);
+    if ('completeness' in expected) assert.equal(plan.completeness, expected.completeness, expected.question);
+    assert.equal(plan.continuity, 'immediate-exact-pronoun-only');
+  }
+});
+
 test('multi-question investigation keeps one graph context and isolates questions', async () => {
   const fixture = await makeFixture();
   try {
@@ -433,6 +458,7 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.deepEqual(batch.items.map((item: any) => item.intent), ['inspect', 'trace', 'code', 'evidence']);
     assert.ok(batch.items.slice(1).every((item: any) => item.resolvedQuestion.includes(batch.items[0].subject.id)), 'follow-up pronouns should inherit only the exact first subject');
     assert.ok(batch.items.every((item: any) => item.status === 'ok'));
+    assert.ok(batch.items.every((item: any) => item.routing?.questionPlan?.lane), 'every ordinary routed question should expose its pure question plan');
 
     const explicit = await callTool('investigate', {
       project: fixture.project,
@@ -465,13 +491,13 @@ test('multi-question investigation keeps one graph context and isolates question
 
     const lifecycleControl = await callTool('investigate', {
       project: fixture.project,
-      question: 'How are accepted semantic meanings preserved, evolved, superseded, split, merged, and prevented from silently changing across revisions?',
+      question: 'How are accepted semantic meanings preserved, evolved, superseded, split, merged, and prevented from silently changing across revisions in source implementation?',
     }) as any;
     assert.equal(lifecycleControl.intent, 'semantic-lifecycle', 'semantic lifecycle must outrank generic implementation-mechanism planning');
 
     const interfaceControl = await callTool('investigate', {
       project: fixture.project,
-      question: 'How does src/panel.tsx handle click interactions and navigation?',
+      question: 'How is the src/panel.tsx interface implemented in source for click interactions and navigation?',
     }) as any;
     assert.equal(interfaceControl.intent, 'interface', 'interface planning must outrank generic implementation-mechanism planning');
     assert.equal(interfaceControl.routing.tool, 'inspect_interface');
