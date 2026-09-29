@@ -499,27 +499,18 @@ function implementationExplorationPattern(text: string): string {
   ]);
   const words = text.match(/[A-Za-z][A-Za-z0-9_-]{3,}/gu) ?? [];
   const stems = words
-    .map(word => word.replace(/(?:ing|edly|edly|ed|es|s)$/iu, ''))
+    .map(word => word.replace(/(?:ing|edly|ed|es|s)$/iu, ''))
     .map(word => word.length >= 5 ? word : '')
     .filter(Boolean)
     .filter(word => !stop.has(word.toLowerCase()));
   const terms = [...new Set(stems)].slice(0, 10);
   if (!terms.length) return '.+';
   return terms.flatMap(term => {
-    const escaped = term.replace(/[.*+?^{}()|[\]\\]/gu, '\\function semanticDepthForQuestion(text: string, explicit?: SemanticQueryDepth): SemanticQueryDepth {
-  if (explicit) return explicit;
-  const lower = text.toLowerCase();
-  if (/\b(exhaustive|exhaustively|every|everything|complete census|full census|entire semantic|all semantic)\b/u.test(lower)) return 'exhaustive';
-  if (/\b(go deep|deep dive|deeply|in depth|broaden|broad view|full picture|supporting systems?|supporting (?:areas|layers|substrates)|substrates?|underneath|across (?:the )?semantic|major capabilities)\b/u.test(lower)) return 'expanded';
-  return 'nucleus';
-}
-');
-    const lower = escaped.toLowerCase();
+    const lower = term.toLowerCase();
     const capitalized = lower.charAt(0).toUpperCase() + lower.slice(1);
     return lower === capitalized ? [lower + '[A-Za-z0-9_-]*'] : [lower + '[A-Za-z0-9_-]*', capitalized + '[A-Za-z0-9_-]*'];
   }).join('|');
 }
-
 async function repositorySemanticUnderstanding(
   project: string,
   graph: IntelligenceGraph,
