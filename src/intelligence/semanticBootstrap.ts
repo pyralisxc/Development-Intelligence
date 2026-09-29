@@ -14,6 +14,7 @@ export interface SemanticCandidate {
     description: string;
     kind: SemanticCandidateKind;
     alternatives: string[];
+    grouping?: string[];
   };
   authority: {
     state: 'proposed';
@@ -24,9 +25,11 @@ export interface SemanticCandidate {
     requiresExplicitReview: true;
   };
   provenance: {
-    origin: 'intrinsic-derivation';
-    producer: 'semantic-bootstrap.v1';
+    origin: SemanticProposalOrigin;
+    producer: string;
     revision: string | null;
+    rationale?: string | null;
+    sourceCandidateId?: string | null;
     evidenceFamilies: SemanticEvidenceFamily[];
     nodeIds: string[];
     edgeIds: string[];

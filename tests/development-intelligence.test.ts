@@ -1160,6 +1160,9 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(viewerJavaScript, /explicit review/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/review/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/lineage/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/ai-proposal/);
+    assert.match(viewerJavaScript, /AI proposal packet \/ import/);
+    assert.match(viewerJavaScript, /Record AI proposal from these editable fields/);
     assert.match(viewerJavaScript, /Accept meaning/);
     assert.match(viewerJavaScript, /Verify with evidence/);
     assert.match(viewerJavaScript, /Resolve semantic lineage/);
@@ -1176,6 +1179,9 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(semanticsBody.policy.candidatesRemainNonAuthoritativeUntilReviewed, true);
     assert.equal(semanticsBody.policy.acceptanceImpliesVerification, false);
     assert.equal(semanticsBody.policy.ownerWriteSurfaceSeparate, true);
+    assert.equal(semanticsBody.policy.aiProposalProviderNeutral, true);
+    assert.equal(semanticsBody.policy.modelOutputAcceptedAutomatically, false);
+    assert.ok(semanticsBody.candidates.every((candidate: any) => candidate.aiProposalPacket?.policy?.explicitHumanReviewRequiredForAcceptance === true));
 
     const intelligenceQuery = await fetch(`${origin}/workbench/query`, {
       method: 'POST',
