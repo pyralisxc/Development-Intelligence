@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { scoreAccuracyCase } from './accuracy-benchmark-lib.mjs';
 
+const competitorReference = JSON.parse(await fs.readFile(path.resolve('benchmark/competitor-reference.json'), 'utf8'));
 const cardForgeRoot = path.resolve(process.argv[2] ?? 'benchmark/cardforge');
 const expectedSha = process.env.CARDFORGE_BENCHMARK_SHA ?? '6d6788cf87dd37d7685d26fa10a15e06fa1208ba';
 const actualSha = execFileSync('git', ['-C', cardForgeRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -267,6 +268,133 @@ if (!semanticAccuracy.pass) {
 if (semanticAccuracy.semanticCandidateScore?.precision !== 1 || semanticAccuracy.semanticCandidateScore?.recall !== 1) {
   throw new Error(`CardForge semantic accuracy must remain 1.0 precision/recall within reviewed universe: ${JSON.stringify(semanticAccuracy.semanticCandidateScore)}`);
 }
+
+function correctionScope(value) {
+  return String(value).split('|', 1)[0].trim();
+}
+
+function semanticCorrectionBurden(score) {
+  const flags = [
+    ...(score?.missingRequired ?? []),
+    ...(score?.forbiddenPresent ?? []),
+    ...(score?.falseObserved ?? []),
+  ];
+  const scopes = [...new Set(flags.map(correctionScope).filter(Boolean))].sort();
+  return {
+    flagCount: flags.length,
+    affectedScopeCount: scopes.length,
+    affectedScopes: scopes,
+    reviewedRequiredCount: Number(score?.required ?? 0),
+    rate: Number(score?.required ?? 0) > 0 ? scopes.length / Number(score.required) : 0,
+  };
+}
+
+function derivedScopes(investigation) {
+  const understanding = investigation?.result?.semanticUnderstanding ?? {};
+  return (understanding.layers?.derived?.items ?? understanding.candidates ?? [])
+    .map(item => String(item?.scope ?? '').trim())
+    .filter(Boolean);
+}
+
+async function generalSemanticQuestion(question, expectedDepth, options = {}) {
+  const started = process.hrtime.bigint();
+  const result = await callTool('investigate', { project, graphId: scan.graphId, question });
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+  const understanding = result?.result?.semanticUnderstanding;
+  if (result?.intent !== 'orientation' || result?.routing?.tool !== 'orient_scope') {
+    throw new Error(`CardForge general semantic question did not route through repository orientation: ${question}`);
+  }
+  if (result?.result?.scope?.kind !== 'repository') throw new Error(`CardForge general semantic question lost repository scope: ${question}`);
+  if (!understanding || understanding.source === 'structural-only') {
+    throw new Error(`CardForge general semantic question fell back to structural-only understanding: ${question}`);
+  }
+  if (result.routing?.semanticDepth !== expectedDepth || understanding.depth !== expectedDepth) {
+    throw new Error(`CardForge semantic depth mismatch: expected ${expectedDepth}, got routing=${result.routing?.semanticDepth} understanding=${understanding.depth}`);
+  }
+  if (/^\d+ graph entities/u.test(String(result.answer ?? ''))) {
+    throw new Error(`CardForge general semantic question regressed to topology-count prose: ${question}`);
+  }
+  if (understanding.completeness?.repositoryOmissionMeansAbsent !== false) {
+    throw new Error(`CardForge semantic answer must not equate omission with repository absence: ${question}`);
+  }
+  const scopes = derivedScopes(result);
+  const requiredScopes = options.requiredDerivedScopes ?? [];
+  const missingRequiredScopes = requiredScopes.filter(scope => !scopes.includes(scope));
+  if (missingRequiredScopes.length) {
+    throw new Error(`CardForge ${expectedDepth} semantic query missed reviewed derived scopes: ${JSON.stringify(missingRequiredScopes)}`);
+  }
+  if (options.requireExhausted && understanding.completeness?.semanticCandidateUniverseExhausted !== true) {
+    throw new Error(`CardForge exhaustive semantic query did not exhaust the evidence-qualified candidate census: ${question}`);
+  }
+  if (elapsedMs > 2000) throw new Error(`CardForge general semantic question exceeded 2000 ms budget: ${question} → ${elapsedMs.toFixed(2)} ms`);
+  return {
+    question,
+    answer: result.answer,
+    semanticSource: understanding.source,
+    semanticDepth: understanding.depth,
+    derivedReturned: understanding.layers?.derived?.returned ?? 0,
+    derivedEligible: understanding.layers?.derived?.eligibleCount ?? 0,
+    semanticCandidateUniverseExhausted: understanding.completeness?.semanticCandidateUniverseExhausted ?? false,
+    reviewedDerivedRecall: requiredScopes.length ? (requiredScopes.length - missingRequiredScopes.length) / requiredScopes.length : null,
+    routingTool: result.routing?.tool ?? null,
+    externalToolCalls: 1,
+    elapsedMs: Number(elapsedMs.toFixed(3)),
+  };
+}
+
+const semanticCorrection = semanticCorrectionBurden(semanticAccuracy.semanticCandidateScore);
+if (semanticCorrection.affectedScopeCount !== 0) {
+  throw new Error(`CardForge reviewed semantic universe requires human correction: ${JSON.stringify(semanticCorrection)}`);
+}
+const reviewedSemanticScopes = semanticAccuracyCase.groundTruth.semanticCandidates.required.map(item => item.scope);
+const reviewedCoreSemanticScopes = reviewedSemanticScopes.filter(scope =>
+  semanticAudit.items.some(item => item.scope === scope && item.coreness.classification === 'core-candidate' && item.factuality.status === 'supported')
+);
+const generalSemanticQuestions = [
+  await generalSemanticQuestion('What does this project do?', 'nucleus'),
+  await generalSemanticQuestion(
+    'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
+    'expanded',
+    { requiredDerivedScopes: reviewedCoreSemanticScopes },
+  ),
+  await generalSemanticQuestion(
+    'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+    'exhaustive',
+    { requiredDerivedScopes: reviewedSemanticScopes, requireExhausted: true },
+  ),
+];
+
+const semanticBatchQuestions = [
+  'What does this project do?',
+  'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
+  'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+  'What changes when this Studio control is activated in src/features/creator-workbench?',
+  'How is feature:card-generator capability realized?',
+];
+const semanticBatchStarted = process.hrtime.bigint();
+const generalSemanticBatch = await callTool('investigate', {
+  project,
+  graphId: scan.graphId,
+  questions: semanticBatchQuestions,
+});
+const semanticBatchElapsedMs = Number(process.hrtime.bigint() - semanticBatchStarted) / 1_000_000;
+if (generalSemanticBatch.intent !== 'batch' || generalSemanticBatch.request?.questionCount !== semanticBatchQuestions.length) {
+  throw new Error(`CardForge semantic batch did not preserve the requested question set: ${JSON.stringify(generalSemanticBatch.request)}`);
+}
+if (generalSemanticBatch.graphId !== scan.graphId || generalSemanticBatch.items.some(item => item.status !== 'ok')) {
+  throw new Error(`CardForge semantic batch did not stay on one successful graph context: ${JSON.stringify(generalSemanticBatch.counts)}`);
+}
+const batchOrientationDepths = generalSemanticBatch.items
+  .filter(item => item.intent === 'orientation')
+  .map(item => item.routing?.semanticDepth);
+if (JSON.stringify(batchOrientationDepths) !== JSON.stringify(['nucleus', 'expanded', 'exhaustive'])) {
+  throw new Error(`CardForge semantic batch lost per-question depth: ${JSON.stringify(batchOrientationDepths)}`);
+}
+if (!generalSemanticBatch.items.some(item => item.intent === 'interface') || !generalSemanticBatch.items.some(item => item.intent === 'intelligence')) {
+  throw new Error(`CardForge semantic batch did not preserve mixed investigation lanes: ${JSON.stringify(generalSemanticBatch.items.map(item => item.intent))}`);
+}
+if (semanticBatchElapsedMs > 5000) throw new Error(`CardForge five-question semantic batch exceeded 5000 ms budget: ${semanticBatchElapsedMs.toFixed(2)} ms`);
+
 const queryArtifacts = buildCanonicalQueryArtifacts(graph);
 const queryArtifactBytes = serializedQueryArtifactBytes(queryArtifacts);
 const fullGraphBytes = Buffer.byteLength(JSON.stringify(graph), 'utf8');
@@ -660,6 +788,58 @@ const report = {
     missingRequired: semanticAccuracy.semanticCandidateScore.missingRequired,
     forbiddenPresent: semanticAccuracy.semanticCandidateScore.forbiddenPresent,
     falseObserved: semanticAccuracy.semanticCandidateScore.falseObserved,
+    correctionBurden: semanticCorrection,
+  },
+  generalSemanticQuestions: {
+    stage: 'T3-general-questions',
+    probes: generalSemanticQuestions,
+    batch: {
+      questionCount: semanticBatchQuestions.length,
+      elapsedMs: Number(semanticBatchElapsedMs.toFixed(3)),
+      graphId: generalSemanticBatch.graphId,
+      errorCount: generalSemanticBatch.counts.error,
+      intents: generalSemanticBatch.items.map(item => item.intent),
+      orientationDepths: batchOrientationDepths,
+    },
+    supportedDepths: ['nucleus', 'expanded', 'exhaustive'],
+    latencyBudgetMs: 2000,
+    policy: {
+      semanticRatherThanTopologyCount: true,
+      structuralOnlyFallbackAllowed: false,
+      productIntentInferred: false,
+      nucleusMayBeNonExhaustive: true,
+      expandedMustExposeAllReviewedCoreCandidates: true,
+      expandedSupportingLayerMayRemainBoundedWithExplicitTruncation: true,
+      exhaustiveCandidateCensusMustReachFullReviewedRecall: true,
+      omissionOutsideDeclaredCompleteScopeMeansAbsence: false,
+    },
+  },
+  competitorReference: {
+    snapshotDate: competitorReference.snapshotDate,
+    policy: competitorReference.policy,
+    references: competitorReference.references.map(reference => ({
+      id: reference.id,
+      vendor: reference.vendor,
+      product: reference.product,
+      category: reference.category,
+      claim: reference.claim,
+      nearestDiDimension: reference.nearestDiDimension,
+      directlyComparableToDI: reference.directlyComparableToDI,
+      comparabilityReason: reference.comparabilityReason,
+      sourceUrl: reference.sourceUrl,
+    })),
+    measuredDiDimensions: {
+      reviewedSemanticPrecision: semanticAccuracy.semanticCandidateScore.precision,
+      reviewedSemanticRecall: semanticAccuracy.semanticCandidateScore.recall,
+      reviewedSemanticFalsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
+      reviewedSemanticCorrectionScopeCount: semanticCorrection.affectedScopeCount,
+      expandedReviewedCoreRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? null,
+      expandedReviewedCoreScopeCount: reviewedCoreSemanticScopes.length,
+      exhaustiveReviewedSemanticRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? null,
+      exhaustiveCandidateUniverseExhausted: generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted ?? false,
+      generalQuestionMaxLatencyMs: Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)),
+      generalQuestionExternalToolCallsEach: 1,
+    },
   },
   semanticBootstrap: {
     stage: 'T1-derived-candidates',
@@ -794,6 +974,9 @@ const summary = [
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
   `- Semantic derivation accuracy (full-capacity census, 7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
+  `- Reviewed semantic correction burden: **${semanticCorrection.affectedScopeCount} affected scope(s) / ${semanticCorrection.reviewedRequiredCount} required concepts (${(semanticCorrection.rate * 100).toFixed(0)}%)**`,
+  `- T3 semantic query depth: **nucleus + expanded + exhaustive / expanded reviewed-core recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% across ${reviewedCoreSemanticScopes.length} reviewed core scope(s) / exhaustive reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive census=${generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted === true} / max ${Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)).toFixed(3)} ms / 1 external DI call each**`,
+  `- Mixed semantic batch: **${semanticBatchQuestions.length} questions / one graph context / intents ${[...new Set(generalSemanticBatch.items.map(item => item.intent))].join(', ')} / depths ${batchOrientationDepths.join(' → ')} / ${semanticBatchElapsedMs.toFixed(3)} ms / errors ${generalSemanticBatch.counts.error}**`,
   `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; full exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id)}; 100→full stable=${semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
   `- Semantic factuality/core audit: **${semanticAudit.counts.factualitySupported} factuality-supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core-candidate / ${semanticAudit.counts.supportingCandidates} supporting-candidate / ${semanticAuditElapsedMs.toFixed(3)} ms**`,
   `- Semantic identity evolution: **${semanticEvolutionResults.length} reviewed parent concepts → head; ${semanticEvolutionResults.filter(item => item.status === 'preserved').length} preserved / ${semanticEvolutionResults.filter(item => item.status === 'realization-changed').length} realization-changed / ${semanticEvolutionResults.filter(item => item.status === 'renamed').length} renamed / ${semanticEvolutionResults.filter(item => item.reviewRequired).length} require review / ${semanticEvolutionElapsedMs.toFixed(3)} ms**`,
@@ -809,6 +992,14 @@ const summary = [
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
   `- Derived motif calibration: **pipeline ${pipelineMotif.confidence} (${pipelineMotif.signals.length} signals, ${pipelineMotifElapsedMs.toFixed(3)} ms) / persistence-owner ${persistenceMotif.confidence} (${persistenceMotif.signals.length} signals, ${persistenceMotifElapsedMs.toFixed(3)} ms) / 1000 ms budget**`,
+  '',
+  '## Published competitor reference snapshot',
+  '',
+  '| Vendor / benchmark | Vendor-published claim | Nearest DI measurement | Directly comparable? |',
+  '| --- | --- | --- | --- |',
+  ...competitorReference.references.map(reference => `| ${reference.vendor} — ${reference.product} | ${reference.claim.summary.replace(/\|/gu, '\\|')} | ${reference.nearestDiDimension} | No — ${reference.comparabilityReason.replace(/\|/gu, '\\|')} |`),
+  '',
+  `> External benchmark claims are a dated ${competitorReference.snapshotDate} reference snapshot from the vendors' own published material. DI does not rank itself above or below those products unless the same dataset, grader, configuration, and metric are replayed.`,
   '',
   '## Representative structural agent probes',
   '',

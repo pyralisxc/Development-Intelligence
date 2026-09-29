@@ -392,7 +392,7 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
 
 function orientationMetric(
   node: GraphNode,
-  graph: IntelligenceGraph,
+  byId: ReadonlyMap<string, GraphNode>,
   incident: GraphEdge[],
   rankBy: ScopeRankBy,
 ): {
@@ -409,7 +409,6 @@ function orientationMetric(
   callees: number;
   rankValue: number;
 } {
-  const byId = new Map(graph.nodes.map(item => [item.id, item]));
   const resolved = incident.filter(edge => edge.status === 'resolved');
   const neighborFiles = new Set<string>();
   const neighborAreas = new Set<string>();
@@ -474,119 +473,228 @@ function semanticNameList(names: string[], limit: number): string {
   return shown.slice(0, -1).join(', ') + ', and ' + shown[shown.length - 1] + suffix;
 }
 
+export type SemanticQueryDepth = 'nucleus' | 'expanded' | 'exhaustive';
+
+function semanticDepthForQuestion(text: string, explicit?: SemanticQueryDepth): SemanticQueryDepth {
+  if (explicit) return explicit;
+  const lower = text.toLowerCase();
+  if (/\b(exhaustive|exhaustively|every|everything|complete census|full census|entire semantic|all semantic)\b/u.test(lower)) return 'exhaustive';
+  if (/\b(go deep|deep dive|deeply|in depth|broaden|broad view|full picture|supporting systems?|supporting (?:areas|layers|substrates)|substrates?|underneath|across (?:the )?semantic|major capabilities)\b/u.test(lower)) return 'expanded';
+  return 'nucleus';
+}
+
 async function repositorySemanticUnderstanding(
   project: string,
   graph: IntelligenceGraph,
   limit: number,
+  depth: SemanticQueryDepth,
 ): Promise<Record<string, unknown>> {
   const authority = await loadSemanticAuthority(project);
   const accepted = latestAcceptedMeanings(authority.ledger);
-  if (accepted.length) {
-    const meanings = accepted.slice(0, limit).map(meaning => ({
-      meaningId: meaning.meaningId,
-      name: meaning.proposal.name,
-      description: meaning.proposal.description,
-      kind: meaning.proposal.kind,
-      scope: meaning.scope,
-      acceptedBy: meaning.acceptance?.actor ?? null,
-      verified: Boolean(meaning.verification),
-      verification: meaning.verification
-        ? { actor: meaning.verification.actor, evidenceCount: meaning.verification.evidenceIds.length }
-        : null,
-    }));
+  const acceptedItems = accepted.map(meaning => ({
+    meaningId: meaning.meaningId,
+    name: meaning.proposal.name,
+    description: meaning.proposal.description,
+    kind: meaning.proposal.kind,
+    scope: meaning.scope,
+    acceptedBy: meaning.acceptance?.actor ?? null,
+    verified: Boolean(meaning.verification),
+    verification: meaning.verification
+      ? { actor: meaning.verification.actor, evidenceCount: meaning.verification.evidenceIds.length }
+      : null,
+  }));
+
+  const observed = graph.nodes
+    .filter(node => node.layer === 'semantic' && ['feature', 'capability', 'domain', 'surface'].includes(node.kind))
+    .sort((a, b) =>
+      Number((b.evidenceIds ?? []).length) - Number((a.evidenceIds ?? []).length)
+      || a.kind.localeCompare(b.kind)
+      || displayName(a).localeCompare(displayName(b)));
+  const observedItems = observed.map(node => ({
+    id: node.id,
+    name: displayName(node),
+    kind: node.kind,
+    locator: node.locator,
+    declared: Boolean(node.tags?.includes('declared')),
+    evidenceCount: (node.evidenceIds ?? []).length,
+  }));
+
+  const candidateLimit = depth === 'exhaustive'
+    ? 1000
+    : depth === 'expanded'
+      ? Math.min(Math.max(limit * 6, 64), 250)
+      : Math.min(Math.max(limit * 2, 24), 100);
+  const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
+  const audit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
+  const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
+  const derivedItems = bootstrap.candidates
+    .map(candidate => {
+      const assessment = auditById.get(candidate.id);
+      const observedMatch = observed.find(node => normalizedMention(displayName(node)) === normalizedMention(candidate.proposal.name));
+      return {
+        id: candidate.id,
+        name: candidate.proposal.name,
+        description: candidate.proposal.description,
+        kind: candidate.proposal.kind,
+        scope: candidate.scope,
+        evidenceFamilies: candidate.provenance.evidenceFamilies,
+        evidenceFamilyCount: candidate.support.evidenceFamilyCount,
+        fileCount: candidate.support.fileCount,
+        resolvedEdgeCount: candidate.support.resolvedEdgeCount,
+        coreness: assessment?.coreness.classification ?? 'supporting-candidate',
+        factuality: assessment?.factuality.status ?? 'needs-review',
+        observedSemanticMatch: observedMatch?.id ?? null,
+        authority: {
+          accepted: false,
+          reviewed: false,
+          persisted: false,
+          proofEligible: false,
+          requiresExplicitReview: true,
+        },
+      };
+    })
+    .sort((a, b) =>
+      Number(b.coreness === 'core-candidate') - Number(a.coreness === 'core-candidate')
+      || b.evidenceFamilyCount - a.evidenceFamilyCount
+      || b.fileCount - a.fileCount
+      || a.name.localeCompare(b.name)
+      || a.scope.localeCompare(b.scope));
+
+  const coreDerived = derivedItems.filter(item => item.coreness === 'core-candidate' && item.factuality === 'supported');
+  const verifiedCount = accepted.filter(meaning => Boolean(meaning.verification)).length;
+  const primarySource = acceptedItems.length
+    ? 'accepted-authority'
+    : coreDerived.length || derivedItems.length
+      ? 'derived-candidates'
+      : observedItems.length
+        ? 'observed-semantic-graph'
+        : 'structural-only';
+
+  const primaryItems = primarySource === 'accepted-authority'
+    ? acceptedItems
+    : primarySource === 'derived-candidates'
+      ? (coreDerived.length ? coreDerived : derivedItems)
+      : primarySource === 'observed-semantic-graph'
+        ? observedItems
+        : [];
+
+  let summary: string;
+  if (primarySource === 'accepted-authority') {
     const features = accepted.filter(meaning => meaning.proposal.kind === 'feature').map(meaning => meaning.proposal.name);
     const capabilities = accepted.filter(meaning => meaning.proposal.kind === 'capability').map(meaning => meaning.proposal.name);
     const allNames = accepted.map(meaning => meaning.proposal.name);
-    const verifiedCount = accepted.filter(meaning => Boolean(meaning.verification)).length;
     const lead = features.length
       ? `${project} is represented by accepted semantic feature${features.length === 1 ? '' : 's'} ${semanticNameList(features, 3)}.`
       : `DI's accepted semantic authority for ${project} includes ${semanticNameList(allNames, 5)}.`;
     const capabilitySentence = capabilities.length
       ? ` Connected accepted capabilities include ${semanticNameList(capabilities, 6)}.`
       : '';
-    return {
-      source: 'accepted-authority',
-      summary: `${lead}${capabilitySentence} ${accepted.length} accepted meaning${accepted.length === 1 ? '' : 's'} are recorded; ${verifiedCount} have separate evidence verification.`,
-      authority: {
-        storageState: authority.state,
-        durable: authority.durable,
-        acceptedCount: accepted.length,
-        verifiedCount,
-        acceptanceImpliesVerification: false,
-      },
-      meanings,
-    };
+    summary = `${lead}${capabilitySentence} ${accepted.length} accepted meaning${accepted.length === 1 ? '' : 's'} are recorded; ${verifiedCount} have separate evidence verification.`;
+  } else if (primarySource === 'derived-candidates') {
+    summary = `Evidence-derived semantic candidates for ${project} currently identify ${semanticNameList(primaryItems.map(item => String(item.name)), 6)}. These are source-backed proposals, not accepted product intent; deeper query modes expose supporting layers and uncertainty without upgrading their authority.`;
+  } else if (primarySource === 'observed-semantic-graph') {
+    summary = `Observed semantic graph concepts for ${project} include ${semanticNameList(observedItems.map(item => item.name), 6)}. These observations are evidence-backed but are not represented as accepted product intent.`;
+  } else {
+    summary = 'No semantic meaning has been accepted, observed, or evidence-qualified yet. DI can describe repository structure, but it should not invent product intent from topology alone.';
   }
 
-  const observed = graph.nodes
-    .filter(node => node.layer === 'semantic' && ['feature', 'capability', 'domain', 'surface'].includes(node.kind))
-    .sort((a, b) => a.kind.localeCompare(b.kind) || displayName(a).localeCompare(displayName(b)));
-  if (observed.length) {
-    const features = observed.filter(node => node.kind === 'feature').map(node => displayName(node));
-    const capabilities = observed.filter(node => node.kind === 'capability').map(node => displayName(node));
-    const lead = features.length
-      ? `${project} is currently represented semantically by ${semanticNameList(features, 3)}.`
-      : `${project} currently has observed semantic concepts including ${semanticNameList(observed.map(node => displayName(node)), 5)}.`;
-    const capabilitySentence = capabilities.length
-      ? ` Connected capabilities include ${semanticNameList(capabilities, 6)}.`
-      : '';
-    return {
-      source: 'observed-semantic-graph',
-      summary: lead + capabilitySentence,
-      authority: {
-        storageState: authority.state,
-        durable: authority.durable,
-        acceptedCount: 0,
-        verifiedCount: 0,
-        acceptanceImpliesVerification: false,
-      },
-      concepts: observed.slice(0, limit).map(node => ({
-        id: node.id,
-        name: displayName(node),
-        kind: node.kind,
-        locator: node.locator,
-        declared: Boolean(node.tags?.includes('declared')),
-      })),
-      note: 'Observed semantic graph concepts are evidence-backed graph meaning, but are not being represented here as human acceptance unless the semantic authority ledger says so.',
-    };
-  }
+  const expandedLimit = Math.min(Math.max(limit * 2, 24), 64);
+  const supportingDerived = derivedItems.filter(item => item.coreness !== 'core-candidate' || item.factuality !== 'supported');
+  const derivedLayerItems = depth === 'exhaustive'
+    ? derivedItems
+    : depth === 'expanded'
+      ? [...coreDerived, ...supportingDerived.slice(0, expandedLimit)]
+      : [];
+  const acceptedLayerItems = depth === 'nucleus'
+    ? []
+    : depth === 'exhaustive'
+      ? acceptedItems
+      : acceptedItems.slice(0, expandedLimit);
+  const observedLayerItems = depth === 'nucleus'
+    ? []
+    : depth === 'exhaustive'
+      ? observedItems
+      : observedItems.slice(0, expandedLimit);
 
-  const bootstrap = bootstrapSemanticCandidates(graph, { limit });
-  const candidates = bootstrap.candidates.map(candidate => ({
-    id: candidate.id,
-    name: candidate.proposal.name,
-    description: candidate.proposal.description,
-    kind: candidate.proposal.kind,
-    scope: candidate.scope,
-    evidenceFamilies: candidate.provenance.evidenceFamilies,
-    accepted: false,
-    reviewed: false,
-  }));
-  if (candidates.length) {
-    return {
-      source: 'derived-candidates',
-      summary: `No accepted or declared semantic meaning is available yet. Evidence-derived candidates currently suggest ${semanticNameList(candidates.map(candidate => candidate.name), 6)}. These remain proposals requiring explicit review before becoming authority.`,
-      authority: {
-        storageState: authority.state,
-        durable: authority.durable,
-        acceptedCount: 0,
-        verifiedCount: 0,
-        acceptanceImpliesVerification: false,
-      },
-      candidates,
-      zeroMetadata: bootstrap.zeroMetadata,
-    };
-  }
+  const eligibleCoverageComplete = Boolean(
+    graph.coverage
+    && graph.coverage.eligibleFiles === graph.coverage.completeFiles
+    && graph.coverage.partialFiles === 0
+    && graph.coverage.failedFiles === 0
+    && graph.coverage.skippedFiles === 0
+  );
+  const nextDepth = depth === 'nucleus' ? 'expanded' : depth === 'expanded' ? 'exhaustive' : null;
 
   return {
-    source: 'structural-only',
-    summary: 'No semantic meaning has been accepted or evidence-qualified yet. DI can describe repository structure, but it should not invent product intent from topology alone.',
+    source: primarySource,
+    depth,
+    summary,
     authority: {
       storageState: authority.state,
       durable: authority.durable,
-      acceptedCount: 0,
-      verifiedCount: 0,
+      acceptedCount: acceptedItems.length,
+      verifiedCount,
       acceptanceImpliesVerification: false,
+    },
+    ...(primarySource === 'accepted-authority' ? { meanings: acceptedItems.slice(0, limit) } : {}),
+    ...(primarySource === 'derived-candidates' ? { candidates: primaryItems.slice(0, limit) } : {}),
+    ...(primarySource === 'observed-semantic-graph' ? { concepts: observedItems.slice(0, limit) } : {}),
+    layers: {
+      accepted: {
+        count: acceptedItems.length,
+        returned: acceptedLayerItems.length,
+        items: acceptedLayerItems,
+        authority: 'accepted',
+      },
+      observed: {
+        count: observedItems.length,
+        returned: observedLayerItems.length,
+        items: observedLayerItems,
+        authority: 'observed-not-accepted',
+      },
+      derived: {
+        eligibleCount: bootstrap.capacity.eligibleCandidateCount,
+        returned: derivedLayerItems.length,
+        exhausted: bootstrap.capacity.exhausted,
+        truncated: bootstrap.capacity.truncated,
+        coreCandidateCount: audit.counts.coreCandidates,
+        coreReturned: derivedLayerItems.filter(item => item.coreness === 'core-candidate' && item.factuality === 'supported').length,
+        supportingCandidateCount: audit.counts.supportingCandidates,
+        supportingReturned: derivedLayerItems.filter(item => item.coreness !== 'core-candidate' || item.factuality !== 'supported').length,
+        supportingPresentationTruncated: depth === 'expanded' && supportingDerived.length > expandedLimit,
+        factualityNeedsReview: audit.counts.factualityNeedsReview,
+        items: derivedLayerItems,
+        authority: 'proposed-not-accepted',
+      },
+    },
+    completeness: {
+      requestedDepth: depth,
+      semanticCandidateUniverseExhausted: bootstrap.capacity.exhausted,
+      candidateOperationalLimit: bootstrap.capacity.operationalLimit,
+      eligibleSourceCoverageComplete: eligibleCoverageComplete,
+      unsupportedFiles: graph.coverage?.unsupportedFiles ?? null,
+      claim: depth === 'exhaustive'
+        ? (bootstrap.capacity.exhausted ? 'exhaustive-derived-candidate-census' : 'exhaustive-request-bounded-by-operational-limit')
+        : 'non-exhaustive-semantic-answer',
+      repositoryOmissionMeansAbsent: false,
+      candidateOmissionWithinExhaustedCensusMeansAbsent: depth === 'exhaustive' && bootstrap.capacity.exhausted,
+      expandedCoreCoverageComplete: depth !== 'expanded' ? null : bootstrap.capacity.exhausted,
+      expandedSupportingPresentationComplete: depth !== 'expanded' ? null : supportingDerived.length <= expandedLimit,
+    },
+    expansion: {
+      currentDepth: depth,
+      nextDepth,
+      availableDepths: ['nucleus', 'expanded', 'exhaustive'],
+      note: nextDepth
+        ? `The same graph context can be expanded to ${nextDepth} without changing semantic authority.`
+        : 'Exhaustive depth enumerates the current evidence-qualified candidate census; it still does not convert proposals into accepted product intent.',
+    },
+    policy: {
+      layeredSemanticEvidence: true,
+      acceptedObservedDerivedRemainDistinct: true,
+      omissionIsNotAbsenceOutsideDeclaredCompleteScope: true,
+      productIntentInferred: false,
+      persisted: false,
     },
   };
 }
@@ -672,6 +780,7 @@ export async function scopeOrientation(input: {
   ref?: string | undefined;
   graphId?: string | undefined;
   rankBy?: ScopeRankBy | undefined;
+  semanticDepth?: SemanticQueryDepth | undefined;
   limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
@@ -743,7 +852,7 @@ export async function scopeOrientation(input: {
 
   const preferredKinds = new Set(['feature','capability','route','api','mcp','provider','file','function','method','class','interface','constructor']);
   const ranked = nodes
-    .map(node => ({ node, metrics: orientationMetric(node, graph, incidentByNode.get(node.id) ?? [], rankBy) }))
+    .map(node => ({ node, metrics: orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy) }))
     .sort((a, b) =>
       b.metrics.rankValue - a.metrics.rankValue
       || Number(preferredKinds.has(b.node.kind)) - Number(preferredKinds.has(a.node.kind))
@@ -791,7 +900,7 @@ export async function scopeOrientation(input: {
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
   const semanticUnderstanding = selected.kind === 'repository'
-    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12))
+    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus')
     : null;
 
   return {
@@ -1378,6 +1487,7 @@ export async function queryWorkbench(input: {
   capability?: TechnicalSourceCapability | undefined;
   scope?: string | undefined;
   rankBy?: ScopeRankBy | undefined;
+  semanticDepth?: SemanticQueryDepth | undefined;
 }): Promise<Record<string, unknown>> {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
@@ -1512,9 +1622,16 @@ export async function queryWorkbench(input: {
     };
   }
 
+  const repositorySemanticOrientationIntent =
+    /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text)
+    && /\b(main|major|moving parts|wide view|orientation|orient|overview|what does .+ do)\b/u.test(lower);
+
   if (
-    /\b(semantic factuality|semantic meaning|semantic meanings|semantic candidate|semantic candidates|over[- ]?deriv|over[- ]?expand|core capabilities|core concepts|core meanings|supporting meanings|supporting capabilities)\b/.test(lower)
-    || (/\bsemantic\b/.test(lower) && /\b(core|supporting|factual|factuality|audit|meaning|candidate|candidates)\b/.test(lower))
+    !repositorySemanticOrientationIntent
+    && (
+      /\b(semantic factuality|semantic meaning|semantic meanings|semantic candidate|semantic candidates|over[- ]?deriv|over[- ]?expand|core capabilities|core concepts|core meanings|supporting meanings|supporting capabilities)\b/.test(lower)
+      || (/\bsemantic\b/.test(lower) && /\b(core|supporting|factual|factuality|audit|meaning|candidate|candidates)\b/.test(lower))
+    )
   ) {
     const result = await semanticAudit({
       project: input.project,
@@ -1538,7 +1655,9 @@ export async function queryWorkbench(input: {
       const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
       if (pathMatch) requestedScope = pathMatch[0]!;
     }
-    if (!requestedScope) {
+    const repositoryDeictic = !requestedScope
+      && /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text);
+    if (!requestedScope && !repositoryDeictic) {
       const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi]);
       if (!resolved.ambiguous && resolved.node) requestedScope = resolved.node.id;
     }
@@ -1551,17 +1670,19 @@ export async function queryWorkbench(input: {
         result: { scopeRequired: true, supportedScopes: ['repository','path','file','entity','feature/route/api'] },
       };
     }
+    const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
     const result = await scopeOrientation({
       project: input.project,
       scope: requestedScope || undefined,
       ref: input.ref,
       graphId: input.graphId,
       rankBy: input.rankBy,
+      semanticDepth,
     });
     return {
       intent: 'orientation',
       subject: requestedScope ? { query: requestedScope } : null,
-      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file' },
+      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file', semanticDepth },
       answer: String((result as any).summary ?? 'Scoped orientation complete.'),
       result,
     };
@@ -1673,6 +1794,7 @@ export async function queryWorkbenchRequest(input: {
   capability?: TechnicalSourceCapability | undefined;
   scope?: string | undefined;
   rankBy?: ScopeRankBy | undefined;
+  semanticDepth?: SemanticQueryDepth | undefined;
 }): Promise<Record<string, unknown>> {
   const explicit = (input.questions ?? []).map(question => question.trim()).filter(Boolean);
   if (explicit.length > 10) throw new Error('questions supports at most 10 items');
@@ -1695,6 +1817,7 @@ export async function queryWorkbenchRequest(input: {
       capability: input.capability,
       scope: input.scope,
       rankBy: input.rankBy,
+      semanticDepth: input.semanticDepth,
     });
     return {
       ...result,
@@ -1721,6 +1844,7 @@ export async function queryWorkbenchRequest(input: {
         capability: input.capability,
         scope: input.scope,
         rankBy: input.rankBy,
+        semanticDepth: input.semanticDepth,
       }) as any;
       const subjectId = result?.subject && result.subject.ambiguous !== true && typeof result.subject.id === 'string'
         ? result.subject.id
