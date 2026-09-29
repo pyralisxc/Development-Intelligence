@@ -7,6 +7,7 @@ import { bootstrapSemanticCandidates } from '../dist/src/intelligence/semanticBo
 import { auditSemanticCandidates } from '../dist/src/intelligence/semanticAudit.js';
 import { projectOrientation } from '../dist/src/intelligence/orientation.js';
 import { synthesizeRepositoryAudit } from '../dist/src/intelligence/repositoryAudit.js';
+import { scoreAccuracyCase } from './accuracy-benchmark-lib.mjs';
 
 const root = path.resolve(process.argv[2] ?? 'benchmark/di-benchmark-gin');
 const expectedSha = process.env.GIN_BENCHMARK_SHA ?? 'bae9b98d8d60fde4aa55a83185ba15a922f98bd7';
@@ -59,6 +60,61 @@ if (semanticAudit.policy.authorityUnaffected !== true || semanticAudit.policy.ve
   throw new Error('Gin semantic audit crossed the non-authoritative audit boundary');
 }
 
+const reviewedSemanticTruth = {
+  version: 1,
+  id: 'gin-external-reviewed-semantic-universe',
+  capability: 'semantic-bootstrap',
+  language: 'go',
+  project: 'DI-Benchmark-Gin',
+  ref: `commit:${actualSha}`,
+  question: 'Which externally reviewed Gin concepts can DI recover from intrinsic repository evidence?',
+  groundTruth: {
+    semanticCandidates: {
+      universeScopes: ['gin.go', 'context.go', 'routergroup.go', 'binding', 'render'],
+      required: [
+        { scope: 'gin.go', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true },
+        { scope: 'context.go', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true },
+        { scope: 'routergroup.go', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true },
+        { scope: 'binding', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true },
+        { scope: 'render', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true },
+      ],
+      forbidden: [],
+      complete: true,
+    },
+  },
+};
+const reviewedSemanticAccuracy = scoreAccuracyCase(reviewedSemanticTruth, {
+  caseId: reviewedSemanticTruth.id,
+  semanticCandidates: semanticBootstrap.candidates,
+});
+if (!reviewedSemanticAccuracy.pass) {
+  throw new Error(`Gin reviewed semantic truth failed: ${JSON.stringify(reviewedSemanticAccuracy.semanticCandidateScore)}`);
+}
+if (reviewedSemanticAccuracy.semanticCandidateScore?.precision !== 1 || reviewedSemanticAccuracy.semanticCandidateScore?.recall !== 1) {
+  throw new Error(`Gin reviewed semantic truth must remain 1.0 precision/recall within its bounded universe: ${JSON.stringify(reviewedSemanticAccuracy.semanticCandidateScore)}`);
+}
+function correctionScope(value) {
+  return String(value).split('|', 1)[0].trim();
+}
+const reviewedSemanticFlags = [
+  ...(reviewedSemanticAccuracy.semanticCandidateScore?.missingRequired ?? []),
+  ...(reviewedSemanticAccuracy.semanticCandidateScore?.forbiddenPresent ?? []),
+  ...(reviewedSemanticAccuracy.semanticCandidateScore?.falseObserved ?? []),
+];
+const reviewedCorrectionScopes = [...new Set(reviewedSemanticFlags.map(correctionScope).filter(Boolean))].sort();
+const reviewedCorrectionBurden = {
+  flagCount: reviewedSemanticFlags.length,
+  affectedScopeCount: reviewedCorrectionScopes.length,
+  affectedScopes: reviewedCorrectionScopes,
+  reviewedRequiredCount: reviewedSemanticTruth.groundTruth.semanticCandidates.required.length,
+  rate: reviewedSemanticTruth.groundTruth.semanticCandidates.required.length
+    ? reviewedCorrectionScopes.length / reviewedSemanticTruth.groundTruth.semanticCandidates.required.length
+    : 0,
+};
+if (reviewedCorrectionBurden.affectedScopeCount !== 0) {
+  throw new Error(`Gin reviewed semantic universe requires human correction: ${JSON.stringify(reviewedCorrectionBurden)}`);
+}
+
 const orientationSubject = graph.nodes.find(node => node.kind === 'struct' && node.name === 'Engine')
   ?? graph.nodes.find(node => ['struct', 'interface', 'function', 'method'].includes(node.kind) && String(node.locator).endsWith('.go'));
 if (!orientationSubject) throw new Error('Gin benchmark could not select a Go orientation subject');
@@ -107,6 +163,27 @@ const report = {
     coreCandidates: semanticAudit.counts.coreCandidates,
     supportingCandidates: semanticAudit.counts.supportingCandidates,
     auditElapsedMs: Number(semanticAuditElapsedMs.toFixed(3)),
+    reviewedTruth: {
+      provenance: {
+        basis: 'independently-reviewed-upstream-source-and-documentation',
+        scopes: reviewedSemanticTruth.groundTruth.semanticCandidates.universeScopes,
+        notes: [
+          'gin.go: Engine is documented in source as the framework instance containing muxer, middleware and configuration.',
+          'context.go: Context is documented in source as request/middleware flow, validation and response rendering context.',
+          'routergroup.go: RouterGroup is documented in source as route-prefix and middleware grouping.',
+          'binding: package boundary corresponds to request binding and validation documented by Gin.',
+          'render: package boundary corresponds to built-in response rendering documented by Gin.',
+        ],
+      },
+      precision: reviewedSemanticAccuracy.semanticCandidateScore.precision,
+      recall: reviewedSemanticAccuracy.semanticCandidateScore.recall,
+      falsePositiveRate: reviewedSemanticAccuracy.semanticCandidateScore.falsePositiveRate,
+      required: reviewedSemanticAccuracy.semanticCandidateScore.required,
+      observed: reviewedSemanticAccuracy.semanticCandidateScore.observed,
+      missingRequired: reviewedSemanticAccuracy.semanticCandidateScore.missingRequired,
+      falseObserved: reviewedSemanticAccuracy.semanticCandidateScore.falseObserved,
+      correctionBurden: reviewedCorrectionBurden,
+    },
     sample: semanticBootstrap.candidates.slice(0, 30).map(candidate => ({
       id: candidate.id,
       scope: candidate.scope,
@@ -141,9 +218,11 @@ const summary = [
   `- Go relationships: **${Object.entries(relationshipCounts).map(([kind,count]) => `${kind}=${count}`).join(' / ')}**`,
   `- Semantic census: **${semanticBootstrap.candidates.length} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes / ${semanticBootstrap.capacity.rejectedScopeCount} rejected**`,
   `- Semantic factuality/core: **${semanticAudit.counts.factualitySupported} supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core / ${semanticAudit.counts.supportingCandidates} supporting**`,
+  `- Reviewed external semantic truth: **precision ${(reviewedSemanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(reviewedSemanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(reviewedSemanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}% across ${reviewedSemanticTruth.groundTruth.semanticCandidates.required.length} independently reviewed scopes**`,
+  `- Reviewed semantic correction burden: **${reviewedCorrectionBurden.affectedScopeCount} affected scope(s) / ${reviewedCorrectionBurden.reviewedRequiredCount} required concepts (${(reviewedCorrectionBurden.rate * 100).toFixed(0)}%)**`,
   `- Orientation: **${orientation.analyzer.technology}/${orientation.analyzer.depth}** on \`${orientationSubject.name ?? orientationSubject.id}\``,
   '',
-  '> This is an external framework specimen. It proves generic language/repository behavior; it is not used as semantic authority until a reviewed truth subset is established.',
+  '> This is an external framework specimen. The five-scope reviewed truth set is benchmark ground truth only; it does not promote any Gin semantic candidate into DI accepted authority.',
 ].join('\n');
 await fs.writeFile(process.env.DEVINT_GIN_MARKDOWN ?? path.resolve('benchmark-gin.md'), `${summary}\n`);
 console.log(summary);

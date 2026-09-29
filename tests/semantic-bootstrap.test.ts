@@ -120,6 +120,30 @@ test('semantic bootstrap derives evidence-linked zero-metadata candidates withou
   assert.equal(result.candidates.some(candidate => candidate.scope.includes('utils')), false, 'single weak utility files should not become functional meaning');
 });
 
+test('single-file HTTP-facing scopes qualify through API evidence without weakening weak utility rejection', () => {
+  const fixture = graph();
+  fixture.nodes.push(
+    node('file:http-context', 'file', 'context.go'),
+    node('package:http-context', 'package', 'context.go:5', 'gin'),
+    node('struct:http-context', 'struct', 'context.go:61', 'Context'),
+    node('import:http-context', 'import-binding', 'context.go:17', 'http'),
+  );
+  fixture.edges.push(
+    edge('http-context-contains-package', 'file:http-context', 'package:http-context', 'contains'),
+    edge('http-context-contains-struct', 'file:http-context', 'struct:http-context', 'contains'),
+  );
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 20 });
+  const context = result.candidates.find(candidate => candidate.scope === 'context.go');
+  assert.ok(context, 'a single-file HTTP-facing scope should qualify through observed API evidence');
+  assert.equal(context.support.fileCount, 1);
+  assert.ok(context.provenance.evidenceFamilies.includes('structure'));
+  assert.ok(context.provenance.evidenceFamilies.includes('relationship'));
+  assert.ok(context.provenance.evidenceFamilies.includes('api'));
+  assert.equal(context.proposal.kind, 'capability');
+  assert.equal(result.candidates.some(candidate => candidate.scope.includes('utils')), false, 'weak single-file utility structure must remain rejected');
+});
+
 test('semantic candidate identities and ordering are deterministic across graph record ordering', () => {
   const left = bootstrapSemanticCandidates(graph(false), { limit: 10 });
   const right = bootstrapSemanticCandidates(graph(true), { limit: 10 });
