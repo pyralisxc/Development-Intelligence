@@ -65,8 +65,10 @@ Grouped search/parity tests protect the one-graph/many-independent-queries contr
 Repository semantic questions are conversational projections over one evidence graph, not lookup-table prompts with one mandatory prose answer. DI supports three explicit semantic depths:
 
 - **nucleus**: the smallest honest semantic answer supported by the strongest available authority/evidence layer; omission is not absence;
-- **expanded**: the nucleus plus supporting accepted, observed, and evidence-derived semantic layers, with authority and uncertainty preserved;
+- **expanded**: the nucleus plus all currently discovered factuality-supported core candidates and a bounded supporting semantic layer, with authority, uncertainty, and any remaining supporting truncation stated explicitly;
 - **exhaustive**: a census of the current evidence-qualified semantic candidate universe up to the declared operational limit, with an explicit exhausted/truncated completeness statement.
+
+Semantic depth and presentation breadth are related but not identical. Expanded mode must not drop discovered core meaning merely because it crossed an arbitrary top-N presentation boundary; supporting material may remain bounded when that truncation is explicit. Exhaustive mode is the only mode that claims the full evidence-qualified candidate census.
 
 Natural-language questions infer depth independently, while agents may explicitly set `semanticDepth`. Batched questions continue to share one immutable graph context, so one request may mix nucleus, expanded, and exhaustive questions across different lanes.
 

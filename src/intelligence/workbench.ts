@@ -599,11 +599,22 @@ async function repositorySemanticUnderstanding(
   }
 
   const expandedLimit = Math.min(Math.max(limit * 2, 24), 64);
-  const layerLimit = depth === 'exhaustive' ? Number.POSITIVE_INFINITY : depth === 'expanded' ? expandedLimit : 0;
-  const take = <T>(items: T[]): T[] => Number.isFinite(layerLimit) ? items.slice(0, layerLimit) : items;
-  const acceptedLayerItems = take(acceptedItems);
-  const observedLayerItems = take(observedItems);
-  const derivedLayerItems = take(derivedItems);
+  const supportingDerived = derivedItems.filter(item => item.coreness !== 'core-candidate' || item.factuality !== 'supported');
+  const derivedLayerItems = depth === 'exhaustive'
+    ? derivedItems
+    : depth === 'expanded'
+      ? [...coreDerived, ...supportingDerived.slice(0, expandedLimit)]
+      : [];
+  const acceptedLayerItems = depth === 'nucleus'
+    ? []
+    : depth === 'exhaustive'
+      ? acceptedItems
+      : acceptedItems.slice(0, expandedLimit);
+  const observedLayerItems = depth === 'nucleus'
+    ? []
+    : depth === 'exhaustive'
+      ? observedItems
+      : observedItems.slice(0, expandedLimit);
 
   const eligibleCoverageComplete = Boolean(
     graph.coverage
@@ -647,7 +658,10 @@ async function repositorySemanticUnderstanding(
         exhausted: bootstrap.capacity.exhausted,
         truncated: bootstrap.capacity.truncated,
         coreCandidateCount: audit.counts.coreCandidates,
+        coreReturned: derivedLayerItems.filter(item => item.coreness === 'core-candidate' && item.factuality === 'supported').length,
         supportingCandidateCount: audit.counts.supportingCandidates,
+        supportingReturned: derivedLayerItems.filter(item => item.coreness !== 'core-candidate' || item.factuality !== 'supported').length,
+        supportingPresentationTruncated: depth === 'expanded' && supportingDerived.length > expandedLimit,
         factualityNeedsReview: audit.counts.factualityNeedsReview,
         items: derivedLayerItems,
         authority: 'proposed-not-accepted',
@@ -664,6 +678,8 @@ async function repositorySemanticUnderstanding(
         : 'non-exhaustive-semantic-answer',
       repositoryOmissionMeansAbsent: false,
       candidateOmissionWithinExhaustedCensusMeansAbsent: depth === 'exhaustive' && bootstrap.capacity.exhausted,
+      expandedCoreCoverageComplete: depth !== 'expanded' ? null : bootstrap.capacity.exhausted,
+      expandedSupportingPresentationComplete: depth !== 'expanded' ? null : supportingDerived.length <= expandedLimit,
     },
     expansion: {
       currentDepth: depth,

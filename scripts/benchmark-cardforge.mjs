@@ -347,12 +347,15 @@ if (semanticCorrection.affectedScopeCount !== 0) {
   throw new Error(`CardForge reviewed semantic universe requires human correction: ${JSON.stringify(semanticCorrection)}`);
 }
 const reviewedSemanticScopes = semanticAccuracyCase.groundTruth.semanticCandidates.required.map(item => item.scope);
+const reviewedCoreSemanticScopes = reviewedSemanticScopes.filter(scope =>
+  semanticAudit.items.some(item => item.scope === scope && item.coreness.classification === 'core-candidate' && item.factuality.status === 'supported')
+);
 const generalSemanticQuestions = [
   await generalSemanticQuestion('What does this project do?', 'nucleus'),
   await generalSemanticQuestion(
     'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
     'expanded',
-    { requiredDerivedScopes: reviewedSemanticScopes },
+    { requiredDerivedScopes: reviewedCoreSemanticScopes },
   ),
   await generalSemanticQuestion(
     'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
@@ -805,7 +808,8 @@ const report = {
       structuralOnlyFallbackAllowed: false,
       productIntentInferred: false,
       nucleusMayBeNonExhaustive: true,
-      expandedMustExposeReviewedSemanticUniverse: true,
+      expandedMustExposeAllReviewedCoreCandidates: true,
+      expandedSupportingLayerMayRemainBoundedWithExplicitTruncation: true,
       exhaustiveCandidateCensusMustReachFullReviewedRecall: true,
       omissionOutsideDeclaredCompleteScopeMeansAbsence: false,
     },
@@ -829,7 +833,8 @@ const report = {
       reviewedSemanticRecall: semanticAccuracy.semanticCandidateScore.recall,
       reviewedSemanticFalsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
       reviewedSemanticCorrectionScopeCount: semanticCorrection.affectedScopeCount,
-      expandedReviewedSemanticRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? null,
+      expandedReviewedCoreRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? null,
+      expandedReviewedCoreScopeCount: reviewedCoreSemanticScopes.length,
       exhaustiveReviewedSemanticRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? null,
       exhaustiveCandidateUniverseExhausted: generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted ?? false,
       generalQuestionMaxLatencyMs: Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)),
@@ -970,7 +975,7 @@ const summary = [
   `- Semantic derivation accuracy (full-capacity census, 7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
   `- Reviewed semantic correction burden: **${semanticCorrection.affectedScopeCount} affected scope(s) / ${semanticCorrection.reviewedRequiredCount} required concepts (${(semanticCorrection.rate * 100).toFixed(0)}%)**`,
-  `- T3 semantic query depth: **nucleus + expanded + exhaustive / expanded reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive census=${generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted === true} / max ${Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)).toFixed(3)} ms / 1 external DI call each**`,
+  `- T3 semantic query depth: **nucleus + expanded + exhaustive / expanded reviewed-core recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% across ${reviewedCoreSemanticScopes.length} reviewed core scope(s) / exhaustive reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive census=${generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted === true} / max ${Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)).toFixed(3)} ms / 1 external DI call each**`,
   `- Mixed semantic batch: **${semanticBatchQuestions.length} questions / one graph context / intents ${[...new Set(generalSemanticBatch.items.map(item => item.intent))].join(', ')} / depths ${batchOrientationDepths.join(' → ')} / ${semanticBatchElapsedMs.toFixed(3)} ms / errors ${generalSemanticBatch.counts.error}**`,
   `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; full exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id)}; 100→full stable=${semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
   `- Semantic factuality/core audit: **${semanticAudit.counts.factualitySupported} factuality-supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core-candidate / ${semanticAudit.counts.supportingCandidates} supporting-candidate / ${semanticAuditElapsedMs.toFixed(3)} ms**`,
