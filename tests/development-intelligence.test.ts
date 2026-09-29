@@ -443,6 +443,25 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(explicit.request.questionCount, 3);
     assert.equal(explicit.graphId, batch.graphId);
     assert.deepEqual(explicit.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
+    assert.equal(explicit.items[1].inheritedSubject, explicit.items[0].subject.id, 'batch metadata must record the subject a pronoun inherited from before routing the follow-up');
+
+    const trailingNaturalLanguage = await queryWorkbenchRequest({
+      project: fixture.project,
+      text: 'What is Panel? What does it depend on? Also show where it is implemented',
+    }) as any;
+    assert.equal(trailingNaturalLanguage.request.mode, 'decomposed');
+    assert.equal(trailingNaturalLanguage.request.questionCount, 3, 'a final question-like remainder must remain an independent query even without a trailing question mark');
+    assert.deepEqual(trailingNaturalLanguage.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
+
+    const mechanism = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How does Panel handle the manage request, and what evidence shows that implementation path?',
+    }) as any;
+    assert.equal(mechanism.intent, 'implementation-explanation');
+    assert.equal(mechanism.routing.tool, 'search_code');
+    assert.equal(mechanism.routing.questionPlan.lane, 'implementation-explanation');
+    assert.equal(mechanism.routing.questionPlan.subjectStrategy, 'source-keyword-evidence');
+    assert.ok(mechanism.result.matches.length > 0, 'mechanism questions should search bounded source evidence rather than collapse into a generic evidence assessment');
 
     const independentQuestions = [
       'What is Panel?',
