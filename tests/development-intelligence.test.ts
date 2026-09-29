@@ -1166,6 +1166,9 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(viewerJavaScript, /Accept meaning/);
     assert.match(viewerJavaScript, /Verify with evidence/);
     assert.match(viewerJavaScript, /Resolve semantic lineage/);
+    assert.match(viewerJavaScript, /Semantic change audit/);
+    assert.match(viewerJavaScript, /data-semantic-change-ref/);
+    assert.match(viewerJavaScript, /stable SEM ID/);
     assert.match(viewerJavaScript, /Split source across candidate group/);
     assert.match(viewerJavaScript, /Merge sources into this candidate/);
     assert.match(viewerJavaScript, /reach describes connection, not impact severity/i);
@@ -1182,6 +1185,18 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(semanticsBody.policy.aiProposalProviderNeutral, true);
     assert.equal(semanticsBody.policy.modelOutputAcceptedAutomatically, false);
     assert.ok(semanticsBody.candidates.every((candidate: any) => candidate.aiProposalPacket?.policy?.explicitHumanReviewRequiredForAcceptance === true));
+    assert.equal(semanticsBody.policy.promotionAuditItemized, true);
+    assert.equal(semanticsBody.policy.promotionAuditDesiredOutcomeInferred, false);
+    assert.ok(semanticsBody.promotionAudit);
+    assert.equal(semanticsBody.promotionAudit.semanticDeltaCount, semanticsBody.promotionAudit.items.length);
+    assert.ok(semanticsBody.promotionAudit.items.every((item: any, index: number) =>
+      item.ordinal === index + 1
+      && /^SEM-[0-9A-F]{8}$/.test(item.auditRef)
+      && typeof item.changeId === 'string'
+      && typeof item.summary === 'string'
+      && Array.isArray(item.reasons)
+    ));
+    assert.equal(semanticsBody.promotionAudit.policy.desiredOutcomeInferred, false);
 
     const intelligenceQuery = await fetch(`${origin}/workbench/query`, {
       method: 'POST',
