@@ -601,6 +601,35 @@ for (const expectedState of ['bulkDataInput', 'lastGeneratedCards', 'pendingRevi
 if ((dataInputMechanism.directConsequences ?? []).some(item => item.proof !== 'resolved-handler-direct-edge')) throw new Error('CardForge direct consequences must be backed by resolved handler edges');
 if (bulkGeneratorProjection.interactionMechanisms?.policy?.directConsequencesRequireResolvedHandler !== true) throw new Error('CardForge direct consequence policy must require a resolved handler');
 if (bulkGeneratorProjectionElapsedMs > 2000) throw new Error(`CardForge BulkGenerator consequence projection exceeded 2000 ms budget: ${bulkGeneratorProjectionElapsedMs.toFixed(2)} ms`);
+const bulkMechanismQuestion = 'How does the bulk generator handle CSV data changes and reset generated-card state?';
+const bulkMechanismStarted = process.hrtime.bigint();
+const bulkMechanismExplanation = await callTool('investigate', {
+  project,
+  graphId: scan.graphId,
+  question: bulkMechanismQuestion,
+});
+const bulkMechanismElapsedMs = Number(process.hrtime.bigint() - bulkMechanismStarted) / 1_000_000;
+if (bulkMechanismExplanation.intent !== 'implementation-explanation') throw new Error('CardForge BulkGenerator mechanism question did not route to implementation-explanation');
+if (bulkMechanismExplanation.routing?.projection !== 'implementation-mechanism') throw new Error('CardForge BulkGenerator mechanism question lost implementation-mechanism projection');
+if (bulkMechanismExplanation.routing?.questionPlan?.lane !== 'implementation-explanation') throw new Error('CardForge BulkGenerator mechanism question lost explicit plan lane');
+const bulkMechanism = bulkMechanismExplanation.result?.mechanism;
+if (!bulkMechanism || bulkMechanism.policy?.sourceObservedOnly !== true || bulkMechanism.policy?.runtimeExecutionProven !== false || bulkMechanism.policy?.semanticAuthority !== false) {
+  throw new Error('CardForge BulkGenerator mechanism explanation crossed its evidence/authority boundary');
+}
+if (bulkMechanism.selection?.mode !== 'graph-ranked-files') throw new Error(`CardForge BulkGenerator mechanism explanation expected graph-ranked source selection, got ${bulkMechanism.selection?.mode}`);
+if (!(bulkMechanism.files ?? []).some(item => item.file === bulkGeneratorScope)) throw new Error('CardForge BulkGenerator mechanism explanation did not reach the known implementation file');
+const bulkMechanismRelations = bulkMechanism.relationships ?? [];
+const explainedStateWrites = new Set(
+  bulkMechanismRelations
+    .filter(edge => edge.kind === 'invokes' && edge.from?.name === 'handleDataInputChange')
+    .map(edge => edge.to?.name)
+    .filter(Boolean),
+);
+for (const expectedState of ['bulkDataInput', 'lastGeneratedCards', 'pendingRevision']) {
+  if (!explainedStateWrites.has(expectedState)) throw new Error(`CardForge mechanism explanation lost resolved ${expectedState} consequence`);
+}
+if (!Array.isArray(bulkMechanism.decisionEvidence) || bulkMechanism.decisionEvidence.length < 1) throw new Error('CardForge mechanism explanation expected bounded decision evidence');
+if (bulkMechanismElapsedMs > 2000) throw new Error(`CardForge mechanism explanation exceeded 2000 ms budget: ${bulkMechanismElapsedMs.toFixed(2)} ms`);
 
 const studioBaselineCalls = 5;
 const studioProjectionCalls = 1;
@@ -943,6 +972,17 @@ const report = {
       stateEffectsInferred: templateEditorProjection.interactionMechanisms.policy.stateEffectsInferred,
       unresolvedDropConsequenceCount: (dropMechanism.directConsequences ?? []).length,
     },
+    mechanismExplanation: {
+      question: bulkMechanismQuestion,
+      elapsedMs: Number(bulkMechanismElapsedMs.toFixed(3)),
+      selectionMode: bulkMechanism.selection.mode,
+      candidateFileCount: bulkMechanism.selection.candidateFiles.length,
+      matchedFileCount: bulkMechanism.files.length,
+      keyEntityCount: bulkMechanism.keyEntities.length,
+      resolvedRelationshipCount: bulkMechanism.relationships.length,
+      decisionEvidenceCount: bulkMechanism.decisionEvidence.length,
+      explainedStateWrites: [...explainedStateWrites].sort(),
+    },
     directConsequences: {
       scope: bulkGeneratorScope,
       elapsedMs: Number(bulkGeneratorProjectionElapsedMs.toFixed(3)),
@@ -1013,6 +1053,7 @@ const summary = [
   `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
   `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,
   `- Proven direct consequences: **${bulkGeneratorProjection.interactionMechanisms.directConsequenceCount} direct nodes across ${bulkGeneratorProjection.interactionMechanisms.directConsequenceMechanismCount} mechanisms / ${bulkGeneratorProjectionElapsedMs.toFixed(3)} ms**`,
+  `- Natural-language mechanism explanation: **${bulkMechanism.files.length} matched files / ${bulkMechanism.keyEntities.length} key entities / ${bulkMechanism.relationships.length} resolved relationships / ${bulkMechanism.decisionEvidence.length} decision evidence items / ${bulkMechanismElapsedMs.toFixed(3)} ms**`,
   `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Canonical current-graph hot path: **cold ${canonicalColdWallMs.toFixed(3)} ms → p50 ${canonicalHotP50Ms.toFixed(3)} ms / p95 ${canonicalHotP95Ms.toFixed(3)} ms across 12 process-cache-evicted reads (${canonicalSpeedupVsP50.toFixed(2)}× vs p50)**`,

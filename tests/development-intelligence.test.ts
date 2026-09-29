@@ -491,6 +491,8 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(mechanism.routing.projection, 'implementation-mechanism');
     assert.ok(mechanism.result.matches.length > 0, 'mechanism questions should search bounded source evidence rather than collapse into a generic evidence assessment');
     assert.ok(mechanism.result.mechanism.files.length > 0, 'mechanism projection must group bounded source evidence by file');
+    assert.equal(mechanism.result.mechanism.selection.mode, 'graph-ranked-files');
+    assert.ok(mechanism.result.mechanism.selection.candidateFiles.some((item: any) => item.file === 'src/panel.tsx'), 'graph-guided source selection must keep the known fixture implementation file');
     assert.ok(mechanism.result.mechanism.keyEntities.length > 0, 'mechanism projection must identify evidence-linked entities in matched files');
     assert.ok(mechanism.result.mechanism.relationships.length > 0, 'mechanism projection must expose resolved graph relationships instead of only raw text hits');
     assert.ok(mechanism.result.mechanism.decisionEvidence.length > 0, 'mechanism projection must expose bounded decision evidence when source contains decision/control terms');

@@ -490,7 +490,7 @@ function implementationExplorationIntent(text: string): boolean {
   return asksMechanism && mechanism;
 }
 
-function implementationExplorationPattern(text: string): string {
+function implementationExplorationTerms(text: string): string[] {
   const stop = new Set([
     'about', 'against', 'also', 'another', 'between', 'broader', 'choice', 'current', 'does', 'doing',
     'evidence', 'exact', 'explain', 'from', 'graph', 'into', 'other', 'question', 'questions', 'read',
@@ -500,38 +500,95 @@ function implementationExplorationPattern(text: string): string {
   const words = text.match(/[A-Za-z][A-Za-z0-9_-]{3,}/gu) ?? [];
   const stems = words
     .map(word => word.replace(/(?:ing|edly|ed|es|s)$/iu, ''))
-    .map(word => word.length >= 5 ? word : '')
+    .map(word => word.length >= 5 ? word.toLowerCase() : '')
     .filter(Boolean)
-    .filter(word => !stop.has(word.toLowerCase()));
-  const terms = [...new Set(stems)].slice(0, 10);
+    .filter(word => !stop.has(word));
+  return [...new Set(stems)].slice(0, 10);
+}
+
+function implementationExplorationPattern(text: string): string {
+  const terms = implementationExplorationTerms(text);
   if (!terms.length) return '.+';
   return terms.flatMap(term => {
-    const lower = term.toLowerCase();
-    const capitalized = lower.charAt(0).toUpperCase() + lower.slice(1);
-    return lower === capitalized ? [lower + '[A-Za-z0-9_-]*'] : [lower + '[A-Za-z0-9_-]*', capitalized + '[A-Za-z0-9_-]*'];
+    const capitalized = term.charAt(0).toUpperCase() + term.slice(1);
+    return [term + '[A-Za-z0-9_-]*', capitalized + '[A-Za-z0-9_-]*'];
   }).join('|');
 }
 
+function regexEscape(value: string): string {
+  return value.replace(/[.*+?^{}()|[\]\\]/gu, '\\$&');
+}
 
+function rankedMechanismSourceFiles(
+  graph: IntelligenceGraph,
+  text: string,
+  limit = 12,
+): Array<{ file: string; score: number; matchedTerms: string[]; nodeHits: number }> {
+  const terms = implementationExplorationTerms(text);
+  if (!terms.length) return [];
+  const files = new Map<string, { score: number; terms: Set<string>; nodeHits: number }>();
+  for (const node of graph.nodes) {
+    const file = sourceFile(node.locator)?.replace(/^\.\//u, '');
+    if (!file) continue;
+    const name = String(node.name ?? '').toLowerCase();
+    const identity = (String(node.id) + ' ' + String(node.locator)).toLowerCase();
+    const matched = terms.filter(term => name.includes(term) || identity.includes(term));
+    if (!matched.length) continue;
+    const current = files.get(file) ?? { score: 0, terms: new Set<string>(), nodeHits: 0 };
+    current.nodeHits += 1;
+    for (const term of matched) {
+      current.terms.add(term);
+      current.score += 2 + Number(name.includes(term)) * 2;
+    }
+    if (node.layer === 'structural' || node.layer === 'representation') current.score += 1;
+    files.set(file, current);
+  }
+  return [...files.entries()]
+    .map(([file, value]) => ({
+      file,
+      score: value.score + value.terms.size * 4,
+      matchedTerms: [...value.terms].sort(),
+      nodeHits: value.nodeHits,
+    }))
+    .sort((a, b) =>
+      b.matchedTerms.length - a.matchedTerms.length
+      || b.score - a.score
+      || b.nodeHits - a.nodeHits
+      || a.file.localeCompare(b.file))
+    .slice(0, Math.max(1, limit));
+}
 async function implementationMechanismProjection(input: {
   project: string;
   text: string;
   ref?: string | undefined;
   graphId?: string | undefined;
+  scope?: string | undefined;
   limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const pattern = implementationExplorationPattern(input.text);
+  const explicitScope = input.scope?.trim() ?? '';
+  const rankedFiles = explicitScope ? [] : rankedMechanismSourceFiles(graph, input.text, 12);
+  const rankedFilePattern = rankedFiles.length
+    ? '^(?:' + rankedFiles.map(item => regexEscape(item.file)).join('|') + ')$'
+    : undefined;
   const source = await searchCode({
     project: input.project,
     ref: input.ref,
     graphId: graph.graphId,
     pattern,
+    ...(explicitScope
+      ? {
+          filePattern: explicitScope.replace(/^\.\//u, ''),
+          filePatternMode: /\.[A-Za-z0-9]+$/u.test(explicitScope) ? 'literal' as const : 'prefix' as const,
+        }
+      : rankedFilePattern
+        ? { filePattern: rankedFilePattern, filePatternMode: 'regex' as const }
+        : {}),
     regex: true,
     context: 3,
     limit: Math.min(Math.max(input.limit ?? 100, 1), 250),
   }) as any;
-
   const matches = Array.isArray(source.matches) ? source.matches : [];
   const fileMap = new Map<string, any[]>();
   for (const match of matches) {
@@ -645,6 +702,12 @@ async function implementationMechanismProjection(input: {
     summary,
     mechanism: {
       pattern,
+      selection: {
+        mode: explicitScope ? 'explicit-scope' : rankedFiles.length ? 'graph-ranked-files' : 'repository-fallback',
+        explicitScope: explicitScope || null,
+        candidateFiles: rankedFiles,
+        sourceFilePattern: explicitScope || rankedFilePattern || null,
+      },
       files,
       keyEntities,
       relationships: resolved.slice(0, 50),
@@ -1950,6 +2013,7 @@ export async function queryWorkbench(input: {
       text,
       ref: input.ref,
       graphId: input.graphId,
+      scope: input.scope,
       limit: 100,
     }) as any;
     return {
