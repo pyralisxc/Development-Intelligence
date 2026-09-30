@@ -2,8 +2,8 @@
   "type": "meta",
   "schemaVersion": 2,
   "format": "sharded-ndjson",
-  "analyzerVersion": "2.9.0-rust-structural",
-  "sourceFingerprint": "01663ec9434772317004851088610996972c5dd070f743ff884b9d028055fc0d",
+  "analyzerVersion": "2.10.0-operational-config",
+  "sourceFingerprint": "37ac4e8b4942cd4e8d3640ad0a47d7bdb332613fb8db8f72cb13d888ad14bc2b",
   "topologyFingerprint": "48964db02d9f01cb95ae81ece885dc31db9600aa62ae747265da119dee2355c3",
   "evidenceFingerprint": "255294703a5c53e498ef0c1a39464390b696159ada8b9cae658a4fdb4a08619a",
   "shards": [

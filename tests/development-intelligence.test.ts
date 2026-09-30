@@ -400,6 +400,7 @@ test('shared investigation router maps ordinary questions to existing DI primiti
     }) as any;
     assert.equal(workflowSource.intent, 'source-search');
     assert.equal(workflowSource.routing.tool, 'search_code');
+    assert.equal(workflowSource.routing.file, '.github/workflows/verify.yml');
     assert.ok(workflowSource.result.matches.some((match: any) => /node-version:\s*22/.test(match.text)));
 
     const premise = await callTool('investigate', {
@@ -429,6 +430,8 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'What does Panel depend on?', lane: 'trace' },
     { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
     { question: 'What does this project do? Go deep across supporting systems and semantic layers.', lane: 'orientation', semanticDepth: 'expanded', completeness: 'expanded' },
+    { question: 'Which current failures or warnings should be fixed first because they most limit DI\'s ability to audit itself and other repositories?', lane: 'repository-audit', subjectStrategy: 'repository' },
+    { question: 'Audit the evidence for Panel.', lane: 'evidence', subjectStrategy: 'entity-or-query' },
     { question: 'Give me a project status summary.', lane: 'overview', subjectStrategy: 'repository' },
     { question: 'How big is this project and what capacity limits are we near?', lane: 'statistics', subjectStrategy: 'repository' },
     { question: 'How many files, nodes, and edges does this repo have?', lane: 'statistics', subjectStrategy: 'repository' },
@@ -443,6 +446,27 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     if ('semanticDepth' in expected) assert.equal(plan.semanticDepth, expected.semanticDepth, expected.question);
     if ('completeness' in expected) assert.equal(plan.completeness, expected.completeness, expected.question);
     assert.equal(plan.continuity, 'immediate-exact-pronoun-only');
+  }
+});
+
+test('repository-level self-audit questions bypass entity resolution and use audit_repository', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const routed = await queryWorkbenchRequest({
+      project: fixture.project,
+      text: 'Which current failures or warnings should be fixed first because they most limit this project ability to audit itself?',
+    }) as any;
+    assert.equal(routed.intent, 'repository-audit');
+    assert.equal(routed.subject, null);
+    assert.equal(routed.routing.tool, 'audit_repository');
+    assert.equal(routed.routing.questionPlan.lane, 'repository-audit');
+    assert.equal(routed.routing.targetResolution.mode, 'repository');
+    assert.ok(Array.isArray(routed.result.findings));
+    assert.ok(routed.result.findingSummary);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -746,6 +770,7 @@ test('scope orientation surfaces explainable local graph structure without an op
       question: 'What are the main functions this page uses?',
     }) as any;
     assert.equal(missingScope.intent, 'orientation');
+    assert.equal(missingScope.routing.targetResolution.mode, 'scope-required');
     assert.equal(missingScope.result.scopeRequired, true, 'deictic scope should remain explicit instead of guessing');
 
     const projectQuestion = await callTool('investigate', {

@@ -238,6 +238,7 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
 
   for (const node of graph.nodes) {
     if ((node.layer ?? 'structural') === 'semantic') continue;
+    if (node.tags?.includes('operational')) continue;
     const file = sourceFile(node.locator);
     if (!file) continue;
     const scoped = scopeForPath(file);
