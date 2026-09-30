@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import test from 'node:test';
 import { canonicalReconcileCronAuthorized, createDevelopmentIntelligenceServer } from '../src/http.js';
 import { canonicalPortfolioRotationIndex } from '../src/intelligence/canonicalPortfolio.js';
+import { canonicalReconcileWorkerLimits, runCanonicalReconcileWorker } from '../src/intelligence/canonicalReconcileWorker.js';
 
 async function close(server: Server): Promise<void> {
   await new Promise<void>(resolve => server.close(() => resolve()));
@@ -30,6 +31,35 @@ test('canonical portfolio rotation deterministically assigns one repository per 
   assert.equal(canonicalPortfolioRotationIndex(2 * minute, 3), 2);
   assert.equal(canonicalPortfolioRotationIndex(3 * minute, 3), 0);
   assert.equal(canonicalPortfolioRotationIndex(5 * minute, 3), 2);
+});
+
+test('canonical reconcile worker limits keep one repository inside one cron slot', () => {
+  const previousTimeout = process.env.DEVINT_CANONICAL_RECONCILE_WORKER_TIMEOUT_MS;
+  const previousHeap = process.env.DEVINT_CANONICAL_RECONCILE_WORKER_HEAP_MB;
+  try {
+    delete process.env.DEVINT_CANONICAL_RECONCILE_WORKER_TIMEOUT_MS;
+    delete process.env.DEVINT_CANONICAL_RECONCILE_WORKER_HEAP_MB;
+    assert.deepEqual(canonicalReconcileWorkerLimits(), { timeoutMs: 45_000, maxOldGenerationSizeMb: 768 });
+
+    process.env.DEVINT_CANONICAL_RECONCILE_WORKER_TIMEOUT_MS = '999999';
+    process.env.DEVINT_CANONICAL_RECONCILE_WORKER_HEAP_MB = '9999';
+    assert.deepEqual(canonicalReconcileWorkerLimits(), { timeoutMs: 55_000, maxOldGenerationSizeMb: 896 });
+  } finally {
+    if (previousTimeout === undefined) delete process.env.DEVINT_CANONICAL_RECONCILE_WORKER_TIMEOUT_MS;
+    else process.env.DEVINT_CANONICAL_RECONCILE_WORKER_TIMEOUT_MS = previousTimeout;
+    if (previousHeap === undefined) delete process.env.DEVINT_CANONICAL_RECONCILE_WORKER_HEAP_MB;
+    else process.env.DEVINT_CANONICAL_RECONCILE_WORKER_HEAP_MB = previousHeap;
+  }
+});
+
+test('isolated reconcile worker returns a structured repository error without failing the parent', async () => {
+  const item = await runCanonicalReconcileWorker(
+    { project: 'unauthorized-owner/missing-project', defaultBranch: 'main' },
+    { timeoutMs: 5_000, maxOldGenerationSizeMb: 128 },
+  );
+  assert.equal(item.project, 'unauthorized-owner/missing-project');
+  assert.equal(item.outcome, 'error');
+  assert.ok(item.reason);
 });
 
 test('canonical reconcile cron route rejects unconfigured and invalid callers before update-plane work', async () => {
