@@ -11,6 +11,7 @@ import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
 import { graphRecordWeight } from './capacity.js';
+import { repositoryAudit } from './repositoryAudit.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -870,6 +871,7 @@ export type InvestigationQuestionLane =
   | 'implementation-claim'
   | 'code'
   | 'semantic-audit'
+  | 'repository-audit'
   | 'orientation'
   | 'trace'
   | 'evidence'
@@ -924,6 +926,13 @@ export function planInvestigationQuestion(input: {
   const statisticsIntent =
     /\b(?:project|repository|repo|codebase|graph)\b[^?.!]{0,60}\b(?:size|stats|statistics|capacity|footprint|limits?|big|large|resource pressure|storage usage)\b/u.test(lower)
     || /\b(?:how (?:big|large) is (?:this|the) (?:project|repository|repo|codebase)|general (?:project )?stats|project stats|capacity profile|how many (?:files|nodes|edges|semantic concepts)|near (?:our )?capacity|close to (?:our )?capacity)\b/u.test(lower);
+  const repositoryAuditIntent =
+    (
+      /\b(?:this|the|our)\s+(?:project|repository|repo|codebase|system)\b/u.test(lower)
+      || /\b(?:itself|ourselves|self[- ]audit|repository-wide|project-wide|overall)\b/u.test(lower)
+      || /\bwhich\s+(?:current\s+)?(?:failures?|warnings?)\b/u.test(lower)
+    )
+    && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
@@ -937,6 +946,7 @@ export function planInvestigationQuestion(input: {
   else if (implementationClaimIntent) lane = 'implementation-claim';
   else if (codeIntent) lane = 'code';
   else if (semanticAuditIntent) lane = 'semantic-audit';
+  else if (repositoryAuditIntent) lane = 'repository-audit';
   else if (orientationIntent) lane = 'orientation';
   else if (traceIntent) lane = 'trace';
   else if (evidenceIntent) lane = 'evidence';
@@ -957,7 +967,7 @@ export function planInvestigationQuestion(input: {
         ? 'source-keyword-evidence'
         : lane === 'interface' || lane === 'orientation'
           ? 'scope-or-entity'
-          : ['semantic-lifecycle', 'semantic-audit', 'change', 'statistics', 'coverage', 'overview'].includes(lane)
+          : ['semantic-lifecycle', 'semantic-audit', 'repository-audit', 'change', 'statistics', 'coverage', 'overview'].includes(lane)
             ? 'repository'
             : 'entity-or-query';
 
@@ -2349,6 +2359,24 @@ export async function queryWorkbench(input: {
       subject: subjectDescriptor(resolved.node, resolved.query, resolved.ambiguous, resolved.candidates),
       routing: { tool: 'query_intelligence' },
       answer: `Evidence-backed assessment: ${String((result as any).answerStatus ?? 'indeterminate')}.`,
+      result,
+    };
+  }
+
+  if (plan.lane === 'repository-audit') {
+    const result = await repositoryAudit({
+      project: input.project,
+      ...(input.ref ? { ref: input.ref } : {}),
+      ...(input.graphId ? { graphId: input.graphId } : {}),
+      limit: 40,
+    }) as any;
+    const findingTotal = Number(result.findingSummary?.total ?? result.findings?.length ?? 0);
+    const blockerTotal = Number(result.coverageBlockers?.length ?? 0);
+    return {
+      intent: 'repository-audit',
+      subject: null,
+      routing: { tool: 'audit_repository' },
+      answer: `Repository audit: ${findingTotal} deterministic finding(s) and ${blockerTotal} coverage blocker(s) on the pinned revision.`,
       result,
     };
   }
