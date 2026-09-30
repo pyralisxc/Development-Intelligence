@@ -221,3 +221,5 @@ npm run vcr:plan -- --repository dockerfile --apply "$VERCEL_PROJECT_ID"
 ```
 
 The apply path deletes only entries classified `delete`, one at a time, through Vercel's VCR image endpoint. Re-run the dry run after cleanup and confirm enough headroom exists before triggering another container deployment.
+
+Production also registers a daily `/internal/vcr-retention` Cron Job. The route is protected by `CRON_SECRET` and uses the deployment's short-lived Vercel OIDC identity to access only this project's VCR inventory; no long-lived Vercel API token is stored in DI. It applies the same planner used by `npm run vcr:plan`, deletes exact image IDs sequentially, then re-reads VCR inventory and fails if any requested deletion remains present. Current READY production, one **distinct-SHA** READY rollback, latest READY Preview, production tags, and configured retention windows remain protected.

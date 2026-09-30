@@ -44,7 +44,7 @@ test('retention protects current production, one rollback, and recent previews',
 test('unknown old tags require review instead of automatic deletion', () => {
   const plan = planVcrRetention({ now, images: [image('unknown', ['release-candidate'], 30)], deployments: [] });
   assert.deepEqual(plan.decisions[0], {
-    id: 'unknown', digest: 'sha256:unknown', tags: ['release-candidate'],
+    id: 'unknown', digest: 'sha256:unknown', sizeInBytes: 0, tags: ['release-candidate'],
     createdAt: now - 30 * day, ageDays: 30, action: 'review', reason: 'old image has tags not correlated to a deployment', protected: false,
   });
 });
@@ -60,7 +60,7 @@ test('retention protects the latest READY Preview deployment even when it is old
     }],
   });
   assert.deepEqual(plan.decisions[0], {
-    id: 'preview', digest: 'sha256:preview', tags: [previewSha.slice(0, 12)],
+    id: 'preview', digest: 'sha256:preview', sizeInBytes: 0, tags: [previewSha.slice(0, 12)],
     createdAt: now - 20 * day, ageDays: 20, action: 'keep', reason: 'latest READY preview deployment', protected: true,
   });
 });
@@ -75,4 +75,26 @@ test('retention trims oldest nonprotected images to the configured target', () =
     plan.decisions.filter(item => item.action === 'delete').map(item => item.id),
     ['candidate-10', 'candidate-11'],
   );
+});
+
+
+test('duplicate deployments of current production SHA do not consume the distinct rollback slot', () => {
+  const currentSha = sha('7');
+  const rollbackSha = sha('8');
+  const plan = planVcrRetention({
+    now,
+    images: [
+      image('current', [currentSha.slice(0, 12)], 20),
+      image('rollback', [rollbackSha.slice(0, 12)], 20),
+    ],
+    deployments: [
+      deployment('prod-current-native', currentSha, 0.1, 'production'),
+      deployment('prod-current-fallback', currentSha, 0.2, 'production'),
+      deployment('prod-rollback', rollbackSha, 3, 'production'),
+    ],
+  });
+  const decisions = Object.fromEntries(plan.decisions.map(item => [item.id, item]));
+  assert.equal(decisions.current.protected, true);
+  assert.equal(decisions.rollback.protected, true);
+  assert.equal(decisions.rollback.reason, 'active production or distinct rollback deployment');
 });

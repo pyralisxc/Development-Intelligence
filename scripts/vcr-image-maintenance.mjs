@@ -5,7 +5,7 @@ function argument(name, fallback) {
   return index === -1 ? fallback : process.argv[index + 1];
 }
 
-const token = process.env.VERCEL_TOKEN;
+const token = process.env.VERCEL_TOKEN ?? process.env.VERCEL_OIDC_TOKEN;
 const projectId = argument('project-id', process.env.VERCEL_PROJECT_ID);
 const teamId = argument('team-id', process.env.VERCEL_TEAM_ID);
 const repository = argument('repository', process.env.VERCEL_VCR_REPOSITORY ?? 'dockerfile');
@@ -20,7 +20,7 @@ const policy = {
 };
 
 if (!token || !projectId || !teamId) {
-  throw new Error('VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID are required. The command is dry run unless --apply exactly matches VERCEL_PROJECT_ID.');
+  throw new Error('VERCEL_TOKEN or VERCEL_OIDC_TOKEN plus VERCEL_PROJECT_ID and VERCEL_TEAM_ID are required. The command is dry run unless --apply exactly matches VERCEL_PROJECT_ID.');
 }
 if (applyConfirmation && applyConfirmation !== projectId) throw new Error('--apply must exactly match VERCEL_PROJECT_ID');
 
