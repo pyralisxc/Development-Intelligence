@@ -13,7 +13,7 @@ import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, se
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools, toolContract } from '../src/mcp.js';
 import { runtimeIdentity } from '../src/runtimeIdentity.js';
-import { interfaceProjection, planInvestigationQuestion, projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
+import { interfaceProjection, planInvestigationQuestion, projectOverview, projectStatistics, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -430,6 +430,8 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
     { question: 'What does this project do? Go deep across supporting systems and semantic layers.', lane: 'orientation', semanticDepth: 'expanded', completeness: 'expanded' },
     { question: 'Give me a project status summary.', lane: 'overview', subjectStrategy: 'repository' },
+    { question: 'How big is this project and what capacity limits are we near?', lane: 'statistics', subjectStrategy: 'repository' },
+    { question: 'How many files, nodes, and edges does this repo have?', lane: 'statistics', subjectStrategy: 'repository' },
     { question: 'Show graph coverage.', lane: 'coverage', subjectStrategy: 'repository' },
   ] as const;
 
@@ -441,6 +443,29 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     if ('semanticDepth' in expected) assert.equal(plan.semanticDepth, expected.semanticDepth, expected.question);
     if ('completeness' in expected) assert.equal(plan.completeness, expected.completeness, expected.question);
     assert.equal(plan.continuity, 'immediate-exact-pronoun-only');
+  }
+});
+
+test('project statistics exposes bounded graph and capacity facts without inventing byte counts', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const stats = await projectStatistics(fixture.project) as any;
+    assert.equal(stats.project, fixture.project);
+    assert.equal(typeof stats.graph.nodes, 'number');
+    assert.equal(typeof stats.graph.edges, 'number');
+    assert.equal(typeof stats.graph.recordWeight, 'number');
+    assert.equal(stats.source.sourceBytes, null);
+    assert.equal(stats.source.sourceBytesStatus, 'unavailable-not-recorded');
+    assert.equal(stats.policy.semanticAuthority, false);
+
+    const routed = await queryWorkbenchRequest({ project: fixture.project, text: 'Give me the general project stats and tell me how big this repo is.' }) as any;
+    assert.equal(routed.intent, 'statistics');
+    assert.equal(routed.routing.tool, 'project_statistics');
+    assert.equal(routed.routing.questionPlan.lane, 'statistics');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
