@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { authMode, authorize, authorizeOwnerWrite, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
+import { authMode, authorize, authorizeOwnerWrite, authorizeSemanticGateWrite, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
 import { callTool, listTools } from './mcp.js';
 import { runtimeIdentity } from './runtimeIdentity.js';
 import { currentGraph } from './intelligence/service.js';
@@ -11,7 +11,7 @@ import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
-import { parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface } from './intelligence/semanticWorkflow.js';
+import { parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { withVercelRequestContext } from './vercelRequestContext.js';
 
@@ -316,6 +316,44 @@ export function createDevelopmentIntelligenceServer() {
         json(res, 200, result);
       } catch (error) {
         json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (requestUrl.pathname === '/workbench/semantics/change-verify' && req.method === 'POST') {
+      const identity = authorizeSemanticGateWrite(req, res);
+      if (!identity) return;
+      try {
+        const body = await readJson(req);
+        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
+        if (typeof body.auditRef !== 'string' || !/^SEM-[0-9A-F]{8}$/u.test(body.auditRef)) throw Object.assign(new Error('auditRef must be a stable SEM identifier'), { status: 400 });
+        if (!Array.isArray(body.evidenceIds)) throw Object.assign(new Error('evidenceIds must be an array'), { status: 400 });
+        const evidenceIds = [...new Set(body.evidenceIds.filter((value: unknown): value is string => typeof value === 'string').map((value: string) => value.trim()).filter(Boolean))];
+        if (!evidenceIds.length) throw Object.assign(new Error('semantic change verification requires explicit evidence ids'), { status: 400 });
+        const ref = typeof body.ref === 'string' && body.ref ? body.ref : undefined;
+        const graphId = typeof body.graphId === 'string' && body.graphId ? body.graphId : undefined;
+        if (ref && graphId) throw Object.assign(new Error('Use either ref or graphId, not both'), { status: 400 });
+        const rationale = body.rationale === undefined || body.rationale === null
+          ? undefined
+          : typeof body.rationale === 'string' ? body.rationale : (() => { throw Object.assign(new Error('rationale must be a string or null'), { status: 400 }); })();
+        if (body.expectedEtag !== undefined && body.expectedEtag !== null && typeof body.expectedEtag !== 'string') {
+          throw Object.assign(new Error('expectedEtag must be a string or null'), { status: 400 });
+        }
+        const result = await verifySemanticPromotionChange({
+          project: body.project,
+          ...(ref ? { ref } : {}),
+          ...(graphId ? { graphId } : {}),
+          auditRef: body.auditRef,
+          evidenceIds,
+          actor: identity.kind === 'human'
+            ? { kind: 'human', id: identity.id }
+            : { kind: 'ai-model', id: identity.id },
+          at: new Date().toISOString(),
+          ...(rationale === undefined ? {} : { rationale }),
+          ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
+        });
+        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
+      } catch (error) {
+        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }

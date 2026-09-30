@@ -10,6 +10,7 @@ import {
   compactSemanticAuthorityToCurrentAccepted,
   latestAcceptedMeanings,
   loadSemanticAuthority,
+  persistSemanticChangeVerification,
   persistSemanticReview,
   persistSemanticReviews,
   promoteCanonicalAcceptedGraph,
@@ -99,6 +100,40 @@ test('semantic authority persists the current review working set with optimistic
   }
 });
 
+test('semantic change verification is revision-bound, CAS-protected, and pruned by promotion compaction', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-change-verification-'));
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const project = 'fixture/change-verification';
+    const revision = 'abababababababababababababababababababab';
+    const empty = await loadSemanticAuthority(project);
+    const verification = {
+      version: 1 as const,
+      changeId: `${revision}:unsupported:semantic-meaning:removed`,
+      auditRef: 'SEM-ABCDEF12',
+      targetRevision: revision,
+      actor: { kind: 'ai-model' as const, id: 'agent:trusted' },
+      at: '2026-09-29T04:00:00.000Z',
+      evidenceIds: ['evidence:removed-route', 'evidence:removed-owner'],
+      rationale: 'Verified against current Preview evidence.',
+    };
+    const stored = await persistSemanticChangeVerification(project, verification, empty.etag);
+    assert.equal(stored.state, 'stored');
+    assert.equal(stored.ledger?.changeVerifications.length, 1);
+    assert.deepEqual(stored.ledger?.changeVerifications[0]?.evidenceIds, ['evidence:removed-owner', 'evidence:removed-route']);
+
+    const conflict = await persistSemanticChangeVerification(project, verification, empty.etag);
+    assert.equal(conflict.state, 'conflict');
+
+    const compacted = await compactSemanticAuthorityToCurrentAccepted(project);
+    assert.equal(compacted.state, 'stored');
+    assert.deepEqual(compacted.ledger?.changeVerifications, []);
+  } finally {
+    delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('semantic authority compaction keeps only current accepted meanings and drops transition history', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-authority-compact-'));
   process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
@@ -140,6 +175,7 @@ test('semantic authority compaction keeps only current accepted meanings and dro
     assert.equal(compacted.ledger?.records[0]?.review.accepted, true);
     assert.deepEqual(compacted.ledger?.records[0]?.review.history, []);
     assert.deepEqual(compacted.ledger?.records[0]?.review.lineage, { predecessorMeaningIds: [], successorMeaningIds: [] });
+    assert.deepEqual(compacted.ledger?.changeVerifications, []);
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });

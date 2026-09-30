@@ -1,8 +1,10 @@
 import { bootstrapSemanticCandidates, type SemanticCandidate, type SemanticCandidateKind } from './semanticBootstrap.js';
 import {
   loadSemanticAuthority,
+  persistSemanticChangeVerification,
   persistSemanticReview,
   persistSemanticReviews,
+  semanticChangeVerificationsAtRevision,
   semanticReviewsAtRevision,
   type SemanticAuthorityLedger,
   type SemanticAuthorityLoad,
@@ -15,7 +17,11 @@ import {
 } from './semanticEvolution.js';
 import {
   applySemanticReviewAction,
+  normalizeSemanticReviewActor,
+  normalizeSemanticReviewRationale,
+  normalizeSemanticReviewTimestamp,
   semanticMeaningReview,
+  type SemanticChangeVerificationRecord,
   type SemanticMeaningReview,
   type SemanticReviewAction,
   type SemanticReviewActor,
@@ -522,6 +528,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
         baseMeanings: acceptedMeanings,
         previewCandidates: fullBootstrap.candidates,
         previewReviews: reviews,
+        changeVerifications: semanticChangeVerificationsAtRevision(authority.ledger, graph.repositoryRevision),
         baseRevision: defaultRevision.sha === graph.repositoryRevision ? null : defaultRevision.sha,
         previewRevision: graph.repositoryRevision,
       });
@@ -565,8 +572,68 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       modelOutputAcceptedAutomatically: false,
       promotionAuditItemized: true,
       promotionAuditDesiredOutcomeInferred: false,
+      promotionGateVerificationCanBeDelegated: true,
       acceptedGraphAffected: false,
     },
+  };
+}
+
+export async function verifySemanticPromotionChange(input: SemanticReviewSurfaceInput & {
+  auditRef: string;
+  evidenceIds: string[];
+  actor: SemanticReviewActor;
+  at: string;
+  rationale?: string | null;
+  expectedEtag?: string | null;
+}): Promise<{
+  state: 'stored' | 'conflict' | 'not-configured';
+  project: string;
+  graphId: string;
+  revision: string | null;
+  auditRef: string;
+  changeId: string;
+  generation: number;
+  etag: string | null;
+  verification: SemanticChangeVerificationRecord;
+  item: Record<string, unknown> | null;
+}> {
+  const surface = await semanticReviewSurface(input) as any;
+  const item = surface.promotionAudit?.items?.find((candidate: any) => candidate.auditRef === input.auditRef);
+  if (!item) throw new Error(`Semantic promotion audit item ${input.auditRef} is not present for the selected revision`);
+  const evidenceIds = [...new Set(input.evidenceIds.map(value => value.trim()).filter(Boolean))].sort();
+  if (!evidenceIds.length) throw new Error('Semantic change verification requires at least one explicit evidence id');
+  const actor = normalizeSemanticReviewActor(input.actor);
+  if (!['human', 'ai-model'].includes(actor.kind)) throw new Error('Semantic change verification actor must be human or ai-model');
+  const verification: SemanticChangeVerificationRecord = {
+    version: 1,
+    changeId: item.changeId,
+    auditRef: item.auditRef,
+    targetRevision: surface.revision,
+    actor,
+    at: normalizeSemanticReviewTimestamp(input.at),
+    evidenceIds,
+    rationale: normalizeSemanticReviewRationale(input.rationale),
+  };
+  const authority = await loadSemanticAuthority(input.project);
+  if (authority.state === 'invalid') throw new Error(authority.error ?? 'Semantic authority ledger is invalid');
+  const expectedEtag = input.expectedEtag === undefined ? authority.etag : input.expectedEtag;
+  const written = await persistSemanticChangeVerification(input.project, verification, expectedEtag);
+  let updatedItem: Record<string, unknown> | null = null;
+  if (written.state === 'stored') {
+    const refreshed = await semanticReviewSurface(input) as any;
+    updatedItem = refreshed.promotionAudit?.items?.find((candidate: any) => candidate.auditRef === input.auditRef) ?? null;
+  }
+  return {
+    state: written.state,
+    project: input.project,
+    graphId: surface.graphId,
+    revision: surface.revision,
+    auditRef: item.auditRef,
+    changeId: item.changeId,
+    generation: written.ledger?.generation ?? authority.ledger?.generation ?? 0,
+    etag: written.etag,
+    verification,
+    item: updatedItem,
   };
 }
 

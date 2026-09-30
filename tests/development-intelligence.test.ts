@@ -1168,6 +1168,8 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(viewerJavaScript, /Resolve semantic lineage/);
     assert.match(viewerJavaScript, /Semantic change audit/);
     assert.match(viewerJavaScript, /data-semantic-change-ref/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/change-verify/);
+    assert.match(viewerJavaScript, /Verify this SEM change/);
     assert.match(viewerJavaScript, /stable SEM ID/);
     assert.match(viewerJavaScript, /Split source across candidate group/);
     assert.match(viewerJavaScript, /Merge sources into this candidate/);
@@ -1187,6 +1189,7 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.ok(semanticsBody.candidates.every((candidate: any) => candidate.aiProposalPacket?.policy?.explicitHumanReviewRequiredForAcceptance === true));
     assert.equal(semanticsBody.policy.promotionAuditItemized, true);
     assert.equal(semanticsBody.policy.promotionAuditDesiredOutcomeInferred, false);
+    assert.equal(semanticsBody.policy.promotionGateVerificationCanBeDelegated, true);
     assert.ok(semanticsBody.promotionAudit);
     assert.equal(semanticsBody.promotionAudit.semanticDeltaCount, semanticsBody.promotionAudit.items.length);
     assert.ok(semanticsBody.promotionAudit.items.every((item: any, index: number) =>

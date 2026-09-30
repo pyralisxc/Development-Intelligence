@@ -457,9 +457,15 @@ function semanticAuditSnapshot(snapshot: any): string {
   return `${snapshot.name ?? snapshot.candidateId ?? 'unnamed'} · ${snapshot.kind ?? 'semantic'} · ${snapshot.scope ?? 'unknown scope'} · ${snapshot.revision ?? 'unknown revision'}`;
 }
 
-function semanticChangeAuditCard(item: any): string {
+function semanticChangeAuditCard(item: any, index: number, writable: boolean): string {
   const reasons = Array.isArray(item.reasons) ? item.reasons : [];
   const alternatives = Array.isArray(item.alternatives) ? item.alternatives : [];
+  const evidenceIds = [...new Set([
+    ...(item.before?.evidenceIds ?? []),
+    ...(item.after?.evidenceIds ?? []),
+    ...(item.verification?.evidenceIds ?? []),
+  ])];
+  const changePrefix = `semantic-change-${index}`;
   return `<article class="card semantic-change-audit" data-semantic-change-ref="${esc(item.auditRef ?? '')}">
     <div class="semantic-card-head">
       <div>
@@ -481,8 +487,16 @@ function semanticChangeAuditCard(item: any): string {
       sourceRevision: item.sourceRevision,
       targetRevision: item.targetRevision,
       approvalBases: item.approvalBases,
+      verification: item.verification,
       evolution: item.evolution,
     }, null, 2))}</pre></details>
+    <details class="semantic-change-verification">
+      <summary>Verify this SEM change</summary>
+      <p class="muted">Verification says the observed change is factually supported by the cited evidence. It does not say the change was desirable.</p>
+      <label>Evidence IDs<textarea id="${changePrefix}-evidence" class="semantic-input" rows="3"${writable ? '' : ' disabled'}>${esc(evidenceIds.join('\n'))}</textarea></label>
+      <label>Verification rationale<textarea id="${changePrefix}-rationale" class="semantic-input" rows="2"${writable ? '' : ' disabled'}></textarea></label>
+      <button type="button" data-semantic-change-verify data-semantic-change-index="${index}"${writable ? '' : ' disabled'}>Verify ${esc(item.auditRef ?? 'SEM change')}</button>
+    </details>
   </article>`;
 }
 
@@ -534,12 +548,42 @@ async function renderSemantics(epoch: number): Promise<void> {
         <p class="muted">Baseline ${esc(data.promotionAuditBasis?.currentDefaultRevision ?? 'none')} → target ${esc(data.promotionAuditBasis?.targetRevision ?? data.revision ?? 'unknown')} · full candidate census ${data.promotionAuditBasis?.candidateUniverseExhausted ? 'exhausted' : 'bounded'}.</p>
       </div>
       <div class="semantic-grid" style="margin-top:13px">
-        ${promotionItems.map((item: any) => semanticChangeAuditCard(item)).join('') || empty('No semantic delta', 'DI found no semantic change requiring an audit item for this target revision.')}
+        ${promotionItems.map((item: any, index: number) => semanticChangeAuditCard(item, index, writable)).join('') || empty('No semantic delta', 'DI found no semantic change requiring an audit item for this target revision.')}
       </div>
     </section>` : ''}
     <div class="semantic-grid" style="margin-top:13px">
       ${candidates.map((candidate: any, index: number) => semanticCandidateCard(candidate, index, writable, candidates)).join('') || empty('No semantic candidates', 'This revision did not produce evidence-qualified semantic candidates.')}
     </div>`;
+
+  const runChangeVerification = async (button: HTMLButtonElement) => {
+    const index = Number(button.dataset.semanticChangeIndex);
+    const item = promotionItems[index];
+    if (!item) return;
+    const prefix = `semantic-change-${index}`;
+    const evidenceIds = semanticLines((document.getElementById(`${prefix}-evidence`) as HTMLTextAreaElement | null)?.value ?? '');
+    const rationale = (document.getElementById(`${prefix}-rationale`) as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    if (!evidenceIds.length) {
+      semanticFlash = `${item.auditRef ?? 'SEM change'} requires at least one explicit evidence ID.`;
+      await renderSemantics(epoch);
+      return;
+    }
+    for (const current of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-change-verify],[data-semantic-action],[data-semantic-lineage-action]'))) current.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/change-verify', {
+        auditRef: item.auditRef,
+        evidenceIds,
+        ...(rationale ? { rationale } : {}),
+        expectedEtag: authority.etag ?? null,
+      });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `${item.auditRef}: verified with ${result.verification?.evidenceIds?.length ?? evidenceIds.length} evidence item(s). Gate status: ${result.item?.approved ? 'cleared' : 'pending'}.`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Semantic gate verification failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
 
   const runAction = async (button: HTMLButtonElement) => {
     const index = Number(button.dataset.semanticIndex);
@@ -676,6 +720,10 @@ async function renderSemantics(epoch: number): Promise<void> {
       await renderSemantics(epoch);
     }
   };
+
+  for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-change-verify]'))) {
+    button.addEventListener('click', () => void runChangeVerification(button));
+  }
 
   for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-action]'))) {
     button.addEventListener('click', () => void runAction(button));
