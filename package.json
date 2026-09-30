@@ -12,7 +12,7 @@
     "build:viewer": "esbuild src/viewerClient.ts --bundle --platform=browser --format=iife --target=es2022 --outfile=dist/public/viewer.js",
     "build": "npm run build:server && npm run build:viewer",
     "test": "npm run build && node --test dist/tests/*.test.js",
-    "verify": "npm run build && node --test dist/tests/*.test.js scripts/*.test.mjs && node scripts/check-generic-boundary.mjs",
+    "verify": "npm run build && node --test --test-reporter=spec dist/tests/*.test.js scripts/*.test.mjs && node scripts/check-generic-boundary.mjs",
     "verify:hosted": "node scripts/verify-hosted-production.mjs",
     "benchmark:capacity": "node scripts/benchmark-capacity.mjs",
     "benchmark:accuracy": "node scripts/benchmark-accuracy.mjs",
