@@ -144,6 +144,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
         { kind: 'automated-by', to: 'mcp:list_projects' },
         { kind: 'automated-by', to: 'mcp:project_status' },
         { kind: 'automated-by', to: 'mcp:project_overview' },
+        { kind: 'automated-by', to: 'mcp:project_statistics' },
         { kind: 'automated-by', to: 'mcp:investigate' },
         { kind: 'automated-by', to: 'mcp:orient_scope' },
         { kind: 'automated-by', to: 'mcp:inspect_interface' },
