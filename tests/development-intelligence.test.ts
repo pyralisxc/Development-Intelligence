@@ -464,6 +464,10 @@ test('project statistics exposes bounded graph and capacity facts without invent
     assert.equal(routed.intent, 'statistics');
     assert.equal(routed.routing.tool, 'project_statistics');
     assert.equal(routed.routing.questionPlan.lane, 'statistics');
+    assert.equal(routed.result.policy.operationalStatsAvailable, true);
+    assert.equal(typeof routed.result.currentness, 'object');
+    assert.equal(typeof routed.result.capacity.cache, 'object');
+    assert.equal(typeof routed.result.persistence, 'object');
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
