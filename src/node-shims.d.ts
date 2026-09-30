@@ -15,6 +15,18 @@ declare module 'node:fs' { export const promises: any; }
 declare module 'node:path' { const value: any; export default value; }
 declare module 'node:os' { const value: any; export default value; }
 declare module 'node:child_process' { export const spawn: any; }
+declare module 'node:worker_threads' {
+  export const isMainThread: boolean;
+  export const parentPort: { postMessage(value: unknown): void } | null;
+  export const workerData: unknown;
+  export class Worker {
+    constructor(filename: URL, options?: { workerData?: unknown; resourceLimits?: { maxOldGenerationSizeMb?: number } });
+    once(event: 'message', listener: (value: any) => void): this;
+    once(event: 'error', listener: (error: Error) => void): this;
+    once(event: 'exit', listener: (code: number) => void): this;
+    terminate(): Promise<number>;
+  }
+}
 declare module 'node:http' { const value: any; export default value; export type IncomingMessage = any; export type ServerResponse = any; export type Server = any; }
 declare module 'node:url' { export const fileURLToPath: any; export const pathToFileURL: any; }
 declare module 'node:assert/strict' { const value: { ok(value: unknown, message?: string): asserts value; [key: string]: any }; export default value; }

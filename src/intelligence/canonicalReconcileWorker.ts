@@ -66,8 +66,8 @@ export async function runCanonicalReconcileWorker(
       if (message?.ok && message.item) finish(message.item);
       else finish(errorItem(input, startedAt, 'isolated reconcile worker returned an invalid response'));
     });
-    worker.once('error', error => finish(errorItem(input, startedAt, `isolated reconcile worker failed: ${error.message}`)));
-    worker.once('exit', code => {
+    worker.once('error', (error: Error) => finish(errorItem(input, startedAt, `isolated reconcile worker failed: ${error.message}`)));
+    worker.once('exit', (code: number) => {
       if (!settled && code !== 0) finish(errorItem(input, startedAt, `isolated reconcile worker exited with code ${code}`));
     });
   });
