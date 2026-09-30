@@ -400,7 +400,7 @@ test('shared investigation router maps ordinary questions to existing DI primiti
     }) as any;
     assert.equal(workflowSource.intent, 'source-search');
     assert.equal(workflowSource.routing.tool, 'search_code');
-    assert.equal(workflowSource.routing.filePattern, '.github/workflows/verify.yml');
+    assert.equal(workflowSource.routing.file, '.github/workflows/verify.yml');
     assert.ok(workflowSource.result.matches.some((match: any) => /node-version:\s*22/.test(match.text)));
 
     const premise = await callTool('investigate', {
