@@ -13,7 +13,8 @@ import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import { parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
 import type { TechnicalSourceCapability } from './types.js';
-import { withVercelRequestContext } from './vercelRequestContext.js';
+import { currentVercelOidcToken, withVercelRequestContext } from './vercelRequestContext.js';
+import { applyVcrRetentionMaintenance } from './intelligence/vcrMaintenance.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
@@ -195,6 +196,31 @@ export function createDevelopmentIntelligenceServer() {
         json(res, (error as any)?.status ?? 500, {
           error: error instanceof Error ? error.message : String(error),
           trigger: 'vercel-cron',
+        });
+      }
+      return;
+    }
+    if (requestUrl.pathname === '/internal/vcr-retention' && req.method === 'GET') {
+      const cronSecret = process.env.CRON_SECRET?.trim();
+      if (!cronSecret) {
+        json(res, 503, { error: 'VCR retention cron is not configured' });
+        return;
+      }
+      if (!canonicalReconcileCronAuthorized(req.headers ?? {}, cronSecret)) {
+        json(res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      try {
+        const token = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim() ?? '';
+        const projectId = process.env.VERCEL_PROJECT_ID?.trim() ?? '';
+        const teamId = process.env.VERCEL_TEAM_ID?.trim() ?? '';
+        const result = await applyVcrRetentionMaintenance({ token, projectId, teamId });
+        json(res, 200, { trigger: 'vercel-cron', maintenance: 'vcr-retention', ...result });
+      } catch (error) {
+        json(res, (error as any)?.status ?? 500, {
+          error: error instanceof Error ? error.message : String(error),
+          trigger: 'vercel-cron',
+          maintenance: 'vcr-retention',
         });
       }
       return;

@@ -9,6 +9,10 @@
     {
       "path": "/internal/reconcile-canonical",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/internal/vcr-retention",
+      "schedule": "17 4 * * *"
     }
   ]
 }

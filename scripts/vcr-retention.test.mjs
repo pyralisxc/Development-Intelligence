@@ -76,3 +76,25 @@ test('retention trims oldest nonprotected images to the configured target', () =
     ['candidate-10', 'candidate-11'],
   );
 });
+
+
+test('duplicate deployments of current production SHA do not consume the distinct rollback slot', () => {
+  const currentSha = sha('7');
+  const rollbackSha = sha('8');
+  const plan = planVcrRetention({
+    now,
+    images: [
+      image('current', [currentSha.slice(0, 12)], 20),
+      image('rollback', [rollbackSha.slice(0, 12)], 20),
+    ],
+    deployments: [
+      deployment('prod-current-native', currentSha, 0.1, 'production'),
+      deployment('prod-current-fallback', currentSha, 0.2, 'production'),
+      deployment('prod-rollback', rollbackSha, 3, 'production'),
+    ],
+  });
+  const decisions = Object.fromEntries(plan.decisions.map(item => [item.id, item]));
+  assert.equal(decisions.current.protected, true);
+  assert.equal(decisions.rollback.protected, true);
+  assert.equal(decisions.rollback.reason, 'active production or distinct rollback deployment');
+});
