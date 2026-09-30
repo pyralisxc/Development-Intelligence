@@ -186,6 +186,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     'resolve_revision',
     'project_status',
     'project_overview',
+    'project_statistics',
     'investigate',
     'orient_scope',
     'inspect_interface',
