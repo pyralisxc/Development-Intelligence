@@ -239,8 +239,14 @@ export async function projectOverview(project: string, ref?: string | undefined,
 
 export async function projectStatistics(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
-  const status = graphId ? null : await projectStatus(project, false);
-  const graphStatus = status ? (status as any).graph ?? null : null;
+  let graphStatus: any = null;
+  try {
+    const status = await projectStatus(project, false);
+    const candidate = (status as any).graph ?? null;
+    if (candidate?.revision === graph.repositoryRevision) graphStatus = candidate;
+  } catch {
+    graphStatus = null;
+  }
   const semantic = graph.nodes.filter(node => node.layer === 'semantic').length;
   const structural = graph.nodes.filter(node => (node.layer ?? 'structural') === 'structural').length;
   const representation = graph.nodes.filter(node => node.layer === 'representation').length;
@@ -319,6 +325,8 @@ export async function projectStatistics(project: string, ref?: string | undefine
       descriptiveOnly: true,
       semanticAuthority: false,
       unknownValuesRemainNull: true,
+      operationalStatsRequireExactRevisionMatch: true,
+      operationalStatsAvailable: Boolean(graphStatus),
     },
   };
 }
