@@ -4,7 +4,7 @@ import type { Observation } from '../../types.js';
 import { observation } from '../model.js';
 
 const SENSITIVE_KEY = /(^|[._-])(password|passwd|secret|token|api[-_]?key|authorization|cookie|credential|private[-_]?key|access[-_]?token|refresh[-_]?token)($|[._-])/i;
-const SENSITIVE_TEXT = /(?:secrets?\.|password|passwd|api[-_]?key|authorization|private[-_]?key|access[-_]?token|refresh[-_]?token|\btoken\b)/i;
+const SENSITIVE_TEXT = /(?:secrets?\.|password|passwd|secret(?:[_-]?key)?|api[-_]?(?:key|token)|authorization|credential|private[-_]?key|access[-_]?token|refresh[-_]?token|(?:^|[^A-Za-z0-9])token(?:[^A-Za-z0-9]|$))/i;
 const ENV_EXAMPLE = /^\.env\.(?:example|sample|template|defaults?)$/i;
 
 function baseName(locator: string): string {

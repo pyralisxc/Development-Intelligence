@@ -90,7 +90,7 @@ test('Parity Contracts keep negatives unproven when unsupported tracked sources 
     unsupportedFiles: 1,
     files: [
       { path: 'src/manage.ts', status: 'complete' },
-      { path: 'workflow.yml', status: 'unsupported', reason: 'unsupported extension .yml' },
+      { path: 'artifact.bin', status: 'unsupported', reason: 'unsupported extension .bin' },
     ],
   };
   const result = evaluateParityContractGraph(fixture, {
@@ -102,7 +102,7 @@ test('Parity Contracts keep negatives unproven when unsupported tracked sources 
   }) as any;
   assert.deepEqual(result.counts, { satisfied: 0, missing: 0, forbiddenPresent: 0, unproven: 2 });
   assert.equal(result.claimCoverage.supportsNegative, false);
-  assert.deepEqual(result.claimCoverage.blockers.map((item: any) => item.path), ['workflow.yml']);
+  assert.deepEqual(result.claimCoverage.blockers.map((item: any) => item.path), ['artifact.bin']);
 });
 
 test('Parity Contracts reject empty expectation overlays', () => {
