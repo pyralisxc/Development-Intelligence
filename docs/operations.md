@@ -288,9 +288,9 @@ The canonical repository remains usable even if Development Intelligence is unav
 
 ## Automatic canonical currentness reconciliation
 
-Production registers a Vercel Cron request to `/internal/reconcile-canonical` every five minutes. Vercel supplies `Authorization: Bearer $CRON_SECRET`; the route fails closed when `CRON_SECRET` is missing or the bearer value does not match.
+Production registers a Vercel Cron request to `/internal/reconcile-canonical` every minute. Vercel supplies `Authorization: Bearer $CRON_SECRET`; the route fails closed when `CRON_SECRET` is missing or the bearer value does not match.
 
-The cron route calls the existing bounded canonical portfolio reconciler. For every authorized repository it re-resolves the provider-authoritative default branch, then uses the existing canonical update plane to load or advance current W. Each repository graph is evicted from process-local graph caches immediately after that repository settles, so a long portfolio pass does not retain multiple large graphs in one function heap. Ordinary query/read surfaces remain mutation-free.
+Each cron request deterministically selects exactly one active authorized repository from the sorted portfolio using the current one-minute time slot, re-resolves that repository's provider-authoritative default branch, and uses the existing canonical update plane to load or advance current W. The next minute selects the next repository and wraps after the portfolio is exhausted. No durable cursor is required, missed invocations recover on the next full rotation, and each request exits after one repository so the process working set is bounded independently of total portfolio size. The selected repository graph is evicted from process-local caches when the request settles. Ordinary query/read surfaces remain mutation-free.
 
 This central fallback intentionally catches default-branch changes made outside Conductor as well as missed provider events. Preview, work, and release branch pushes do not become canonical merely because they were pushed. A future Conductor post-promotion reconcile hint may reduce latency, but it is only an acceleration hint: DI remains responsible for validating the repository default branch before publishing canonical current state.
 
