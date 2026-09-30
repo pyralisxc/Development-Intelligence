@@ -18,6 +18,7 @@ import {
 } from '../src/intelligence/semanticAuthorityStore.js';
 import { makeCanonicalGraphRecord, saveCanonicalGraph, loadCanonicalGraph } from '../src/intelligence/canonicalStore.js';
 import type { IntelligenceGraph } from '../src/types.js';
+import { ANALYZER_VERSION } from '../src/intelligence/repository.js';
 
 function candidate(id: string, revision: string): SemanticCandidate {
   return {
@@ -42,7 +43,7 @@ function candidate(id: string, revision: string): SemanticCandidate {
 function graph(project: string, revision: string, source: string): IntelligenceGraph {
   return {
     schemaVersion: 2,
-    analyzerVersion: '2.9.0-rust-structural',
+    analyzerVersion: ANALYZER_VERSION,
     graphId: `repo-${revision}-fixture0000`,
     project,
     role: 'W',

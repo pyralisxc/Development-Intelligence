@@ -1902,7 +1902,9 @@ async function unsupportedPathSourceFallback(
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const normalized = file.replace(/^\.\//u, '');
   const coverage = graph.coverage?.files.find(item => item.path.replace(/^\.\//u, '') === normalized);
-  if (!coverage || !['unsupported', 'skipped', 'partial'].includes(coverage.status)) return null;
+  const operationalPath = /(?:^|\/)(?:Dockerfile(?:\.[A-Za-z0-9_.-]+)?|action\.ya?ml|[^/]+\.ya?ml|\.env\.(?:example|sample)|\.(?:git|docker)ignore)$/u.test(normalized);
+  const sourceFactQuestion = /\b(?:version|configure|configured|configuration|setting|value|variable|image|trigger|job|step|input|output|ignore|ignored|uses?|declares?)\b/iu.test(text);
+  if (!coverage || (!['unsupported', 'skipped', 'partial'].includes(coverage.status) && !(operationalPath && sourceFactQuestion))) return null;
   const search = sourceFallbackPattern(text, file);
   const result = await searchCode({
     project: input.project,
@@ -2049,6 +2051,11 @@ async function resolveInvestigationTarget(
       && /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text);
     if (repositoryDeictic) return { ...base, mode: 'repository' };
 
+    const scopeRequired = plan.lane === 'interface'
+      ? /\b(this page|this feature|this workspace|this panel|this screen)\b/iu.test(text)
+      : /\b(this page|this file|this module|this feature|this area)\b/iu.test(text);
+    if (scopeRequired) return { ...base, mode: 'scope-required', query: null };
+
     const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
     if (resolved.node) {
       return {
@@ -2072,11 +2079,6 @@ async function resolveInvestigationTarget(
         candidates: resolved.candidates,
       };
     }
-
-    const scopeRequired = plan.lane === 'interface'
-      ? /\b(this page|this feature|this workspace|this panel|this screen)\b/iu.test(text)
-      : /\b(this page|this file|this module|this feature|this area)\b/iu.test(text);
-    if (scopeRequired) return { ...base, mode: 'scope-required', query: resolved.query };
 
     return { ...base, mode: 'repository', query: resolved.query };
   }
