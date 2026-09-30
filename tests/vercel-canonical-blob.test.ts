@@ -237,6 +237,32 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
   }
 });
 
+test('explicit current-branch replay cannot poison canonical Blob cache provenance for the same SHA', async () => {
+  const item = await fixture();
+  try {
+    const canonical = await graphStatus(item.project) as any;
+    assert.equal(canonical.observability.persistence.mode, 'vercel-private-blob');
+    assert.equal(canonical.observability.persistence.durable, true);
+    assert.equal(canonical.observability.persistence.saveState, 'stored');
+
+    clearGraphCache(item.project);
+
+    const replay = await scanGraph(item.project, { ref: 'branch:main' });
+    assert.equal(replay.repositoryRevision, canonical.revision);
+
+    const afterReplay = await graphStatus(item.project) as any;
+    assert.equal(afterReplay.revision, canonical.revision);
+    assert.equal(afterReplay.observability.persistence.mode, 'vercel-private-blob');
+    assert.equal(afterReplay.observability.persistence.durable, true);
+    assert.equal(afterReplay.observability.persistence.loadState, 'hit');
+    assert.equal(afterReplay.observability.persistence.saveState, 'skipped');
+    assert.equal(afterReplay.observability.queryArtifacts.state, 'referenced');
+    assert.equal(afterReplay.working.graphId, canonical.working.graphId);
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
 test('concurrent Vercel query generations reserve distinct bounded slots', async () => {
   const item = await fixture();
   try {

@@ -105,7 +105,10 @@ const repositoryCache = new Map<string, RepositoryCacheEntry>();
 const snapshotCache = new Map<string, SnapshotGraph>();
 const repositoryBuildGate = new AsyncGate(() => positiveIntegerSetting(process.env.DEVINT_GRAPH_BUILD_CONCURRENCY, 1, 'DEVINT_GRAPH_BUILD_CONCURRENCY'));
 
-function cacheKey(project: string, sha: string): string { return `${project}:${sha}`; }
+type RepositoryCacheScope = 'canonical' | 'replay';
+function cacheKey(project: string, sha: string, scope: RepositoryCacheScope = 'canonical'): string {
+  return `${project}:${scope}:${sha}`;
+}
 function repositoryRetentionId(key: string): string { return `repository:${key}`; }
 function snapshotRetentionId(key: string): string { return `snapshot:${key}`; }
 
@@ -173,7 +176,8 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
   const revisionResolutionMs = elapsedMs(resolutionStarted);
   const config = await getProjectConfig(project);
   const canonicalEligible = ref === undefined || ref === config.defaultRef;
-  const key = cacheKey(project, revision.sha);
+  const cacheScope: RepositoryCacheScope = canonicalEligible ? 'canonical' : 'replay';
+  const key = cacheKey(project, revision.sha, cacheScope);
   let entry = repositoryCache.get(key);
   const cacheState: GraphAccessTiming['cacheState'] = entry ? (entry.value ? 'hit' : 'coalesced') : 'miss';
   if (!entry) {
@@ -526,7 +530,7 @@ async function loadCachedRepositoryGraphForRead(project: string, ref?: string): 
   // path. The no-surprise read/update separation applies to current canonical W.
   if (!canonicalEligible) return await buildCachedRepositoryGraph(project, ref);
 
-  const key = cacheKey(project, revision.sha);
+  const key = cacheKey(project, revision.sha, 'canonical');
   let entry = repositoryCache.get(key);
   const cacheState: GraphAccessTiming['cacheState'] = entry ? (entry.value ? 'hit' : 'coalesced') : 'miss';
 
@@ -731,7 +735,7 @@ export async function loadQueryArtifactShadow(
 ): Promise<QueryArtifactShadowLoad> {
   const revision = graph.repositoryRevision;
   if (!revision) return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'graph-has-no-exact-revision' };
-  const entry = repositoryCache.get(cacheKey(project, revision));
+  const entry = repositoryCache.get(cacheKey(project, revision, 'canonical'));
   if (!entry) return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'canonical-cache-entry-unavailable' };
   const cached = await entry.promise;
   if (cached.graph.graphId !== graph.graphId || cached.graph.repositoryRevision !== revision) {
@@ -852,9 +856,12 @@ async function scanRuntimeUrl(project: string, urlText: string): Promise<{ sourc
 
 export async function scanGraph(project: string, options: { ref?: string | undefined; urls?: string[] } = {}): Promise<IntelligenceGraph> {
   const revision = await resolveProjectRevision(project, options.ref);
-  const cached = repositoryCache.get(cacheKey(project, revision.sha));
+  const config = await getProjectConfig(project);
+  const canonicalEligible = options.ref === undefined || options.ref === config.defaultRef;
+  const key = cacheKey(project, revision.sha, canonicalEligible ? 'canonical' : 'replay');
+  const cached = repositoryCache.get(key);
   if (cached?.value && !cached.value.queryArtifacts.ref) {
-    repositoryCache.delete(cacheKey(project, revision.sha));
+    repositoryCache.delete(key);
   }
   const repository = await buildCachedRepositoryGraph(project, options.ref);
   const urls = options.urls ?? [];
