@@ -10,6 +10,7 @@ import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from '.
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
+import { graphRecordWeight } from './capacity.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -233,6 +234,92 @@ export async function projectOverview(project: string, ref?: string | undefined,
     findings: findings.slice(0, 20),
     subjects: subjects.slice(0, 10).map(subject => projectSubjectBrief(graph, subject.trim())).filter(item => Boolean(item.query)),
     sources,
+  };
+}
+
+export async function projectStatistics(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(project, ref, graphId);
+  const status = graphId ? null : await projectStatus(project, false);
+  const graphStatus = status ? (status as any).graph ?? null : null;
+  const semantic = graph.nodes.filter(node => node.layer === 'semantic').length;
+  const structural = graph.nodes.filter(node => (node.layer ?? 'structural') === 'structural').length;
+  const representation = graph.nodes.filter(node => node.layer === 'representation').length;
+  const coverage = compactCoverage(graph) as any;
+  const cache = graphStatus?.cache ?? null;
+  const observability = graphStatus?.observability ?? null;
+  const maxRetainedRecords = typeof cache?.maxRetainedRecords === 'number' ? cache.maxRetainedRecords : null;
+  const retainedRecords = typeof cache?.retainedRecords === 'number' ? cache.retainedRecords : null;
+  const cacheUtilization = maxRetainedRecords && retainedRecords !== null
+    ? Number((retainedRecords / maxRetainedRecords).toFixed(4))
+    : null;
+  const warnings: string[] = [];
+  if (coverage?.failedFiles) warnings.push(`${coverage.failedFiles} source file(s) failed analysis.`);
+  if (coverage?.partialFiles) warnings.push(`${coverage.partialFiles} source file(s) are only partially analyzed.`);
+  if (coverage?.skippedFiles) warnings.push(`${coverage.skippedFiles} source file(s) were skipped.`);
+  if (cacheUtilization !== null && cacheUtilization >= 0.8) warnings.push(`Process graph-cache record utilization is ${Math.round(cacheUtilization * 100)}% of its configured bound.`);
+
+  return {
+    project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    role: graph.role,
+    summary: `${project}: ${coverage?.trackedFiles ?? 'unknown'} tracked files, ${graph.nodes.length} graph nodes, ${graph.edges.length} edges, ${semantic} semantic concepts, and ${graph.evidence.length} evidence records.`,
+    source: {
+      trackedFiles: coverage?.trackedFiles ?? null,
+      eligibleFiles: coverage?.eligibleFiles ?? null,
+      analyzedFiles: coverage?.analyzedFiles ?? null,
+      completeFiles: coverage?.completeFiles ?? null,
+      partialFiles: coverage?.partialFiles ?? null,
+      unsupportedFiles: coverage?.unsupportedFiles ?? null,
+      skippedFiles: coverage?.skippedFiles ?? null,
+      failedFiles: coverage?.failedFiles ?? null,
+      sourceBytes: null,
+      sourceBytesStatus: 'unavailable-not-recorded',
+    },
+    graph: {
+      nodes: graph.nodes.length,
+      edges: graph.edges.length,
+      evidenceRecords: graph.evidence.length,
+      semanticNodes: semantic,
+      structuralNodes: structural,
+      representationNodes: representation,
+      sources: graph.sources.length,
+      recordWeight: graphRecordWeight(graph),
+      explicitValueConflicts: graph.explicitValueConflicts.length,
+      unresolvedNodeIds: graph.unmatchedNodeIds.length,
+      unavailableSources: graph.unavailableSourceIds.length,
+    },
+    currentness: graphStatus?.currentness ?? null,
+    persistence: observability ? {
+      canonical: observability.persistence ?? null,
+      queryArtifacts: observability.queryArtifacts ?? null,
+    } : null,
+    capacity: {
+      cache: cache ? {
+        ...cache,
+        utilization: cacheUtilization,
+      } : null,
+      coldBuild: observability?.coldBuild ?? null,
+      graphAccess: observability?.graphAccess ?? null,
+      lastToolCall: observability?.lastToolCall ?? null,
+      limits: {
+        maxRetainedRecords,
+        repositoryMaxEntries: cache?.repository?.maxEntries ?? null,
+        snapshotMaxEntries: cache?.snapshots?.maxEntries ?? null,
+        coldBuildConcurrency: cache?.coldBuilds?.limit ?? null,
+      },
+    },
+    providerStorage: {
+      available: false,
+      bytes: null,
+      note: 'Provider storage is not inferred from repository graph state. It is populated only when a configured live evidence plane supplies project-scoped storage metrics.',
+    },
+    warnings,
+    policy: {
+      descriptiveOnly: true,
+      semanticAuthority: false,
+      unknownValuesRemainNull: true,
+    },
   };
 }
 
@@ -769,6 +856,7 @@ export type InvestigationQuestionLane =
   | 'semantic-lifecycle'
   | 'implementation-explanation'
   | 'change'
+  | 'statistics'
   | 'coverage'
   | 'parity'
   | 'implementation-claim'
@@ -825,6 +913,9 @@ export function planInvestigationQuestion(input: {
   const traceIntent = /\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/u.test(lower);
   const evidenceIntent = /\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/u.test(lower);
   const claimIntent = /\b(no|none|not|only|second|absent|missing|without|actually|whether|cannot|can't)\b/u.test(lower);
+  const statisticsIntent =
+    /\b(?:project|repository|repo|codebase|graph)\b[^?.!]{0,60}\b(?:size|stats|statistics|capacity|footprint|limits?|big|large|resource pressure|storage usage)\b/u.test(lower)
+    || /\b(?:how (?:big|large) is (?:this|the) (?:project|repository|repo|codebase)|general (?:project )?stats|project stats|capacity profile|how many (?:files|nodes|edges|semantic concepts)|near (?:our )?capacity|close to (?:our )?capacity)\b/u.test(lower);
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
@@ -832,6 +923,7 @@ export function planInvestigationQuestion(input: {
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
   else if (implementationExplorationIntent(text)) lane = 'implementation-explanation';
   else if (/\b(what changed|changes?|diff|delta)\b/u.test(lower)) lane = 'change';
+  else if (statisticsIntent) lane = 'statistics';
   else if (/\bcoverage\b/u.test(lower)) lane = 'coverage';
   else if (/\bparity\b/u.test(lower)) lane = 'parity';
   else if (implementationClaimIntent) lane = 'implementation-claim';
@@ -857,7 +949,7 @@ export function planInvestigationQuestion(input: {
         ? 'source-keyword-evidence'
         : lane === 'interface' || lane === 'orientation'
           ? 'scope-or-entity'
-          : ['semantic-lifecycle', 'semantic-audit', 'change', 'coverage', 'overview'].includes(lane)
+          : ['semantic-lifecycle', 'semantic-audit', 'change', 'statistics', 'coverage', 'overview'].includes(lane)
             ? 'repository'
             : 'entity-or-query';
 
@@ -2251,6 +2343,11 @@ export async function queryWorkbench(input: {
       answer: `Evidence-backed assessment: ${String((result as any).answerStatus ?? 'indeterminate')}.`,
       result,
     };
+  }
+
+  if (plan.lane === 'statistics') {
+    const result = await projectStatistics(input.project, input.ref, input.graphId);
+    return { intent: 'statistics', subject: null, routing: { tool: 'project_statistics' }, answer: String(result.summary ?? `${input.project} statistics`), result };
   }
 
   if (plan.lane === 'overview') {
