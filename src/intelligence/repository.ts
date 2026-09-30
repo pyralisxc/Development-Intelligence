@@ -1621,7 +1621,7 @@ export async function advanceRepositoryGraph(input: {
   ];
   for (const file of tracked) {
     const ext = path.extname(file.path).toLowerCase();
-    if (!supportsSourcePath(relative) && !coverageFiles.some(item => item.path === file.path)) {
+    if (!supportsSourcePath(file.path) && !coverageFiles.some(item => item.path === file.path)) {
       coverageFiles.push({ path: file.path, status: 'unsupported', reason: `unsupported extension ${ext || '(none)'}` });
     }
   }

@@ -25,24 +25,25 @@ test('operational/config paths are supported generically without accepting arbit
 
 test('workflow/action YAML yields bounded operational structure and redacts secret-bearing commands', () => {
   const locator='action.yml';
-  const result=analyzeByTechnology({source:source(locator),locatorBase:locator,text:`
-name: Example
-on:
-  push:
-jobs:
-  verify:
-    steps:
-      - uses: actions/checkout@v7
-      - name: Test
-        run: npm test
-      - run: echo "${{ secrets.API_TOKEN }}"
-inputs:
-  project:
-    description: Project
-outputs:
-  digest:
-    description: Digest
-`});
+  const yamlText=[
+    'name: Example',
+    'on:',
+    '  push:',
+    'jobs:',
+    '  verify:',
+    '    steps:',
+    '      - uses: actions/checkout@v7',
+    '      - name: Test',
+    '        run: npm test',
+    '      - run: echo "${{ secrets.API_TOKEN }}"',
+    'inputs:',
+    '  project:',
+    '    description: Project',
+    'outputs:',
+    '  digest:',
+    '    description: Digest',
+  ].join('\n');
+  const result=analyzeByTechnology({source:source(locator),locatorBase:locator,text:yamlText});
   const kinds=new Set(result.observations.map(item=>item.kind));
   assert.ok(kinds.has('workflow-trigger'));
   assert.ok(kinds.has('workflow-job'));
