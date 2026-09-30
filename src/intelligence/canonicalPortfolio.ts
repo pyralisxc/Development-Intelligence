@@ -1,4 +1,4 @@
-import { graphStatus } from './service.js';
+import { clearGraphCache, graphStatus } from './service.js';
 import { authorizedInstallationPortfolio } from './installationPortfolio.js';
 
 export interface CanonicalPortfolioReconcileOptions {
@@ -44,6 +44,7 @@ export async function reconcileCanonicalPortfolio(options: CanonicalPortfolioRec
     }
 
     const startedAt = Date.now();
+    console.info(JSON.stringify({ event: 'canonical-reconcile-start', project, defaultBranch: repository.defaultBranch }));
     try {
       const status = await graphStatus(project) as any;
       const persistence = status?.observability?.persistence ?? {};
@@ -78,6 +79,16 @@ export async function reconcileCanonicalPortfolio(options: CanonicalPortfolioRec
         durationMs: Math.max(0, Date.now() - startedAt),
         reason: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      clearGraphCache(project);
+      const item = items.at(-1);
+      console.info(JSON.stringify({
+        event: 'canonical-reconcile-complete',
+        project,
+        outcome: item?.project === project ? item.outcome : 'unknown',
+        durationMs: Math.max(0, Date.now() - startedAt),
+        cacheEvicted: true,
+      }));
     }
   }
 
@@ -98,6 +109,7 @@ export async function reconcileCanonicalPortfolio(options: CanonicalPortfolioRec
       sourceAuthority: 'github',
       derivedState: 'canonical-current-graph',
       sequential: true,
+      cacheEviction: 'per-repository',
       historicalRevisionsPersisted: false,
     },
   };
