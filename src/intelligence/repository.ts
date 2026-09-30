@@ -6,7 +6,7 @@ import type { EvidenceRecord, ExplicitValueConflict, GraphCoverage, GraphCoverag
 import type { RepositoryChangedFile } from '../source/git.js';
 import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
-import { analyzeByTechnology } from './analyzers/index.js';
+import { analyzeByTechnology, isOperationalConfigPath, supportsSourcePath } from './analyzers/index.js';
 import { detectProviders } from './providers.js';
 import { evidenceRecord, observation, resolution, semanticEntity, semanticRelationship } from './model.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
@@ -14,7 +14,7 @@ import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.9.0-rust-structural';
+export const ANALYZER_VERSION = '2.10.0-operational-config';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -22,7 +22,6 @@ const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py', '.go', '.rs']);
 const UNITY_SERIALIZED_EXTENSIONS = new Set(['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer']);
 const UNITY_JSON_EXTENSIONS = new Set(['.asmdef', '.asmref', '.inputactions']);
-const TEXT_EXTENSIONS = new Set([...CODE_EXTENSIONS, ...POLYGLOT_EXTENSIONS, ...UNITY_SERIALIZED_EXTENSIONS, ...UNITY_JSON_EXTENSIONS, '.json', '.md', '.mdx', '.html', '.htm', '.css', '.sql']);
 const SYMBOL_KINDS = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);
 const SEMANTIC_PREFIXES = new Set(['surface', 'capability', 'action', 'feature', 'route', 'api', 'mcp', 'provider', 'tool', 'workflow']);
 
@@ -113,7 +112,7 @@ function fileNode(source: SourceDescriptor, relative: string): GraphNode {
     name: relative,
     field: 'path',
     value: relative,
-    tags: ['repository'],
+    tags: ['repository', ...(isOperationalConfigPath(relative) ? ['operational'] : [])],
     layer: 'structural',
     checkpoint: false,
   });
@@ -1517,14 +1516,14 @@ export async function advanceRepositoryGraph(input: {
     if (POLYGLOT_EXTENSIONS.has(ext) || UNITY_SERIALIZED_EXTENSIONS.has(ext) || UNITY_JSON_EXTENSIONS.has(ext)) {
       return { graph: null, strategy: 'fallback', reason: `incremental frontier contains globally coupled ${ext || '(none)'} source`, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
     }
-    if (ext && !CODE_EXTENSIONS.has(ext) && !LOCAL_INCREMENTAL_EXTENSIONS.has(ext) && TEXT_EXTENSIONS.has(ext)) {
+    if (ext && !CODE_EXTENSIONS.has(ext) && !LOCAL_INCREMENTAL_EXTENSIONS.has(ext) && supportsSourcePath(relative)) {
       return { graph: null, strategy: 'fallback', reason: `incremental frontier contains unsupported incremental extension ${ext}`, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
     }
   }
 
   const createdAt = new Date().toISOString();
   const tracked = await trackedFiles(input.root);
-  const eligible = tracked.filter(file => TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()));
+  const eligible = tracked.filter(file => supportsSourcePath(file.path));
   if (eligible.length > MAX_FILES) {
     return { graph: null, strategy: 'fallback', reason: `current eligible file count exceeds graph limit ${MAX_FILES}`, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
   }
@@ -1542,7 +1541,7 @@ export async function advanceRepositoryGraph(input: {
     const trackedFile = trackedByPath.get(relative);
     if (!trackedFile) continue;
     const ext = path.extname(relative).toLowerCase();
-    if (!TEXT_EXTENSIONS.has(ext)) {
+    if (!supportsSourcePath(relative)) {
       refreshedCoverage.push({ path: relative, status: 'unsupported', reason: `unsupported extension ${ext || '(none)'}` });
       continue;
     }
@@ -1622,7 +1621,7 @@ export async function advanceRepositoryGraph(input: {
   ];
   for (const file of tracked) {
     const ext = path.extname(file.path).toLowerCase();
-    if (!TEXT_EXTENSIONS.has(ext) && !coverageFiles.some(item => item.path === file.path)) {
+    if (!supportsSourcePath(relative) && !coverageFiles.some(item => item.path === file.path)) {
       coverageFiles.push({ path: file.path, status: 'unsupported', reason: `unsupported extension ${ext || '(none)'}` });
     }
   }
@@ -1675,7 +1674,7 @@ export async function buildRepositoryGraph(input: {
 }): Promise<IntelligenceGraph> {
   const createdAt = new Date().toISOString();
   const tracked = await trackedFiles(input.root);
-  const eligible = tracked.filter(file => TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()));
+  const eligible = tracked.filter(file => supportsSourcePath(file.path));
   const selected = [...eligible]
     .sort((left, right) => {
       const leftMeta = path.extname(left.path).toLowerCase() === '.meta' ? 1 : 0;
@@ -1686,7 +1685,7 @@ export async function buildRepositoryGraph(input: {
   const selectedPaths = new Set(selected.map(file => file.path));
   const warnings: string[] = [];
   const coverageFiles: GraphCoverageFile[] = tracked
-    .filter(file => !TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase()))
+    .filter(file => !supportsSourcePath(file.path))
     .map(file => ({ path: file.path, status: 'unsupported', reason: `unsupported extension ${path.extname(file.path).toLowerCase() || '(none)'}` }));
   for (const file of eligible) if (!selectedPaths.has(file.path)) coverageFiles.push({ path: file.path, status: 'skipped', reason: `file limit ${MAX_FILES}` });
   if (selected.length < eligible.length) warnings.push(`Graph file limit reached: analyzed at most ${selected.length} of ${eligible.length} eligible tracked files.`);

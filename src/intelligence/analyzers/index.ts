@@ -10,6 +10,7 @@ import { analyzeCss } from './css.js';
 import { analyzeSql } from './sql.js';
 import { analyzeGo } from './go.js';
 import { analyzeRust } from './rust.js';
+import { analyzeOperationalConfig, isOperationalConfigPath } from './operationalConfig.js';
 
 const EMPTY: AnalyzeResult = { observations: [], resolutions: [] };
 
@@ -69,11 +70,26 @@ export const SOURCE_ANALYSIS_SUPPORT = [
     extensions: ['.asmdef', '.asmref', '.inputactions'],
     precision: 'JSON structure and representation evidence',
   },
+  {
+    technology: 'Operational/configuration text',
+    extensions: ['.yml', '.yaml', 'Dockerfile*', '.env.example', '.env.sample', '.env.template', '.gitignore', '.dockerignore'],
+    precision: 'bounded workflow/action keys, jobs, steps, references, commands, Docker build instructions, environment variable names, and ignore/source-boundary patterns; secret-like values are redacted',
+  },
 ] as const;
+
+const BASE_SUPPORTED_EXTENSIONS = new Set(
+  SOURCE_ANALYSIS_SUPPORT.flatMap(entry => entry.extensions.filter(value => value.startsWith('.') && !value.includes('*'))),
+);
+
+export function supportsSourcePath(locatorBase: string): boolean {
+  const ext = path.extname(locatorBase).toLowerCase();
+  return BASE_SUPPORTED_EXTENSIONS.has(ext) || isOperationalConfigPath(locatorBase);
+}
 
 export function analyzeByTechnology(context: AnalyzeContext): AnalyzeResult {
   const ext = path.extname(context.locatorBase).toLowerCase();
   try {
+    if (isOperationalConfigPath(context.locatorBase)) return analyzeOperationalConfig(context);
     if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(ext)) return analyzeTypeScript(context);
     if (['.json', '.asmdef', '.asmref', '.inputactions'].includes(ext)) return analyzeJson(context);
     if (['.md', '.mdx'].includes(ext)) return analyzeMarkdown(context);
@@ -107,3 +123,4 @@ export { analyzeHtml } from './html.js';
 export { analyzeJson } from './json.js';
 export { analyzeCss } from './css.js';
 export { analyzeSql } from './sql.js';
+export { analyzeOperationalConfig, isOperationalConfigPath } from './operationalConfig.js';
