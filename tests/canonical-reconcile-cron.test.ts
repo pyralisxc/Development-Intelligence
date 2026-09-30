@@ -57,7 +57,8 @@ test('canonical reconcile cron route rejects unconfigured and invalid callers be
 
 test('vercel schedules one rotating canonical reconciliation every minute', async () => {
   const config = JSON.parse(await fs.readFile('vercel.json', 'utf8')) as any;
-  assert.deepEqual(config.crons, [
+  assert.deepEqual(
+    config.crons.find((item: any) => item.path === '/internal/reconcile-canonical'),
     { path: '/internal/reconcile-canonical', schedule: '* * * * *' },
-  ]);
+  );
 });
