@@ -12,7 +12,7 @@ test('scheduled VCR maintenance deletes exact planned image ids and verifies pos
   ];
   const deployments = [
     { uid: 'prod-current', state: 'READY', target: 'production', created: now - 1000, meta: { githubCommitSha: currentSha, githubCommitRef: 'main' } },
-    { uid: 'prod-old', state: 'READY', target: 'production', created: now - 10 * 24 * 60 * 60 * 1000, meta: { githubCommitSha: oldSha, githubCommitRef: 'main' } },
+    { uid: 'prod-old', state: 'ERROR', target: 'production', created: now - 10 * 24 * 60 * 60 * 1000, meta: { githubCommitSha: oldSha, githubCommitRef: 'main' } },
   ];
   const deleted: string[] = [];
   const fetcher = async (input: string, init?: RequestInit): Promise<Response> => {

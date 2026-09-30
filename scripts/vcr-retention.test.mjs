@@ -44,7 +44,7 @@ test('retention protects current production, one rollback, and recent previews',
 test('unknown old tags require review instead of automatic deletion', () => {
   const plan = planVcrRetention({ now, images: [image('unknown', ['release-candidate'], 30)], deployments: [] });
   assert.deepEqual(plan.decisions[0], {
-    id: 'unknown', digest: 'sha256:unknown', tags: ['release-candidate'],
+    id: 'unknown', digest: 'sha256:unknown', sizeInBytes: 0, tags: ['release-candidate'],
     createdAt: now - 30 * day, ageDays: 30, action: 'review', reason: 'old image has tags not correlated to a deployment', protected: false,
   });
 });
@@ -60,7 +60,7 @@ test('retention protects the latest READY Preview deployment even when it is old
     }],
   });
   assert.deepEqual(plan.decisions[0], {
-    id: 'preview', digest: 'sha256:preview', tags: [previewSha.slice(0, 12)],
+    id: 'preview', digest: 'sha256:preview', sizeInBytes: 0, tags: [previewSha.slice(0, 12)],
     createdAt: now - 20 * day, ageDays: 20, action: 'keep', reason: 'latest READY preview deployment', protected: true,
   });
 });
