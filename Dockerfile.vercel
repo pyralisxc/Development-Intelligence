@@ -10,6 +10,7 @@ RUN npm ci --no-audit --no-fund
 COPY src ./src
 COPY tests ./tests
 COPY scripts ./scripts
+COPY benchmark ./benchmark
 RUN npm run verify
 
 FROM base AS runtime

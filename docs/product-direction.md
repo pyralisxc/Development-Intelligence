@@ -41,7 +41,7 @@ Each inspected project remains autonomous:
 
 - Git/source owns implementation truth.
 - The project owns product intent and project-specific architecture rules.
-- Accepted semantic graph history is committed with that project when the project chooses to adopt it.
+- Development Intelligence keeps the current accepted semantic authority needed to understand the project now; historical semantic interpretation is reconstructed from exact Git revisions when an audit asks for it rather than accumulated as a parallel archive.
 - Development Intelligence owns its generic graph model, analyzers, evidence discipline, and query contracts.
 - Runtime observations, external analyzers, and technical sources may contribute evidence but never become hidden authorities.
 
@@ -54,7 +54,7 @@ Each inspected project remains autonomous:
 5. **Uncertainty stays visible.** Candidate, unresolved, unavailable, partial, and conflicting evidence are valid outcomes.
 6. **Clients share capability contracts.** MCP, the Workbench, AI Systems Control, and future clients must not drift into separate intelligence backends or duplicate DI semantics.
 7. **Projects keep their meaning.** Generic analysis may understand technologies and explicit source-adjacent declarations; it may not invent product intent or branch on project identity.
-8. **Accepted truth travels with source.** Git owns durable accepted graph history; service caches and checkouts are disposable.
+8. **Current truth is durable; history is reconstructable.** DI canonical persistence owns the current accepted semantic authority, Git owns immutable source/history, and service caches, transition reviews, and checkouts are disposable once they no longer serve current truth.
 9. **Observation is bounded.** Repository, runtime, and technical-source access is allowlisted, read-only, credential-safe, and explicit.
 10. **Complexity must earn permanence.** New persistence, providers, abstractions, team concepts, or workflow controls must improve trustworthy understanding enough to justify their carrying cost.
 
@@ -101,7 +101,7 @@ Current boundaries are equally important:
 - Arbitrary external analyzers may contribute evidence only after a generic adapter contract exists; no plugin may dictate graph identity or lifecycle.
 - The service inspects and explains. It does not write inspected repositories or operate their providers.
 
-For mechanically current details, prefer the deployed `GET /health`, MCP tool schemas, `get_graph_schema`, `package.json`, source, CI, and the accepted `/.development-intelligence/` checkpoint over prose.
+For mechanically current details, prefer the deployed `GET /health`, MCP tool schemas, `project_status`, `get_graph_schema`, DI canonical persistence/currentness, `package.json`, source, and CI over prose. Repository-local `.development-intelligence` files are legacy/self-test compatibility artifacts, not the semantic authority for inspected projects.
 
 ## Direction
 
@@ -110,7 +110,7 @@ Development Intelligence should become more useful by increasing the **fidelity,
 The next durable improvements should come from five directions:
 
 1. **Deeper technical fidelity.** Improve cross-file and cross-language relationships, framework/protocol understanding, evidence quality, ranking, and honest coverage where real repository questions expose gaps.
-2. **Stronger temporal intelligence.** Make distant commits, PR proposals, accepted results, regressions, and architectural evolution easier to compare without turning history into a second storage authority.
+2. **Stronger temporal intelligence.** Reconstruct and compare distant commits, PR proposals, accepted results, regressions, and architectural evolution on demand without turning those comparisons into a second storage authority.
 3. **Better question-to-evidence flow.** Reduce repetitive calls, expose useful neighborhoods and explanations, and help people and agents move from a question to exact evidence without navigating raw graph mechanics.
 4. **Broader generic evidence inputs.** Let mature external analyzers, logs, metrics, databases, and provider APIs contribute bounded evidence through stable generic contracts while preserving one graph owner.
 5. **Portfolio-grade proof.** Continuously test the product against materially different real repositories, languages, scales, and workflows so generic claims are earned rather than inferred from one flagship project.

@@ -2,11 +2,11 @@
 
 ## Hosting principle
 
-Development Intelligence does not require a permanently administered graph server, persistent graph disk, external object bucket, or graph database.
+Development Intelligence does not require a permanently administered graph database or persistent graph disk. Git remains source/history authority, while hosted canonical A/W and semantic-review authority use configured DI canonical persistence (currently Vercel Private Blob). Local checkouts, query artifacts, and analyzer caches remain reconstructable compute.
 
-Durable accepted intelligence lives with each inspected Git project as `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/`. It follows ordinary Git history, review, branching, backup, and access control.
+Inspected repositories do not need a generated semantic checkpoint. Consumers should pin `pyralisxc/Development-Intelligence` to a reviewed full commit SHA and use checkpointless `mode: analyze` when they want repository-side CI evidence. DI canonical persistence owns semantic acceptance/review state; repository source and product/architecture documents retain their own authority roles.
 
-Repositories can enforce that authority with the root composite GitHub Action. Consumers should pin `pyralisxc/Development-Intelligence` to a reviewed full commit SHA, check out their own repository first, and invoke the action with a stable project identifier. The default `check` mode is read-only and fails closed on stale or invalid checkpoints. Optional `seal` mode writes a deterministic candidate but never commits or pushes; the consuming repository owns review and acceptance.
+The legacy `check` / `seal` checkpoint modes remain for DI self-verification and migration compatibility, not as the normal authority model for inspected repositories.
 
 The **source repository and running service have independent visibility**. The Development Intelligence repository may be public for collaboration, inspection, and reuse while a deployed Workbench/MCP endpoint remains privately gated. Repository privacy must not be treated as the service's authentication boundary.
 
@@ -143,31 +143,32 @@ The HTTP entry points are:
 
 The Workbench is not a second data owner. It consumes the same graph/evidence/query/source services as MCP.
 
-## Candidate sealing
+## Semantic candidate promotion
 
-Graph sealing belongs in the inspected project's own candidate workflow:
+For an inspected repository:
 
-1. make the intended source changes;
-2. generate B with `graphCli seal` against the exact candidate working tree;
-3. run `graphCli check` and review semantic A→B drift as appropriate;
-4. commit source + `.development-intelligence/` checkpoint according to the project's workflow;
-5. merge through normal review/release process;
-6. after merge, B is the new A by ordinary Git semantics.
+1. make and verify the intended source changes through that repository's normal Preview-first workflow;
+2. DI resolves the exact candidate revision and derives W plus evidence-linked semantic candidates/evolution;
+3. review any changed semantic meaning through DI's shared review surface;
+4. require a current-revision approval basis for every semantic promotion item;
+5. only after the repository's normal human/release gate does DI advance accepted semantic A for the promoted revision;
+6. do not commit a generated `.development-intelligence/` authority directory into the inspected repository.
 
-If A is absent or damaged, DI can still generate W from Git. Checkpoint failure must not make source unavailable.
+If canonical A is absent, stale, or contradictory, promotion fails closed and the migration/recovery path must make the discrepancy explicit rather than inventing acceptance.
 
 ### Currentness interpretation
 
 `project_status` reports separate dimensions:
 
-- source match;
-- semantic topology match;
-- evidence match/drift;
-- analyzer match/drift;
-- supported checkpoint schema;
-- checkpoint integrity.
+- accepted semantic currentness;
+- source currentness;
+- semantic topology currentness;
+- evidence currentness/drift;
+- analyzer currentness/drift;
+- schema support;
+- integrity state.
 
-Evidence/analyzer drift alone does not invalidate accepted semantic topology. Corrupted shard topology, unsupported schema, or source/topology mismatch does.
+Evidence/analyzer drift alone does not manufacture product-semantic drift. Changed or unsupported semantic topology requires explicit review; repository-local legacy checkpoints are migration fallback only once DI canonical A exists.
 
 ## Authentication
 

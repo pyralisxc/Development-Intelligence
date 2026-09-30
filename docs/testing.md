@@ -18,17 +18,17 @@ Parity Contract tests protect the boundary between caller intent and observed tr
 
 ### Git-owned A/W/B lifecycle
 
-A committed checkpoint is accepted semantic topology for its source state. Currentness is dimensional: source/topology integrity controls accepted semantic currency while evidence/analyzer drift is reported separately rather than automatically manufacturing product drift.
+Current accepted semantic A and the temporary Preview review state needed to establish it live in DI canonical persistence for inspected projects. Successful promotion compacts that review working set back to current accepted meaning; historical semantic audits are reconstructed from exact Git revisions rather than retained as an ever-growing semantic ledger. Currentness is dimensional: semantic topology may remain accepted across implementation-only source movement when current evidence supports continuity, while evidence/analyzer drift is reported separately rather than manufacturing product drift.
 
-### No durable service database
+### Durable canonical authority, disposable compute
 
-Remote analysis uses disposable exact-revision checkouts. Scratch state is removed after use. Losing service-local files/caches must not lose accepted intelligence.
+Remote analysis uses disposable exact-revision checkouts. Scratch files/caches are removed after use. Losing local process state must not lose accepted intelligence; hosted canonical persistence is the durable DI authority layer and Git remains the reconstructable source/history layer.
 
-### Deterministic and tamper-evident checkpoint
+### Deterministic compatibility/self-seal checkpoint
 
-`/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards under `/.development-intelligence/graph/` excludes its own directory from source fingerprinting. Checkpoint reads recompute semantic topology from shard contents rather than trusting manifest counts/fingerprints alone. The same semantic topology must produce byte-identical checkpoint content.
+The legacy/self-test `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards remains covered for tamper evidence, deterministic serialization, migration fallback, and DI's own Seal B packaging tests. Checkpoint reads recompute semantic topology from shard contents rather than trusting manifest counts/fingerprints alone.
 
-The `action-smoke` GitHub Actions job invokes the repository's root composite action against Development Intelligence itself. This proves the published packaging path can install, build, and enforce the accepted checkpoint independently of the ordinary repository verification command.
+The `action-smoke` GitHub Actions job invokes the repository's root composite action against Development Intelligence itself. This proves the published packaging path can install, build, and enforce DI's self-seal release contract independently of the ordinary repository verification command; it does not make repository-local checkpoints the authority model for inspected projects.
 
 ### Source provenance and safety
 
@@ -60,6 +60,20 @@ Generic module resolution must represent file imports, dynamic `import()` depend
 
 Grouped search/parity tests protect the one-graph/many-independent-queries contract so exploratory agent work does not require one network round trip per term.
 
+### Semantic query depth
+
+Repository semantic questions are conversational projections over one evidence graph, not lookup-table prompts with one mandatory prose answer. DI supports three explicit semantic depths:
+
+- **nucleus**: the smallest honest semantic answer supported by the strongest available authority/evidence layer; omission is not absence;
+- **expanded**: the nucleus plus all currently discovered factuality-supported core candidates and a bounded supporting semantic layer, with authority, uncertainty, and any remaining supporting truncation stated explicitly;
+- **exhaustive**: a census of the current evidence-qualified semantic candidate universe up to the declared operational limit, with an explicit exhausted/truncated completeness statement.
+
+Semantic depth and presentation breadth are related but not identical. Expanded mode must not drop discovered core meaning merely because it crossed an arbitrary top-N presentation boundary; supporting material may remain bounded when that truncation is explicit. Exhaustive mode is the only mode that claims the full evidence-qualified candidate census.
+
+Natural-language questions infer depth independently, while agents may explicitly set `semanticDepth`. Batched questions continue to share one immutable graph context, so one request may mix nucleus, expanded, and exhaustive questions across different lanes.
+
+A benchmark may require 100% recall only against an independently established **complete scope**. A broad explanatory question must not be failed merely because it omits an item from a different complete census, and DI must never treat an omitted concept as disproven outside a declared complete scope. Accepted meaning, observed semantics, and derived proposals remain separate at every depth.
+
 ### Evidence and conflict discipline
 
 Independent agreeing observations may accumulate evidence for one stable identity. Contradictory semantic assertions remain explicit conflicts. Syntax-proven relationships may be resolved; heuristic cross-source matches remain candidates; unresolved relationships remain explicit.
@@ -83,6 +97,12 @@ Portfolio testing must remain read-only and SHA-pinned. When a replay discovers 
 5. keep analyzer/coverage/tooling limitations in Development Intelligence rather than exporting false project defects.
 
 Useful portfolio feedback includes orientation call count, warm/cold latency, evidence depth, uncertainty honesty, fix-surface quality, and whether an agent can act without manually rediscovering the codebase. Recurring weaknesses become DI work items backed by real-repository evidence. External repositories do not need to adopt DI-specific product semantics in order to serve as benchmark evidence.
+
+### Published competitor reference discipline
+
+The benchmark may carry a dated snapshot of competitors' own published claims so DI's measured dimensions are visible beside the market's stated targets. These references are **not** ground truth and are never converted into a synthetic leaderboard. A direct DI-vs-competitor performance conclusion requires the same task corpus, product configuration, grader, and metric definition.
+
+The checked-in competitor snapshot is validated to use official vendor sources and to mark numeric claims non-comparable by default. CardForge's benchmark currently pairs those references with DI-owned measurements for semantic precision/recall, reviewed correction burden, T3 general-question grounding, tool-call count, latency, and evidence discipline. Bug-catch rate, end-to-end PR quality, and private-session agent scores remain explicitly unmeasured unless DI replays the corresponding protocol.
 
 ### Human Workbench over agent truth
 
@@ -143,6 +163,8 @@ Repository visibility is not an authentication mechanism. Public source must rem
 Acceptance covers modern `2026-07-28` discovery, routing headers, complete results, private cache hints, and the intrinsic public tool listing.
 
 ## CardForge evidence strategy
+
+Reviewed repository truth in benchmarks is always scoped to the exact immutable specimen revision. Changing a pinned benchmark SHA invalidates any human-reviewed semantic oracle until that new specimen is reviewed; tests must never carry yesterday's repository meaning forward merely to preserve a score. Temporal benchmarks evaluate each endpoint and whether DI correctly describes the observed transition, not whether a semantic identity stayed the same.
 
 The permanent CardForge benchmark is read-only against a pinned source SHA and produces disposable W plus review artifacts. It protects representative scale, coverage, generic semantic kinds, module/import/call resolution, known cross-file traces, source search, Architecture, and Parity. It also protects three agent-workflow concerns observed in real CardForge tasks: one-call grouped exploration, stateless reconstruction of canonical graph IDs, and searchable CSS structure for camera/responsive/layout evidence. Assessment calibration additionally proves natural feature phrasing, present-symbol existence questions, and subject-scoped audits without manufacturing undeclared capability semantics. Scoped audits declare their resolved relationship radius, group findings by observed cause, and retain the underlying evidence rather than treating a raw count as an intrinsic quality judgment. It does not depend on the retired Product Reality oracle, interpret Product Reality metadata as DI semantics, or write a DI checkpoint into CardForge.
 

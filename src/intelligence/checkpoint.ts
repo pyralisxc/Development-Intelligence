@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import type { GraphCheckpointMeta, GraphCheckpointMetaV2, GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { ANALYZER_VERSION, GRAPH_DIRECTORY, checkpointProjection, semanticTopologyFingerprint } from './repository.js';
 import { stringifyValue } from './model.js';
+import { stableHash } from '../util/hash.js';
 
 const GRAPH_MANIFEST_PATH = `${GRAPH_DIRECTORY}/manifest.json`;
 const GRAPH_SHARD_DIRECTORY = `${GRAPH_DIRECTORY}/graph`;
@@ -198,4 +199,42 @@ export function checkpointToGraph(input: {
 
 export function checkpointAnalyzerCurrent(meta: GraphCheckpointMeta): boolean {
   return meta.schemaVersion === 2 && meta.analyzerVersion === ANALYZER_VERSION;
+}
+
+export function workingToAcceptedGraph(input: {
+  graph: IntelligenceGraph;
+  repository: string;
+  acceptedAt?: string;
+}): IntelligenceGraph {
+  const projection = checkpointProjection(input.graph);
+  const nodes = projection.nodes.map(stableNode).sort((a, b) => a.id.localeCompare(b.id));
+  const edges = projection.edges.map(stableEdge).sort((a, b) => a.id.localeCompare(b.id));
+  const acceptedAt = input.acceptedAt ?? new Date().toISOString();
+  return {
+    schemaVersion: 2,
+    analyzerVersion: input.graph.analyzerVersion,
+    graphId: `accepted-${input.graph.repositoryRevision?.slice(0, 12) ?? stableHash([input.graph.sourceFingerprint]).slice(0, 12)}-${stableHash([input.graph.topologyFingerprint, input.graph.evidenceFingerprint]).slice(0, 10)}`,
+    project: input.graph.project,
+    role: 'A',
+    createdAt: acceptedAt,
+    repositoryRevision: input.graph.repositoryRevision,
+    sourceFingerprint: input.graph.sourceFingerprint,
+    topologyFingerprint: input.graph.topologyFingerprint,
+    evidenceFingerprint: input.graph.evidenceFingerprint,
+    sources: [{
+      id: 'repository',
+      kind: 'repository-canonical-acceptance',
+      locator: input.repository,
+      revision: input.graph.repositoryRevision,
+      observedAt: acceptedAt,
+      available: true,
+    }],
+    evidence: [],
+    nodes,
+    edges,
+    namingDivergences: [],
+    explicitValueConflicts: [],
+    unmatchedNodeIds: [],
+    unavailableSourceIds: [],
+  };
 }

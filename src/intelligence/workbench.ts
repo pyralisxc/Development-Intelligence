@@ -7,6 +7,9 @@ import { currentGraph } from './service.js';
 import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLens, searchGraph, traceGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
+import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
+import { auditSemanticCandidates } from './semanticAudit.js';
+import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -156,6 +159,30 @@ function projectSubjectBrief(graph: IntelligenceGraph, query: string): Record<st
 
 const OVERVIEW_FINDING_CATEGORIES = new Set<AuditFinding['category']>(['coverage', 'conflict', 'realization']);
 
+export async function semanticAudit(input: {
+  project: string;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  limit?: number | undefined;
+  candidateLimit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const candidateLimit = Math.min(Math.max(input.candidateLimit ?? 200, 1), 1000);
+  const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
+  const audit = auditSemanticCandidates(graph, bootstrap, { limit: input.limit ?? 30 });
+  const reviewed = audit.items.length;
+  const core = audit.counts.coreCandidates;
+  const needsReview = audit.counts.factualityNeedsReview;
+  return {
+    project: input.project,
+    graphId: graph.graphId,
+    summary: `${audit.candidateUniverse.eligible} evidence-qualified semantic candidate(s); ${core} of ${reviewed} audited candidate(s) satisfy the explicit core-candidate facets and ${needsReview} require factuality review.`,
+    ...audit,
+    coverage: compactCoverage(graph),
+    policyNote: 'Core/supporting is an evidence-grounded audit classification, not semantic authority. Acceptance and verification remain separate.',
+  };
+}
+
 export async function projectOverview(project: string, ref?: string | undefined, graphId?: string | undefined, subjects: string[] = []): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
   const [status, diff, sources] = await Promise.all([
@@ -201,6 +228,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
     coverageDetailTool: 'check_graph_coverage',
     highlights: semanticHighlights(graph).map(node => ({ id: node.id, kind: node.kind, name: displayName(node), locator: node.locator })),
     areas: topAreas(graph),
+    semanticBootstrap: bootstrapSemanticCandidates(graph, { limit: 12 }),
     changes: diff ? { ...diffCounts, detail: diff } : null,
     findings: findings.slice(0, 20),
     subjects: subjects.slice(0, 10).map(subject => projectSubjectBrief(graph, subject.trim())).filter(item => Boolean(item.query)),
@@ -364,7 +392,7 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
 
 function orientationMetric(
   node: GraphNode,
-  graph: IntelligenceGraph,
+  byId: ReadonlyMap<string, GraphNode>,
   incident: GraphEdge[],
   rankBy: ScopeRankBy,
 ): {
@@ -381,7 +409,6 @@ function orientationMetric(
   callees: number;
   rankValue: number;
 } {
-  const byId = new Map(graph.nodes.map(item => [item.id, item]));
   const resolved = incident.filter(edge => edge.status === 'resolved');
   const neighborFiles = new Set<string>();
   const neighborAreas = new Set<string>();
@@ -436,12 +463,712 @@ function orientationReason(metrics: ReturnType<typeof orientationMetric>, rankBy
   return String(metrics.crossFileReach) + ' neighboring file(s) and ' + String(metrics.crossAreaReach) + ' neighboring area(s) through resolved relationships.';
 }
 
+function semanticNameList(names: string[], limit: number): string {
+  const unique = [...new Set(names.filter(Boolean))];
+  const shown = unique.slice(0, limit);
+  if (!shown.length) return '';
+  if (shown.length === 1) return shown[0]!;
+  const suffix = unique.length > shown.length ? ` and ${unique.length - shown.length} more` : '';
+  if (shown.length === 2) return shown.join(' and ') + suffix;
+  return shown.slice(0, -1).join(', ') + ', and ' + shown[shown.length - 1] + suffix;
+}
+
+export type SemanticQueryDepth = 'nucleus' | 'expanded' | 'exhaustive';
+
+function semanticDepthForQuestion(text: string, explicit?: SemanticQueryDepth): SemanticQueryDepth {
+  if (explicit) return explicit;
+  const lower = text.toLowerCase();
+  if (/\b(exhaustive|exhaustively|every|everything|complete census|full census|entire semantic|all semantic)\b/u.test(lower)) return 'exhaustive';
+  if (/\b(go deep|deep dive|deeply|in depth|broaden|broad view|full picture|supporting systems?|supporting (?:areas|layers|substrates)|substrates?|underneath|across (?:the )?semantic|major capabilities)\b/u.test(lower)) return 'expanded';
+  return 'nucleus';
+}
+
+function implementationExplorationIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const asksMechanism = /\b(how|where)\b/u.test(lower);
+  const mechanism = /\b(?:rout\w*|choos\w*|select\w*|dispatch\w*|decompos\w*|inherit\w*|prevent\w*|contaminat\w*|handl\w*|resolv\w*|plann\w*|shard\w*|index\w*|load\w*|map\w*|correlat\w*)\b/u.test(lower);
+  return asksMechanism && mechanism;
+}
+
+function implementationExplorationTerms(text: string): string[] {
+  const stop = new Set([
+    'about', 'against', 'also', 'another', 'between', 'broader', 'choice', 'current', 'does', 'doing',
+    'evidence', 'exact', 'explain', 'from', 'graph', 'into', 'other', 'question', 'questions', 'read',
+    'reads', 'request', 'requests', 'system', 'that', 'their', 'them', 'then', 'there', 'these', 'they',
+    'this', 'those', 'what', 'when', 'where', 'which', 'with', 'without',
+  ]);
+  const words = text.match(/[A-Za-z][A-Za-z0-9_-]{3,}/gu) ?? [];
+  const stems = words
+    .map(word => word.replace(/(?:ing|edly|ed|es|s)$/iu, ''))
+    .map(word => word.length >= 5 ? word.toLowerCase() : '')
+    .filter(Boolean)
+    .filter(word => !stop.has(word));
+  return [...new Set(stems)].slice(0, 10);
+}
+
+function implementationExplorationPattern(text: string): string {
+  const terms = implementationExplorationTerms(text);
+  if (!terms.length) return '.+';
+  return terms.flatMap(term => {
+    const capitalized = term.charAt(0).toUpperCase() + term.slice(1);
+    return [term + '[A-Za-z0-9_-]*', capitalized + '[A-Za-z0-9_-]*'];
+  }).join('|');
+}
+
+function regexEscape(value: string): string {
+  return value.replace(/[.*+?^{}()|[\]\\]/gu, '\\$&');
+}
+
+function rankedMechanismSourceFiles(
+  graph: IntelligenceGraph,
+  text: string,
+  limit = 12,
+): Array<{ file: string; score: number; matchedTerms: string[]; nodeHits: number }> {
+  const terms = implementationExplorationTerms(text);
+  if (!terms.length) return [];
+  const files = new Map<string, { score: number; terms: Set<string>; nodeHits: number }>();
+  for (const node of graph.nodes) {
+    const file = sourceFile(node.locator)?.replace(/^\.\//u, '');
+    if (!file) continue;
+    const name = String(node.name ?? '').toLowerCase();
+    const identity = (String(node.id) + ' ' + String(node.locator)).toLowerCase();
+    const matched = terms.filter(term => name.includes(term) || identity.includes(term));
+    if (!matched.length) continue;
+    const current = files.get(file) ?? { score: 0, terms: new Set<string>(), nodeHits: 0 };
+    current.nodeHits += 1;
+    for (const term of matched) {
+      current.terms.add(term);
+      current.score += 2 + Number(name.includes(term)) * 2;
+    }
+    if (node.layer === 'structural' || node.layer === 'representation') current.score += 1;
+    files.set(file, current);
+  }
+  return [...files.entries()]
+    .map(([file, value]) => ({
+      file,
+      score: value.score + value.terms.size * 4,
+      matchedTerms: [...value.terms].sort(),
+      nodeHits: value.nodeHits,
+    }))
+    .sort((a, b) =>
+      b.matchedTerms.length - a.matchedTerms.length
+      || b.score - a.score
+      || b.nodeHits - a.nodeHits
+      || a.file.localeCompare(b.file))
+    .slice(0, Math.max(1, limit));
+}
+async function implementationMechanismProjection(input: {
+  project: string;
+  text: string;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  scope?: string | undefined;
+  limit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const pattern = implementationExplorationPattern(input.text);
+  const queryTerms = implementationExplorationTerms(input.text);
+  const explicitScope = input.scope?.trim() ?? '';
+  const rankedFiles = explicitScope ? [] : rankedMechanismSourceFiles(graph, input.text, 12);
+  const rankedFilePattern = rankedFiles.length
+    ? '^(?:' + rankedFiles.map(item => regexEscape(item.file)).join('|') + ')$'
+    : undefined;
+  const source = await searchCode({
+    project: input.project,
+    ref: input.ref,
+    graphId: graph.graphId,
+    pattern,
+    ...(explicitScope
+      ? {
+          filePattern: explicitScope.replace(/^\.\//u, ''),
+          filePatternMode: /\.[A-Za-z0-9]+$/u.test(explicitScope) ? 'literal' as const : 'prefix' as const,
+        }
+      : rankedFilePattern
+        ? { filePattern: rankedFilePattern, filePatternMode: 'regex' as const }
+        : {}),
+    regex: true,
+    context: 3,
+    limit: Math.min(Math.max(input.limit ?? 100, 1), 250),
+  }) as any;
+  const matches = Array.isArray(source.matches) ? source.matches : [];
+  const fileMap = new Map<string, any[]>();
+  for (const match of matches) {
+    const file = String(match.file ?? '').trim();
+    if (!file) continue;
+    const items = fileMap.get(file) ?? [];
+    items.push(match);
+    fileMap.set(file, items);
+  }
+  const matchedFiles = new Set(fileMap.keys());
+  const matchedSourceLines = new Map<string, Set<number>>();
+  for (const match of matches) {
+    const file = String(match.file ?? '').trim();
+    const line = Number(match.line ?? 0);
+    if (!file || !Number.isFinite(line) || line <= 0) continue;
+    const lines = matchedSourceLines.get(file) ?? new Set<number>();
+    lines.add(line);
+    matchedSourceLines.set(file, lines);
+  }
+  const endpointRelevance = (node: GraphNode | undefined): { queryTermHits: number; sourceMatch: boolean } => {
+    if (!node) return { queryTermHits: 0, sourceMatch: false };
+    const name = String(node.name ?? '').toLowerCase();
+    const queryTermHits = queryTerms.filter(term => name.includes(term)).length;
+    const file = sourceFile(node.locator)?.replace(/^\.\//u, '') ?? '';
+    const lineMatch = node.locator.match(/:(\d+)(?::|$)/u);
+    const line = Number(lineMatch?.[1] ?? 0);
+    return {
+      queryTermHits,
+      sourceMatch: Boolean(file && line > 0 && matchedSourceLines.get(file)?.has(line)),
+    };
+  };
+  const scopedNodes = graph.nodes.filter(node => {
+    const file = sourceFile(node.locator)?.replace(/^\.\//u, '');
+    return Boolean(file && matchedFiles.has(file));
+  });
+  const scopedIds = new Set(scopedNodes.map(node => node.id));
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+
+  const touching = graph.edges.filter(edge =>
+    Boolean(edge.from && scopedIds.has(edge.from))
+    || Boolean(edge.to && scopedIds.has(edge.to)));
+  const relationshipItems = touching
+    .map(edge => {
+      const from = edge.from ? byId.get(edge.from) : undefined;
+      const to = edge.to ? byId.get(edge.to) : undefined;
+      const fromRelevance = endpointRelevance(from);
+      const toRelevance = endpointRelevance(to);
+      return {
+        queryTermHits: fromRelevance.queryTermHits + toRelevance.queryTermHits,
+        sourceMatchEndpointCount: Number(fromRelevance.sourceMatch) + Number(toRelevance.sourceMatch),
+        edgeId: edge.id,
+        kind: edge.kind,
+        status: edge.status,
+        confidence: edge.confidence,
+        from: edge.from ? {
+          id: edge.from,
+          name: displayName(from, edge.from),
+          kind: from?.kind ?? 'unknown',
+          locator: from?.locator ?? null,
+        } : null,
+        to: edge.to ? {
+          id: edge.to,
+          name: displayName(to, edge.to),
+          kind: to?.kind ?? 'unknown',
+          locator: to?.locator ?? null,
+        } : null,
+        evidenceIds: edge.evidenceIds ?? [],
+        bothEndpointsInMatchedFiles: Boolean(edge.from && edge.to && scopedIds.has(edge.from) && scopedIds.has(edge.to)),
+      };
+    })
+    .sort((a, b) =>
+      Number(b.status === 'resolved') - Number(a.status === 'resolved')
+      || b.sourceMatchEndpointCount - a.sourceMatchEndpointCount
+      || b.queryTermHits - a.queryTermHits
+      || Number(b.bothEndpointsInMatchedFiles) - Number(a.bothEndpointsInMatchedFiles)
+      || a.kind.localeCompare(b.kind)
+      || String(a.edgeId).localeCompare(String(b.edgeId)));
+
+  const resolved = relationshipItems.filter(item => item.status === 'resolved');
+  const unresolved = relationshipItems.filter(item => item.status !== 'resolved');
+  const resolvedDegree = new Map<string, number>();
+  for (const edge of resolved) {
+    if (edge.from?.id && scopedIds.has(edge.from.id)) resolvedDegree.set(edge.from.id, (resolvedDegree.get(edge.from.id) ?? 0) + 1);
+    if (edge.to?.id && scopedIds.has(edge.to.id)) resolvedDegree.set(edge.to.id, (resolvedDegree.get(edge.to.id) ?? 0) + 1);
+  }
+
+  const keyEntities = scopedNodes
+    .map(node => ({
+      id: node.id,
+      name: displayName(node),
+      kind: node.kind,
+      layer: node.layer ?? 'structural',
+      locator: node.locator,
+      queryTermHits: endpointRelevance(node).queryTermHits,
+      sourceMatch: endpointRelevance(node).sourceMatch,
+      resolvedRelationshipCount: resolvedDegree.get(node.id) ?? 0,
+      evidenceCount: (node.evidenceIds ?? []).length,
+    }))
+    .sort((a, b) =>
+      Number(b.sourceMatch) - Number(a.sourceMatch)
+      || b.queryTermHits - a.queryTermHits
+      || b.resolvedRelationshipCount - a.resolvedRelationshipCount
+      || b.evidenceCount - a.evidenceCount
+      || a.name.localeCompare(b.name)
+      || a.id.localeCompare(b.id))
+    .slice(0, 20);
+
+  const decisionEvidence = matches
+    .filter((match: any) => /\b(if|else|switch|case|return|fallback|strategy|mode|select|choose|plan|shard|index|cache|exact)\b/iu.test(String(match.text ?? '')))
+    .slice(0, 30)
+    .map((match: any) => ({
+      file: match.file,
+      line: match.line,
+      text: match.text,
+      before: match.before,
+      after: match.after,
+    }));
+
+  const files = [...fileMap.entries()]
+    .map(([file, items]) => ({
+      file,
+      matchCount: items.length,
+      sample: items.slice(0, 5).map((match: any) => ({
+        line: match.line,
+        text: match.text,
+        before: match.before,
+        after: match.after,
+      })),
+    }))
+    .sort((a, b) => b.matchCount - a.matchCount || a.file.localeCompare(b.file))
+    .slice(0, 20);
+
+  const fileNames = files.slice(0, 4).map(item => item.file);
+  const summary = matches.length
+    ? String(matches.length) + ' bounded source match(es) across ' + String(fileMap.size) + ' file(s); '
+      + String(resolved.length) + ' resolved graph relationship(s) connect entities in or directly adjacent to those files'
+      + (fileNames.length ? ', led by ' + semanticNameList(fileNames, 4) : '') + '.'
+    : 'No bounded source evidence matched the requested implementation mechanism in this graph context.';
+
+  return {
+    ...source,
+    summary,
+    mechanism: {
+      pattern,
+      selection: {
+        mode: explicitScope ? 'explicit-scope' : rankedFiles.length ? 'graph-ranked-files' : 'repository-fallback',
+        explicitScope: explicitScope || null,
+        candidateFiles: rankedFiles,
+        sourceFilePattern: explicitScope || rankedFilePattern || null,
+      },
+      files,
+      keyEntities,
+      relationships: resolved.slice(0, 50),
+      decisionEvidence,
+      uncertainty: {
+        candidateRelationships: unresolved.filter(item => item.status === 'candidate').length,
+        unresolvedRelationships: unresolved.filter(item => item.status === 'unresolved').length,
+        examples: unresolved.slice(0, 20),
+      },
+      policy: {
+        deterministic: true,
+        sourceObservedOnly: true,
+        graphRelationshipsRequireObservedEdges: true,
+        runtimeExecutionProven: false,
+        productIntentInferred: false,
+        semanticAuthority: false,
+        persisted: false,
+      },
+    },
+    coverage: compactCoverage(graph),
+  };
+}
+
+export type InvestigationQuestionLane =
+  | 'source-query'
+  | 'interface'
+  | 'semantic-lifecycle'
+  | 'implementation-explanation'
+  | 'change'
+  | 'coverage'
+  | 'parity'
+  | 'implementation-claim'
+  | 'code'
+  | 'semantic-audit'
+  | 'orientation'
+  | 'trace'
+  | 'evidence'
+  | 'overview'
+  | 'entity';
+
+export type InvestigationQuestionProofMode = 'descriptive' | 'evidence' | 'claim';
+export type InvestigationQuestionSubjectStrategy =
+  | 'external-source'
+  | 'repository'
+  | 'scope-or-entity'
+  | 'source-keyword-evidence'
+  | 'entity-or-query';
+
+export interface InvestigationQuestionPlan {
+  lane: InvestigationQuestionLane;
+  semanticDepth: SemanticQueryDepth;
+  proofMode: InvestigationQuestionProofMode;
+  subjectStrategy: InvestigationQuestionSubjectStrategy;
+  completeness: 'bounded' | SemanticQueryDepth;
+  continuity: 'immediate-exact-pronoun-only';
+}
+
+export function planInvestigationQuestion(input: {
+  text: string;
+  sourceId?: string;
+  semanticDepth?: SemanticQueryDepth;
+}): InvestigationQuestionPlan {
+  const text = input.text.trim();
+  if (!text) throw new Error('text must be non-empty');
+  const lower = text.toLowerCase();
+  const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
+  const interfaceIntent = /\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/u.test(lower);
+  const semanticLifecycleIntent =
+    /\b(semantic|meaning|meanings)\b/u.test(lower)
+    && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/u.test(lower);
+  const repositorySemanticOrientationIntent =
+    /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text)
+    && /\b(main|major|moving parts|wide view|orientation|orient|overview|what does .+ do)\b/u.test(lower);
+  const semanticAuditIntent =
+    !repositorySemanticOrientationIntent
+    && (
+      /\b(semantic factuality|semantic meaning|semantic meanings|semantic candidate|semantic candidates|over[- ]?deriv|over[- ]?expand|core capabilities|core concepts|core meanings|supporting meanings|supporting capabilities)\b/u.test(lower)
+      || (/\bsemantic\b/u.test(lower) && /\b(core|supporting|factual|factuality|audit|meaning|candidate|candidates)\b/u.test(lower))
+    );
+  const orientationIntent = /\b(main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|overview of|what does .+ do)\b/u.test(lower);
+  const implementationClaimIntent = /\b(write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|write back|accepted graph|accepted checkpoint)\b/u.test(lower);
+  const codeIntent = /\b(code|source|implementation|implemented)\b/u.test(lower);
+  const traceIntent = /\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/u.test(lower);
+  const evidenceIntent = /\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/u.test(lower);
+  const claimIntent = /\b(no|none|not|only|second|absent|missing|without|actually|whether|cannot|can't)\b/u.test(lower);
+
+  let lane: InvestigationQuestionLane;
+  if (input.sourceId) lane = 'source-query';
+  else if (interfaceIntent) lane = 'interface';
+  else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
+  else if (implementationExplorationIntent(text)) lane = 'implementation-explanation';
+  else if (/\b(what changed|changes?|diff|delta)\b/u.test(lower)) lane = 'change';
+  else if (/\bcoverage\b/u.test(lower)) lane = 'coverage';
+  else if (/\bparity\b/u.test(lower)) lane = 'parity';
+  else if (implementationClaimIntent) lane = 'implementation-claim';
+  else if (codeIntent) lane = 'code';
+  else if (semanticAuditIntent) lane = 'semantic-audit';
+  else if (orientationIntent) lane = 'orientation';
+  else if (traceIntent) lane = 'trace';
+  else if (evidenceIntent) lane = 'evidence';
+  else if (/\b(overview|summary|summarize|project status|what is this project)\b/u.test(lower)) lane = 'overview';
+  else lane = 'entity';
+
+  const proofMode: InvestigationQuestionProofMode =
+    lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
+      ? 'claim'
+      : lane === 'evidence'
+        ? 'evidence'
+        : 'descriptive';
+
+  const subjectStrategy: InvestigationQuestionSubjectStrategy =
+    lane === 'source-query'
+      ? 'external-source'
+      : lane === 'implementation-explanation'
+        ? 'source-keyword-evidence'
+        : lane === 'interface' || lane === 'orientation'
+          ? 'scope-or-entity'
+          : ['semantic-lifecycle', 'semantic-audit', 'change', 'coverage', 'overview'].includes(lane)
+            ? 'repository'
+            : 'entity-or-query';
+
+  return {
+    lane,
+    semanticDepth,
+    proofMode,
+    subjectStrategy,
+    completeness: lane === 'orientation' ? semanticDepth : 'bounded',
+    continuity: 'immediate-exact-pronoun-only',
+  };
+}
+
+async function repositorySemanticUnderstanding(
+  project: string,
+  graph: IntelligenceGraph,
+  limit: number,
+  depth: SemanticQueryDepth,
+): Promise<Record<string, unknown>> {
+  const authority = await loadSemanticAuthority(project);
+  const accepted = latestAcceptedMeanings(authority.ledger);
+  const acceptedItems = accepted.map(meaning => ({
+    meaningId: meaning.meaningId,
+    name: meaning.proposal.name,
+    description: meaning.proposal.description,
+    kind: meaning.proposal.kind,
+    scope: meaning.scope,
+    acceptedBy: meaning.acceptance?.actor ?? null,
+    verified: Boolean(meaning.verification),
+    verification: meaning.verification
+      ? { actor: meaning.verification.actor, evidenceCount: meaning.verification.evidenceIds.length }
+      : null,
+  }));
+
+  const observed = graph.nodes
+    .filter(node => node.layer === 'semantic' && ['feature', 'capability', 'domain', 'surface'].includes(node.kind))
+    .sort((a, b) =>
+      Number((b.evidenceIds ?? []).length) - Number((a.evidenceIds ?? []).length)
+      || a.kind.localeCompare(b.kind)
+      || displayName(a).localeCompare(displayName(b)));
+  const observedItems = observed.map(node => ({
+    id: node.id,
+    name: displayName(node),
+    kind: node.kind,
+    locator: node.locator,
+    declared: Boolean(node.tags?.includes('declared')),
+    evidenceCount: (node.evidenceIds ?? []).length,
+  }));
+
+  const candidateLimit = depth === 'exhaustive'
+    ? 1000
+    : depth === 'expanded'
+      ? Math.min(Math.max(limit * 6, 64), 250)
+      : Math.min(Math.max(limit * 2, 24), 100);
+  const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
+  const audit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
+  const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
+  const derivedItems = bootstrap.candidates
+    .map(candidate => {
+      const assessment = auditById.get(candidate.id);
+      const observedMatch = observed.find(node => normalizedMention(displayName(node)) === normalizedMention(candidate.proposal.name));
+      return {
+        id: candidate.id,
+        name: candidate.proposal.name,
+        description: candidate.proposal.description,
+        kind: candidate.proposal.kind,
+        scope: candidate.scope,
+        evidenceFamilies: candidate.provenance.evidenceFamilies,
+        evidenceFamilyCount: candidate.support.evidenceFamilyCount,
+        fileCount: candidate.support.fileCount,
+        resolvedEdgeCount: candidate.support.resolvedEdgeCount,
+        coreness: assessment?.coreness.classification ?? 'supporting-candidate',
+        factuality: assessment?.factuality.status ?? 'needs-review',
+        observedSemanticMatch: observedMatch?.id ?? null,
+        authority: {
+          accepted: false,
+          reviewed: false,
+          persisted: false,
+          proofEligible: false,
+          requiresExplicitReview: true,
+        },
+      };
+    })
+    .sort((a, b) =>
+      Number(b.coreness === 'core-candidate') - Number(a.coreness === 'core-candidate')
+      || b.evidenceFamilyCount - a.evidenceFamilyCount
+      || b.fileCount - a.fileCount
+      || a.name.localeCompare(b.name)
+      || a.scope.localeCompare(b.scope));
+
+  const coreDerived = derivedItems.filter(item => item.coreness === 'core-candidate' && item.factuality === 'supported');
+  const verifiedCount = accepted.filter(meaning => Boolean(meaning.verification)).length;
+  const primarySource = acceptedItems.length
+    ? 'accepted-authority'
+    : coreDerived.length || derivedItems.length
+      ? 'derived-candidates'
+      : observedItems.length
+        ? 'observed-semantic-graph'
+        : 'structural-only';
+
+  const primaryItems = primarySource === 'accepted-authority'
+    ? acceptedItems
+    : primarySource === 'derived-candidates'
+      ? (coreDerived.length ? coreDerived : derivedItems)
+      : primarySource === 'observed-semantic-graph'
+        ? observedItems
+        : [];
+
+  let summary: string;
+  if (primarySource === 'accepted-authority') {
+    const features = accepted.filter(meaning => meaning.proposal.kind === 'feature').map(meaning => meaning.proposal.name);
+    const capabilities = accepted.filter(meaning => meaning.proposal.kind === 'capability').map(meaning => meaning.proposal.name);
+    const allNames = accepted.map(meaning => meaning.proposal.name);
+    const lead = features.length
+      ? `${project} is represented by accepted semantic feature${features.length === 1 ? '' : 's'} ${semanticNameList(features, 3)}.`
+      : `DI's accepted semantic authority for ${project} includes ${semanticNameList(allNames, 5)}.`;
+    const capabilitySentence = capabilities.length
+      ? ` Connected accepted capabilities include ${semanticNameList(capabilities, 6)}.`
+      : '';
+    summary = `${lead}${capabilitySentence} ${accepted.length} accepted meaning${accepted.length === 1 ? '' : 's'} are recorded; ${verifiedCount} have separate evidence verification.`;
+  } else if (primarySource === 'derived-candidates') {
+    summary = `Evidence-derived semantic candidates for ${project} currently identify ${semanticNameList(primaryItems.map(item => String(item.name)), 6)}. These are source-backed proposals, not accepted product intent; deeper query modes expose supporting layers and uncertainty without upgrading their authority.`;
+  } else if (primarySource === 'observed-semantic-graph') {
+    summary = `Observed semantic graph concepts for ${project} include ${semanticNameList(observedItems.map(item => item.name), 6)}. These observations are evidence-backed but are not represented as accepted product intent.`;
+  } else {
+    summary = 'No semantic meaning has been accepted, observed, or evidence-qualified yet. DI can describe repository structure, but it should not invent product intent from topology alone.';
+  }
+
+  const expandedLimit = Math.min(Math.max(limit * 2, 24), 64);
+  const supportingDerived = derivedItems.filter(item => item.coreness !== 'core-candidate' || item.factuality !== 'supported');
+  const derivedLayerItems = depth === 'exhaustive'
+    ? derivedItems
+    : depth === 'expanded'
+      ? [...coreDerived, ...supportingDerived.slice(0, expandedLimit)]
+      : [];
+  const acceptedLayerItems = depth === 'nucleus'
+    ? []
+    : depth === 'exhaustive'
+      ? acceptedItems
+      : acceptedItems.slice(0, expandedLimit);
+  const observedLayerItems = depth === 'nucleus'
+    ? []
+    : depth === 'exhaustive'
+      ? observedItems
+      : observedItems.slice(0, expandedLimit);
+
+  const eligibleCoverageComplete = Boolean(
+    graph.coverage
+    && graph.coverage.eligibleFiles === graph.coverage.completeFiles
+    && graph.coverage.partialFiles === 0
+    && graph.coverage.failedFiles === 0
+    && graph.coverage.skippedFiles === 0
+  );
+  const nextDepth = depth === 'nucleus' ? 'expanded' : depth === 'expanded' ? 'exhaustive' : null;
+
+  return {
+    source: primarySource,
+    depth,
+    summary,
+    authority: {
+      storageState: authority.state,
+      durable: authority.durable,
+      acceptedCount: acceptedItems.length,
+      verifiedCount,
+      acceptanceImpliesVerification: false,
+    },
+    ...(primarySource === 'accepted-authority' ? { meanings: acceptedItems.slice(0, limit) } : {}),
+    ...(primarySource === 'derived-candidates' ? { candidates: primaryItems.slice(0, limit) } : {}),
+    ...(primarySource === 'observed-semantic-graph' ? { concepts: observedItems.slice(0, limit) } : {}),
+    layers: {
+      accepted: {
+        count: acceptedItems.length,
+        returned: acceptedLayerItems.length,
+        items: acceptedLayerItems,
+        authority: 'accepted',
+      },
+      observed: {
+        count: observedItems.length,
+        returned: observedLayerItems.length,
+        items: observedLayerItems,
+        authority: 'observed-not-accepted',
+      },
+      derived: {
+        eligibleCount: bootstrap.capacity.eligibleCandidateCount,
+        returned: derivedLayerItems.length,
+        exhausted: bootstrap.capacity.exhausted,
+        truncated: bootstrap.capacity.truncated,
+        coreCandidateCount: audit.counts.coreCandidates,
+        coreReturned: derivedLayerItems.filter(item => item.coreness === 'core-candidate' && item.factuality === 'supported').length,
+        supportingCandidateCount: audit.counts.supportingCandidates,
+        supportingReturned: derivedLayerItems.filter(item => item.coreness !== 'core-candidate' || item.factuality !== 'supported').length,
+        supportingPresentationTruncated: depth === 'expanded' && supportingDerived.length > expandedLimit,
+        factualityNeedsReview: audit.counts.factualityNeedsReview,
+        items: derivedLayerItems,
+        authority: 'proposed-not-accepted',
+      },
+    },
+    completeness: {
+      requestedDepth: depth,
+      semanticCandidateUniverseExhausted: bootstrap.capacity.exhausted,
+      candidateOperationalLimit: bootstrap.capacity.operationalLimit,
+      eligibleSourceCoverageComplete: eligibleCoverageComplete,
+      unsupportedFiles: graph.coverage?.unsupportedFiles ?? null,
+      claim: depth === 'exhaustive'
+        ? (bootstrap.capacity.exhausted ? 'exhaustive-derived-candidate-census' : 'exhaustive-request-bounded-by-operational-limit')
+        : 'non-exhaustive-semantic-answer',
+      repositoryOmissionMeansAbsent: false,
+      candidateOmissionWithinExhaustedCensusMeansAbsent: depth === 'exhaustive' && bootstrap.capacity.exhausted,
+      expandedCoreCoverageComplete: depth !== 'expanded' ? null : bootstrap.capacity.exhausted,
+      expandedSupportingPresentationComplete: depth !== 'expanded' ? null : supportingDerived.length <= expandedLimit,
+    },
+    expansion: {
+      currentDepth: depth,
+      nextDepth,
+      availableDepths: ['nucleus', 'expanded', 'exhaustive'],
+      note: nextDepth
+        ? `The same graph context can be expanded to ${nextDepth} without changing semantic authority.`
+        : 'Exhaustive depth enumerates the current evidence-qualified candidate census; it still does not convert proposals into accepted product intent.',
+    },
+    policy: {
+      layeredSemanticEvidence: true,
+      acceptedObservedDerivedRemainDistinct: true,
+      omissionIsNotAbsenceOutsideDeclaredCompleteScope: true,
+      productIntentInferred: false,
+      persisted: false,
+    },
+  };
+}
+
+
+async function semanticLifecycleOverview(project: string): Promise<Record<string, unknown>> {
+  const authority = await loadSemanticAuthority(project);
+  const latestByMeaning = new Map<string, NonNullable<typeof authority.ledger>['records'][number]['review']>();
+  for (const record of authority.ledger?.records ?? []) latestByMeaning.set(record.meaningId, record.review);
+  const reviews = [...latestByMeaning.values()];
+  const active = reviews.filter(review => !['superseded', 'split', 'merged'].includes(review.state));
+  const accepted = active.filter(review => review.accepted);
+  const verified = active.filter(review => Boolean(review.verification));
+  const humanAccepted = accepted.filter(review => review.acceptance?.actor.kind === 'human');
+  const humanVerified = verified.filter(review => review.verification?.actor.kind === 'human');
+  const aiVerified = verified.filter(review => review.verification?.actor.kind === 'ai-model');
+
+  return {
+    summary: 'Semantic meaning moves from evidence-backed proposal → shared AI/human review → independent acceptance and/or evidence-backed verification → stable meaning identity across revisions → explicit lineage for replacement, supersession, split, or merge → current-revision approval at the Preview→Main boundary. Acceptance never implies verification, and verification never implies acceptance.',
+    stages: [
+      {
+        stage: 'proposal',
+        authority: false,
+        description: 'Intrinsic graph evidence can propose feature/capability/surface/domain meaning. A proposal is not accepted authority and requires explicit review.',
+      },
+      {
+        stage: 'review',
+        authority: false,
+        description: 'AI or human reviewers can amend the same proposal while its original provenance is preserved.',
+      },
+      {
+        stage: 'acceptance',
+        authority: true,
+        description: 'Acceptance records who accepted the meaning and why. Acceptance is independent from semantic verification; human acceptance can approve the current Preview semantic delta.',
+      },
+      {
+        stage: 'verification',
+        authority: false,
+        description: 'Verification requires explicit evidence IDs and remains independent from acceptance. A trusted human or delegated agent may verify the factual SEM change itself; that verification can satisfy the Preview promotion gate without becoming semantic acceptance.',
+      },
+      {
+        stage: 'evolution',
+        authority: 'evidence-led-current-meaning',
+        description: 'A meaning identity may carry forward when current evidence supports continuity, but continuity is not a goal by itself. Changed, unsupported, ambiguous, split, merged, or replaced meaning is handled as a Preview transition rather than forcing yesterday\'s interpretation onto the current revision.',
+      },
+      {
+        stage: 'promotion',
+        authority: 'preview-gate',
+        description: 'A current-revision human acceptance or explicit current-revision SEM verification may satisfy a promotion item. Verification proves the observed change, not product intent; ambiguous or disputed changes remain directly auditable by SEM ID.',
+      },
+    ],
+    authority: {
+      storageState: authority.state,
+      durable: authority.durable,
+      storedRecords: authority.ledger?.records.length ?? 0,
+      latestMeanings: reviews.length,
+      activeMeanings: active.length,
+      acceptedMeanings: accepted.length,
+      verifiedMeanings: verified.length,
+      humanAcceptedMeanings: humanAccepted.length,
+      humanVerifiedMeanings: humanVerified.length,
+      aiVerifiedMeanings: aiVerified.length,
+    },
+    policy: {
+      sharedHumanAiReviewSurface: true,
+      acceptanceImpliesVerification: false,
+      verificationImpliesAcceptance: false,
+      verificationRequiresEvidence: true,
+      proposalProvenancePreserved: true,
+      acceptedMeaningCannotBeSilentlyAmended: true,
+      lineageRequiredForReplacementSplitMergeSupersession: true,
+      promotionApprovalAlternatives: ['human-accepted', 'human-verified', 'ai-verified'],
+      previousRevisionApprovalDoesNotApprovePreviewDelta: true,
+      projection: 'read-only-explanation',
+      persisted: false,
+    },
+  };
+}
+
 export async function scopeOrientation(input: {
   project: string;
   scope?: string | undefined;
   ref?: string | undefined;
   graphId?: string | undefined;
   rankBy?: ScopeRankBy | undefined;
+  semanticDepth?: SemanticQueryDepth | undefined;
   limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
@@ -513,7 +1240,7 @@ export async function scopeOrientation(input: {
 
   const preferredKinds = new Set(['feature','capability','route','api','mcp','provider','file','function','method','class','interface','constructor']);
   const ranked = nodes
-    .map(node => ({ node, metrics: orientationMetric(node, graph, incidentByNode.get(node.id) ?? [], rankBy) }))
+    .map(node => ({ node, metrics: orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy) }))
     .sort((a, b) =>
       b.metrics.rankValue - a.metrics.rankValue
       || Number(preferredKinds.has(b.node.kind)) - Number(preferredKinds.has(a.node.kind))
@@ -541,7 +1268,7 @@ export async function scopeOrientation(input: {
     const external = byId.get(externalId);
     return {
       edgeId: edge.id,
-      direction: outbound ? 'outbound' : 'inbound',
+      direction: outbound ? ('outbound' as const) : ('inbound' as const),
       kind: edge.kind,
       external: { id: externalId, name: displayName(external, externalId), kind: external?.kind ?? 'unknown', locator: external?.locator ?? null },
     };
@@ -560,6 +1287,10 @@ export async function scopeOrientation(input: {
     .slice(0, Math.min(limit, 10))
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
+  const semanticUnderstanding = selected.kind === 'repository'
+    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus')
+    : null;
+
   return {
     project: input.project,
     graphId: graph.graphId,
@@ -572,7 +1303,10 @@ export async function scopeOrientation(input: {
       resolvedBoundaryCount: boundary.length,
     },
     rankBy,
-    summary: String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; key entities are ordered by ' + rankBy + '.',
+    summary: semanticUnderstanding
+      ? String(semanticUnderstanding.summary)
+      : String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; key entities are ordered by ' + rankBy + '.',
+    semanticUnderstanding,
     nodeKinds: Object.entries(nodeKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
     relationshipKinds: Object.entries(relationshipKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
     keyEntities,
@@ -587,6 +1321,417 @@ export async function scopeOrientation(input: {
       persisted: false,
       note: 'Orientation ranks observed graph facets only. It does not assign architectural quality, severity, or product priority.',
     },
+  };
+}
+
+
+const INTERFACE_SURFACE_KINDS = new Set(['surface', 'route', 'ui-element']);
+const INTERFACE_STATE_KINDS = new Set(['state-binding', 'state-write']);
+const INTERFACE_INTERACTION_KINDS = new Set(['ui-element', 'component-prop-handler', 'component-prop-binding']);
+const INTERFACE_TRANSITION_KINDS = new Set(['navigation-call', 'route-reference', 'route']);
+const INTERFACE_EFFECT_KINDS = new Set(['http-call', 'rpc-call', 'sql-reference', 'mcp-tool']);
+const INTERFACE_REPRESENTATION_KINDS = new Set(['css-class-reference', 'css-selector', 'css-at-rule', 'css-custom-property']);
+const INTERACTION_MECHANISM_NODE_KINDS = new Set(['component-prop-binding', 'component-prop-handler']);
+const DIRECT_CONSEQUENCE_KINDS = new Set(['state-write', 'navigation-call', 'http-call', 'rpc-call']);
+const INTERACTION_FAMILY_ORDER = ['pointer', 'drop', 'drag', 'scroll', 'click', 'focus', 'keyboard', 'input', 'submit', 'context-menu', 'touch', 'mouse'] as const;
+type InteractionFamily = typeof INTERACTION_FAMILY_ORDER[number];
+
+function interactionFamily(prop: string): InteractionFamily | null {
+  if (/^on(?:Stage)?Pointer[A-Z]/u.test(prop)) return 'pointer';
+  if (prop === 'onDrop') return 'drop';
+  if (/^onDrag[A-Z]?/u.test(prop)) return 'drag';
+  if (/^onScroll[A-Z]?/u.test(prop)) return 'scroll';
+  if (/^on(?:Double)?Click$/u.test(prop)) return 'click';
+  if (prop === 'onFocus' || prop === 'onBlur') return 'focus';
+  if (/^onKey[A-Z]/u.test(prop)) return 'keyboard';
+  if (['onChange', 'onInput', 'onBeforeInput'].includes(prop) || /^on[A-Za-z0-9]*Change$/u.test(prop)) return 'input';
+  if (prop === 'onSubmit') return 'submit';
+  if (prop === 'onContextMenu') return 'context-menu';
+  if (/^onTouch[A-Z]/u.test(prop)) return 'touch';
+  if (/^onMouse[A-Z]/u.test(prop)) return 'mouse';
+  return null;
+}
+
+function objectValue(node: GraphNode): Record<string, unknown> {
+  return node.value && typeof node.value === 'object' && !Array.isArray(node.value)
+    ? node.value as Record<string, unknown>
+    : {};
+}
+
+interface InterfaceProjectionItem {
+  id: string;
+  name: string;
+  kind: string;
+  layer: string;
+  locator: string;
+  sourceFile: string | null;
+  value: unknown;
+  resolvedRelationshipCount: number;
+  links: Array<{
+    edgeId: string;
+    kind: string;
+    direction: 'outbound' | 'inbound';
+    neighbor: { id: string; name: string; kind: string; locator: string | null } | null;
+  }>;
+  projectionRole?: 'surface' | 'surface-owner';
+}
+
+function interfaceProjectionItem(
+  node: GraphNode,
+  byId: Map<string, GraphNode>,
+  incident: GraphEdge[],
+): InterfaceProjectionItem {
+  const resolved = incident.filter(edge => edge.status === 'resolved');
+  const links: InterfaceProjectionItem['links'] = resolved.slice(0, 8).map(edge => {
+    const outbound = edge.from === node.id;
+    const neighborId = outbound ? edge.to : edge.from;
+    const neighbor = neighborId ? byId.get(neighborId) : undefined;
+    return {
+      edgeId: edge.id,
+      kind: edge.kind,
+      direction: outbound ? 'outbound' : 'inbound',
+      neighbor: neighborId ? {
+        id: neighborId,
+        name: displayName(neighbor, neighborId),
+        kind: neighbor?.kind ?? 'unknown',
+        locator: neighbor?.locator ?? null,
+      } : null,
+    };
+  });
+  return {
+    id: node.id,
+    name: displayName(node),
+    kind: node.kind,
+    layer: node.layer ?? 'structural',
+    locator: node.locator,
+    sourceFile: sourceFile(node.locator),
+    value: node.value ?? null,
+    resolvedRelationshipCount: resolved.length,
+    links,
+  };
+}
+
+export async function interfaceProjection(input: {
+  project: string;
+  scope?: string | undefined;
+  ref?: string | undefined;
+  graphId?: string | undefined;
+  limit?: number | undefined;
+}): Promise<Record<string, unknown>> {
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+  const selected = scopeNodeIds(graph, input.scope);
+
+  if (selected.kind === 'ambiguous') {
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: true,
+      scope: { kind: selected.kind, value: selected.value },
+      candidates: selected.candidates.slice(0, 10).map(node => ({
+        id: node.id,
+        name: displayName(node),
+        kind: node.kind,
+        layer: node.layer ?? 'structural',
+        locator: node.locator,
+      })),
+      policy: { deterministic: true, persisted: false, semanticAuthority: false },
+    };
+  }
+  if (selected.kind === 'missing') {
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: false,
+      scope: { kind: selected.kind, value: selected.value },
+      summary: 'No graph scope matching "' + String(selected.value) + '" was observed.',
+      surfaces: [],
+      state: [],
+      interactions: [],
+      interactionMechanisms: { total: 0, families: [] },
+      transitions: [],
+      effects: [],
+      representation: [],
+      coverage: compactCoverage(graph),
+      policy: { deterministic: true, persisted: false, semanticAuthority: false },
+    };
+  }
+
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  let scopedIds = selected.ids;
+  if (selected.kind === 'entity' && selected.entity) {
+    scopedIds = new Set([selected.entity.id]);
+    let frontier = [selected.entity.id];
+    for (let depth = 0; depth < 2 && frontier.length && scopedIds.size < 500; depth += 1) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const edge of graph.edges) {
+          if (edge.status !== 'resolved' || (edge.from !== id && edge.to !== id)) continue;
+          const neighbor = edge.from === id ? edge.to : edge.from;
+          if (neighbor && !scopedIds.has(neighbor) && scopedIds.size < 500) {
+            scopedIds.add(neighbor);
+            next.push(neighbor);
+          }
+        }
+      }
+      frontier = next;
+    }
+  }
+
+  const nodes = [...scopedIds].map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
+  const scopedSet = new Set(nodes.map(node => node.id));
+  const incidentByNode = new Map<string, GraphEdge[]>();
+  const touchingEdges: GraphEdge[] = [];
+  for (const edge of graph.edges) {
+    const touches = Boolean((edge.from && scopedSet.has(edge.from)) || (edge.to && scopedSet.has(edge.to)));
+    if (!touches) continue;
+    touchingEdges.push(edge);
+    for (const endpoint of [edge.from, edge.to]) {
+      if (!endpoint) continue;
+      const current = incidentByNode.get(endpoint) ?? [];
+      current.push(edge);
+      incidentByNode.set(endpoint, current);
+    }
+  }
+
+  const projectionCandidates = new Map(nodes.map(node => [node.id, node]));
+  for (const edge of touchingEdges) {
+    if (edge.status !== 'resolved') continue;
+    for (const endpoint of [edge.from, edge.to]) {
+      if (!endpoint || projectionCandidates.has(endpoint)) continue;
+      const node = byId.get(endpoint);
+      if (node) projectionCandidates.set(endpoint, node);
+    }
+  }
+
+  const projectNodes = (kinds: Set<string>) => [...projectionCandidates.values()]
+    .filter(node => kinds.has(node.kind))
+    .sort((a, b) =>
+      (incidentByNode.get(b.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
+      - (incidentByNode.get(a.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
+      || displayName(a).localeCompare(displayName(b)))
+    .slice(0, limit)
+    .map(node => interfaceProjectionItem(node, byId, incidentByNode.get(node.id) ?? []));
+
+  const explicitSurfaces = projectNodes(INTERFACE_SURFACE_KINDS).map(item => ({ ...item, projectionRole: 'surface' }));
+  const interfaceEvidenceKinds = new Set([
+    ...INTERFACE_INTERACTION_KINDS,
+    ...INTERFACE_STATE_KINDS,
+    ...INTERFACE_TRANSITION_KINDS,
+    ...INTERFACE_EFFECT_KINDS,
+  ]);
+  const surfaceOwners = nodes
+    .filter(node => ['function', 'method', 'class', 'interface', 'file'].includes(node.kind))
+    .filter(node => /\.(?:tsx|jsx)$/iu.test(sourceFile(node.locator) ?? ''))
+    .filter(node => (incidentByNode.get(node.id) ?? []).some(edge => {
+      if (edge.status !== 'resolved') return false;
+      const neighborId = edge.from === node.id ? edge.to : edge.from;
+      const neighbor = neighborId ? byId.get(neighborId) : undefined;
+      return Boolean(neighbor && interfaceEvidenceKinds.has(neighbor.kind));
+    }))
+    .sort((a, b) =>
+      (incidentByNode.get(b.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
+      - (incidentByNode.get(a.id)?.filter(edge => edge.status === 'resolved').length ?? 0)
+      || displayName(a).localeCompare(displayName(b)))
+    .slice(0, limit)
+    .map(node => ({
+      ...interfaceProjectionItem(node, byId, incidentByNode.get(node.id) ?? []),
+      projectionRole: 'surface-owner',
+    }));
+  const surfaces = [...explicitSurfaces, ...surfaceOwners]
+    .filter((item, index, all) => all.findIndex(other => other.id === item.id) === index)
+    .slice(0, limit);
+  const state = projectNodes(INTERFACE_STATE_KINDS);
+  const interactions = projectNodes(INTERFACE_INTERACTION_KINDS);
+  const transitions = projectNodes(INTERFACE_TRANSITION_KINDS);
+  const effects = projectNodes(INTERFACE_EFFECT_KINDS);
+  const representation = projectNodes(INTERFACE_REPRESENTATION_KINDS);
+
+  const mechanismItems = [...projectionCandidates.values()]
+    .filter(node => INTERACTION_MECHANISM_NODE_KINDS.has(node.kind))
+    .map(node => {
+      const value = objectValue(node);
+      const prop = typeof value.prop === 'string' ? value.prop : null;
+      if (!prop) return null;
+      const family = interactionFamily(prop);
+      if (!family) return null;
+      const component = typeof value.component === 'string' ? value.component : null;
+      const declaredHandler = typeof value.handler === 'string' ? value.handler : null;
+      const handlerEdge = (incidentByNode.get(node.id) ?? []).find(edge =>
+        edge.status === 'resolved' && edge.from === node.id && edge.kind === 'binds_to' && Boolean(edge.to));
+      const handlerNode = handlerEdge?.to ? byId.get(handlerEdge.to) : undefined;
+      const directConsequences = handlerNode ? graph.edges
+        .filter(edge =>
+          edge.status === 'resolved'
+          && edge.from === handlerNode.id
+          && edge.kind === 'invokes'
+          && Boolean(edge.to)
+          && DIRECT_CONSEQUENCE_KINDS.has(byId.get(edge.to!)?.kind ?? ''))
+        .slice(0, 20)
+        .map(edge => {
+          const consequence = byId.get(edge.to!);
+          return {
+            edgeId: edge.id,
+            relationshipKind: edge.kind,
+            id: consequence!.id,
+            kind: consequence!.kind,
+            name: displayName(consequence!),
+            locator: consequence!.locator,
+            value: consequence!.value ?? null,
+            evidence: edge.evidence ?? [],
+            proof: 'resolved-handler-direct-edge',
+          };
+        }) : [];
+      return {
+        id: node.id,
+        family,
+        component,
+        prop,
+        declaredHandler,
+        resolvedHandler: handlerNode ? {
+          id: handlerNode.id,
+          name: displayName(handlerNode),
+          kind: handlerNode.kind,
+          locator: handlerNode.locator,
+        } : null,
+        directConsequences,
+        evidence: {
+          nodeId: node.id,
+          nodeKind: node.kind,
+          locator: node.locator,
+          sourceFile: sourceFile(node.locator),
+          plane: 'source',
+        },
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .sort((a, b) =>
+      INTERACTION_FAMILY_ORDER.indexOf(a.family) - INTERACTION_FAMILY_ORDER.indexOf(b.family)
+      || String(a.component ?? '').localeCompare(String(b.component ?? ''))
+      || a.prop.localeCompare(b.prop)
+      || a.id.localeCompare(b.id));
+  const mechanismSampleLimit = Math.min(limit, 20);
+  const resolvedHandlerCount = mechanismItems.filter(item => item.resolvedHandler).length;
+  const directConsequenceMechanismCount = mechanismItems.filter(item => item.directConsequences.length > 0).length;
+  const directConsequenceCount = mechanismItems.reduce((sum, item) => sum + item.directConsequences.length, 0);
+  const interactionMechanisms = {
+    total: mechanismItems.length,
+    resolvedHandlerCount,
+    unresolvedHandlerCount: mechanismItems.length - resolvedHandlerCount,
+    directConsequenceMechanismCount,
+    directConsequenceCount,
+    families: INTERACTION_FAMILY_ORDER
+      .map(family => {
+        const familyItems = mechanismItems.filter(item => item.family === family);
+        return {
+          family,
+          count: familyItems.length,
+          items: familyItems.slice(0, mechanismSampleLimit),
+        };
+      })
+      .filter(group => group.count > 0),
+    policy: {
+      sourceObservedOnly: true,
+      declaredHandlerIsNotResolvedHandler: true,
+      runtimeOccurrenceProven: false,
+      stateEffectsInferred: false,
+      directConsequencesRequireResolvedHandler: true,
+      directConsequencesRequireResolvedInvokesEdge: true,
+    },
+  };
+
+  const uncertaintyEdges = touchingEdges.filter(edge => edge.status !== 'resolved');
+  const runtimeSources = graph.sources.filter(source => source.kind !== 'repository');
+  const observedKinds = new Set(nodes.map(node => node.kind));
+  const unknowns: string[] = [];
+  if (!runtimeSources.length) {
+    unknowns.push('Rendered visibility, geometry, stacking, scroll ownership, pointer/focus ownership, and actual runtime state transitions are not proven by source-only evidence.');
+  }
+  if (!state.length) unknowns.push('No source-derived state binding/write nodes were observed in this scope.');
+  if (!representation.length) unknowns.push('No CSS representation nodes were observed in this scope; layout/visibility behavior may require source or runtime inspection.');
+
+  const combined = [...surfaces, ...state, ...interactions, ...transitions, ...effects]
+    .filter((item, index, all) => all.findIndex(other => other.id === item.id) === index)
+    .sort((a: any, b: any) => Number(b.resolvedRelationshipCount ?? 0) - Number(a.resolvedRelationshipCount ?? 0));
+
+  return {
+    project: input.project,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    ambiguous: false,
+    scope: {
+      kind: selected.kind,
+      value: selected.value,
+      nodeCount: nodes.length,
+      neighborhoodDepth: selected.kind === 'entity' ? 2 : 0,
+    },
+    summary: [
+      surfaces.length ? String(surfaces.length) + ' surface/route item(s)' : 'no surface/route items',
+      state.length ? String(state.length) + ' state item(s)' : 'no state items',
+      interactions.length ? String(interactions.length) + ' interaction item(s)' : 'no interaction items',
+      mechanismItems.length ? String(mechanismItems.length) + ' source-observed interaction mechanism(s)' : 'no classified interaction mechanisms',
+      transitions.length ? String(transitions.length) + ' transition item(s)' : 'no transition items',
+      effects.length ? String(effects.length) + ' external/persistence effect item(s)' : 'no external/persistence effects',
+    ].join('; ') + ' observed in the selected scope.',
+    capabilities: {
+      surfaces: surfaces.length > 0,
+      state: state.length > 0,
+      interactions: interactions.length > 0,
+      interactionMechanisms: mechanismItems.length > 0,
+      transitions: transitions.length > 0,
+      effects: effects.length > 0,
+      representation: representation.length > 0,
+      runtimeObservations: runtimeSources.length > 0,
+    },
+    surfaces,
+    state,
+    interactions,
+    interactionMechanisms,
+    transitions,
+    effects,
+    representation,
+    runtimeObservations: {
+      available: runtimeSources.length > 0,
+      sources: runtimeSources.map(source => ({
+        id: source.id,
+        kind: source.kind,
+        locator: source.locator,
+        revision: source.revision,
+        observedAt: source.observedAt,
+        available: source.available,
+      })),
+    },
+    uncertainty: {
+      candidateEdges: uncertaintyEdges.filter(edge => edge.status === 'candidate').length,
+      unresolvedEdges: uncertaintyEdges.filter(edge => edge.status === 'unresolved').length,
+      examples: uncertaintyEdges.slice(0, Math.min(limit, 12)).map(edge => ({
+        edgeId: edge.id,
+        kind: edge.kind,
+        status: edge.status,
+        from: edge.from,
+        to: edge.to,
+      })),
+      unknowns,
+    },
+    nextInspections: combined.slice(0, Math.min(8, limit)).map((item: any) => ({
+      id: item.id,
+      name: item.name,
+      kind: item.kind,
+      locator: item.locator,
+      reason: String(item.resolvedRelationshipCount ?? 0) + ' resolved relationship(s) in the interface projection.',
+    })),
+    coverage: compactCoverage(graph),
+    policy: {
+      deterministic: true,
+      evidenceLinked: true,
+      persisted: false,
+      semanticAuthority: false,
+      runtimeClaimsRequireObservation: true,
+      note: 'This is a derived interface/interaction view over the canonical graph. It does not create UI truth, semantic product intent, or runtime state.',
+    },
+    observedNodeKinds: [...observedKinds].sort(),
   };
 }
 
@@ -669,6 +1814,53 @@ async function unsupportedPathSourceFallback(
   };
 }
 
+type InvestigationTargetMode =
+  | 'external-source'
+  | 'repository'
+  | 'source-keywords'
+  | 'scope'
+  | 'entity'
+  | 'query'
+  | 'scope-required';
+
+interface InvestigationTargetResolution {
+  strategy: InvestigationQuestionSubjectStrategy;
+  mode: InvestigationTargetMode;
+  query: string | null;
+  scope: string | null;
+  node: GraphNode | null;
+  ambiguous: boolean;
+  candidates: GraphNode[];
+}
+
+function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
+  switch (lane) {
+    case 'parity':
+      return [/\b(show|find|inspect|query|parity|for|of|what|is|the)\b/gi];
+    case 'code':
+      return [/\b(show|show me|find|search|code|source|implementation|implemented|for|of|where|is|the)\b/gi];
+    case 'implementation-claim':
+      return [/\b(where|what|which|how|does|do|is|are|write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|back|into|the|an|a)\b/gi];
+    case 'interface':
+      return [/\b(what|which|show|find|explain|interface|interaction|interactive|ui|state|owners?|controls?|changes?|when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?|major|in|of|for|the|this|page|feature|workspace)\b/gi];
+    case 'orientation':
+      return [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi];
+    case 'trace':
+      return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi];
+    case 'evidence':
+      return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi];
+    case 'entity':
+      return [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i];
+    default:
+      return [];
+  }
+}
+
+function explicitInvestigationScope(text: string): string | null {
+  const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
+  return pathMatch?.[0] ?? null;
+}
+
 async function resolveInvestigationSubject(
   input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
   text: string,
@@ -721,6 +1913,102 @@ async function resolveInvestigationSubject(
   return { query: cleaned || null, node: null, ambiguous: true, candidates: tied.map(item => item.node) };
 }
 
+async function resolveInvestigationTarget(
+  input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
+  text: string,
+  plan: InvestigationQuestionPlan,
+): Promise<InvestigationTargetResolution> {
+  const base = {
+    strategy: plan.subjectStrategy,
+    query: null,
+    scope: null,
+    node: null,
+    ambiguous: false,
+    candidates: [] as GraphNode[],
+  };
+
+  if (plan.subjectStrategy === 'external-source') return { ...base, mode: 'external-source' };
+  if (plan.subjectStrategy === 'repository') return { ...base, mode: 'repository' };
+  if (plan.subjectStrategy === 'source-keyword-evidence') return { ...base, mode: 'source-keywords' };
+
+  if (plan.subjectStrategy === 'scope-or-entity') {
+    const explicitScope = input.scope?.trim() || explicitInvestigationScope(text);
+    if (explicitScope) return { ...base, mode: 'scope', scope: explicitScope, query: explicitScope };
+
+    const repositoryDeictic = plan.lane === 'orientation'
+      && /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text);
+    if (repositoryDeictic) return { ...base, mode: 'repository' };
+
+    const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
+    if (resolved.node) {
+      return {
+        strategy: plan.subjectStrategy,
+        mode: 'entity',
+        query: resolved.query,
+        scope: resolved.node.id,
+        node: resolved.node,
+        ambiguous: false,
+        candidates: resolved.candidates,
+      };
+    }
+    if (resolved.ambiguous) {
+      return {
+        strategy: plan.subjectStrategy,
+        mode: 'query',
+        query: resolved.query,
+        scope: null,
+        node: null,
+        ambiguous: true,
+        candidates: resolved.candidates,
+      };
+    }
+
+    const scopeRequired = plan.lane === 'interface'
+      ? /\b(this page|this feature|this workspace|this panel|this screen)\b/iu.test(text)
+      : /\b(this page|this file|this module|this feature|this area)\b/iu.test(text);
+    if (scopeRequired) return { ...base, mode: 'scope-required', query: resolved.query };
+
+    return { ...base, mode: 'repository', query: resolved.query };
+  }
+
+  const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
+  return {
+    strategy: plan.subjectStrategy,
+    mode: resolved.node ? 'entity' : 'query',
+    query: resolved.query,
+    scope: resolved.node?.id ?? null,
+    node: resolved.node,
+    ambiguous: resolved.ambiguous,
+    candidates: resolved.candidates,
+  };
+}
+
+function targetResolutionForRouting(target: InvestigationTargetResolution): Record<string, unknown> {
+  return {
+    strategy: target.strategy,
+    mode: target.mode,
+    query: target.query,
+    scope: target.scope,
+    ambiguous: target.ambiguous,
+    node: target.node
+      ? {
+          id: target.node.id,
+          name: displayName(target.node),
+          kind: target.node.kind,
+          layer: target.node.layer ?? 'structural',
+          locator: target.node.locator,
+        }
+      : null,
+    candidates: target.candidates.slice(0, 10).map(item => ({
+      id: item.id,
+      name: displayName(item),
+      kind: item.kind,
+      layer: item.layer ?? 'structural',
+      locator: item.locator,
+    })),
+  };
+}
+
 export async function queryWorkbench(input: {
   project: string;
   text: string;
@@ -730,10 +2018,18 @@ export async function queryWorkbench(input: {
   capability?: TechnicalSourceCapability | undefined;
   scope?: string | undefined;
   rankBy?: ScopeRankBy | undefined;
+  semanticDepth?: SemanticQueryDepth | undefined;
 }): Promise<Record<string, unknown>> {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
   const lower = text.toLowerCase();
+  const plan = planInvestigationQuestion({
+    text,
+    ...(input.sourceId ? { sourceId: input.sourceId } : {}),
+    ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
+  });
+  const target = await resolveInvestigationTarget(input, text, plan);
+  const result = await (async (): Promise<Record<string, unknown>> => {
 
   if (input.sourceId) {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
@@ -743,20 +2039,41 @@ export async function queryWorkbench(input: {
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
 
-  if (/\b(what changed|changes?|diff|delta)\b/.test(lower)) {
+  if (plan.lane === 'implementation-explanation') {
+    const result = await implementationMechanismProjection({
+      project: input.project,
+      text,
+      ref: input.ref,
+      graphId: input.graphId,
+      scope: input.scope,
+      limit: 100,
+    }) as any;
+    return {
+      intent: 'implementation-explanation',
+      subject: null,
+      routing: {
+        tool: 'search_code',
+        projection: 'implementation-mechanism',
+      },
+      answer: String(result.summary ?? 'Implementation mechanism evidence loaded.'),
+      result,
+    };
+  }
+
+  if (plan.lane === 'change') {
     const result = await diffAcceptedToWorking(input.project, input.ref);
     const counts = semanticDiffCounts(result);
     return { intent: 'change', subject: null, routing: { tool: 'diff_graph' }, answer: `Accepted → working semantic change: ${counts.added} added, ${counts.removed} removed, ${counts.changed} changed records.`, result };
   }
 
-  if (/\bcoverage\b/.test(lower)) {
+  if (plan.lane === 'coverage') {
     const result = await graphCoverage(input.project, input.ref, input.graphId);
     const coverage = result as any;
     return { intent: 'coverage', subject: null, routing: { tool: 'check_graph_coverage' }, answer: `Coverage: ${coverage.completeFiles ?? '?'} complete, ${coverage.partialFiles ?? '?'} partial, ${coverage.failedFiles ?? '?'} failed, ${coverage.skippedFiles ?? '?'} skipped files.`, result };
   }
 
-  if (/\bparity\b/.test(lower)) {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(show|find|inspect|query|parity|for|of|what|is|the)\b/gi]);
+  if (plan.lane === 'parity') {
+    const resolved = target;
     const subject = resolved.node?.id ?? resolved.query ?? undefined;
     const result = await parityLens({ project: input.project, ref: input.ref, graphId: input.graphId, query: subject, limit: 100 }) as any;
     return {
@@ -768,8 +2085,8 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (/\b(code|source|implementation|implemented)\b/.test(lower)) {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(show|show me|find|search|code|source|implementation|implemented|for|of|where|is|the)\b/gi]);
+  if (plan.lane === 'code') {
+    const resolved = target;
     if (resolved.ambiguous) {
       return { intent: 'code', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'get_code_snippet' }, answer: 'The requested implementation subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
     }
@@ -788,8 +2105,8 @@ export async function queryWorkbench(input: {
     }
   }
 
-  if (/\b(write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|write back|accepted graph|accepted checkpoint)\b/.test(lower)) {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(where|what|which|how|does|do|is|are|write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|back|into|the|an|a)\b/gi]);
+  if (plan.lane === 'implementation-claim') {
+    const resolved = target;
     if (!resolved.ambiguous && resolved.node) {
       const terms = [resolved.node.name ?? '', 'writeCheckpoint', 'sealLocalGraph', 'accepted', 'persist']
         .filter(Boolean)
@@ -806,17 +2123,71 @@ export async function queryWorkbench(input: {
     }
   }
 
-  if (/\b(main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|overview of|what does .+ do)\b/.test(lower)) {
-    let requestedScope = input.scope?.trim() || '';
-    if (!requestedScope) {
-      const pathMatch = text.match(/\b(?:src|tests|docs|scripts|app|lib|packages?)\/[A-Za-z0-9_./@-]+/u);
-      if (pathMatch) requestedScope = pathMatch[0]!;
+  if (plan.lane === 'interface') {
+    if (target.ambiguous) {
+      return {
+        intent: 'interface',
+        subject: subjectDescriptor(null, target.query, true, target.candidates),
+        routing: { tool: 'inspect_interface' },
+        answer: 'The interface subject is ambiguous; choose an exact scope or entity.',
+        result: { ambiguous: true, candidates: target.candidates },
+      };
     }
-    if (!requestedScope) {
-      const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi]);
-      if (!resolved.ambiguous && resolved.node) requestedScope = resolved.node.id;
+    if (target.mode === 'scope-required') {
+      return {
+        intent: 'interface',
+        subject: null,
+        routing: { tool: 'inspect_interface', scopeRequired: true },
+        answer: 'A concrete file, path, route, feature, or entity scope is required for this interface question.',
+        result: { scopeRequired: true, supportedScopes: ['repository','path','file','entity','feature/route'] },
+      };
     }
-    if (!requestedScope && /\b(this page|this file|this module|this feature|this area)\b/i.test(text)) {
+    const requestedScope = target.scope ?? '';
+    const result = await interfaceProjection({
+      project: input.project,
+      scope: requestedScope || undefined,
+      ref: input.ref,
+      graphId: input.graphId,
+    });
+    return {
+      intent: 'interface',
+      subject: requestedScope ? { query: requestedScope } : null,
+      routing: { tool: 'inspect_interface' },
+      answer: String((result as any).summary ?? 'Interface / interaction projection complete.'),
+      result,
+    };
+  }
+
+  if (plan.lane === 'semantic-lifecycle') {
+    const result = await semanticLifecycleOverview(input.project);
+    return {
+      intent: 'semantic-lifecycle',
+      subject: null,
+      routing: { tool: 'investigate', projection: 'semantic-lifecycle' },
+      answer: String((result as any).summary),
+      result,
+    };
+  }
+
+  if (plan.lane === 'semantic-audit') {
+    const result = await semanticAudit({
+      project: input.project,
+      ref: input.ref,
+      graphId: input.graphId,
+      limit: 40,
+      candidateLimit: 200,
+    });
+    return {
+      intent: 'semantic-audit',
+      subject: null,
+      routing: { tool: 'audit_semantics' },
+      answer: String((result as any).summary ?? 'Semantic factuality/core audit complete.'),
+      result,
+    };
+  }
+
+  if (plan.lane === 'orientation') {
+    if (target.mode === 'scope-required') {
       return {
         intent: 'orientation',
         subject: null,
@@ -825,24 +2196,27 @@ export async function queryWorkbench(input: {
         result: { scopeRequired: true, supportedScopes: ['repository','path','file','entity','feature/route/api'] },
       };
     }
+    const requestedScope = target.ambiguous ? '' : (target.scope ?? '');
+    const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
     const result = await scopeOrientation({
       project: input.project,
       scope: requestedScope || undefined,
       ref: input.ref,
       graphId: input.graphId,
       rankBy: input.rankBy,
+      semanticDepth,
     });
     return {
       intent: 'orientation',
       subject: requestedScope ? { query: requestedScope } : null,
-      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file' },
+      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file', semanticDepth },
       answer: String((result as any).summary ?? 'Scoped orientation complete.'),
       result,
     };
   }
 
-  if (/\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/.test(lower)) {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi]);
+  if (plan.lane === 'trace') {
+    const resolved = target;
     if (resolved.ambiguous) {
       return { intent: 'trace', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'trace_path' }, answer: 'The relationship subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
     }
@@ -862,9 +2236,9 @@ export async function queryWorkbench(input: {
     }
   }
 
-  if (/\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/.test(lower)) {
-    const resolved = await resolveInvestigationSubject(input, text, [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi]);
-    const claimNeedsAssessment = /\b(no|none|not|only|second|absent|missing|without|actually|whether|cannot|can't)\b/.test(lower);
+  if (plan.lane === 'evidence') {
+    const resolved = target;
+    const claimNeedsAssessment = plan.proofMode === 'claim';
     if (!claimNeedsAssessment && !resolved.ambiguous && resolved.node && /\b(evidence|supports?|supporting|proof|prove)\b/.test(lower)) {
       const result = await inspectEntity({ project: input.project, node: resolved.node.id, ref: input.ref, graphId: input.graphId });
       return { intent: 'evidence', subject: subjectDescriptor(resolved.node, resolved.query), routing: { tool: 'inspect_entity' }, answer: `Evidence and resolved context loaded for “${displayName(resolved.node)}”.`, result };
@@ -879,12 +2253,12 @@ export async function queryWorkbench(input: {
     };
   }
 
-  if (/\b(overview|summary|summarize|project status|what is this project)\b/.test(lower)) {
+  if (plan.lane === 'overview') {
     const result = await projectOverview(input.project, input.ref, input.graphId);
     return { intent: 'overview', subject: null, routing: { tool: 'project_overview' }, answer: String(result.summary ?? `${input.project} overview`), result };
   }
 
-  const resolved = await resolveInvestigationSubject(input, text, [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i]);
+  const resolved = target;
   if (resolved.ambiguous) {
     return { intent: 'search', subject: subjectDescriptor(null, resolved.query, true, resolved.candidates), routing: { tool: 'search_graph' }, answer: 'The requested subject is ambiguous; choose an exact entity.', result: { ambiguous: true, candidates: resolved.candidates } };
   }
@@ -899,6 +2273,18 @@ export async function queryWorkbench(input: {
     return { intent: 'inspect', subject: subjectDescriptor(result.nodes[0], query), routing: { tool: 'inspect_entity' }, answer: String(inspected.summary ?? `Found ${query}.`), result: inspected };
   }
   return { intent: 'search', subject: subjectDescriptor(null, query), routing: { tool: 'search_graph' }, answer: `${result.nodeTotal ?? result.nodes?.length ?? 0} entities match “${query}”.`, result };
+  })();
+  const routing = result.routing && typeof result.routing === 'object'
+    ? result.routing as Record<string, unknown>
+    : {};
+  return {
+    ...result,
+    routing: {
+      ...routing,
+      questionPlan: plan,
+      targetResolution: targetResolutionForRouting(target),
+    },
+  };
 }
 
 
@@ -914,7 +2300,10 @@ function decomposeQuestionText(text: string): string[] {
     start = index + 1;
   }
   const remainder = trimmed.slice(start).trim();
-  if (pieces.length > 1 && !remainder) return pieces;
+  if (remainder && pieces.length && /^(?:(?:and|also)\s+)?(?:what|which|where|when|why|how|who|show|find|inspect|tell|explain|trace|list|does|do|is|are|can|could|would)\b/iu.test(remainder)) {
+    pieces.push(remainder);
+  }
+  if (pieces.length > 1) return pieces;
   return [trimmed];
 }
 
@@ -947,6 +2336,7 @@ export async function queryWorkbenchRequest(input: {
   capability?: TechnicalSourceCapability | undefined;
   scope?: string | undefined;
   rankBy?: ScopeRankBy | undefined;
+  semanticDepth?: SemanticQueryDepth | undefined;
 }): Promise<Record<string, unknown>> {
   const explicit = (input.questions ?? []).map(question => question.trim()).filter(Boolean);
   if (explicit.length > 10) throw new Error('questions supports at most 10 items');
@@ -969,6 +2359,7 @@ export async function queryWorkbenchRequest(input: {
       capability: input.capability,
       scope: input.scope,
       rankBy: input.rankBy,
+      semanticDepth: input.semanticDepth,
     });
     return {
       ...result,
@@ -986,6 +2377,7 @@ export async function queryWorkbenchRequest(input: {
   let inheritedSubjectId: string | null = null;
   for (const [index, originalQuestion] of questions.entries()) {
     const inherited = inheritedQuestion(originalQuestion, inheritedSubjectId);
+    const inheritedFromSubjectId = inherited.inherited ? inheritedSubjectId : null;
     try {
       const result = await queryWorkbench({
         project: input.project,
@@ -995,16 +2387,17 @@ export async function queryWorkbenchRequest(input: {
         capability: input.capability,
         scope: input.scope,
         rankBy: input.rankBy,
+        semanticDepth: input.semanticDepth,
       }) as any;
       const subjectId = result?.subject && result.subject.ambiguous !== true && typeof result.subject.id === 'string'
         ? result.subject.id
         : null;
-      if (subjectId) inheritedSubjectId = subjectId;
+      inheritedSubjectId = subjectId;
       items.push({
         index,
         question: originalQuestion,
         resolvedQuestion: inherited.text,
-        inheritedSubject: inherited.inherited ? inheritedSubjectId : null,
+        inheritedSubject: inheritedFromSubjectId,
         status: 'ok',
         intent: result.intent ?? null,
         subject: result.subject ?? null,
@@ -1013,11 +2406,12 @@ export async function queryWorkbenchRequest(input: {
         result: result.result ?? null,
       });
     } catch (error) {
+      inheritedSubjectId = null;
       items.push({
         index,
         question: originalQuestion,
         resolvedQuestion: inherited.text,
-        inheritedSubject: inherited.inherited ? inheritedSubjectId : null,
+        inheritedSubject: inheritedFromSubjectId,
         status: 'error',
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1044,10 +2438,11 @@ export async function queryWorkbenchRequest(input: {
     },
     policy: {
       deterministicDecomposition: true,
-      inheritedSubjectOnlyFromExactPriorResult: true,
+      inheritedSubjectOnlyFromImmediateExactPriorResult: true,
+      failedOrSubjectlessQuestionClearsInheritance: true,
       failureIsolation: true,
       persisted: false,
-      note: 'Each question is routed independently over one pinned graph context. Prior exact subjects may resolve simple pronouns; ambiguous or failed questions never become graph authority.',
+      note: 'Each question is routed independently over one pinned graph context. Only the immediately prior successful exact subject may resolve simple pronouns; failed, ambiguous, repository-level, and other subjectless questions clear inheritance.',
     },
   };
 }

@@ -172,6 +172,47 @@ export function authorize(req: IncomingMessage, res: ServerResponse, options: { 
   return false;
 }
 
+export function authorizeSemanticGateWrite(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: { interactive?: boolean } = {},
+): { kind: 'human' | 'agent'; id: string } | null {
+  const mode = authMode();
+  if (mode === 'private' || mode === 'oauth') {
+    if (ownerSessionValid(req)) return { kind: 'human', id: 'human:owner' };
+    const supplied = bearerToken(req);
+    const agentToken = process.env.DEVINT_AGENT_TOKEN?.trim() ?? '';
+    if (agentToken && supplied && equalSecret(agentToken, supplied)) return { kind: 'agent', id: 'agent:trusted' };
+    if (options.interactive) {
+      interactiveLogin(req, res);
+      return null;
+    }
+    res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Owner session or trusted agent token required for semantic gate verification' }));
+    return null;
+  }
+  if (mode === 'none') return authorize(req, res, options) ? { kind: 'human', id: 'human:local' } : null;
+  if (mode === 'bearer' || mode === 'proxy') return authorize(req, res, options) ? { kind: 'agent', id: 'agent:trusted' } : null;
+  res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify({ error: 'Trusted semantic gate verification is unavailable for this auth mode' }));
+  return null;
+}
+
+export function authorizeOwnerWrite(req: IncomingMessage, res: ServerResponse, options: { interactive?: boolean } = {}): boolean {
+  const mode = authMode();
+  if (mode === 'private' || mode === 'oauth') {
+    if (ownerSessionValid(req)) return true;
+    if (options.interactive) return interactiveLogin(req, res);
+    res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Owner session required for semantic authority writes' }));
+    return false;
+  }
+  if (mode === 'none') return authorize(req, res, options);
+  res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify({ error: 'Owner-authenticated browser session required for semantic authority writes' }));
+  return false;
+}
+
 function normalizedHostname(value: string | undefined): string | null {
   const hostname = value?.trim().toLowerCase() ?? '';
   if (!hostname || hostname.startsWith('.') || hostname.endsWith('.') || hostname.includes('..') || !/^[a-z0-9.-]+$/.test(hostname)) return null;

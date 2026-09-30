@@ -7,7 +7,7 @@ declare global {
   }
 }
 
-type Section = 'overview' | 'explore' | 'parity' | 'query' | 'sources' | 'changes';
+type Section = 'overview' | 'explore' | 'semantics' | 'parity' | 'query' | 'sources' | 'changes';
 type ExploreMode = 'summary' | 'list' | 'table' | 'graph' | 'raw';
 type GraphLens = 'architecture' | 'parity' | 'code';
 type ProjectionNode = { id: string; kind: string; layer?: string; name?: string; locator?: string; value?: unknown; evidenceIds?: string[] };
@@ -30,7 +30,7 @@ const globalForm = document.getElementById('global-query') as HTMLFormElement;
 const globalInput = document.getElementById('global-query-input') as HTMLInputElement;
 const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-section]'));
 
-let section: Section = (['overview', 'explore', 'parity', 'query', 'sources', 'changes'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
+let section: Section = (['overview', 'explore', 'semantics', 'parity', 'query', 'sources', 'changes'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
 let sectionEpoch = 0;
 let exploreMode: ExploreMode = 'summary';
 let graphLens: GraphLens = 'architecture';
@@ -40,6 +40,7 @@ let selectedInspection: any = null;
 let inspectorTab = 'summary';
 let renderer: Sigma | null = null;
 let preferredQuerySource = '';
+let semanticFlash = '';
 let parityContractText = `{
   "version": 1,
   "name": "Feature parity",
@@ -57,6 +58,7 @@ let parityContractText = `{
 const sectionCopy: Record<Section, { title: string; description: string }> = {
   overview: { title: 'Overview', description: 'Readable project intelligence: current state, quick notes, important concepts, coverage and meaningful change.' },
   explore: { title: 'Explore', description: 'Search the same intelligence as Summary, List, Table, Graph or Raw records. Use the Inspector for the details.' },
+  semantics: { title: 'Semantics', description: 'Review evidence-derived project meaning before it becomes durable authority. Amend, accept, reject, verify and lineage changes are explicit, separately recorded actions.' },
   parity: { title: 'Parity Contracts', description: 'Compare caller-owned expected entities and relationships with observed project reality. Expectations remain ephemeral and never become accepted truth.' },
   query: { title: 'Query', description: 'Ask Development Intelligence about the project or run a bounded read-only query against a configured technical source.' },
   sources: { title: 'Sources', description: 'See what DI can actually inspect: Git, runtime origins, databases/log adapters, freshness, coverage and query capabilities.' },
@@ -331,6 +333,410 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
   (document.getElementById('run-query') as HTMLButtonElement).addEventListener('click', () => void run());
 }
 
+
+function semanticStateClass(review: any): string {
+  if (review?.accepted) return 'status-good';
+  if (review?.state === 'rejected') return 'status-bad';
+  if (review?.reviewed) return 'status-warn';
+  return '';
+}
+
+function semanticStateLabel(review: any): string {
+  if (!review) return 'proposed';
+  if (review.accepted && review.verification) return 'accepted · verified';
+  if (review.accepted) return 'accepted';
+  if (review.verification) return 'verified · not accepted';
+  return review.state ?? (review.reviewed ? 'reviewed' : 'proposed');
+}
+
+function semanticProposal(candidate: any): any {
+  return candidate.review?.proposal ?? candidate.proposal ?? {};
+}
+
+function proposalName(candidate: any): string {
+  return semanticProposal(candidate).name ?? candidate.id;
+}
+
+function semanticCandidateCard(candidate: any, index: number, writable: boolean, allCandidates: any[]): string {
+  const proposal = semanticProposal(candidate);
+  const review = candidate.review;
+  const prefix = `semantic-${index}`;
+  const evidenceIds = candidate.provenance?.evidenceIds ?? [];
+  const evidenceFamilies = candidate.provenance?.evidenceFamilies ?? [];
+  const alternatives = Array.isArray(proposal.alternatives) ? proposal.alternatives.join('\n') : '';
+  const grouping = Array.isArray(proposal.grouping) ? proposal.grouping.join('\n') : '';
+  const continuity = candidate.continuity ?? { state: 'new', sourceMeaningIds: [] };
+  const sourceMeaningIds = Array.isArray(continuity.sourceMeaningIds) ? continuity.sourceMeaningIds : [];
+  const sourceMeaningSet = new Set(sourceMeaningIds);
+  const lineagePeerCandidateIds = continuity.state === 'ambiguous'
+    ? allCandidates
+        .filter(item => item?.continuity?.state === 'ambiguous'
+          && (item.continuity.sourceMeaningIds ?? []).some((meaningId: string) => sourceMeaningSet.has(meaningId)))
+        .map(item => item.id)
+        .filter(Boolean)
+        .sort()
+    : [];
+  const candidateWritable = writable && continuity.state !== 'ambiguous';
+  const aiWritable = candidateWritable && !review;
+  const lineageWritable = writable && continuity.state === 'ambiguous';
+  const disabled = candidateWritable ? '' : ' disabled';
+  const lineageDisabled = lineageWritable ? '' : ' disabled';
+  const actor = review?.acceptance?.actor ?? review?.verification?.actor;
+  const authorityLine = actor ? `${actor.kind ?? 'reviewer'} · ${actor.id ?? 'unknown'}` : 'No accepted authority recorded';
+  return `<article class="card semantic-card" data-semantic-candidate="${esc(candidate.id)}">
+    <div class="semantic-card-head">
+      <div>
+        <div><span class="badge">${esc(proposal.kind ?? candidate.proposal?.kind ?? 'candidate')}</span> <span class="badge ${semanticStateClass(review)}">${esc(semanticStateLabel(review))}</span></div>
+        <h2>${esc(proposal.name ?? candidate.proposal?.name ?? candidate.id)}</h2>
+        <p>${esc(proposal.description ?? candidate.proposal?.description ?? '')}</p>
+      </div>
+      <div class="semantic-meta"><strong>${esc(candidate.scope)}</strong><span>${esc(candidate.provenance?.origin ?? 'intrinsic-derivation')}</span><span>identity · ${esc(continuity.state)}${continuity.meaningId ? ` · ${esc(continuity.meaningId)}` : ''}</span></div>
+    </div>
+    <div class="semantic-proof">
+      <span>${esc(evidenceFamilies.length)} evidence families</span>
+      <span>${esc(candidate.provenance?.nodeIds?.length ?? 0)} nodes</span>
+      <span>${esc(candidate.provenance?.edgeIds?.length ?? 0)} relationships</span>
+      <span>${esc(evidenceIds.length)} evidence records</span>
+    </div>
+    <p class="muted">Revision ${esc(candidate.provenance?.revision ?? 'unknown')} · ${esc(authorityLine)}. Acceptance and verification are independent.</p>
+    ${continuity.state === 'ambiguous' ? `<p class="status-warn">Identity continuity is ambiguous. Review is read-only until explicit split/merge/replacement lineage resolves it.</p>` : continuity.state === 'inherited' ? `<p class="status-good">Stable semantic identity inherited from ${esc(continuity.sourceRevision ?? 'an earlier accepted revision')}.</p>` : ''}
+    ${continuity.state === 'ambiguous' ? `<details class="semantic-lineage-editor" open>
+      <summary>Resolve semantic lineage</summary>
+      <p class="muted">This authority change is atomic: source meanings and successor proposals are written together or not at all.</p>
+      <label>Source meaning IDs<textarea id="${prefix}-lineage-sources" class="semantic-input" rows="2"${lineageDisabled}>${esc(sourceMeaningIds.join('\n'))}</textarea></label>
+      <label>Split successor candidate IDs<textarea id="${prefix}-lineage-successors" class="semantic-input" rows="3"${lineageDisabled}>${esc(lineagePeerCandidateIds.join('\n'))}</textarea></label>
+      <div class="semantic-actions">
+        <button type="button" data-semantic-lineage-action="replace" data-semantic-index="${index}"${lineageDisabled}>Replace source with this candidate</button>
+        <button type="button" data-semantic-lineage-action="split" data-semantic-index="${index}"${lineageDisabled}>Split source across candidate group</button>
+        <button type="button" data-semantic-lineage-action="merge" data-semantic-index="${index}"${lineageDisabled}>Merge sources into this candidate</button>
+      </div>
+    </details>` : ''}
+    <details class="semantic-editor">
+      <summary>Edit / review meaning</summary>
+      <div class="semantic-form">
+        <label>Name<input id="${prefix}-name" class="semantic-input" value="${esc(proposal.name ?? '')}"${disabled}></label>
+        <label>Kind<select id="${prefix}-kind" class="semantic-input"${disabled}>
+          ${(['feature','capability','surface','domain'] as const).map(kind => `<option value="${kind}"${proposal.kind === kind ? ' selected' : ''}>${kind}</option>`).join('')}
+        </select></label>
+        <label class="semantic-wide">Description<textarea id="${prefix}-description" class="semantic-input" rows="3"${disabled}>${esc(proposal.description ?? '')}</textarea></label>
+        <label class="semantic-wide">Alternatives <span class="muted">(one per line)</span><textarea id="${prefix}-alternatives" class="semantic-input" rows="2"${disabled}>${esc(alternatives)}</textarea></label>
+        <label class="semantic-wide">Grouping / ownership suggestions <span class="muted">(one per line)</span><textarea id="${prefix}-grouping" class="semantic-input" rows="2"${disabled}>${esc(grouping)}</textarea></label>
+        <label class="semantic-wide">Review rationale <span class="muted">(optional)</span><textarea id="${prefix}-rationale" class="semantic-input" rows="2"${disabled}></textarea></label>
+      </div>
+      <div class="semantic-actions">
+        <button class="primary" type="button" data-semantic-action="amend" data-semantic-index="${index}"${disabled}>Save amendment</button>
+        <button class="primary" type="button" data-semantic-action="accept" data-semantic-index="${index}"${disabled}>Accept meaning</button>
+        <button class="semantic-danger" type="button" data-semantic-action="reject" data-semantic-index="${index}"${disabled}>Reject proposal</button>
+      </div>
+      <div class="semantic-verify">
+        <label>Evidence IDs used for independent verification<textarea id="${prefix}-evidence" class="semantic-input" rows="3"${disabled}>${esc(evidenceIds.join('\n'))}</textarea></label>
+        <button class="primary" type="button" data-semantic-action="verify" data-semantic-index="${index}"${disabled}>Verify with evidence</button>
+      </div>
+      <details class="semantic-ai-proposal">
+        <summary>AI proposal packet / import</summary>
+        <p class="muted">DI supplies bounded evidence; the model supplies wording/grouping. Importing the result records ai-model provenance but does not accept or verify it.</p>
+        <details><summary class="muted">Bounded AI proposal packet</summary><pre class="raw">${esc(JSON.stringify(candidate.aiProposalPacket ?? {}, null, 2))}</pre></details>
+        <div class="semantic-form">
+          <label>Model provider<input id="${prefix}-ai-provider" class="semantic-input" placeholder="openai / anthropic / local"${aiWritable ? '' : ' disabled'}></label>
+          <label>Model ID<input id="${prefix}-ai-model" class="semantic-input" placeholder="model identifier"${aiWritable ? '' : ' disabled'}></label>
+          <label class="semantic-wide">AI rationale tied to the packet<textarea id="${prefix}-ai-rationale" class="semantic-input" rows="3"${aiWritable ? '' : ' disabled'}></textarea></label>
+        </div>
+        <button type="button" data-semantic-ai-proposal data-semantic-index="${index}"${aiWritable ? '' : ' disabled'}>Record AI proposal from these editable fields</button>
+      </details>
+            <details><summary class="muted">Candidate provenance</summary><pre class="raw">${esc(JSON.stringify(candidate.provenance ?? {}, null, 2))}</pre></details>
+    </details>
+  </article>`;
+}
+
+function semanticLines(value: string): string[] {
+  return [...new Set(value.split(/\r?\n|,/u).map(item => item.trim()).filter(Boolean))];
+}
+
+function semanticAuditSnapshot(snapshot: any): string {
+  if (!snapshot) return 'none';
+  return `${snapshot.name ?? snapshot.candidateId ?? 'unnamed'} · ${snapshot.kind ?? 'semantic'} · ${snapshot.scope ?? 'unknown scope'} · ${snapshot.revision ?? 'unknown revision'}`;
+}
+
+function semanticChangeAuditCard(item: any, index: number, writable: boolean): string {
+  const reasons = Array.isArray(item.reasons) ? item.reasons : [];
+  const alternatives = Array.isArray(item.alternatives) ? item.alternatives : [];
+  const evidenceIds = [...new Set([
+    ...(item.before?.evidenceIds ?? []),
+    ...(item.after?.evidenceIds ?? []),
+    ...(item.verification?.evidenceIds ?? []),
+  ])];
+  const changePrefix = `semantic-change-${index}`;
+  return `<article class="card semantic-change-audit" data-semantic-change-ref="${esc(item.auditRef ?? '')}">
+    <div class="semantic-card-head">
+      <div>
+        <div><span class="badge">${esc(item.auditRef ?? ('SEM-' + String(item.ordinal ?? '?')))}</span> <span class="badge">${esc(item.changeKind ?? 'change')}</span> <span class="badge ${item.approved ? 'status-good' : 'status-warn'}">${item.approved ? 'cleared' : 'review required'}</span></div>
+        <h2>${esc(item.summary ?? item.name ?? item.changeId ?? 'Semantic change')}</h2>
+      </div>
+      <div class="semantic-meta"><strong>#${esc(item.ordinal ?? '?')}</strong><span>${esc(item.scope ?? '')}</span></div>
+    </div>
+    <p><strong>Before:</strong> ${esc(semanticAuditSnapshot(item.before))}</p>
+    <p><strong>After:</strong> ${esc(semanticAuditSnapshot(item.after))}</p>
+    ${reasons.length ? `<div><strong>Why DI says this changed</strong><ul>${reasons.map((reason: string) => `<li>${esc(reason)}</li>`).join('')}</ul></div>` : ''}
+    ${alternatives.length ? `<div><strong>Competing current candidates</strong><ul>${alternatives.map((alternative: any) => `<li>${esc(semanticAuditSnapshot(alternative))}</li>`).join('')}</ul></div>` : ''}
+    <details><summary class="muted">Exact audit identity / evidence delta</summary><pre class="raw">${esc(JSON.stringify({
+      auditRef: item.auditRef,
+      ordinal: item.ordinal,
+      changeId: item.changeId,
+      meaningId: item.meaningId,
+      candidateId: item.candidateId,
+      sourceRevision: item.sourceRevision,
+      targetRevision: item.targetRevision,
+      approvalBases: item.approvalBases,
+      verification: item.verification,
+      evolution: item.evolution,
+    }, null, 2))}</pre></details>
+    <details class="semantic-change-verification">
+      <summary>Verify this SEM change</summary>
+      <p class="muted">Verification says the observed change is factually supported by the cited evidence. It does not say the change was desirable.</p>
+      <label>Evidence IDs<textarea id="${changePrefix}-evidence" class="semantic-input" rows="3"${writable ? '' : ' disabled'}>${esc(evidenceIds.join('\n'))}</textarea></label>
+      <label>Verification rationale<textarea id="${changePrefix}-rationale" class="semantic-input" rows="2"${writable ? '' : ' disabled'}></textarea></label>
+      <button type="button" data-semantic-change-verify data-semantic-change-index="${index}"${writable ? '' : ' disabled'}>Verify ${esc(item.auditRef ?? 'SEM change')}</button>
+    </details>
+  </article>`;
+}
+
+async function renderSemantics(epoch: number): Promise<void> {
+  setHead();
+  content.innerHTML = empty('Loading semantic meaning', 'Loading evidence-derived candidates and DI-owned review authority…');
+  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'semantics', limit: '100' }));
+  if (!sectionIsCurrent(epoch, 'semantics')) return;
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  const authority = data.authority ?? {};
+  const promotionAudit = data.promotionAudit ?? null;
+  const promotionItems = Array.isArray(promotionAudit?.items) ? promotionAudit.items : [];
+  const writable = authority.state !== 'not-configured' && authority.state !== 'invalid';
+  const accepted = candidates.filter((candidate: any) => candidate.review?.accepted).length;
+  const verified = candidates.filter((candidate: any) => Boolean(candidate.review?.verification)).length;
+  const reviewed = candidates.filter((candidate: any) => Boolean(candidate.review?.reviewed)).length;
+  const flash = semanticFlash;
+  semanticFlash = '';
+  const storageMessage = authority.state === 'not-configured'
+    ? 'Semantic authority storage is not configured for this deployment. Candidates remain inspectable, but review writes are disabled.'
+    : authority.state === 'invalid'
+      ? `Semantic authority is invalid: ${authority.error ?? 'unknown error'}. Writes are disabled until repaired.`
+      : `DI semantic authority: ${authority.state ?? 'unknown'} · generation ${authority.generation ?? 0} · ${authority.durable ? 'durable' : 'non-durable'}.`;
+  content.innerHTML = `${flash ? `<div class="card semantic-flash"><strong>${esc(flash)}</strong></div>` : ''}
+    <div class="hero-grid">
+      <div class="card">
+        <h3>Semantic authority</h3>
+        <h2>Evidence → proposal → explicit review</h2>
+        <p>${esc(storageMessage)}</p>
+        <p class="muted">This workspace never silently promotes a proposal. Acceptance records human authority; verification separately records evidence support. Current revision: ${esc(data.revision ?? 'unknown')}.</p>
+      </div>
+      <div class="card">
+        <h3>Current review state</h3>
+        <div class="metric-grid">
+          ${metric('candidates', candidates.length)}
+          ${metric('reviewed', reviewed)}
+          ${metric('accepted', accepted)}
+          ${metric('verified', verified)}
+        </div>
+        <p class="muted">${data.zeroMetadata ? 'Zero-metadata semantic bootstrap' : 'Repository semantic evidence present'} · ${esc(data.declaredSemanticCount ?? 0)} declared semantic concept(s).</p>
+      </div>
+    </div>
+    ${!writable ? `<div class="card" style="margin-top:13px;border-color:#6d5130"><h3>Read-only review state</h3><p class="status-warn">${esc(storageMessage)}</p></div>` : ''}
+    ${promotionAudit ? `<section class="semantic-change-manifest" style="margin-top:13px">
+      <div class="card">
+        <h3>Semantic change audit</h3>
+        <h2>${esc(promotionAudit.semanticDeltaCount ?? 0)} individually addressable change(s)</h2>
+        <p>Reference a change by its stable SEM ID when auditing with an agent. These items report what DI observes between accepted meaning and this revision; they do not infer whether the change was desirable.</p>
+        <p class="muted">Baseline ${esc(data.promotionAuditBasis?.currentDefaultRevision ?? 'none')} → target ${esc(data.promotionAuditBasis?.targetRevision ?? data.revision ?? 'unknown')} · full candidate census ${data.promotionAuditBasis?.candidateUniverseExhausted ? 'exhausted' : 'bounded'}.</p>
+      </div>
+      <div class="semantic-grid" style="margin-top:13px">
+        ${promotionItems.map((item: any, index: number) => semanticChangeAuditCard(item, index, writable)).join('') || empty('No semantic delta', 'DI found no semantic change requiring an audit item for this target revision.')}
+      </div>
+    </section>` : ''}
+    <div class="semantic-grid" style="margin-top:13px">
+      ${candidates.map((candidate: any, index: number) => semanticCandidateCard(candidate, index, writable, candidates)).join('') || empty('No semantic candidates', 'This revision did not produce evidence-qualified semantic candidates.')}
+    </div>`;
+
+  const runChangeVerification = async (button: HTMLButtonElement) => {
+    const index = Number(button.dataset.semanticChangeIndex);
+    const item = promotionItems[index];
+    if (!item) return;
+    const prefix = `semantic-change-${index}`;
+    const evidenceIds = semanticLines((document.getElementById(`${prefix}-evidence`) as HTMLTextAreaElement | null)?.value ?? '');
+    const rationale = (document.getElementById(`${prefix}-rationale`) as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    if (!evidenceIds.length) {
+      semanticFlash = `${item.auditRef ?? 'SEM change'} requires at least one explicit evidence ID.`;
+      await renderSemantics(epoch);
+      return;
+    }
+    for (const current of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-change-verify],[data-semantic-action],[data-semantic-lineage-action]'))) current.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/change-verify', {
+        auditRef: item.auditRef,
+        evidenceIds,
+        ...(rationale ? { rationale } : {}),
+        expectedEtag: authority.etag ?? null,
+      });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `${item.auditRef}: verified with ${result.verification?.evidenceIds?.length ?? evidenceIds.length} evidence item(s). Gate status: ${result.item?.approved ? 'cleared' : 'pending'}.`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Semantic gate verification failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
+
+  const runAction = async (button: HTMLButtonElement) => {
+    const index = Number(button.dataset.semanticIndex);
+    const candidate = candidates[index];
+    if (!candidate) return;
+    const prefix = `semantic-${index}`;
+    const action = button.dataset.semanticAction;
+    const rationale = (document.getElementById(`${prefix}-rationale`) as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    let command: Record<string, unknown>;
+    if (action === 'amend') {
+      const name = (document.getElementById(`${prefix}-name`) as HTMLInputElement).value.trim();
+      const kind = (document.getElementById(`${prefix}-kind`) as HTMLSelectElement).value;
+      const description = (document.getElementById(`${prefix}-description`) as HTMLTextAreaElement).value.trim();
+      const alternatives = semanticLines((document.getElementById(`${prefix}-alternatives`) as HTMLTextAreaElement).value);
+      const grouping = semanticLines((document.getElementById(`${prefix}-grouping`) as HTMLTextAreaElement).value);
+      command = { kind: 'amend', proposal: { name, kind, description, alternatives, grouping }, ...(rationale ? { rationale } : {}) };
+    } else if (action === 'verify') {
+      const evidenceIds = semanticLines((document.getElementById(`${prefix}-evidence`) as HTMLTextAreaElement).value);
+      if (!evidenceIds.length) {
+        semanticFlash = 'Verification requires at least one explicit evidence ID.';
+        await renderSemantics(epoch);
+        return;
+      }
+      command = { kind: 'verify', evidenceIds, ...(rationale ? { rationale } : {}) };
+    } else if (action === 'accept' || action === 'reject') {
+      command = { kind: action, ...(rationale ? { rationale } : {}) };
+    } else {
+      return;
+    }
+
+    for (const current of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-action]'))) current.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/review', {
+        candidateId: candidate.id,
+        command,
+        expectedEtag: authority.etag ?? null,
+      });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `${proposalName(candidate)}: ${result.review?.state ?? result.state}. Semantic authority generation ${result.generation ?? authority.generation ?? 0}.`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Semantic review failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
+
+  const runAiProposal = async (button: HTMLButtonElement) => {
+    const index = Number(button.dataset.semanticIndex);
+    const candidate = candidates[index];
+    if (!candidate) return;
+    const prefix = `semantic-${index}`;
+    const provider = (document.getElementById(`${prefix}-ai-provider`) as HTMLInputElement | null)?.value.trim() ?? '';
+    const modelId = (document.getElementById(`${prefix}-ai-model`) as HTMLInputElement | null)?.value.trim() ?? '';
+    const rationale = (document.getElementById(`${prefix}-ai-rationale`) as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    const name = (document.getElementById(`${prefix}-name`) as HTMLInputElement).value.trim();
+    const kind = (document.getElementById(`${prefix}-kind`) as HTMLSelectElement).value;
+    const description = (document.getElementById(`${prefix}-description`) as HTMLTextAreaElement).value.trim();
+    const alternatives = semanticLines((document.getElementById(`${prefix}-alternatives`) as HTMLTextAreaElement).value);
+    const grouping = semanticLines((document.getElementById(`${prefix}-grouping`) as HTMLTextAreaElement).value);
+    if (!modelId || !rationale) {
+      semanticFlash = 'AI proposal import requires a model ID and evidence-tied rationale.';
+      await renderSemantics(epoch);
+      return;
+    }
+    for (const current of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-ai-proposal],[data-semantic-lineage-action],[data-semantic-action]'))) current.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/ai-proposal', {
+        candidateId: candidate.id,
+        draft: {
+          model: { id: modelId, ...(provider ? { provider } : {}) },
+          proposal: { name, kind, description, alternatives, grouping },
+          rationale,
+        },
+        expectedEtag: authority.etag ?? null,
+      });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `${proposalName(candidate)}: AI proposal recorded from ${result.review?.proposalProvenance?.producer ?? modelId}; it remains unaccepted.`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `AI semantic proposal failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
+
+  const runLineage = async (button: HTMLButtonElement) => {
+    const index = Number(button.dataset.semanticIndex);
+    const candidate = candidates[index];
+    if (!candidate) return;
+    const prefix = `semantic-${index}`;
+    const action = button.dataset.semanticLineageAction;
+    const sourceMeaningIds = semanticLines((document.getElementById(`${prefix}-lineage-sources`) as HTMLTextAreaElement | null)?.value ?? '');
+    const successorCandidateIds = semanticLines((document.getElementById(`${prefix}-lineage-successors`) as HTMLTextAreaElement | null)?.value ?? '');
+    const rationale = (document.getElementById(`${prefix}-rationale`) as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    let command: Record<string, unknown>;
+    if (action === 'replace') {
+      if (sourceMeaningIds.length !== 1) {
+        semanticFlash = 'Replace requires exactly one source meaning.';
+        await renderSemantics(epoch);
+        return;
+      }
+      command = { kind: 'replace', sourceMeaningId: sourceMeaningIds[0], successorCandidateId: candidate.id, ...(rationale ? { rationale } : {}) };
+    } else if (action === 'split') {
+      if (sourceMeaningIds.length !== 1 || successorCandidateIds.length < 2) {
+        semanticFlash = 'Split requires exactly one source meaning and at least two successor candidates.';
+        await renderSemantics(epoch);
+        return;
+      }
+      command = { kind: 'split', sourceMeaningId: sourceMeaningIds[0], successorCandidateIds, ...(rationale ? { rationale } : {}) };
+    } else if (action === 'merge') {
+      if (sourceMeaningIds.length < 2) {
+        semanticFlash = 'Merge requires at least two source meanings.';
+        await renderSemantics(epoch);
+        return;
+      }
+      command = { kind: 'merge', sourceMeaningIds, successorCandidateId: candidate.id, ...(rationale ? { rationale } : {}) };
+    } else {
+      return;
+    }
+
+    for (const current of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-lineage-action],[data-semantic-action]'))) current.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/lineage', {
+        command,
+        expectedEtag: authority.etag ?? null,
+      });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `${proposalName(candidate)}: ${result.operation ?? action} lineage stored. Semantic authority generation ${result.generation ?? authority.generation ?? 0}.`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Semantic lineage failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
+
+  for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-change-verify]'))) {
+    button.addEventListener('click', () => void runChangeVerification(button));
+  }
+
+  for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-action]'))) {
+    button.addEventListener('click', () => void runAction(button));
+  }
+
+  for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-lineage-action]'))) {
+    button.addEventListener('click', () => void runLineage(button));
+  }
+  for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-ai-proposal]'))) {
+    button.addEventListener('click', () => void runAiProposal(button));
+  }
+}
+
 function parityStatusClass(status: string): string {
   if (status === 'satisfied') return 'status-good';
   if (status === 'unproven') return 'status-warn';
@@ -432,6 +838,7 @@ async function activateSection(next: Section, queryPrefill = ''): Promise<void> 
   try {
     if (section === 'overview') await renderOverview(epoch);
     else if (section === 'explore') await loadExplore(epoch);
+    else if (section === 'semantics') await renderSemantics(epoch);
     else if (section === 'parity') await renderParity(epoch);
     else if (section === 'query') await renderQuery(epoch, queryPrefill);
     else if (section === 'sources') await renderSources(epoch);

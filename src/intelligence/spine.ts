@@ -10,6 +10,11 @@ function textField(node: GraphNode, key: string): string | null {
   return typeof value === 'string' && value ? value : null;
 }
 
+function stringArrayField(node: GraphNode, key: string): string[] {
+  const value = valueRecord(node)?.[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && Boolean(item)) : [];
+}
+
 function shortName(value: string): string { return value.toLowerCase().split('.').at(-1) ?? value.toLowerCase(); }
 
 function add(output: GraphEdge[], seen: Set<string>, edge: GraphEdge): void {
@@ -97,6 +102,35 @@ export function resolveEvidenceSpine(nodes: GraphNode[], existing: GraphEdge[]):
       layer: 'representation',
       checkpoint: false,
     }));
+  }
+
+  const selectorsByClass = new Map<string, GraphNode[]>();
+  for (const selectorNode of nodes.filter(node => node.kind === 'css-selector')) {
+    const selector = textField(selectorNode, 'selector') ?? selectorNode.name;
+    if (!selector) continue;
+    for (const match of selector.matchAll(/\.([A-Za-z_][A-Za-z0-9_-]*)/gu)) {
+      const className = match[1]!;
+      const bucket = selectorsByClass.get(className) ?? [];
+      bucket.push(selectorNode);
+      selectorsByClass.set(className, bucket);
+    }
+  }
+  for (const classRef of nodes.filter(node => node.kind === 'css-class-reference')) {
+    for (const className of stringArrayField(classRef, 'classes')) {
+      for (const selectorNode of selectorsByClass.get(className) ?? []) {
+        add(output, seen, resolution({
+          from: classRef.id,
+          to: selectorNode.id,
+          kind: 'styled_by',
+          strategy: 'css-class-selector',
+          confidence: 1,
+          status: 'resolved',
+          evidence: [classRef.locator, selectorNode.locator, `class .${className}`],
+          layer: 'representation',
+          checkpoint: false,
+        }));
+      }
+    }
   }
 
   const handlers = new Map<string, GraphNode[]>();

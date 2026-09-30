@@ -4,6 +4,9 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
+import { bootstrapSemanticCandidates } from '../dist/src/intelligence/semanticBootstrap.js';
+import { auditSemanticCandidates } from '../dist/src/intelligence/semanticAudit.js';
+import { scoreAccuracyCase } from './accuracy-benchmark-lib.mjs';
 import { assessGraph } from '../dist/src/intelligence/assessment.js';
 import { synthesizeRepositoryAudit } from '../dist/src/intelligence/repositoryAudit.js';
 import { verifyTransition } from '../dist/src/intelligence/temporalVerification.js';
@@ -15,6 +18,20 @@ const targets = [
     expectedSha: process.env.GAME_STUDIO_CORE_BENCHMARK_SHA ?? '55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d',
     requiredKinds: ['class', 'interface', 'method', 'unity-object', 'unity-asset-guid'],
     requiredStrategies: ['unity-guid', 'unity-file-id', 'unity-meta-companion'],
+    semanticTruth: {
+      universeScopes: [
+        'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay',
+        'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Character',
+        'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Input',
+        'Packages/com.neonblackinteractivellc.neonblackhub',
+      ],
+      required: [
+        { scope: 'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay', name: 'Gameplay' },
+        { scope: 'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Character', name: 'Character' },
+        { scope: 'Packages/com.neonblackinteractivellc.neonblackhub/Members/Pyralis/Gameplay/Modules/Input', name: 'Input' },
+      ],
+      forbidden: [{ scope: 'Packages/com.neonblackinteractivellc.neonblackhub' }],
+    },
   },
   {
     project: 'Medieval-Sim',
@@ -22,6 +39,36 @@ const targets = [
     expectedSha: process.env.MEDIEVAL_SIM_BENCHMARK_SHA ?? '8f721556d9548dfd09378d337b06416415ee09e7',
     requiredKinds: ['class', 'method', 'constructor', 'package', 'import-binding'],
     requiredRelationships: ['imports', 'resolves_to'],
+    semanticTruth: {
+      universeScopes: [
+        'src/main/java/medievalsim/grandexchange',
+        'src/main/java/medievalsim/zones',
+        'src/main',
+      ],
+      required: [
+        { scope: 'src/main/java/medievalsim/grandexchange' },
+        { scope: 'src/main/java/medievalsim/zones', name: 'Zones' },
+      ],
+      forbidden: [{ scope: 'src/main' }],
+    },
+  },
+  {
+    project: 'AI-Systems-Control',
+    root: path.resolve(process.argv[4] ?? 'benchmark/ai-systems-control'),
+    expectedSha: process.env.AI_SYSTEMS_CONTROL_BENCHMARK_SHA ?? '36c9162d94b974500535ce211aa018512432485c',
+    requiredKinds: ['file', 'function', 'interface', 'route', 'api', 'feature'],
+    requiredRelationships: ['imports', 'resolves_to'],
+    semanticTruth: {
+      universeScopes: [
+        'src/features/project-workspace',
+        'src/slice-a',
+      ],
+      required: [
+        { scope: 'src/features/project-workspace', name: 'Project Workspace' },
+        { scope: 'src/slice-a', name: 'Slice A' },
+      ],
+      forbidden: [],
+    },
   },
 ];
 
@@ -53,6 +100,89 @@ for (const target of targets) {
   if (actualSha !== target.expectedSha) throw new Error(`${target.project} benchmark SHA mismatch: expected ${target.expectedSha}, got ${actualSha}`);
   const started = Date.now();
   const graph = await buildLocalGraph(target.root, target.project);
+  const semantic50Started = process.hrtime.bigint();
+  const semanticBootstrap50 = bootstrapSemanticCandidates(graph, { limit: 50 });
+  const semantic50ElapsedMs = Number(process.hrtime.bigint() - semantic50Started) / 1_000_000;
+  const semantic100Started = process.hrtime.bigint();
+  const semanticBootstrap100 = bootstrapSemanticCandidates(graph, { limit: 100 });
+  const semantic100ElapsedMs = Number(process.hrtime.bigint() - semantic100Started) / 1_000_000;
+  const semanticFullLimit = Math.min(
+    Math.max(100, semanticBootstrap100.capacity.eligibleCandidateCount),
+    semanticBootstrap100.capacity.operationalLimit,
+  );
+  const semanticFullStarted = process.hrtime.bigint();
+  const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: semanticFullLimit });
+  const semanticElapsedMs = Number(process.hrtime.bigint() - semanticFullStarted) / 1_000_000;
+  const semanticMetamorphicElapsedMs = semantic50ElapsedMs + semantic100ElapsedMs + semanticElapsedMs;
+  if (semanticBootstrap.capacity.eligibleCandidateCount <= semanticBootstrap.capacity.operationalLimit && !semanticBootstrap.capacity.exhausted) {
+    throw new Error(`${target.project} full semantic census should exhaust within operational limit: ${JSON.stringify(semanticBootstrap.capacity)}`);
+  }
+  if (semanticBootstrap100.capacity.eligibleCandidateCount !== semanticBootstrap.capacity.eligibleCandidateCount) {
+    throw new Error(`${target.project} 100→full census changed the eligible semantic universe`);
+  }
+  if (semanticBootstrap.capacity.eligibleCandidateCount + semanticBootstrap.capacity.rejectedScopeCount !== semanticBootstrap.capacity.groupedScopeCount) {
+    throw new Error(`${target.project} semantic scope census does not reconcile`);
+  }
+  if (semanticBootstrap.candidates.some(candidate => candidate.support.evidenceFamilyCount < 2)) {
+    throw new Error(`${target.project} semantic capacity admitted an evidence-insufficient candidate`);
+  }
+  const semanticPrefixStable = semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id);
+  const semanticFullPrefixStable = semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id);
+  if (!semanticPrefixStable) throw new Error(`${target.project} semantic 50→100 expansion changed prior candidate identity/order`);
+  if (!semanticFullPrefixStable) throw new Error(`${target.project} semantic 100→full expansion changed prior candidate identity/order`);
+  if (Math.max(semantic50ElapsedMs, semantic100ElapsedMs, semanticElapsedMs) > 2000) {
+    throw new Error(`${target.project} individual semantic projection exceeded 2000 ms: 50=${semantic50ElapsedMs.toFixed(2)} / 100=${semantic100ElapsedMs.toFixed(2)} / full=${semanticElapsedMs.toFixed(2)} ms`);
+  }
+  if (semanticBootstrap.candidates.some(candidate => candidate.authority.accepted || candidate.authority.persisted || candidate.authority.proofEligible)) {
+    throw new Error(`${target.project} semantic bootstrap crossed the proposal authority boundary`);
+  }
+  const semanticAuditStarted = process.hrtime.bigint();
+  const semanticAudit = auditSemanticCandidates(graph, semanticBootstrap, { limit: semanticBootstrap.candidates.length });
+  const semanticAuditElapsedMs = Number(process.hrtime.bigint() - semanticAuditStarted) / 1_000_000;
+  if (semanticAuditElapsedMs > 1000) throw new Error(`${target.project} semantic audit exceeded 1000 ms: ${semanticAuditElapsedMs.toFixed(2)} ms`);
+  if (semanticAudit.counts.audited !== semanticBootstrap.candidates.length) throw new Error(`${target.project} semantic audit did not cover the full candidate universe`);
+  if (semanticAudit.counts.factualityNeedsReview !== 0) throw new Error(`${target.project} semantic audit found broken proposal factuality`);
+  if (semanticAudit.policy.authorityUnaffected !== true || semanticAudit.policy.verificationUnaffected !== true || semanticAudit.policy.subjectiveGlobalScore !== false) {
+    throw new Error(`${target.project} semantic audit crossed the derived-assessment boundary`);
+  }
+  const semanticCase = {
+    version: 1,
+    id: `${target.project.toLowerCase()}-semantic-bootstrap-reviewed-universe`,
+    capability: 'semantic-bootstrap',
+    language: target.project === 'Game-Studio-Core' ? 'csharp' : target.project === 'Medieval-Sim' ? 'java' : 'typescript',
+    project: target.project,
+    ref: `commit:${actualSha}`,
+    groundTruth: {
+      semanticCandidates: {
+        universeScopes: target.semanticTruth.universeScopes,
+        required: target.semanticTruth.required.map(item => ({
+          ...item,
+          origin: 'intrinsic-derivation',
+          accepted: false,
+          persisted: false,
+          proofEligible: false,
+          requiresExplicitReview: true,
+          minEvidenceFamilies: 2,
+        })),
+        forbidden: target.semanticTruth.forbidden,
+        complete: true,
+      },
+    },
+  };
+  const semanticAccuracy = scoreAccuracyCase(semanticCase, {
+    caseId: semanticCase.id,
+    semanticCandidates: semanticBootstrap.candidates,
+  });
+  const semanticPresentationAccuracy = scoreAccuracyCase(semanticCase, {
+    caseId: semanticCase.id,
+    semanticCandidates: semanticBootstrap.candidates.slice(0, 32),
+  });
+  if (!semanticAccuracy.pass || semanticAccuracy.semanticCandidateScore?.precision !== 1 || semanticAccuracy.semanticCandidateScore?.recall !== 1) {
+    throw new Error(`${target.project} semantic derivation accuracy failed: ${JSON.stringify(semanticAccuracy.semanticCandidateScore)}`);
+  }
+  if (!semanticPresentationAccuracy.pass) {
+    throw new Error(`${target.project} semantic top-32 presentation failed: ${JSON.stringify(semanticPresentationAccuracy.semanticCandidateScore)}`);
+  }
   const kindCounts = Object.fromEntries(target.requiredKinds.map(kind => [kind, graph.nodes.filter(node => node.kind === kind).length]));
   const strategyCounts = Object.fromEntries((target.requiredStrategies ?? []).map(strategy => [strategy, graph.edges.filter(edge => edge.strategy === strategy && edge.status === 'resolved').length]));
   const relationshipCounts = Object.fromEntries((target.requiredRelationships ?? []).map(kind => [kind, graph.edges.filter(edge => edge.kind === kind && edge.status === 'resolved').length]));
@@ -224,6 +354,31 @@ for (const target of targets) {
     kindCounts,
     strategyCounts,
     relationshipCounts,
+    semanticAccuracy: {
+      elapsedMs: Number(semanticElapsedMs.toFixed(3)),
+      candidateCount: semanticBootstrap.candidates.length,
+      capacity: semanticBootstrap.capacity,
+      audit: {
+        elapsedMs: Number(semanticAuditElapsedMs.toFixed(3)),
+        factualitySupported: semanticAudit.counts.factualitySupported,
+        factualityNeedsReview: semanticAudit.counts.factualityNeedsReview,
+        coreCandidates: semanticAudit.counts.coreCandidates,
+        supportingCandidates: semanticAudit.counts.supportingCandidates,
+      },
+      first50PrefixStable: semanticPrefixStable,
+      first100PrefixStable: semanticFullPrefixStable,
+      fullLimit: semanticFullLimit,
+      metamorphicElapsedMs: Number(semanticMetamorphicElapsedMs.toFixed(3)),
+      kindCounts: Object.fromEntries([...new Set(semanticBootstrap.candidates.map(candidate => candidate.proposal.kind))].sort().map(kind => [kind, semanticBootstrap.candidates.filter(candidate => candidate.proposal.kind === kind).length])),
+      scopeRoleCounts: Object.fromEntries(['functional-container', 'direct'].map(role => [role, semanticBootstrap.candidates.filter(candidate => candidate.support.scopeRole === role).length])),
+      precision: semanticAccuracy.semanticCandidateScore.precision,
+      recall: semanticAccuracy.semanticCandidateScore.recall,
+      falsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
+      boundedPresentationLimit: 32,
+      boundedPresentationPrecision: semanticPresentationAccuracy.semanticCandidateScore.precision,
+      boundedPresentationRecall: semanticPresentationAccuracy.semanticCandidateScore.recall,
+      boundedPresentationFalsePositiveRate: semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate,
+    },
     temporalVerification,
     repositoryAudit: { elapsedMs: Number(auditElapsedMs.toFixed(3)), findingTotal: repositoryAudit.findingSummary.total, targetCount: repositoryAudit.investigationTargets.length, relationshipConcentrations: repositoryAudit.relationshipConcentrations.slice(0, 5), coverageBlockers: repositoryAudit.coverageBlockers, architectureBoundaryCount: repositoryAudit.architectureBoundaries.length },
     orientationProbe,
@@ -240,7 +395,7 @@ const resourceReport = {
   systemCpuMs: Number((processResources.systemCPUTime / 1000).toFixed(1)),
 };
 const jsonPath = process.env.DEVINT_PORTFOLIO_JSON ?? path.resolve('benchmark-polyglot-portfolio.json');
-await fs.writeFile(jsonPath, `${JSON.stringify({ benchmark: 'Development Intelligence pinned C#/Unity + Java portfolio', processResources: resourceReport, reports }, null, 2)}\n`);
+await fs.writeFile(jsonPath, `${JSON.stringify({ benchmark: 'Development Intelligence pinned C#/Unity + Java + TypeScript semantic portfolio', processResources: resourceReport, reports }, null, 2)}\n`);
 const summary = [
   '# Development Intelligence polyglot portfolio benchmark',
   '',
@@ -255,6 +410,10 @@ const summary = [
     '',
     ...Object.entries({ ...item.kindCounts, ...item.strategyCounts, ...item.relationshipCounts }).map(([name, count]) => `- ${name}: **${count}**`),
     ...(item.temporalVerification ? [`- parent→pinned temporal verification: **${item.temporalVerification.elapsedMs} ms — ${item.temporalVerification.changedFileCount} changed files / ${item.temporalVerification.unexpectedTotal} unexpected graph changes**`] : []),
+    `- semantic derivation: **precision ${(item.semanticAccuracy.precision * 100).toFixed(0)}% / recall ${(item.semanticAccuracy.recall * 100).toFixed(0)}% / FPR ${(item.semanticAccuracy.falsePositiveRate * 100).toFixed(0)}% / ${item.semanticAccuracy.elapsedMs} ms**`,
+    `- semantic top-32 presentation: **precision ${(item.semanticAccuracy.boundedPresentationPrecision * 100).toFixed(0)}% / recall ${(item.semanticAccuracy.boundedPresentationRecall * 100).toFixed(0)}% / FPR ${(item.semanticAccuracy.boundedPresentationFalsePositiveRate * 100).toFixed(0)}%**`,
+    `- semantic capacity census: **${item.semanticAccuracy.capacity.eligibleCandidateCount} evidence-qualified / ${item.semanticAccuracy.capacity.groupedScopeCount} grouped scopes; ${item.semanticAccuracy.capacity.rejectedScopeCount} rejected; full exhausted=${item.semanticAccuracy.capacity.exhausted}; 50→100 stable=${item.semanticAccuracy.first50PrefixStable}; 100→full stable=${item.semanticAccuracy.first100PrefixStable}**`,
+    `- semantic factuality/core audit: **${item.semanticAccuracy.audit.factualitySupported} factuality-supported / ${item.semanticAccuracy.audit.factualityNeedsReview} need review / ${item.semanticAccuracy.audit.coreCandidates} core-candidate / ${item.semanticAccuracy.audit.supportingCandidates} supporting-candidate / ${item.semanticAccuracy.audit.elapsedMs} ms**`,
     `- repository audit: **${item.repositoryAudit.elapsedMs} ms** — ${item.repositoryAudit.findingTotal} deterministic findings / ${item.repositoryAudit.targetCount} bounded investigation target(s)`,
     ...(item.orientationProbe ? [
       `- orientation known query: **${item.orientationProbe.known.elapsedMs} ms** — ${item.orientationProbe.known.answerStatus}, ${item.orientationProbe.known.analyzerTechnology}/${item.orientationProbe.known.analyzerDepth}, ${item.orientationProbe.known.disambiguatingEvidenceCount} disambiguating-evidence hint(s)`,

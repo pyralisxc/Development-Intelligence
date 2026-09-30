@@ -78,3 +78,69 @@ npm run benchmark:accuracy -- benchmark/accuracy/cases.json benchmark/accuracy/o
 ```
 
 The checked-in portfolio cases and automatic DI observation collector are added incrementally as their independent ground truth is established.
+
+## Semantic-candidate accuracy
+
+Semantic bootstrap uses the same case/scoring contract rather than a separate benchmark authority. Cases may add an optional `groundTruth.semanticCandidates` block:
+
+```json
+{
+  "semanticCandidates": {
+    "universeScopes": ["src/features/authentication", "src/features/editor", "src/shared"],
+    "required": [
+      {
+        "scope": "src/features/authentication",
+        "name": "Authentication",
+        "origin": "intrinsic-derivation",
+        "accepted": false,
+        "persisted": false,
+        "proofEligible": false,
+        "requiresExplicitReview": true,
+        "minEvidenceFamilies": 2
+      }
+    ],
+    "forbidden": [
+      { "scope": "src/shared" }
+    ],
+    "complete": true
+  }
+}
+```
+
+Semantic precision is reported only for complete ground truth. `universeScopes` can define a bounded, independently reviewed evaluation universe inside a much larger repository: observations outside that universe remain unjudged rather than being mislabeled false positives. Within a complete universe, extra observed candidates count as false positives.
+
+A required semantic candidate is matched by exact scope plus any optional constraints supplied by the case: name, kind, evidence families, minimum evidence-family count, provenance origin, and authority fields. This lets the benchmark detect both concept errors and authority drift (for example a derived proposal becoming `accepted:true` without review).
+
+The CardForge benchmark uses a pinned seven-scope reviewed universe to produce real-repository semantic-candidate precision, recall, and false-positive rate while preserving the broader repository as unjudged evidence. This is deliberately narrower than claiming repository-wide semantic precision before exhaustive independent ground truth exists.
+
+
+## Human correction burden and general-question quality
+
+Semantic accuracy is not complete if a candidate set scores well but still forces a reviewer to repair obvious concepts, or if ordinary questions fall back to graph-count prose.
+
+The CardForge real-repository benchmark therefore also reports:
+
+- **correction burden** — the number of reviewed semantic scopes implicated by missing required concepts, forbidden concepts, or false observed concepts inside the complete reviewed universe;
+- **T3 general-question grounding** — natural repository questions such as “What does this project do?” must route through repository orientation, use semantic understanding rather than structural-only fallback, avoid topology-count prose, and surface multiple independently reviewed concepts;
+- **external tool-call count and latency** for each general question.
+
+A correction burden of zero is meaningful only for the declared reviewed universe. It must not be generalized to the entire repository without exhaustive ground truth.
+
+## Competitor reference snapshots
+
+`benchmark/competitor-reference.json` records dated claims from official competitor sources. The snapshot exists to make market claims visible next to DI's own reproducible measurements, not to create an apples-to-oranges ranking.
+
+Every external numeric claim is marked non-comparable until DI can replay the same dataset, grader, configuration, and metric definition. Competitor output is never benchmark ground truth merely because the vendor published it.
+
+
+## Conversational semantic depth
+
+Broad semantic questions are not scored as fixed keyword lists. The same repository question may request three different evidence projections:
+
+- `nucleus`: concise, strongest-supported semantic orientation;
+- `expanded`: supporting semantic layers and substrates in the same request;
+- `exhaustive`: an explicit evidence-qualified candidate census with completeness/truncation disclosed.
+
+The CardForge T3 benchmark therefore does **not** require its five-item T1 semantic-candidate universe to appear in the nucleus prose. Instead, it requires the expanded and exhaustive projections to expose all five reviewed candidate scopes, and requires the exhaustive projection to report an exhausted candidate census. This preserves 100% recall where ground truth is actually complete without teaching DI a preferred summary.
+
+Batched investigation may mix query depths through natural-language intent while retaining one immutable graph context. Explicit `semanticDepth` is available when an agent wants to force one depth for the request.

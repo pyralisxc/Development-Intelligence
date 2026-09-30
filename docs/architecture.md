@@ -117,48 +117,35 @@ Expectation/future data is caller reasoning and is not sealed as accepted curren
 
 ## A / W / B lifecycle
 
-The accepted checkpoint lives in the inspected repository under `/.development-intelligence/` and follows ordinary Git history.
+DI canonical persistence owns accepted semantic state for inspected projects; Git remains source/history authority.
 
-- **A — accepted:** stable semantic topology already accepted with the project.
-- **W — working:** the complete graph regenerated from one exact Git SHA. Canonical W is source-derived and disposable.
-- **B — sealed candidate:** deterministic semantic topology generated for a candidate and committed with it.
-- After normal Git merge, B becomes the new A; previous A remains in Git history.
+- **A — accepted:** stable semantic topology plus explicit review/acceptance history associated with exact project revisions.
+- **W — working:** the complete graph generated from one exact Git SHA. Current default-branch W may be durably cached for fast reads but is reconstructable.
+- **B — candidate:** the candidate revision's semantic delta and review/evolution state at the Preview→Main boundary.
+- Promotion advances A only after the current-revision semantic gate is satisfied. Previous accepted meaning remains temporally inspectable through DI authority/history rather than generated files in the inspected repository.
 
-DI does not maintain a central promotion pointer or durable graph-history database.
+### Why accepted authority stays semantic
 
-### Why A/B stores semantic topology only
+Git already stores the source required to rebuild structural intelligence. Persisting every source-derived structural record as authority would duplicate source and create needless churn. DI therefore keeps semantic acceptance/review state as durable authority while structural/code intelligence remains reconstructable from Git.
 
-Git already stores the source required to rebuild structural intelligence. Persisting all source-derived structural records would duplicate authority and create needless churn. A/B therefore persists the semantic topology needed for accepted-reality comparison while structural/code intelligence is regenerated from Git.
+Runtime observations never automatically become accepted semantics because they may not be reproducible from repository source.
 
-Runtime observations are never automatically sealed because they may not be reproducible from repository source.
+## Canonical integrity and currentness
 
-## Checkpoint integrity and currentness
-
-The checkpoint is deterministic sharded NDJSON:
-
-1. `manifest.json`;
-2. stable semantic node/relationship records;
-3. deterministic hexadecimal shard assignment.
-
-The manifest records:
-
-- **source fingerprint** — tracked project content excluding `.development-intelligence/`;
-- **topology fingerprint** — stable persisted semantic topology;
-- **evidence fingerprint** — evidence/provenance attestation at seal time;
-- **analyzer version** — observation model used to build the candidate.
-
-Checkpoint validation recomputes topology from shard contents. The manifest is not trusted as a substitute for content integrity.
-
-Currentness is dimensional:
+Canonical persistence records exact revision identity and independent currentness dimensions:
 
 - source currentness;
 - topology currentness;
 - evidence drift;
 - analyzer drift;
 - schema support;
-- checkpoint integrity.
+- integrity state.
 
-Accepted semantic A is current only when the checkpoint is valid/supported and its source/topology match canonical W. Evidence or analyzer changes are reported separately so harmless observation improvements do not manufacture semantic product drift.
+Accepted semantic A can remain semantically current across implementation-only movement when topology remains equivalent; source/evidence/analyzer movement is reported independently. A current revision with a changed semantic delta requires current-revision review before promotion.
+
+Semantic review persistence is a current-authority working set, not a historical warehouse. Preview may temporarily hold base + candidate review/lineage records while deciding the next accepted state. Successful semantic promotion compacts those records to the latest active accepted meanings and removes transition event history/lineage scaffolding. Exact historical understanding comes from replaying the requested Git revision and, when needed, comparing immutable revisions ephemerally.
+
+The deterministic `.development-intelligence/` manifest/shard format remains an internal self-seal and legacy migration/compatibility format. Its content-integrity checks are still tested, but inspected repositories must not use it as a parallel machine semantic authority.
 
 ## Exact revision context
 

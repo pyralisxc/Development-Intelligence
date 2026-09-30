@@ -27,16 +27,16 @@ See [Product direction](docs/product-direction.md), [Architecture](docs/architec
 
 ## A / W / B lifecycle
 
-Development Intelligence uses a Git-native accepted/working/candidate lifecycle:
+Development Intelligence uses a revision-bound accepted/working/candidate lifecycle:
 
-- **A — accepted:** `/.development-intelligence/manifest.json` plus deterministic semantic shards under `/.development-intelligence/graph/` committed in the accepted branch.
-- **W — working:** a graph generated from one exact Git revision; structural, semantic, and representation intelligence is disposable and rebuilt as needed.
-- **B — sealed candidate:** a deterministic semantic-topology checkpoint generated from the exact candidate before promotion.
-- After normal Git merge, B is simply the new A. Previous A remains in Git history.
+- **A — accepted:** durable semantic topology and review/acceptance history owned by DI canonical persistence for an exact project revision.
+- **W — working:** the complete evidence graph for one exact Git revision. Current default-branch W may be durably cached in DI, but remains reconstructable from Git and technical evidence.
+- **B — candidate:** the exact candidate revision plus its semantic delta/review state at the Preview→Main promotion boundary.
+- Promotion advances DI's accepted semantic state only after the current-revision semantic gate is satisfied; Git remains source/history authority.
 
-Expectation/future overlays are optional caller evidence, not accepted current reality.
+Expectation/future overlays are optional caller evidence, not accepted current reality. Acceptance never implies verification, and repository-local generated files are not a second semantic authority.
 
-The checkpoint source fingerprint excludes `/.development-intelligence/` itself, avoiding a self-referential commit-SHA problem while still detecting source changes. Stable semantic records are deterministically assigned to hexadecimal NDJSON shards.
+The deterministic `/.development-intelligence/` checkpoint format remains supported for DI's own self-seal and legacy migration/compatibility testing. Hosted inspected projects use DI canonical persistence instead of committing generated semantic authority into each repository.
 
 ## Public MCP surface
 
@@ -256,23 +256,24 @@ MCP endpoint: `POST /mcp`
 
 Health endpoint: `GET /health`
 
-## Sealing/checking a project graph
+## Local analysis and compatibility checkpoint utilities
 
 When the Development Intelligence package is available in a project checkout:
 
 ```bash
 npm run build
+node dist/src/graphCli.js analyze --repo-path /path/to/project --project project-id
 node dist/src/graphCli.js seal --repo-path /path/to/project --project project-id
 node dist/src/graphCli.js check --repo-path /path/to/project --project project-id
 ```
 
-`seal` writes `/.development-intelligence/manifest.json` and deterministic semantic NDJSON shards under `/.development-intelligence/graph/`. The project commits that directory with its candidate according to its own repository workflow.
+`analyze` is checkpointless and is the normal repository-side integration. `seal` / `check` retain the deterministic `/.development-intelligence/` format for DI self-verification and legacy compatibility/migration; those files are not the hosted semantic authority for inspected repositories.
 
 Development Intelligence itself does not commit or merge inspected projects on behalf of callers merely to maintain graph state.
 
-### GitHub Actions checkpoint gate
+### GitHub Actions analysis gate
 
-The repository also publishes a composite action that lets any GitHub repository check or seal its own accepted checkpoint without copying Development Intelligence into that repository. Pin the action to a reviewed full commit SHA:
+The repository publishes a composite action that lets a GitHub repository run checkpointless DI analysis without copying Development Intelligence into that repository. Pin the action to a reviewed full commit SHA:
 
 ```yaml
 steps:
@@ -280,10 +281,10 @@ steps:
   - uses: pyralisxc/Development-Intelligence@FULL_COMMIT_SHA
     with:
       project: owner/repository
-      mode: check
+      mode: analyze
 ```
 
-`check` fails when source, semantic topology, evidence, analyzer compatibility, schema support, or checkpoint integrity is stale. `mode: seal` writes the deterministic checkpoint into the caller checkout, but deliberately does not commit or push it; the caller's own reviewed repository workflow remains authoritative for acceptance.
+`mode: analyze` builds and verifies the exact checkout without creating repository-owned semantic authority. `check` / `seal` remain compatibility/self-test modes for the legacy checkpoint format; semantic acceptance and promotion for hosted projects belong to DI canonical persistence and its review lifecycle.
 
 ## Project access configuration
 

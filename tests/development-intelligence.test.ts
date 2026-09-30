@@ -13,7 +13,7 @@ import { analyzeImpact, diffAcceptedToWorking, graphArchitecture, parityLens, se
 import { searchCode, getCodeSnippet } from '../src/intelligence/code.js';
 import { callTool, listTools, toolContract } from '../src/mcp.js';
 import { runtimeIdentity } from '../src/runtimeIdentity.js';
-import { projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
+import { interfaceProjection, planInvestigationQuestion, projectOverview, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
@@ -42,6 +42,24 @@ export function helper() { return 'ok'; }
 public sealed class ArchitectureAggregateProbe
 {
     public ArchitectureAggregateProbe() {}
+}
+`);
+  await fs.writeFile(path.join(source, 'src', 'interaction.tsx'), `
+import { useState } from 'react';
+export function InteractionFixture() {
+  const [active, setActive] = useState(false);
+  function handlePointerMove() { setActive(true); }
+  function handleDrop() { void fetch('/api/drop', { method: 'POST' }); }
+  function handleClick() {}
+  function handleFocus() { window.location.assign('/focused'); }
+  function handleCustomSignal() {}
+  return <CanvasWidget
+    onPointerMove={handlePointerMove}
+    onDrop={handleDrop}
+    onClick={handleClick}
+    onFocus={handleFocus}
+    dataAction={handleCustomSignal}
+  />;
 }
 `);
   await fs.writeFile(path.join(source, 'src', 'panel.tsx'), `
@@ -182,7 +200,8 @@ test('Git-owned A/W/B graph lifecycle distinguishes source drift from semantic t
     clearGraphCache(fixture.project);
 
     const stale = await graphStatus(fixture.project) as any;
-    assert.equal(stale.accepted.current, false, 'A is not accepted-current for a different source fingerprint until B is sealed');
+    assert.equal(stale.accepted.current, true, 'representation-only source churn must preserve accepted semantic A when topology is unchanged');
+    assert.equal(stale.currentness.acceptedSemanticCurrent, true);
     assert.equal(stale.currentness.sourceCurrent, false);
     assert.equal(stale.currentness.topologyCurrent, true, 'representation-only churn must not manufacture semantic topology drift');
     const delta = await diffAcceptedToWorking(fixture.project) as any;
@@ -400,6 +419,31 @@ test('shared investigation router maps ordinary questions to existing DI primiti
   }
 });
 
+test('question planning separates lane, subject strategy, depth, and proof burden before execution', () => {
+  const cases = [
+    { question: 'How is the Workbench interface implemented in source?', lane: 'interface', subjectStrategy: 'scope-or-entity' },
+    { question: 'Where in source is accepted semantic meaning persisted and evolved?', lane: 'semantic-lifecycle', subjectStrategy: 'repository' },
+    { question: 'How does the adaptive query planner choose between indexed and sharded reads, and what evidence exposes that choice?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'How does Panel implementation persist accepted state?', lane: 'implementation-claim', proofMode: 'claim' },
+    { question: 'Where is Panel implemented?', lane: 'code' },
+    { question: 'What does Panel depend on?', lane: 'trace' },
+    { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
+    { question: 'What does this project do? Go deep across supporting systems and semantic layers.', lane: 'orientation', semanticDepth: 'expanded', completeness: 'expanded' },
+    { question: 'Give me a project status summary.', lane: 'overview', subjectStrategy: 'repository' },
+    { question: 'Show graph coverage.', lane: 'coverage', subjectStrategy: 'repository' },
+  ] as const;
+
+  for (const expected of cases) {
+    const plan = planInvestigationQuestion({ text: expected.question });
+    assert.equal(plan.lane, expected.lane, expected.question);
+    if ('subjectStrategy' in expected) assert.equal(plan.subjectStrategy, expected.subjectStrategy, expected.question);
+    if ('proofMode' in expected) assert.equal(plan.proofMode, expected.proofMode, expected.question);
+    if ('semanticDepth' in expected) assert.equal(plan.semanticDepth, expected.semanticDepth, expected.question);
+    if ('completeness' in expected) assert.equal(plan.completeness, expected.completeness, expected.question);
+    assert.equal(plan.continuity, 'immediate-exact-pronoun-only');
+  }
+});
+
 test('multi-question investigation keeps one graph context and isolates questions', async () => {
   const fixture = await makeFixture();
   try {
@@ -414,6 +458,8 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.deepEqual(batch.items.map((item: any) => item.intent), ['inspect', 'trace', 'code', 'evidence']);
     assert.ok(batch.items.slice(1).every((item: any) => item.resolvedQuestion.includes(batch.items[0].subject.id)), 'follow-up pronouns should inherit only the exact first subject');
     assert.ok(batch.items.every((item: any) => item.status === 'ok'));
+    assert.ok(batch.items.every((item: any) => item.routing?.questionPlan?.lane), 'every ordinary routed question should expose its pure question plan');
+    assert.ok(batch.items.every((item: any) => item.routing?.targetResolution?.mode), 'every ordinary routed question should expose one normalized target-resolution record');
 
     const explicit = await callTool('investigate', {
       project: fixture.project,
@@ -424,6 +470,106 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(explicit.request.questionCount, 3);
     assert.equal(explicit.graphId, batch.graphId);
     assert.deepEqual(explicit.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
+    assert.equal(explicit.items[1].inheritedSubject, explicit.items[0].subject.id, 'batch metadata must record the subject a pronoun inherited from before routing the follow-up');
+
+    const trailingNaturalLanguage = await queryWorkbenchRequest({
+      project: fixture.project,
+      text: 'What is Panel? What does it depend on? Also show where it is implemented',
+    }) as any;
+    assert.equal(trailingNaturalLanguage.request.mode, 'decomposed');
+    assert.equal(trailingNaturalLanguage.request.questionCount, 3, 'a final question-like remainder must remain an independent query even without a trailing question mark');
+    assert.deepEqual(trailingNaturalLanguage.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
+
+    const mechanism = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How does Panel handle the manage request, and what evidence shows that implementation path?',
+    }) as any;
+    assert.equal(mechanism.intent, 'implementation-explanation');
+    assert.equal(mechanism.routing.tool, 'search_code');
+    assert.equal(mechanism.routing.questionPlan.lane, 'implementation-explanation');
+    assert.equal(mechanism.routing.questionPlan.subjectStrategy, 'source-keyword-evidence');
+    assert.equal(mechanism.routing.projection, 'implementation-mechanism');
+    assert.ok(mechanism.result.matches.length > 0, 'mechanism questions should search bounded source evidence rather than collapse into a generic evidence assessment');
+    assert.ok(mechanism.result.mechanism.files.length > 0, 'mechanism projection must group bounded source evidence by file');
+    assert.equal(mechanism.result.mechanism.selection.mode, 'graph-ranked-files');
+    assert.ok(mechanism.result.mechanism.selection.candidateFiles.some((item: any) => item.file === 'src/panel.tsx'), 'graph-guided source selection must keep the known fixture implementation file');
+    assert.ok(mechanism.result.mechanism.keyEntities.length > 0, 'mechanism projection must identify evidence-linked entities in matched files');
+    assert.ok(mechanism.result.mechanism.relationships.length > 0, 'mechanism projection must expose resolved graph relationships instead of only raw text hits');
+    assert.ok(mechanism.result.mechanism.relationships.some((edge: any) => edge.sourceMatchEndpointCount > 0 || edge.queryTermHits > 0), 'bounded mechanism relationships must prioritize endpoints tied to the query or matched source');
+    assert.ok(mechanism.result.mechanism.decisionEvidence.length > 0, 'mechanism projection must expose bounded decision evidence when source contains decision/control terms');
+    assert.equal(mechanism.result.mechanism.policy.sourceObservedOnly, true);
+    assert.equal(mechanism.result.mechanism.policy.runtimeExecutionProven, false);
+    assert.equal(mechanism.result.mechanism.policy.semanticAuthority, false);
+
+    const lifecycleControl = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How are accepted semantic meanings preserved, evolved, superseded, split, merged, and prevented from silently changing across revisions in source implementation?',
+    }) as any;
+    assert.equal(lifecycleControl.intent, 'semantic-lifecycle', 'semantic lifecycle must outrank generic implementation-mechanism planning');
+
+    const interfaceControl = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How is the src/panel.tsx interface implemented in source for click interactions and navigation?',
+    }) as any;
+    assert.equal(interfaceControl.intent, 'interface', 'interface planning must outrank generic implementation-mechanism planning');
+    assert.equal(interfaceControl.routing.tool, 'inspect_interface');
+
+    const traceParaphrases = await Promise.all([
+      'What does Panel depend on?',
+      'Show dependencies of Panel',
+      'Show relationships connected to Panel',
+    ].map(question => callTool('investigate', { project: fixture.project, question }) as any));
+    const traceSubjectIds = traceParaphrases.map(item => item.routing?.targetResolution?.node?.id ?? null);
+    assert.ok(traceSubjectIds[0], 'trace paraphrases must resolve one concrete subject');
+    assert.ok(traceSubjectIds.every(id => id === traceSubjectIds[0]), 'trace paraphrases must preserve the same resolved subject');
+    assert.ok(traceParaphrases.every(item => item.routing?.questionPlan?.lane === 'trace'));
+
+    const codeParaphrases = await Promise.all([
+      'Where is Panel implemented?',
+      'Show source implementation for Panel',
+    ].map(question => callTool('investigate', { project: fixture.project, question }) as any));
+    const codeSubjectIds = codeParaphrases.map(item => item.routing?.targetResolution?.node?.id ?? null);
+    assert.ok(codeSubjectIds[0]);
+    assert.ok(codeSubjectIds.every(id => id === codeSubjectIds[0]), 'code paraphrases must preserve the same resolved subject');
+
+    const ordinaryEvidence = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What evidence supports Panel?',
+    }) as any;
+    const negativeEvidence = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Prove Panel is the only composition root.',
+    }) as any;
+    assert.equal(ordinaryEvidence.routing.questionPlan.proofMode, 'evidence');
+    assert.equal(negativeEvidence.routing.questionPlan.proofMode, 'claim');
+    assert.equal(
+      ordinaryEvidence.routing.targetResolution.node.id,
+      negativeEvidence.routing.targetResolution.node.id,
+      'proof burden must not silently change the resolved subject',
+    );
+
+    const independentQuestions = [
+      'What is Panel?',
+      'Where is helper implemented?',
+      'What evidence supports Panel?',
+    ];
+    const independentBatch = await callTool('investigate', {
+      project: fixture.project,
+      questions: independentQuestions,
+    }) as any;
+    const independentSingles = await Promise.all(independentQuestions.map(question => callTool('investigate', {
+      project: fixture.project,
+      question,
+      graphId: independentBatch.graphId,
+    }) as any));
+    assert.equal(independentBatch.counts.error, 0);
+    for (const [index, single] of independentSingles.entries()) {
+      const item = independentBatch.items[index];
+      assert.equal(item.intent, single.intent, `batch intent drifted for independent question ${index}`);
+      assert.equal(item.routing?.tool, single.routing?.tool, `batch routing drifted for independent question ${index}`);
+      assert.equal(item.subject?.id ?? null, single.subject?.id ?? null, `batch subject drifted for independent question ${index}`);
+      assert.equal(item.answer, single.answer, `batch answer drifted for independent question ${index}`);
+    }
 
     const isolated = await queryWorkbenchRequest({
       project: fixture.project,
@@ -432,7 +578,96 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(isolated.items[0].status, 'ok');
     assert.equal(isolated.items[1].status, 'error');
     assert.equal(isolated.items[2].status, 'ok', 'one failed question must not poison later questions');
+    assert.equal(isolated.items[2].inheritedSubject, null, 'a failed intervening question must break stale pronoun inheritance');
+    assert.equal(isolated.items[2].resolvedQuestion, 'What evidence supports it?', 'later pronouns must remain unresolved instead of silently jumping over a failed question');
+    assert.notEqual(isolated.items[2].subject?.id ?? null, isolated.items[0].subject?.id ?? null, 'an older exact subject must not leak across a failed question');
     assert.equal(isolated.counts.error, 1);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('interface projection organizes UI interactions and effects without creating semantic authority', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+
+    const projection = await interfaceProjection({
+      project: fixture.project,
+      scope: 'src/panel.tsx',
+      limit: 20,
+    }) as any;
+    assert.equal(projection.scope.kind, 'file');
+    assert.equal(projection.policy.deterministic, true);
+    assert.equal(projection.policy.persisted, false);
+    assert.equal(projection.policy.semanticAuthority, false);
+    assert.ok(projection.surfaces.length > 0, 'projection should expose an explicit surface or a source-evidenced surface owner');
+    assert.ok(projection.surfaces.some((item: any) => item.projectionRole === 'surface' || item.projectionRole === 'surface-owner'));
+    assert.ok(projection.interactions.length > 0 || projection.surfaces.some((item: any) => item.projectionRole === 'surface-owner'));
+    assert.ok(projection.effects.some((item: any) => item.kind === 'http-call'));
+    assert.ok(projection.transitions.some((item: any) => item.kind === 'navigation-call'));
+    assert.equal(projection.runtimeObservations.available, false);
+    assert.ok(projection.uncertainty.unknowns.some((value: string) => /runtime state transitions/i.test(value)));
+
+    const direct = await callTool('inspect_interface', {
+      project: fixture.project,
+      scope: 'src/panel.tsx',
+      limit: 20,
+    }) as any;
+    assert.equal(direct.scope.kind, 'file');
+    assert.equal(direct.policy.semanticAuthority, false);
+
+    const natural = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What changes when this control is activated?',
+      scope: 'src/panel.tsx',
+    }) as any;
+    assert.equal(natural.intent, 'interface');
+    assert.equal(natural.routing.tool, 'inspect_interface');
+    assert.equal(natural.result.scope.kind, 'file');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('interface projection groups exact source-observed event mechanisms without upgrading declared handlers', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const projection = await interfaceProjection({
+      project: fixture.project,
+      scope: 'src/interaction.tsx',
+      limit: 30,
+    }) as any;
+
+    assert.equal(projection.capabilities.interactionMechanisms, true);
+    assert.equal(projection.interactionMechanisms.policy.sourceObservedOnly, true);
+    assert.equal(projection.interactionMechanisms.policy.runtimeOccurrenceProven, false);
+    assert.equal(projection.interactionMechanisms.policy.stateEffectsInferred, false);
+
+    const groups = new Map(projection.interactionMechanisms.families.map((group: any) => [group.family, group]));
+    for (const family of ['pointer', 'drop', 'click', 'focus']) assert.ok(groups.has(family), family);
+    const pointer = (groups.get('pointer') as any).items.find((item: any) => item.prop === 'onPointerMove');
+    assert.equal(pointer.component, 'CanvasWidget');
+    assert.equal(pointer.declaredHandler, 'handlePointerMove');
+    assert.equal(pointer.resolvedHandler?.name, 'handlePointerMove');
+    assert.ok(pointer.directConsequences.some((item: any) => item.kind === 'state-write' && item.name === 'active' && item.proof === 'resolved-handler-direct-edge'));
+    const drop = (groups.get('drop') as any).items.find((item: any) => item.prop === 'onDrop');
+    assert.equal(drop.declaredHandler, 'handleDrop');
+    assert.equal(drop.resolvedHandler?.name, 'handleDrop');
+    assert.ok(drop.directConsequences.some((item: any) => item.kind === 'http-call' && item.name === 'POST /api/drop'));
+    const focus = (groups.get('focus') as any).items.find((item: any) => item.prop === 'onFocus');
+    assert.ok(focus.directConsequences.some((item: any) => item.kind === 'navigation-call' && item.name === '/focused'));
+    const click = (groups.get('click') as any).items.find((item: any) => item.prop === 'onClick');
+    assert.deepEqual(click.directConsequences, []);
+    assert.equal(projection.interactionMechanisms.resolvedHandlerCount, 4);
+    assert.equal(projection.interactionMechanisms.directConsequenceMechanismCount, 3);
+    assert.equal(projection.interactionMechanisms.policy.directConsequencesRequireResolvedHandler, true);
+    assert.equal(projection.interactionMechanisms.policy.directConsequencesRequireResolvedInvokesEdge, true);
+    const allItems = projection.interactionMechanisms.families.flatMap((group: any) => group.items);
+    assert.equal(allItems.some((item: any) => item.prop === 'dataAction'), false);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -484,6 +719,109 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.equal(missingScope.intent, 'orientation');
     assert.equal(missingScope.result.scopeRequired, true, 'deictic scope should remain explicit instead of guessing');
 
+    const projectQuestion = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do?',
+    }) as any;
+    assert.equal(projectQuestion.intent, 'orientation');
+    assert.equal(projectQuestion.routing.tool, 'orient_scope');
+    assert.equal(projectQuestion.routing.semanticDepth, 'nucleus');
+    assert.equal(projectQuestion.result.scope.kind, 'repository');
+    assert.ok(projectQuestion.result.semanticUnderstanding);
+    assert.ok(['accepted-authority', 'observed-semantic-graph', 'derived-candidates', 'structural-only'].includes(projectQuestion.result.semanticUnderstanding.source));
+    assert.equal(projectQuestion.result.semanticUnderstanding.depth, 'nucleus');
+    assert.equal(projectQuestion.answer, projectQuestion.result.semanticUnderstanding.summary);
+    assert.equal(/^\d+ graph entities/u.test(projectQuestion.answer), false, 'general project questions should lead with semantic understanding rather than topology counts');
+    assert.equal(projectQuestion.result.semanticUnderstanding.authority.acceptanceImpliesVerification, false);
+    assert.equal(projectQuestion.result.semanticUnderstanding.completeness.repositoryOmissionMeansAbsent, false);
+    assert.equal(projectQuestion.result.semanticUnderstanding.expansion.nextDepth, 'expanded');
+
+    const expandedProject = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do? Go deep across the supporting systems, semantic layers, substrates, and evidence.',
+    }) as any;
+    assert.equal(expandedProject.routing.semanticDepth, 'expanded');
+    assert.equal(expandedProject.result.semanticUnderstanding.depth, 'expanded');
+    assert.ok(expandedProject.result.semanticUnderstanding.layers.derived.returned > 0);
+    assert.equal(expandedProject.result.semanticUnderstanding.completeness.claim, 'non-exhaustive-semantic-answer');
+
+    const exhaustiveProject = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+    }) as any;
+    assert.equal(exhaustiveProject.routing.semanticDepth, 'exhaustive');
+    assert.equal(exhaustiveProject.result.semanticUnderstanding.depth, 'exhaustive');
+    assert.equal(exhaustiveProject.result.semanticUnderstanding.completeness.semanticCandidateUniverseExhausted, true);
+    assert.equal(exhaustiveProject.result.semanticUnderstanding.completeness.candidateOmissionWithinExhaustedCensusMeansAbsent, true);
+
+    const expandedDerived = expandedProject.result.semanticUnderstanding.layers.derived.items;
+    const exhaustiveDerived = exhaustiveProject.result.semanticUnderstanding.layers.derived.items;
+    const exhaustiveDerivedIds = new Set(exhaustiveDerived.map((item: any) => item.id));
+    assert.ok(
+      expandedDerived.every((item: any) => exhaustiveDerivedIds.has(item.id)),
+      'exhaustive depth must monotonically contain every semantic candidate surfaced by expanded depth',
+    );
+    const expandedCoreIds = expandedDerived
+      .filter((item: any) => item.coreness === 'core-candidate' && item.factuality === 'supported')
+      .map((item: any) => item.id);
+    assert.equal(
+      expandedProject.result.semanticUnderstanding.layers.derived.coreReturned,
+      expandedCoreIds.length,
+      'expanded core-return accounting must match the surfaced evidence-qualified core set',
+    );
+    assert.equal(
+      expandedProject.result.semanticUnderstanding.completeness.expandedCoreCoverageComplete,
+      true,
+      'small complete fixtures should prove expanded core coverage rather than merely imply it',
+    );
+
+    const explicitExpanded = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do?',
+      semanticDepth: 'expanded',
+    }) as any;
+    assert.equal(explicitExpanded.routing.semanticDepth, 'expanded');
+
+    const semanticDepthBatch = await callTool('investigate', {
+      project: fixture.project,
+      questions: [
+        'What does this project do?',
+        'What does this project do? Go deep across supporting semantic layers and substrates.',
+        'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate.',
+      ],
+    }) as any;
+    assert.deepEqual(
+      semanticDepthBatch.items.map((item: any) => item.routing.semanticDepth),
+      ['nucleus', 'expanded', 'exhaustive'],
+      'each batch question should infer semantic depth independently while sharing one graph context',
+    );
+    assert.ok(semanticDepthBatch.items.every((item: any) => item.result.graphId === semanticDepthBatch.graphId));
+
+    const semanticLifecycle = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How are accepted semantic meanings preserved, evolved, superseded, split, merged, and prevented from silently changing across revisions?',
+    }) as any;
+    assert.equal(semanticLifecycle.intent, 'semantic-lifecycle');
+    assert.equal(semanticLifecycle.routing.projection, 'semantic-lifecycle');
+    assert.match(semanticLifecycle.answer, /proposal.*review.*acceptance.*verification.*stable meaning identity.*Preview→Main/u);
+    assert.equal(semanticLifecycle.result.policy.acceptanceImpliesVerification, false);
+    assert.equal(semanticLifecycle.result.policy.verificationImpliesAcceptance, false);
+    assert.equal(semanticLifecycle.result.policy.verificationRequiresEvidence, true);
+    assert.equal(semanticLifecycle.result.policy.acceptedMeaningCannotBeSilentlyAmended, true);
+    assert.equal(semanticLifecycle.result.policy.previousRevisionApprovalDoesNotApprovePreviewDelta, true);
+    assert.deepEqual(
+      semanticLifecycle.result.policy.promotionApprovalAlternatives,
+      ['human-accepted', 'human-verified', 'ai-verified'],
+    );
+
+    const proposalToAuthority = await callTool('investigate', {
+      project: fixture.project,
+      question: 'How does semantic meaning move from an AI proposal to accepted authority and verification?',
+    }) as any;
+    assert.equal(proposalToAuthority.intent, 'semantic-lifecycle');
+    assert.equal(proposalToAuthority.result.stages[0].stage, 'proposal');
+    assert.equal(proposalToAuthority.result.stages.at(-1).stage, 'promotion');
+
 
     const scopedSpecific = await callTool('investigate', {
       project: fixture.project,
@@ -491,6 +829,82 @@ test('scope orientation surfaces explainable local graph structure without an op
       scope: 'src/panel.tsx',
     }) as any;
     assert.equal(scopedSpecific.subject?.locator, 'src/panel.tsx', 'explicit file scope must constrain specific subject resolution as well as orientation');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+
+test('repository-deictic project questions outrank a colliding Project entity name', async () => {
+  const fixture = await makeFixture();
+  try {
+    await fs.writeFile(path.join(fixture.source, 'src', 'project.ts'), `
+export class Project {
+  describe() { return 'feature project'; }
+}
+`);
+    await commit(fixture.source, 'add colliding Project entity');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project);
+    assert.ok(graph.nodes.some(node => node.name === 'Project'), 'fixture must contain an entity named Project');
+
+    const general = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does this project do?',
+    }) as any;
+    assert.equal(general.intent, 'orientation');
+    assert.equal(general.result.scope.kind, 'repository');
+    assert.ok(general.result.semanticUnderstanding);
+
+    const possessive = await callTool('investigate', {
+      project: fixture.project,
+      question: "What are this project's major capabilities?",
+    }) as any;
+    assert.equal(possessive.intent, 'orientation');
+    assert.equal(possessive.result.scope.kind, 'repository');
+    assert.ok(possessive.result.semanticUnderstanding);
+
+    const explicitEntity = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does Project do?',
+    }) as any;
+    assert.equal(explicitEntity.intent, 'orientation');
+    assert.equal(explicitEntity.result.scope.kind, 'entity', 'an explicit Project entity question must remain entity-scoped');
+    assert.equal(explicitEntity.result.scope.value, graph.nodes.find(node => node.name === 'Project')?.id);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('semantic audit exposes factuality and core facets without changing semantic authority', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+
+    const direct = await callTool('audit_semantics', {
+      project: fixture.project,
+      candidateLimit: 200,
+      limit: 30,
+    }) as any;
+    assert.equal(direct.policy.derivedAssessmentOnly, true);
+    assert.equal(direct.policy.authorityUnaffected, true);
+    assert.equal(direct.policy.verificationUnaffected, true);
+    assert.equal(direct.policy.subjectiveGlobalScore, false);
+    assert.equal(direct.policy.productIntentInferred, false);
+    assert.equal(direct.candidateUniverse.eligible >= direct.candidateUniverse.returned, true);
+    assert.ok(Array.isArray(direct.items));
+    assert.ok(direct.items.every((item: any) => item.authority.accepted === false && item.authority.persisted === false));
+    assert.ok(direct.items.every((item: any) => ['core-candidate', 'supporting-candidate'].includes(item.coreness.classification)));
+
+    const natural = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which semantic meanings look core and are they factual?',
+    }) as any;
+    assert.equal(natural.intent, 'semantic-audit');
+    assert.equal(natural.routing.tool, 'audit_semantics');
+    assert.equal(natural.result.policy.authorityUnaffected, true);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -571,6 +985,10 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'project_overview',
     'investigate',
     'orient_scope',
+    'inspect_interface',
+    'audit_semantics',
+    'semantic_review_surface',
+    'audit_semantic_authority_portfolio',
     'query_intelligence',
     'audit_repository',
     'inspect_portfolio',
@@ -602,6 +1020,14 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(/Codebase Memory|CBM_CACHE_DIR|graph\.db\.zst/i.test(serialized), false);
   const byName = new Map(listed.map(tool => [tool.name, tool]));
   assert.equal(byName.get('scan_graph')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('inspect_interface')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('inspect_interface')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('audit_semantics')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('audit_semantics')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('semantic_review_surface')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('semantic_review_surface')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('audit_semantic_authority_portfolio')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('audit_semantic_authority_portfolio')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('query_source')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_parity')?.annotations?.openWorldHint, true);
@@ -613,7 +1039,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 27, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 31, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -631,7 +1057,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 27);
+  assert.equal(identity.mcp.toolCount, 31);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
@@ -699,6 +1125,9 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'project_overview'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'investigate'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'orient_scope'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_interface'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'audit_semantics'));
+    assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'audit_semantic_authority_portfolio'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'inspect_entity'));
     assert.ok(listBody.result.tools.some((tool: any) => tool.name === 'query_source'));
     assert.equal(listBody.result.tools.some((tool: any) => tool.name === 'clear_cache'), false);
@@ -712,6 +1141,8 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     const html = await workbench.text();
     assert.match(html, /Overview/);
     assert.match(html, /Explore/);
+    assert.match(html, /Semantics/);
+    assert.match(html, /data-section="semantics"/);
     assert.match(html, /Parity/);
     assert.match(html, /Query/);
     assert.match(html, /Sources/);
@@ -726,8 +1157,49 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     const viewerJavaScript = await viewerBundle.text();
     assert.match(viewerJavaScript, /Evidence-backed assessment/);
     assert.match(viewerJavaScript, /Typed reach/);
+    assert.match(viewerJavaScript, /explicit review/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/review/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/lineage/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/ai-proposal/);
+    assert.match(viewerJavaScript, /AI proposal packet \/ import/);
+    assert.match(viewerJavaScript, /Record AI proposal from these editable fields/);
+    assert.match(viewerJavaScript, /Accept meaning/);
+    assert.match(viewerJavaScript, /Verify with evidence/);
+    assert.match(viewerJavaScript, /Resolve semantic lineage/);
+    assert.match(viewerJavaScript, /Semantic change audit/);
+    assert.match(viewerJavaScript, /data-semantic-change-ref/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/change-verify/);
+    assert.match(viewerJavaScript, /Verify this SEM change/);
+    assert.match(viewerJavaScript, /stable SEM ID/);
+    assert.match(viewerJavaScript, /Split source across candidate group/);
+    assert.match(viewerJavaScript, /Merge sources into this candidate/);
     assert.match(viewerJavaScript, /reach describes connection, not impact severity/i);
     assert.match(viewerJavaScript, /Claims and proof/);
+
+    const semanticsParams = new URLSearchParams({ project: fixture.project, action: 'semantics', limit: '20' });
+    const semantics = await fetch(`${origin}/workbench/data?${semanticsParams}`);
+    assert.equal(semantics.status, 200);
+    const semanticsBody = await semantics.json() as any;
+    assert.ok(Array.isArray(semanticsBody.candidates));
+    assert.equal(semanticsBody.policy.candidatesRemainNonAuthoritativeUntilReviewed, true);
+    assert.equal(semanticsBody.policy.acceptanceImpliesVerification, false);
+    assert.equal(semanticsBody.policy.ownerWriteSurfaceSeparate, true);
+    assert.equal(semanticsBody.policy.aiProposalProviderNeutral, true);
+    assert.equal(semanticsBody.policy.modelOutputAcceptedAutomatically, false);
+    assert.ok(semanticsBody.candidates.every((candidate: any) => candidate.aiProposalPacket?.policy?.explicitHumanReviewRequiredForAcceptance === true));
+    assert.equal(semanticsBody.policy.promotionAuditItemized, true);
+    assert.equal(semanticsBody.policy.promotionAuditDesiredOutcomeInferred, false);
+    assert.equal(semanticsBody.policy.promotionGateVerificationCanBeDelegated, true);
+    assert.ok(semanticsBody.promotionAudit);
+    assert.equal(semanticsBody.promotionAudit.semanticDeltaCount, semanticsBody.promotionAudit.items.length);
+    assert.ok(semanticsBody.promotionAudit.items.every((item: any, index: number) =>
+      item.ordinal === index + 1
+      && /^SEM-[0-9A-F]{8}$/.test(item.auditRef)
+      && typeof item.changeId === 'string'
+      && typeof item.summary === 'string'
+      && Array.isArray(item.reasons)
+    ));
+    assert.equal(semanticsBody.promotionAudit.policy.desiredOutcomeInferred, false);
 
     const intelligenceQuery = await fetch(`${origin}/workbench/query`, {
       method: 'POST',

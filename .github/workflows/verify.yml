@@ -141,6 +141,7 @@ jobs:
     env:
       GAME_STUDIO_CORE_BENCHMARK_SHA: 55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d
       MEDIEVAL_SIM_BENCHMARK_SHA: 8f721556d9548dfd09378d337b06416415ee09e7
+      AI_SYSTEMS_CONTROL_BENCHMARK_SHA: 36c9162d94b974500535ce211aa018512432485c
     steps:
       - name: Check out Development Intelligence candidate
         uses: actions/checkout@v7
@@ -163,9 +164,16 @@ jobs:
           ref: 8f721556d9548dfd09378d337b06416415ee09e7
           path: benchmark/medieval-sim
           persist-credentials: false
+      - name: Check out pinned TypeScript/web target
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/AI-Systems-Control
+          ref: 36c9162d94b974500535ce211aa018512432485c
+          path: benchmark/ai-systems-control
+          persist-credentials: false
       - name: Replay pinned polyglot portfolio
         run: |
-          node scripts/benchmark-polyglot-portfolio.mjs benchmark/game-studio-core benchmark/medieval-sim
+          node scripts/benchmark-polyglot-portfolio.mjs benchmark/game-studio-core benchmark/medieval-sim benchmark/ai-systems-control
           cat benchmark-polyglot-portfolio.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload portfolio evidence
         uses: actions/upload-artifact@v4
@@ -174,6 +182,80 @@ jobs:
           path: |
             benchmark-polyglot-portfolio.json
             benchmark-polyglot-portfolio.md
+          if-no-files-found: error
+          retention-days: 14
+
+
+  external-gin-benchmark:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GIN_BENCHMARK_SHA: bae9b98d8d60fde4aa55a83185ba15a922f98bd7
+    steps:
+      - name: Check out Development Intelligence candidate
+        uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Check out pinned external Go specimen
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/DI-Benchmark-Gin
+          ref: bae9b98d8d60fde4aa55a83185ba15a922f98bd7
+          path: benchmark/di-benchmark-gin
+          persist-credentials: false
+      - name: Replay external Go specimen
+        run: |
+          node scripts/benchmark-gin.mjs benchmark/di-benchmark-gin
+          cat benchmark-gin.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload external Go benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-external-gin-benchmark
+          path: |
+            benchmark-gin.json
+            benchmark-gin.md
+          if-no-files-found: error
+          retention-days: 14
+
+
+  external-amux-benchmark:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AMUX_BENCHMARK_SHA: 7f87c55cd3e99642c4ca9ca5df54bfd663a2f097
+      DEVINT_GRAPH_MAX_FILES: 5000
+      DEVINT_GRAPH_MAX_FILE_BYTES: 5000000
+    steps:
+      - name: Check out Development Intelligence candidate
+        uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Check out pinned external Rust specimen
+        uses: actions/checkout@v7
+        with:
+          repository: mixpeek/amux
+          ref: 7f87c55cd3e99642c4ca9ca5df54bfd663a2f097
+          path: benchmark/amux
+          persist-credentials: false
+      - name: Replay external Rust specimen
+        run: |
+          node scripts/benchmark-amux.mjs benchmark/amux
+          cat benchmark-amux.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload external Rust benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-external-amux-benchmark
+          path: |
+            benchmark-amux.json
+            benchmark-amux.md
           if-no-files-found: error
           retention-days: 14
 

@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { scoreAccuracyCase } from './accuracy-benchmark-lib.mjs';
 
+const competitorReference = JSON.parse(await fs.readFile(path.resolve('benchmark/competitor-reference.json'), 'utf8'));
 const cardForgeRoot = path.resolve(process.argv[2] ?? 'benchmark/cardforge');
 const expectedSha = process.env.CARDFORGE_BENCHMARK_SHA ?? '6d6788cf87dd37d7685d26fa10a15e06fa1208ba';
 const actualSha = execFileSync('git', ['-C', cardForgeRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -42,6 +44,10 @@ process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(temp, 'canonical');
 
 const { callTool } = await import('../dist/src/mcp.js');
 const { buildLocalGraph } = await import('../dist/src/intelligence/local.js');
+const { bootstrapSemanticCandidates } = await import('../dist/src/intelligence/semanticBootstrap.js');
+const { auditSemanticCandidates } = await import('../dist/src/intelligence/semanticAudit.js');
+const { semanticMeaningReview, applySemanticReviewAction } = await import('../dist/src/intelligence/semanticReview.js');
+const { evaluateSemanticEvolution } = await import('../dist/src/intelligence/semanticEvolution.js');
 const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
@@ -103,6 +109,328 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+const semanticBootstrap50Started = process.hrtime.bigint();
+const semanticBootstrap50 = bootstrapSemanticCandidates(graph, { limit: 50 });
+const semanticBootstrap50ElapsedMs = Number(process.hrtime.bigint() - semanticBootstrap50Started) / 1_000_000;
+const semanticBootstrap100Started = process.hrtime.bigint();
+const semanticBootstrap100 = bootstrapSemanticCandidates(graph, { limit: 100 });
+const semanticBootstrap100ElapsedMs = Number(process.hrtime.bigint() - semanticBootstrap100Started) / 1_000_000;
+const semanticFullLimit = Math.min(
+  Math.max(100, semanticBootstrap100.capacity.eligibleCandidateCount),
+  semanticBootstrap100.capacity.operationalLimit,
+);
+const semanticBootstrapFullStarted = process.hrtime.bigint();
+const semanticBootstrap = bootstrapSemanticCandidates(graph, { limit: semanticFullLimit });
+const semanticBootstrapElapsedMs = Number(process.hrtime.bigint() - semanticBootstrapFullStarted) / 1_000_000;
+const semanticMetamorphicElapsedMs = semanticBootstrap50ElapsedMs + semanticBootstrap100ElapsedMs + semanticBootstrapElapsedMs;
+if (semanticBootstrap.capacity.eligibleCandidateCount <= semanticBootstrap.capacity.operationalLimit && !semanticBootstrap.capacity.exhausted) {
+  throw new Error(`CardForge full semantic census should exhaust within operational limit: ${JSON.stringify(semanticBootstrap.capacity)}`);
+}
+if (semanticBootstrap100.capacity.eligibleCandidateCount !== semanticBootstrap.capacity.eligibleCandidateCount) {
+  throw new Error('CardForge 100→full semantic census changed the eligible universe');
+}
+if (semanticBootstrap.capacity.eligibleCandidateCount > semanticBootstrap.capacity.groupedScopeCount) {
+  throw new Error('CardForge semantic capacity exceeded grouped source scope capacity');
+}
+if (semanticBootstrap.capacity.eligibleCandidateCount + semanticBootstrap.capacity.rejectedScopeCount !== semanticBootstrap.capacity.groupedScopeCount) {
+  throw new Error('CardForge semantic scope census does not reconcile');
+}
+if (semanticBootstrap.candidates.some(candidate => candidate.support.evidenceFamilyCount < 2)) {
+  throw new Error('CardForge semantic capacity admitted an evidence-insufficient candidate');
+}
+if (semanticBootstrap50.candidates.some((candidate, index) => semanticBootstrap100.candidates[index]?.id !== candidate.id)) {
+  throw new Error('CardForge semantic 50→100 expansion changed candidate identity/order instead of extending the same ranking');
+}
+if (semanticBootstrap100.candidates.some((candidate, index) => semanticBootstrap.candidates[index]?.id !== candidate.id)) {
+  throw new Error('CardForge semantic 100→full expansion changed candidate identity/order instead of extending the same ranking');
+}
+if (semanticBootstrap.zeroMetadata !== true) throw new Error('CardForge semantic-bootstrap benchmark must remain zero-metadata');
+if (semanticBootstrap.candidates.length < 3) throw new Error(`CardForge semantic bootstrap expected at least 3 candidates, got ${semanticBootstrap.candidates.length}`);
+if (semanticBootstrap.candidates.some(candidate => candidate.authority.persisted || candidate.authority.proofEligible || candidate.authority.accepted)) {
+  throw new Error('CardForge semantic candidates crossed the non-authoritative T1 boundary');
+}
+if (semanticBootstrap.candidates.some(candidate => candidate.provenance.origin !== 'intrinsic-derivation' || candidate.provenance.revision !== actualSha)) {
+  throw new Error('CardForge semantic candidates lost intrinsic proposal provenance');
+}
+if (!semanticBootstrap.candidates.some(candidate => candidate.support.evidenceFamilyCount >= 3)) {
+  throw new Error('CardForge semantic bootstrap expected at least one candidate with 3 independent evidence families');
+}
+if (Math.max(semanticBootstrap50ElapsedMs, semanticBootstrap100ElapsedMs, semanticBootstrapElapsedMs) > 1000) {
+  throw new Error(`CardForge individual semantic projection exceeded 1000 ms budget: 50=${semanticBootstrap50ElapsedMs.toFixed(2)} / 100=${semanticBootstrap100ElapsedMs.toFixed(2)} / full=${semanticBootstrapElapsedMs.toFixed(2)} ms`);
+}
+const semanticAuditStarted = process.hrtime.bigint();
+const semanticAudit = auditSemanticCandidates(graph, semanticBootstrap, { limit: semanticBootstrap.candidates.length });
+const semanticAuditElapsedMs = Number(process.hrtime.bigint() - semanticAuditStarted) / 1_000_000;
+if (semanticAuditElapsedMs > 1000) throw new Error(`CardForge semantic audit exceeded 1000 ms: ${semanticAuditElapsedMs.toFixed(2)} ms`);
+if (semanticAudit.counts.audited !== semanticBootstrap.candidates.length) throw new Error('CardForge semantic audit did not cover the full derived candidate universe');
+if (semanticAudit.counts.factualityNeedsReview !== 0) throw new Error(`CardForge semantic audit found broken proposal factuality: ${JSON.stringify(semanticAudit.items.filter(item => item.factuality.status === 'needs-review'))}`);
+if (semanticAudit.counts.coreCandidates < 1 || semanticAudit.counts.supportingCandidates < 1) throw new Error('CardForge semantic audit must distinguish both core and supporting semantic candidates');
+if (semanticAudit.policy.authorityUnaffected !== true || semanticAudit.policy.verificationUnaffected !== true || semanticAudit.policy.subjectiveGlobalScore !== false) {
+  throw new Error('CardForge semantic audit crossed the derived-assessment boundary');
+}
+const semanticEvolutionScopes = [
+  'src/features/account',
+  'src/features/card-generator',
+  'src/features/creator-workbench',
+  'src/features/storage-management',
+  'src/features/template-editor',
+];
+const parentWorktree = path.join(temp, 'cardforge-parent');
+execFileSync('git', ['-C', cardForgeRoot, 'worktree', 'add', '--detach', parentWorktree, temporalParentSha], { stdio: 'ignore' });
+let semanticEvolutionResults = [];
+let semanticEvolutionElapsedMs = 0;
+try {
+  const evolutionStarted = process.hrtime.bigint();
+  const parentGraph = await buildLocalGraph(parentWorktree, project);
+  const parentBootstrap = bootstrapSemanticCandidates(parentGraph, { limit: 1000 });
+  for (const scope of semanticEvolutionScopes) {
+    const before = parentBootstrap.candidates.find(candidate => candidate.scope === scope);
+    const after = semanticBootstrap.candidates.find(candidate => candidate.scope === scope) ?? null;
+    if (!before) throw new Error(`CardForge semantic evolution benchmark lost reviewed parent concept ${scope}`);
+    const reviewed = applySemanticReviewAction(semanticMeaningReview(before), {
+      kind: 'accept',
+      actor: { kind: 'imported-assertion', id: 'benchmark:reviewed-semantic-universe' },
+      at: '2026-09-27T00:00:00.000Z',
+      rationale: 'Ephemeral benchmark acceptance over independently reviewed semantic ground truth.',
+    });
+    const evolution = evaluateSemanticEvolution(reviewed, semanticBootstrap.candidates, actualSha);
+    const allowedStatuses = new Set(['preserved', 'realization-changed', 'renamed', 'weakened', 'unsupported', 'ambiguous']);
+    if (!allowedStatuses.has(evolution.status)) {
+      throw new Error(`CardForge semantic evolution produced an unknown status for ${scope}: ${JSON.stringify(evolution)}`);
+    }
+    if (evolution.matchedCandidate && !semanticBootstrap.candidates.some(candidate => candidate.id === evolution.matchedCandidate?.id)) {
+      throw new Error(`CardForge semantic evolution returned a candidate outside current head truth for ${scope}`);
+    }
+    if (evolution.status === 'unsupported' && (evolution.matchedCandidate !== null || evolution.reviewRequired !== true)) {
+      throw new Error(`CardForge unsupported semantic transition must be explicit and reviewable for ${scope}: ${JSON.stringify(evolution)}`);
+    }
+    semanticEvolutionResults.push({
+      scope,
+      meaningId: reviewed.meaningId,
+      status: evolution.status,
+      reviewRequired: evolution.reviewRequired,
+      parentCandidateId: before.id,
+      headCandidateId: after?.id ?? null,
+      matchedCandidateId: evolution.matchedCandidate?.id ?? null,
+      supportDelta: evolution.supportDelta,
+    });
+  }
+  semanticEvolutionElapsedMs = Number(process.hrtime.bigint() - evolutionStarted) / 1_000_000;
+} finally {
+  try { execFileSync('git', ['-C', cardForgeRoot, 'worktree', 'remove', '--force', parentWorktree], { stdio: 'ignore' }); } catch {}
+}
+const semanticAccuracyUniverse = [
+  'src/features/account',
+  'src/features/card-generator',
+  'src/features/creator-workbench',
+  'src/features/storage-management',
+  'src/features/template-editor',
+  'src/shared',
+  'src/utils',
+];
+const semanticAccuracyCase = {
+  version: 1,
+  id: 'cardforge-semantic-bootstrap-reviewed-universe',
+  capability: 'semantic-bootstrap',
+  language: 'typescript',
+  project: 'CardForge',
+  ref: `commit:${actualSha}`,
+  question: 'Which major CardForge feature concepts can be derived from intrinsic evidence?',
+  groundTruth: {
+    semanticCandidates: {
+      universeScopes: semanticAccuracyUniverse,
+      required: [
+        { scope: 'src/features/account', name: 'Account', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+        { scope: 'src/features/card-generator', name: 'Card Generator', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+        { scope: 'src/features/creator-workbench', name: 'Creator Workbench', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+        { scope: 'src/features/storage-management', name: 'Storage Management', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+        { scope: 'src/features/template-editor', name: 'Template Editor', origin: 'intrinsic-derivation', accepted: false, persisted: false, proofEligible: false, requiresExplicitReview: true, minEvidenceFamilies: 2 },
+      ],
+      forbidden: [
+        { scope: 'src/shared' },
+        { scope: 'src/utils' },
+      ],
+      complete: true,
+    },
+  },
+  provenance: [
+    { kind: 'source', locator: 'src/features/account' },
+    { kind: 'source', locator: 'src/features/card-generator' },
+    { kind: 'source', locator: 'src/features/creator-workbench' },
+    { kind: 'source', locator: 'src/features/storage-management' },
+    { kind: 'source', locator: 'src/features/template-editor' },
+  ],
+};
+const semanticAccuracy = scoreAccuracyCase(semanticAccuracyCase, {
+  caseId: semanticAccuracyCase.id,
+  semanticCandidates: semanticBootstrap.candidates,
+});
+const semanticPresentationAccuracy = scoreAccuracyCase(semanticAccuracyCase, {
+  caseId: semanticAccuracyCase.id,
+  semanticCandidates: semanticBootstrap.candidates.slice(0, 32),
+});
+if (!semanticAccuracy.pass) {
+  throw new Error(`CardForge semantic accuracy failed: ${JSON.stringify(semanticAccuracy.semanticCandidateScore)}`);
+}
+if (semanticAccuracy.semanticCandidateScore?.precision !== 1 || semanticAccuracy.semanticCandidateScore?.recall !== 1) {
+  throw new Error(`CardForge semantic accuracy must remain 1.0 precision/recall within reviewed universe: ${JSON.stringify(semanticAccuracy.semanticCandidateScore)}`);
+}
+
+function correctionScope(value) {
+  return String(value).split('|', 1)[0].trim();
+}
+
+function semanticCorrectionBurden(score) {
+  const flags = [
+    ...(score?.missingRequired ?? []),
+    ...(score?.forbiddenPresent ?? []),
+    ...(score?.falseObserved ?? []),
+  ];
+  const scopes = [...new Set(flags.map(correctionScope).filter(Boolean))].sort();
+  return {
+    flagCount: flags.length,
+    affectedScopeCount: scopes.length,
+    affectedScopes: scopes,
+    reviewedRequiredCount: Number(score?.required ?? 0),
+    rate: Number(score?.required ?? 0) > 0 ? scopes.length / Number(score.required) : 0,
+  };
+}
+
+function derivedScopes(investigation) {
+  const understanding = investigation?.result?.semanticUnderstanding ?? {};
+  return (understanding.layers?.derived?.items ?? understanding.candidates ?? [])
+    .map(item => String(item?.scope ?? '').trim())
+    .filter(Boolean);
+}
+
+async function generalSemanticQuestion(question, expectedDepth, options = {}) {
+  const started = process.hrtime.bigint();
+  const result = await callTool('investigate', { project, graphId: scan.graphId, question });
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+  const understanding = result?.result?.semanticUnderstanding;
+  if (result?.intent !== 'orientation' || result?.routing?.tool !== 'orient_scope') {
+    throw new Error(`CardForge general semantic question did not route through repository orientation: ${question}`);
+  }
+  if (result?.result?.scope?.kind !== 'repository') throw new Error(`CardForge general semantic question lost repository scope: ${question}`);
+  if (!understanding || understanding.source === 'structural-only') {
+    throw new Error(`CardForge general semantic question fell back to structural-only understanding: ${question}`);
+  }
+  if (result.routing?.semanticDepth !== expectedDepth || understanding.depth !== expectedDepth) {
+    throw new Error(`CardForge semantic depth mismatch: expected ${expectedDepth}, got routing=${result.routing?.semanticDepth} understanding=${understanding.depth}`);
+  }
+  if (/^\d+ graph entities/u.test(String(result.answer ?? ''))) {
+    throw new Error(`CardForge general semantic question regressed to topology-count prose: ${question}`);
+  }
+  if (understanding.completeness?.repositoryOmissionMeansAbsent !== false) {
+    throw new Error(`CardForge semantic answer must not equate omission with repository absence: ${question}`);
+  }
+  const scopes = derivedScopes(result);
+  const requiredScopes = options.requiredDerivedScopes ?? [];
+  const missingRequiredScopes = requiredScopes.filter(scope => !scopes.includes(scope));
+  if (missingRequiredScopes.length) {
+    throw new Error(`CardForge ${expectedDepth} semantic query missed reviewed derived scopes: ${JSON.stringify(missingRequiredScopes)}`);
+  }
+  if (options.requireExhausted && understanding.completeness?.semanticCandidateUniverseExhausted !== true) {
+    throw new Error(`CardForge exhaustive semantic query did not exhaust the evidence-qualified candidate census: ${question}`);
+  }
+  if (elapsedMs > 2000) throw new Error(`CardForge general semantic question exceeded 2000 ms budget: ${question} → ${elapsedMs.toFixed(2)} ms`);
+  return {
+    question,
+    answer: result.answer,
+    semanticSource: understanding.source,
+    semanticDepth: understanding.depth,
+    derivedReturned: understanding.layers?.derived?.returned ?? 0,
+    derivedEligible: understanding.layers?.derived?.eligibleCount ?? 0,
+    semanticCandidateUniverseExhausted: understanding.completeness?.semanticCandidateUniverseExhausted ?? false,
+    reviewedDerivedRecall: requiredScopes.length ? (requiredScopes.length - missingRequiredScopes.length) / requiredScopes.length : null,
+    routingTool: result.routing?.tool ?? null,
+    externalToolCalls: 1,
+    elapsedMs: Number(elapsedMs.toFixed(3)),
+  };
+}
+
+const semanticCorrection = semanticCorrectionBurden(semanticAccuracy.semanticCandidateScore);
+if (semanticCorrection.affectedScopeCount !== 0) {
+  throw new Error(`CardForge reviewed semantic universe requires human correction: ${JSON.stringify(semanticCorrection)}`);
+}
+const reviewedSemanticScopes = semanticAccuracyCase.groundTruth.semanticCandidates.required.map(item => item.scope);
+const reviewedCoreSemanticScopes = reviewedSemanticScopes.filter(scope =>
+  semanticAudit.items.some(item => item.scope === scope && item.coreness.classification === 'core-candidate' && item.factuality.status === 'supported')
+);
+const generalSemanticQuestions = [
+  await generalSemanticQuestion('What does this project do?', 'nucleus'),
+  await generalSemanticQuestion(
+    'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
+    'expanded',
+    { requiredDerivedScopes: reviewedCoreSemanticScopes },
+  ),
+  await generalSemanticQuestion(
+    'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+    'exhaustive',
+    { requiredDerivedScopes: reviewedSemanticScopes, requireExhausted: true },
+  ),
+];
+
+const semanticBatchQuestions = [
+  'What does this project do?',
+  'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
+  'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+  'What changes when this Studio control is activated in src/features/creator-workbench?',
+  'How is feature:card-generator capability realized?',
+];
+const semanticBatchStarted = process.hrtime.bigint();
+const generalSemanticBatch = await callTool('investigate', {
+  project,
+  graphId: scan.graphId,
+  questions: semanticBatchQuestions,
+});
+const semanticBatchElapsedMs = Number(process.hrtime.bigint() - semanticBatchStarted) / 1_000_000;
+if (generalSemanticBatch.intent !== 'batch' || generalSemanticBatch.request?.questionCount !== semanticBatchQuestions.length) {
+  throw new Error(`CardForge semantic batch did not preserve the requested question set: ${JSON.stringify(generalSemanticBatch.request)}`);
+}
+if (generalSemanticBatch.graphId !== scan.graphId || generalSemanticBatch.items.some(item => item.status !== 'ok')) {
+  throw new Error(`CardForge semantic batch did not stay on one successful graph context: ${JSON.stringify(generalSemanticBatch.counts)}`);
+}
+const batchOrientationDepths = generalSemanticBatch.items
+  .filter(item => item.intent === 'orientation')
+  .map(item => item.routing?.semanticDepth);
+if (JSON.stringify(batchOrientationDepths) !== JSON.stringify(['nucleus', 'expanded', 'exhaustive'])) {
+  throw new Error(`CardForge semantic batch lost per-question depth: ${JSON.stringify(batchOrientationDepths)}`);
+}
+if (!generalSemanticBatch.items.some(item => item.intent === 'interface') || !generalSemanticBatch.items.some(item => item.intent === 'intelligence')) {
+  throw new Error(`CardForge semantic batch did not preserve mixed investigation lanes: ${JSON.stringify(generalSemanticBatch.items.map(item => item.intent))}`);
+}
+if (semanticBatchElapsedMs > 5000) throw new Error(`CardForge five-question semantic batch exceeded 5000 ms budget: ${semanticBatchElapsedMs.toFixed(2)} ms`);
+
+const standaloneByDepth = new Map(generalSemanticQuestions.map(item => [item.semanticDepth, item]));
+for (const item of generalSemanticBatch.items.filter(item => item.intent === 'orientation')) {
+  const standalone = standaloneByDepth.get(item.routing?.semanticDepth);
+  if (!standalone) throw new Error(`CardForge batch emitted unexpected orientation depth: ${item.routing?.semanticDepth}`);
+  const batchUnderstanding = item.result?.semanticUnderstanding;
+  const batchScopes = (batchUnderstanding?.layers?.derived?.items ?? batchUnderstanding?.candidates ?? [])
+    .map(candidate => String(candidate?.scope ?? '').trim())
+    .filter(Boolean);
+  const standaloneResult = await callTool('investigate', { project, graphId: scan.graphId, question: standalone.question });
+  const standaloneUnderstanding = standaloneResult?.result?.semanticUnderstanding;
+  const standaloneScopes = (standaloneUnderstanding?.layers?.derived?.items ?? standaloneUnderstanding?.candidates ?? [])
+    .map(candidate => String(candidate?.scope ?? '').trim())
+    .filter(Boolean);
+  if (JSON.stringify(batchScopes) !== JSON.stringify(standaloneScopes)) {
+    throw new Error(`CardForge batching changed semantic content at ${item.routing?.semanticDepth} depth`);
+  }
+  if (batchUnderstanding?.source !== standaloneUnderstanding?.source) {
+    throw new Error(`CardForge batching changed semantic authority source at ${item.routing?.semanticDepth} depth`);
+  }
+}
+
+const expandedStandalone = generalSemanticBatch.items.find(item => item.routing?.semanticDepth === 'expanded');
+const exhaustiveStandalone = generalSemanticBatch.items.find(item => item.routing?.semanticDepth === 'exhaustive');
+const expandedBatchScopes = derivedScopes(expandedStandalone);
+const exhaustiveBatchScopes = new Set(derivedScopes(exhaustiveStandalone));
+if (expandedBatchScopes.some(scope => !exhaustiveBatchScopes.has(scope))) {
+  throw new Error('CardForge exhaustive batch projection must monotonically contain expanded derived scopes');
+}
+
 const queryArtifacts = buildCanonicalQueryArtifacts(graph);
 const queryArtifactBytes = serializedQueryArtifactBytes(queryArtifacts);
 const fullGraphBytes = Buffer.byteLength(JSON.stringify(graph), 'utf8');
@@ -198,6 +526,122 @@ if (scopedAudit.findingSummary?.total !== scopedAudit.findings.length || scopedA
   throw new Error('CardForge scoped audit did not explain its blast radius and grouped findings');
 }
 const assessmentElapsedMs = Date.now() - assessmentStarted;
+
+const studioScope = 'src/features/creator-workbench';
+const studioManualQueries = ['CreatorWorkbench', 'openStudioSheet', 'navigation', 'scroll', 'pointer', 'overlay'];
+const studioManualStarted = process.hrtime.bigint();
+const studioManualSearch = await callTool('search_graph', { project, graphId: scan.graphId, queries: studioManualQueries, limit: 40 });
+const studioManualOrientation = await callTool('orient_scope', { project, graphId: scan.graphId, scope: studioScope, limit: 20 });
+const studioManualSource = await callTool('search_code', {
+  project,
+  graphId: scan.graphId,
+  pattern: 'drag|drop|scroll|pointer|overlay',
+  filePattern: studioScope,
+  filePatternMode: 'prefix',
+  regex: true,
+  context: 2,
+  limit: 80,
+});
+const studioManualCoverage = await callTool('check_graph_coverage', { project, graphId: scan.graphId });
+const studioManualSchema = await callTool('get_graph_schema', { project, graphId: scan.graphId });
+const studioManualElapsedMs = Number(process.hrtime.bigint() - studioManualStarted) / 1_000_000;
+if (!Array.isArray(studioManualSearch.results) || studioManualSearch.results.length !== studioManualQueries.length) throw new Error('CardForge Studio manual decomposition search lost independent queries');
+if (!studioManualOrientation?.scope || Number(studioManualOrientation.scope.nodeCount ?? 0) < 1) throw new Error('CardForge Studio manual orientation did not resolve the feature scope');
+if (Number(studioManualSource.total ?? 0) < 1) throw new Error('CardForge Studio source decomposition expected scroll/pointer/overlay evidence');
+if (!studioManualCoverage?.summary || !studioManualSchema?.nodeKinds) throw new Error('CardForge Studio manual decomposition expected coverage and schema context');
+
+const studioProjectionStarted = process.hrtime.bigint();
+const studioProjection = await callTool('inspect_interface', { project, graphId: scan.graphId, scope: studioScope, limit: 100 });
+const studioProjectionElapsedMs = Number(process.hrtime.bigint() - studioProjectionStarted) / 1_000_000;
+if (studioProjection.ambiguous === true || Number(studioProjection.scope?.nodeCount ?? 0) < 1) throw new Error('CardForge Studio interface projection did not resolve the feature scope');
+if (studioProjection.policy?.deterministic !== true || studioProjection.policy?.persisted !== false || studioProjection.policy?.semanticAuthority !== false) throw new Error('CardForge Studio interface projection crossed its authority boundary');
+if (!Array.isArray(studioProjection.surfaces) || studioProjection.surfaces.length < 1) throw new Error('CardForge Studio interface projection expected surfaces');
+if (!Array.isArray(studioProjection.state) || !studioProjection.state.some(item => item.name === 'openStudioSheet')) throw new Error('CardForge Studio interface projection lost known Studio state ownership');
+if (!Array.isArray(studioProjection.transitions) || !studioProjection.transitions.some(item => item.kind === 'navigation-call')) throw new Error('CardForge Studio interface projection lost navigation evidence');
+if (!Array.isArray(studioProjection.representation) || !studioProjection.representation.some(item => item.kind === 'css-class-reference')) throw new Error('CardForge Studio interface projection expected static JSX class references');
+const studioCssEvidence = studioProjection.representation.find(item => item.kind === 'css-selector' && String(item.name ?? '').includes('cardforge-studio-workspace') && /overflow/u.test(JSON.stringify(item.value ?? null)));
+if (!studioCssEvidence) throw new Error('CardForge Studio interface projection did not join workspace class usage to CSS overflow evidence');
+if (studioProjection.runtimeObservations?.available !== false) throw new Error('CardForge Studio source benchmark unexpectedly claimed runtime observations');
+if (!studioProjection.uncertainty?.unknowns?.some(value => /runtime state transitions|geometry|stacking|scroll ownership|pointer\/focus ownership/i.test(String(value)))) throw new Error('CardForge Studio interface projection did not preserve runtime-only uncertainty');
+if (studioProjectionElapsedMs > 2000) throw new Error(`CardForge Studio interface projection exceeded 2000 ms budget: ${studioProjectionElapsedMs.toFixed(2)} ms`);
+
+const studioRoutedQuestion = await callTool('investigate', {
+  project,
+  graphId: scan.graphId,
+  question: 'What changes when this Studio control is activated?',
+  scope: studioScope,
+});
+if (studioRoutedQuestion.intent !== 'interface' || studioRoutedQuestion.routing?.tool !== 'inspect_interface') throw new Error('CardForge Studio natural-language interaction question did not route to inspect_interface');
+
+const templateEditorScope = 'src/features/template-editor';
+const templateEditorProjectionStarted = process.hrtime.bigint();
+const templateEditorProjection = await callTool('inspect_interface', { project, graphId: scan.graphId, scope: templateEditorScope, limit: 100 });
+const templateEditorProjectionElapsedMs = Number(process.hrtime.bigint() - templateEditorProjectionStarted) / 1_000_000;
+const mechanismGroups = new Map((templateEditorProjection.interactionMechanisms?.families ?? []).map(group => [group.family, group]));
+const pointerGroup = mechanismGroups.get('pointer');
+const dropGroup = mechanismGroups.get('drop');
+const clickGroup = mechanismGroups.get('click');
+if (!pointerGroup || Number(pointerGroup.count ?? 0) < 2) throw new Error('CardForge template editor projection expected multiple source-observed pointer mechanisms');
+if (!dropGroup || Number(dropGroup.count ?? 0) < 1) throw new Error('CardForge template editor projection expected a source-observed drop mechanism');
+if (!clickGroup || Number(clickGroup.count ?? 0) < 1) throw new Error('CardForge template editor projection expected source-observed click mechanisms');
+const pointerMoveMechanism = (pointerGroup.items ?? []).find(item => item.component === 'TemplateCanvasStage' && item.prop === 'onPointerMove' && item.declaredHandler === 'handlePointerMove');
+const dropMechanism = (dropGroup.items ?? []).find(item => item.component === 'TemplateCanvasStage' && item.prop === 'onDrop' && item.declaredHandler === 'handleDrop');
+if (!pointerMoveMechanism) throw new Error('CardForge template editor projection lost TemplateCanvasStage.onPointerMove handler evidence');
+if (!dropMechanism) throw new Error('CardForge template editor projection lost TemplateCanvasStage.onDrop handler evidence');
+if (templateEditorProjection.interactionMechanisms?.policy?.runtimeOccurrenceProven !== false) throw new Error('CardForge template editor projection incorrectly promoted source event bindings into runtime occurrence');
+if (templateEditorProjection.interactionMechanisms?.policy?.stateEffectsInferred !== false) throw new Error('CardForge template editor projection inferred state effects without resolved evidence');
+if (dropMechanism.resolvedHandler !== null || (dropMechanism.directConsequences ?? []).length !== 0) throw new Error('CardForge TemplateCanvasStage.onDrop should remain consequence-unknown without a resolved handler');
+if (templateEditorProjectionElapsedMs > 2000) throw new Error(`CardForge template editor mechanism projection exceeded 2000 ms budget: ${templateEditorProjectionElapsedMs.toFixed(2)} ms`);
+
+const bulkGeneratorScope = 'src/features/card-generator/components/BulkGenerator.tsx';
+const bulkGeneratorProjectionStarted = process.hrtime.bigint();
+const bulkGeneratorProjection = await callTool('inspect_interface', { project, graphId: scan.graphId, scope: bulkGeneratorScope, limit: 100 });
+const bulkGeneratorProjectionElapsedMs = Number(process.hrtime.bigint() - bulkGeneratorProjectionStarted) / 1_000_000;
+const inputMechanisms = (bulkGeneratorProjection.interactionMechanisms?.families ?? []).find(group => group.family === 'input');
+const dataInputMechanism = (inputMechanisms?.items ?? []).find(item => item.component === 'BulkCsvInputPanel' && item.prop === 'onDataInputChange' && item.declaredHandler === 'handleDataInputChange');
+if (!dataInputMechanism) throw new Error('CardForge BulkGenerator projection lost BulkCsvInputPanel.onDataInputChange mechanism');
+if (dataInputMechanism.resolvedHandler?.name !== 'handleDataInputChange') throw new Error('CardForge BulkGenerator input mechanism did not resolve handleDataInputChange exactly');
+const dataInputStateWrites = new Set((dataInputMechanism.directConsequences ?? []).filter(item => item.kind === 'state-write').map(item => item.name));
+for (const expectedState of ['bulkDataInput', 'lastGeneratedCards', 'pendingRevision']) {
+  if (!dataInputStateWrites.has(expectedState)) throw new Error(`CardForge direct consequence projection lost state write ${expectedState}`);
+}
+if ((dataInputMechanism.directConsequences ?? []).some(item => item.proof !== 'resolved-handler-direct-edge')) throw new Error('CardForge direct consequences must be backed by resolved handler edges');
+if (bulkGeneratorProjection.interactionMechanisms?.policy?.directConsequencesRequireResolvedHandler !== true) throw new Error('CardForge direct consequence policy must require a resolved handler');
+if (bulkGeneratorProjectionElapsedMs > 2000) throw new Error(`CardForge BulkGenerator consequence projection exceeded 2000 ms budget: ${bulkGeneratorProjectionElapsedMs.toFixed(2)} ms`);
+const bulkMechanismQuestion = 'How does the bulk generator handle CSV data changes and reset generated-card state?';
+const bulkMechanismStarted = process.hrtime.bigint();
+const bulkMechanismExplanation = await callTool('investigate', {
+  project,
+  graphId: scan.graphId,
+  question: bulkMechanismQuestion,
+});
+const bulkMechanismElapsedMs = Number(process.hrtime.bigint() - bulkMechanismStarted) / 1_000_000;
+if (bulkMechanismExplanation.intent !== 'implementation-explanation') throw new Error('CardForge BulkGenerator mechanism question did not route to implementation-explanation');
+if (bulkMechanismExplanation.routing?.projection !== 'implementation-mechanism') throw new Error('CardForge BulkGenerator mechanism question lost implementation-mechanism projection');
+if (bulkMechanismExplanation.routing?.questionPlan?.lane !== 'implementation-explanation') throw new Error('CardForge BulkGenerator mechanism question lost explicit plan lane');
+const bulkMechanism = bulkMechanismExplanation.result?.mechanism;
+if (!bulkMechanism || bulkMechanism.policy?.sourceObservedOnly !== true || bulkMechanism.policy?.runtimeExecutionProven !== false || bulkMechanism.policy?.semanticAuthority !== false) {
+  throw new Error('CardForge BulkGenerator mechanism explanation crossed its evidence/authority boundary');
+}
+if (bulkMechanism.selection?.mode !== 'graph-ranked-files') throw new Error(`CardForge BulkGenerator mechanism explanation expected graph-ranked source selection, got ${bulkMechanism.selection?.mode}`);
+if (!(bulkMechanism.files ?? []).some(item => item.file === bulkGeneratorScope)) throw new Error('CardForge BulkGenerator mechanism explanation did not reach the known implementation file');
+const bulkMechanismRelations = bulkMechanism.relationships ?? [];
+const explainedStateWrites = new Set(
+  bulkMechanismRelations
+    .filter(edge => edge.kind === 'invokes' && edge.from?.name === 'handleDataInputChange')
+    .map(edge => edge.to?.name)
+    .filter(Boolean),
+);
+for (const expectedState of ['bulkDataInput', 'lastGeneratedCards', 'pendingRevision']) {
+  if (!explainedStateWrites.has(expectedState)) throw new Error(`CardForge mechanism explanation lost resolved ${expectedState} consequence`);
+}
+if (!Array.isArray(bulkMechanism.decisionEvidence) || bulkMechanism.decisionEvidence.length < 1) throw new Error('CardForge mechanism explanation expected bounded decision evidence');
+if (bulkMechanismElapsedMs > 2000) throw new Error(`CardForge mechanism explanation exceeded 2000 ms budget: ${bulkMechanismElapsedMs.toFixed(2)} ms`);
+
+const studioBaselineCalls = 5;
+const studioProjectionCalls = 1;
+const studioCallReduction = studioBaselineCalls - studioProjectionCalls;
+const studioCallReductionPct = studioCallReduction / studioBaselineCalls;
 
 const probes = [
   {
@@ -374,6 +818,195 @@ const report = {
     workflowQueries: workflowSearch.results.map(result => ({ query: result.query, nodeTotal: result.nodeTotal, edgeTotal: result.edgeTotal })),
   },
   sourceSearch: { total: sourceSearch.total ?? 0, sample: Array.isArray(sourceSearch.matches) ? sourceSearch.matches.slice(0, 5) : [] },
+  semanticEvolution: {
+    baseSha: temporalParentSha,
+    headSha: actualSha,
+    elapsedMs: Number(semanticEvolutionElapsedMs.toFixed(3)),
+    reviewedConceptCount: semanticEvolutionResults.length,
+    results: semanticEvolutionResults,
+    policy: {
+      ephemeralBenchmarkAcceptance: true,
+      persisted: false,
+      acceptedGraphAffected: false,
+    },
+  },
+  semanticAccuracy: {
+    caseId: semanticAccuracy.caseId,
+    reviewedUniverseScopes: semanticAccuracyUniverse,
+    derivationPoolLimit: semanticFullLimit,
+    boundedPresentationLimit: 32,
+    boundedPresentation: {
+      recall: semanticPresentationAccuracy.semanticCandidateScore.recall,
+      precision: semanticPresentationAccuracy.semanticCandidateScore.precision,
+      falsePositiveRate: semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate,
+      requiredFound: semanticPresentationAccuracy.semanticCandidateScore.requiredFound,
+      observed: semanticPresentationAccuracy.semanticCandidateScore.observed,
+      missingRequired: semanticPresentationAccuracy.semanticCandidateScore.missingRequired,
+      falseObserved: semanticPresentationAccuracy.semanticCandidateScore.falseObserved,
+    },
+    recall: semanticAccuracy.semanticCandidateScore.recall,
+    precision: semanticAccuracy.semanticCandidateScore.precision,
+    falsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
+    requiredFound: semanticAccuracy.semanticCandidateScore.requiredFound,
+    required: semanticAccuracy.semanticCandidateScore.required,
+    observed: semanticAccuracy.semanticCandidateScore.observed,
+    missingRequired: semanticAccuracy.semanticCandidateScore.missingRequired,
+    forbiddenPresent: semanticAccuracy.semanticCandidateScore.forbiddenPresent,
+    falseObserved: semanticAccuracy.semanticCandidateScore.falseObserved,
+    correctionBurden: semanticCorrection,
+  },
+  generalSemanticQuestions: {
+    stage: 'T3-general-questions',
+    probes: generalSemanticQuestions,
+    batch: {
+      questionCount: semanticBatchQuestions.length,
+      elapsedMs: Number(semanticBatchElapsedMs.toFixed(3)),
+      graphId: generalSemanticBatch.graphId,
+      errorCount: generalSemanticBatch.counts.error,
+      intents: generalSemanticBatch.items.map(item => item.intent),
+      orientationDepths: batchOrientationDepths,
+    },
+    supportedDepths: ['nucleus', 'expanded', 'exhaustive'],
+    latencyBudgetMs: 2000,
+    policy: {
+      semanticRatherThanTopologyCount: true,
+      structuralOnlyFallbackAllowed: false,
+      productIntentInferred: false,
+      nucleusMayBeNonExhaustive: true,
+      expandedMustExposeAllReviewedCoreCandidates: true,
+      expandedSupportingLayerMayRemainBoundedWithExplicitTruncation: true,
+      exhaustiveCandidateCensusMustReachFullReviewedRecall: true,
+      omissionOutsideDeclaredCompleteScopeMeansAbsence: false,
+    },
+  },
+  competitorReference: {
+    snapshotDate: competitorReference.snapshotDate,
+    policy: competitorReference.policy,
+    references: competitorReference.references.map(reference => ({
+      id: reference.id,
+      vendor: reference.vendor,
+      product: reference.product,
+      category: reference.category,
+      claim: reference.claim,
+      nearestDiDimension: reference.nearestDiDimension,
+      directlyComparableToDI: reference.directlyComparableToDI,
+      comparabilityReason: reference.comparabilityReason,
+      sourceUrl: reference.sourceUrl,
+    })),
+    measuredDiDimensions: {
+      reviewedSemanticPrecision: semanticAccuracy.semanticCandidateScore.precision,
+      reviewedSemanticRecall: semanticAccuracy.semanticCandidateScore.recall,
+      reviewedSemanticFalsePositiveRate: semanticAccuracy.semanticCandidateScore.falsePositiveRate,
+      reviewedSemanticCorrectionScopeCount: semanticCorrection.affectedScopeCount,
+      expandedReviewedCoreRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? null,
+      expandedReviewedCoreScopeCount: reviewedCoreSemanticScopes.length,
+      exhaustiveReviewedSemanticRecall: generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? null,
+      exhaustiveCandidateUniverseExhausted: generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted ?? false,
+      generalQuestionMaxLatencyMs: Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)),
+      generalQuestionExternalToolCallsEach: 1,
+    },
+  },
+  semanticBootstrap: {
+    stage: 'T1-derived-candidates',
+    zeroMetadata: semanticBootstrap.zeroMetadata,
+    observedSemanticCount: semanticBootstrap.observedSemanticCount,
+    declaredSemanticCount: semanticBootstrap.declaredSemanticCount,
+    candidateCount: semanticBootstrap.candidates.length,
+    capacity: semanticBootstrap.capacity,
+    audit: {
+      elapsedMs: Number(semanticAuditElapsedMs.toFixed(3)),
+      factualitySupported: semanticAudit.counts.factualitySupported,
+      factualityNeedsReview: semanticAudit.counts.factualityNeedsReview,
+      coreCandidates: semanticAudit.counts.coreCandidates,
+      supportingCandidates: semanticAudit.counts.supportingCandidates,
+      sampleCore: semanticAudit.items.filter(item => item.coreness.classification === 'core-candidate').slice(0, 8).map(item => ({ scope: item.scope, name: item.proposal.name, reasons: item.coreness.reasons })),
+      sampleSupporting: semanticAudit.items.filter(item => item.coreness.classification === 'supporting-candidate').slice(0, 8).map(item => ({ scope: item.scope, name: item.proposal.name, reasons: item.coreness.reasons })),
+    },
+    first50PrefixStable: semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id),
+    first100PrefixStable: semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id),
+    kindCounts: Object.fromEntries([...new Set(semanticBootstrap.candidates.map(candidate => candidate.proposal.kind))].sort().map(kind => [kind, semanticBootstrap.candidates.filter(candidate => candidate.proposal.kind === kind).length])),
+    scopeRoleCounts: Object.fromEntries(['functional-container', 'direct'].map(role => [role, semanticBootstrap.candidates.filter(candidate => candidate.support.scopeRole === role).length])),
+    elapsedMs: semanticBootstrapElapsedMs,
+    metamorphicElapsedMs: semanticMetamorphicElapsedMs,
+    checkpoints: {
+      at50: { elapsedMs: semanticBootstrap50ElapsedMs, returned: semanticBootstrap50.candidates.length, truncated: semanticBootstrap50.capacity.truncated },
+      at100: { elapsedMs: semanticBootstrap100ElapsedMs, returned: semanticBootstrap100.candidates.length, truncated: semanticBootstrap100.capacity.truncated },
+      full: { requestedLimit: semanticFullLimit, elapsedMs: semanticBootstrapElapsedMs, returned: semanticBootstrap.candidates.length, exhausted: semanticBootstrap.capacity.exhausted },
+    },
+    maxEvidenceFamilyCount: Math.max(0, ...semanticBootstrap.candidates.map(candidate => candidate.support.evidenceFamilyCount)),
+    sample: semanticBootstrap.candidates.slice(0, 8).map(candidate => ({
+      id: candidate.id,
+      name: candidate.proposal.name,
+      kind: candidate.proposal.kind,
+      scope: candidate.scope,
+      evidenceFamilies: candidate.provenance.evidenceFamilies,
+      authority: candidate.authority,
+    })),
+  },
+  interfaceProjection: {
+    scope: studioScope,
+    baselineDecomposition: {
+      calls: studioBaselineCalls,
+      tools: ['search_graph', 'orient_scope', 'search_code', 'check_graph_coverage', 'get_graph_schema'],
+      elapsedMs: Number(studioManualElapsedMs.toFixed(3)),
+      sourceMatches: Number(studioManualSource.total ?? 0),
+    },
+    projection: {
+      calls: studioProjectionCalls,
+      elapsedMs: Number(studioProjectionElapsedMs.toFixed(3)),
+      surfaceCount: studioProjection.surfaces.length,
+      stateCount: studioProjection.state.length,
+      interactionCount: studioProjection.interactions.length,
+      transitionCount: studioProjection.transitions.length,
+      effectCount: studioProjection.effects.length,
+      representationCount: studioProjection.representation.length,
+      cssWorkspaceOverflowEvidence: { id: studioCssEvidence.id, name: studioCssEvidence.name, locator: studioCssEvidence.locator, value: studioCssEvidence.value },
+      runtimeObservationsAvailable: studioProjection.runtimeObservations.available,
+      unknowns: studioProjection.uncertainty.unknowns,
+    },
+    routedQuestion: {
+      intent: studioRoutedQuestion.intent,
+      tool: studioRoutedQuestion.routing?.tool ?? null,
+    },
+    interactionMechanisms: {
+      scope: templateEditorScope,
+      elapsedMs: Number(templateEditorProjectionElapsedMs.toFixed(3)),
+      total: templateEditorProjection.interactionMechanisms.total,
+      families: templateEditorProjection.interactionMechanisms.families.map(group => ({ family: group.family, count: group.count })),
+      pointerMove: pointerMoveMechanism,
+      drop: dropMechanism,
+      runtimeOccurrenceProven: templateEditorProjection.interactionMechanisms.policy.runtimeOccurrenceProven,
+      stateEffectsInferred: templateEditorProjection.interactionMechanisms.policy.stateEffectsInferred,
+      unresolvedDropConsequenceCount: (dropMechanism.directConsequences ?? []).length,
+    },
+    mechanismExplanation: {
+      question: bulkMechanismQuestion,
+      elapsedMs: Number(bulkMechanismElapsedMs.toFixed(3)),
+      selectionMode: bulkMechanism.selection.mode,
+      candidateFileCount: bulkMechanism.selection.candidateFiles.length,
+      matchedFileCount: bulkMechanism.files.length,
+      keyEntityCount: bulkMechanism.keyEntities.length,
+      resolvedRelationshipCount: bulkMechanism.relationships.length,
+      decisionEvidenceCount: bulkMechanism.decisionEvidence.length,
+      explainedStateWrites: [...explainedStateWrites].sort(),
+    },
+    directConsequences: {
+      scope: bulkGeneratorScope,
+      elapsedMs: Number(bulkGeneratorProjectionElapsedMs.toFixed(3)),
+      resolvedHandlerCount: bulkGeneratorProjection.interactionMechanisms.resolvedHandlerCount,
+      directConsequenceMechanismCount: bulkGeneratorProjection.interactionMechanisms.directConsequenceMechanismCount,
+      directConsequenceCount: bulkGeneratorProjection.interactionMechanisms.directConsequenceCount,
+      dataInput: {
+        component: dataInputMechanism.component,
+        prop: dataInputMechanism.prop,
+        declaredHandler: dataInputMechanism.declaredHandler,
+        resolvedHandler: dataInputMechanism.resolvedHandler,
+        consequences: dataInputMechanism.directConsequences,
+      },
+    },
+    callReduction: studioCallReduction,
+    callReductionPct: Number(studioCallReductionPct.toFixed(4)),
+  },
   queryArtifacts: {
     fullGraphBytes,
     indexBytes: queryArtifactBytes.indexBytes,
@@ -415,6 +1048,19 @@ const summary = [
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
+  `- Semantic derivation accuracy (full-capacity census, 7-scope reviewed universe): **precision ${(semanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
+  `- Semantic bounded presentation (top 32 from same pool): **precision ${(semanticPresentationAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(semanticPresentationAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(semanticPresentationAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}%**`,
+  `- Reviewed semantic correction burden: **${semanticCorrection.affectedScopeCount} affected scope(s) / ${semanticCorrection.reviewedRequiredCount} required concepts (${(semanticCorrection.rate * 100).toFixed(0)}%)**`,
+  `- T3 semantic query depth: **nucleus + expanded + exhaustive / expanded reviewed-core recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'expanded')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% across ${reviewedCoreSemanticScopes.length} reviewed core scope(s) / exhaustive reviewed-candidate recall ${((generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.reviewedDerivedRecall ?? 0) * 100).toFixed(0)}% / exhaustive census=${generalSemanticQuestions.find(item => item.semanticDepth === 'exhaustive')?.semanticCandidateUniverseExhausted === true} / max ${Math.max(...generalSemanticQuestions.map(item => item.elapsedMs)).toFixed(3)} ms / 1 external DI call each**`,
+  `- Mixed semantic batch: **${semanticBatchQuestions.length} questions / one graph context / intents ${[...new Set(generalSemanticBatch.items.map(item => item.intent))].join(', ')} / depths ${batchOrientationDepths.join(' → ')} / ${semanticBatchElapsedMs.toFixed(3)} ms / errors ${generalSemanticBatch.counts.error}**`,
+  `- Semantic capacity census: **${semanticBootstrap.capacity.eligibleCandidateCount} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes; ${semanticBootstrap.capacity.rejectedScopeCount} rejected; full exhausted=${semanticBootstrap.capacity.exhausted}; 50→100 stable=${semanticBootstrap50.candidates.every((candidate, index) => semanticBootstrap100.candidates[index]?.id === candidate.id)}; 100→full stable=${semanticBootstrap100.candidates.every((candidate, index) => semanticBootstrap.candidates[index]?.id === candidate.id)}**`,
+  `- Semantic factuality/core audit: **${semanticAudit.counts.factualitySupported} factuality-supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core-candidate / ${semanticAudit.counts.supportingCandidates} supporting-candidate / ${semanticAuditElapsedMs.toFixed(3)} ms**`,
+  `- Semantic revision interpretation: **${semanticEvolutionResults.length} reviewed parent concepts independently evaluated against head; ${semanticEvolutionResults.map(item => item.status).join(' / ')} / ${semanticEvolutionResults.filter(item => item.reviewRequired).length} require review / ${semanticEvolutionElapsedMs.toFixed(3)} ms**`,
+  `- Studio interface projection: **${studioProjection.surfaces.length} surfaces / ${studioProjection.state.length} state facts / ${studioProjection.transitions.length} transitions / ${studioProjection.representation.length} representation facts / ${studioProjectionElapsedMs.toFixed(3)} ms**`,
+  `- Studio decomposition replay: **${studioBaselineCalls} primitive calls → ${studioProjectionCalls} projection call (${(studioCallReductionPct * 100).toFixed(0)}% fewer)**`,
+  `- Template-editor mechanisms: **${templateEditorProjection.interactionMechanisms.total} source-observed bindings across ${templateEditorProjection.interactionMechanisms.families.length} families / ${templateEditorProjectionElapsedMs.toFixed(3)} ms**`,
+  `- Proven direct consequences: **${bulkGeneratorProjection.interactionMechanisms.directConsequenceCount} direct nodes across ${bulkGeneratorProjection.interactionMechanisms.directConsequenceMechanismCount} mechanisms / ${bulkGeneratorProjectionElapsedMs.toFixed(3)} ms**`,
+  `- Natural-language mechanism explanation: **${bulkMechanism.files.length} matched files / ${bulkMechanism.keyEntities.length} key entities / ${bulkMechanism.relationships.length} resolved relationships / ${bulkMechanism.decisionEvidence.length} decision evidence items / ${bulkMechanismElapsedMs.toFixed(3)} ms**`,
   `- CardForge parent→pinned temporal verification: **${temporalElapsedMs.toFixed(3)} ms — ${temporalVerification.delta.changedFileCount} changed files / ${temporalVerification.unexpectedChanges.total} unexpected graph changes**`,
   `- DI + CardForge portfolio synthesis: **${portfolioElapsedMs.toFixed(3)} ms / 1000 ms budget — ${portfolio.sharedDependencyTotal} shared dependencies / ${portfolio.crossRepositoryLinkTotal} cross-repo links**`,
   `- Canonical current-graph hot path: **cold ${canonicalColdWallMs.toFixed(3)} ms → p50 ${canonicalHotP50Ms.toFixed(3)} ms / p95 ${canonicalHotP95Ms.toFixed(3)} ms across 12 process-cache-evicted reads (${canonicalSpeedupVsP50.toFixed(2)}× vs p50)**`,
@@ -423,6 +1069,14 @@ const summary = [
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
   `- Derived motif calibration: **pipeline ${pipelineMotif.confidence} (${pipelineMotif.signals.length} signals, ${pipelineMotifElapsedMs.toFixed(3)} ms) / persistence-owner ${persistenceMotif.confidence} (${persistenceMotif.signals.length} signals, ${persistenceMotifElapsedMs.toFixed(3)} ms) / 1000 ms budget**`,
+  '',
+  '## Published competitor reference snapshot',
+  '',
+  '| Vendor / benchmark | Vendor-published claim | Nearest DI measurement | Directly comparable? |',
+  '| --- | --- | --- | --- |',
+  ...competitorReference.references.map(reference => `| ${reference.vendor} — ${reference.product} | ${reference.claim.summary.replace(/\|/gu, '\\|')} | ${reference.nearestDiDimension} | No — ${reference.comparabilityReason.replace(/\|/gu, '\\|')} |`),
+  '',
+  `> External benchmark claims are a dated ${competitorReference.snapshotDate} reference snapshot from the vendors' own published material. DI does not rank itself above or below those products unless the same dataset, grader, configuration, and metric are replayed.`,
   '',
   '## Representative structural agent probes',
   '',
