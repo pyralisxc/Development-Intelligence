@@ -6,6 +6,15 @@ export interface CanonicalPortfolioReconcileOptions {
   repositories?: string[];
   includeArchived?: boolean;
   limit?: number;
+  rotationEpochMs?: number;
+  rotationIntervalMs?: number;
+}
+
+export function canonicalPortfolioRotationIndex(epochMs: number, candidateCount: number, intervalMs = 60_000): number {
+  if (!Number.isFinite(epochMs) || epochMs < 0) throw new Error('rotation epoch must be a finite non-negative timestamp');
+  if (!Number.isInteger(candidateCount) || candidateCount <= 0) throw new Error('rotation candidate count must be a positive integer');
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) throw new Error('rotation interval must be positive');
+  return Math.floor(epochMs / intervalMs) % candidateCount;
 }
 
 export interface CanonicalPortfolioReconcileItem {
@@ -28,9 +37,20 @@ export async function reconcileCanonicalPortfolio(options: CanonicalPortfolioRec
   const owners = portfolio.owners;
   const discovered = portfolio.discovered;
   const candidates = portfolio.selected;
+  const activeCandidates = options.includeArchived === true
+    ? candidates
+    : candidates.filter(repository => !repository.archived && !repository.disabled);
+  const rotationRequested = options.rotationEpochMs !== undefined;
+  const rotationIntervalMs = Math.max(1, Math.trunc(options.rotationIntervalMs ?? 60_000));
+  const rotationIndex = rotationRequested && activeCandidates.length
+    ? canonicalPortfolioRotationIndex(options.rotationEpochMs!, activeCandidates.length, rotationIntervalMs)
+    : null;
+  const selectedCandidates = rotationIndex === null
+    ? candidates.slice(0, limit)
+    : [activeCandidates[rotationIndex]!];
 
   const items: CanonicalPortfolioReconcileItem[] = [];
-  for (const repository of candidates.slice(0, limit)) {
+  for (const repository of selectedCandidates) {
     const project = repository.fullName;
     if ((repository.archived || repository.disabled) && options.includeArchived !== true) {
       items.push({
@@ -102,7 +122,7 @@ export async function reconcileCanonicalPortfolio(options: CanonicalPortfolioRec
     discoveredRepositories: discovered.length,
     selectedRepositories: candidates.length,
     processedRepositories: items.length,
-    truncated: candidates.length > limit,
+    truncated: rotationRequested ? activeCandidates.length > items.length : candidates.length > limit,
     counts,
     items,
     policy: {
@@ -110,6 +130,12 @@ export async function reconcileCanonicalPortfolio(options: CanonicalPortfolioRec
       derivedState: 'canonical-current-graph',
       sequential: true,
       cacheEviction: 'per-repository',
+      selection: rotationRequested ? 'rotating-single-repository' : 'bounded-prefix',
+      ...(rotationRequested ? {
+        rotationIndex,
+        rotationSize: activeCandidates.length,
+        rotationIntervalMs,
+      } : {}),
       historicalRevisionsPersisted: false,
     },
   };
