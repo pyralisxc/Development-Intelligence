@@ -11,6 +11,7 @@ import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
+import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import { parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { currentVercelOidcToken, withVercelRequestContext } from './vercelRequestContext.js';
@@ -190,7 +191,7 @@ export function createDevelopmentIntelligenceServer() {
         return;
       }
       try {
-        const result = await reconcileCanonicalPortfolio({
+        const result = await reconcileCanonicalPortfolioIsolated({
           rotationEpochMs: Date.now(),
           rotationIntervalMs: 60_000,
         });

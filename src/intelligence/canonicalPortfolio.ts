@@ -1,5 +1,5 @@
 import { clearGraphCache, graphStatus } from './service.js';
-import { authorizedInstallationPortfolio } from './installationPortfolio.js';
+import { authorizedInstallationPortfolio, type GithubInstallationRepository } from './installationPortfolio.js';
 
 export interface CanonicalPortfolioReconcileOptions {
   owners?: string[];
@@ -28,7 +28,64 @@ export interface CanonicalPortfolioReconcileItem {
   reason?: string;
 }
 
-export async function reconcileCanonicalPortfolio(options: CanonicalPortfolioReconcileOptions = {}): Promise<Record<string, unknown>> {
+export async function reconcileCanonicalProject(repository: GithubInstallationRepository): Promise<CanonicalPortfolioReconcileItem> {
+  const project = repository.fullName;
+  const startedAt = Date.now();
+  console.info(JSON.stringify({ event: 'canonical-reconcile-start', project, defaultBranch: repository.defaultBranch }));
+  let item: CanonicalPortfolioReconcileItem;
+  try {
+    const status = await graphStatus(project) as any;
+    const persistence = status?.observability?.persistence ?? {};
+    const coldBuildMs = typeof status?.observability?.coldBuild?.totalMs === 'number'
+      ? status.observability.coldBuild.totalMs
+      : null;
+    const outcome: CanonicalPortfolioReconcileItem['outcome'] =
+      persistence.loadState === 'hit'
+        ? 'hit'
+        : persistence.saveState === 'stored'
+          ? 'stored'
+          : persistence.durable === false
+            ? 'not-configured'
+            : persistence.loadState === 'error' || persistence.saveState === 'error'
+              ? 'error'
+              : 'not-configured';
+    item = {
+      project,
+      defaultBranch: repository.defaultBranch,
+      revision: typeof status?.revision === 'string' ? status.revision : undefined,
+      outcome,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      persistence,
+      coldBuildMs,
+      ...(outcome === 'error' && typeof persistence.error === 'string' ? { reason: persistence.error } : {}),
+    };
+  } catch (error) {
+    item = {
+      project,
+      defaultBranch: repository.defaultBranch,
+      outcome: 'error',
+      durationMs: Math.max(0, Date.now() - startedAt),
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearGraphCache(project);
+  }
+  console.info(JSON.stringify({
+    event: 'canonical-reconcile-complete',
+    project,
+    outcome: item.outcome,
+    durationMs: Math.max(0, Date.now() - startedAt),
+    cacheEvicted: true,
+  }));
+  return item;
+}
+
+export type CanonicalProjectReconciler = (repository: GithubInstallationRepository) => Promise<CanonicalPortfolioReconcileItem>;
+
+export async function reconcileCanonicalPortfolio(
+  options: CanonicalPortfolioReconcileOptions = {},
+  reconcileProject: CanonicalProjectReconciler = reconcileCanonicalProject,
+): Promise<Record<string, unknown>> {
   const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 250);
   const portfolio = await authorizedInstallationPortfolio({
     ...(options.owners?.length ? { owners: options.owners } : {}),
@@ -62,54 +119,7 @@ export async function reconcileCanonicalPortfolio(options: CanonicalPortfolioRec
       });
       continue;
     }
-
-    const startedAt = Date.now();
-    console.info(JSON.stringify({ event: 'canonical-reconcile-start', project, defaultBranch: repository.defaultBranch }));
-    try {
-      const status = await graphStatus(project) as any;
-      const persistence = status?.observability?.persistence ?? {};
-      const coldBuildMs = typeof status?.observability?.coldBuild?.totalMs === 'number'
-        ? status.observability.coldBuild.totalMs
-        : null;
-      const outcome: CanonicalPortfolioReconcileItem['outcome'] =
-        persistence.loadState === 'hit'
-          ? 'hit'
-          : persistence.saveState === 'stored'
-            ? 'stored'
-            : persistence.durable === false
-              ? 'not-configured'
-              : persistence.loadState === 'error' || persistence.saveState === 'error'
-                ? 'error'
-                : 'not-configured';
-      items.push({
-        project,
-        defaultBranch: repository.defaultBranch,
-        revision: typeof status?.revision === 'string' ? status.revision : undefined,
-        outcome,
-        durationMs: Math.max(0, Date.now() - startedAt),
-        persistence,
-        coldBuildMs,
-        ...(outcome === 'error' && typeof persistence.error === 'string' ? { reason: persistence.error } : {}),
-      });
-    } catch (error) {
-      items.push({
-        project,
-        defaultBranch: repository.defaultBranch,
-        outcome: 'error',
-        durationMs: Math.max(0, Date.now() - startedAt),
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      clearGraphCache(project);
-      const item = items.at(-1);
-      console.info(JSON.stringify({
-        event: 'canonical-reconcile-complete',
-        project,
-        outcome: item?.project === project ? item.outcome : 'unknown',
-        durationMs: Math.max(0, Date.now() - startedAt),
-        cacheEvicted: true,
-      }));
-    }
+    items.push(await reconcileProject(repository));
   }
 
   const counts = Object.fromEntries(['hit', 'stored', 'not-configured', 'error', 'skipped'].map(outcome => [
