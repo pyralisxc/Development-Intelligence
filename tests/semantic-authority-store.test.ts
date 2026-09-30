@@ -120,7 +120,7 @@ test('semantic change verification is revision-bound, CAS-protected, and pruned 
     const stored = await persistSemanticChangeVerification(project, verification, empty.etag);
     assert.equal(stored.state, 'stored');
     assert.equal(stored.ledger?.changeVerifications?.length, 1);
-    assert.deepEqual(stored.ledger?.changeVerifications[0]?.evidenceIds, ['evidence:removed-owner', 'evidence:removed-route']);
+    assert.deepEqual(stored.ledger?.changeVerifications?.[0]?.evidenceIds, ['evidence:removed-owner', 'evidence:removed-route']);
 
     const conflict = await persistSemanticChangeVerification(project, verification, empty.etag);
     assert.equal(conflict.state, 'conflict');
