@@ -327,7 +327,7 @@ export function createDevelopmentIntelligenceServer() {
         if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
         if (typeof body.auditRef !== 'string' || !/^SEM-[0-9A-F]{8}$/u.test(body.auditRef)) throw Object.assign(new Error('auditRef must be a stable SEM identifier'), { status: 400 });
         if (!Array.isArray(body.evidenceIds)) throw Object.assign(new Error('evidenceIds must be an array'), { status: 400 });
-        const evidenceIds = [...new Set(body.evidenceIds.filter((value: unknown): value is string => typeof value === 'string').map((value: string) => value.trim()).filter(Boolean))];
+        const evidenceIds: string[] = [...new Set((body.evidenceIds as unknown[]).filter((value): value is string => typeof value === 'string').map(value => value.trim()).filter(Boolean))];
         if (!evidenceIds.length) throw Object.assign(new Error('semantic change verification requires explicit evidence ids'), { status: 400 });
         const ref = typeof body.ref === 'string' && body.ref ? body.ref : undefined;
         const graphId = typeof body.graphId === 'string' && body.graphId ? body.graphId : undefined;

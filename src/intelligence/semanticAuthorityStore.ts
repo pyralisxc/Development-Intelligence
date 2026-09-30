@@ -28,7 +28,7 @@ export interface SemanticAuthorityLedger {
   generation: number;
   updatedAt: string;
   records: StoredSemanticAuthorityRecord[];
-  changeVerifications: SemanticChangeVerificationRecord[];
+  changeVerifications?: SemanticChangeVerificationRecord[];
 }
 
 export interface SemanticAuthorityLoad {

@@ -119,7 +119,7 @@ test('semantic change verification is revision-bound, CAS-protected, and pruned 
     };
     const stored = await persistSemanticChangeVerification(project, verification, empty.etag);
     assert.equal(stored.state, 'stored');
-    assert.equal(stored.ledger?.changeVerifications.length, 1);
+    assert.equal(stored.ledger?.changeVerifications?.length, 1);
     assert.deepEqual(stored.ledger?.changeVerifications[0]?.evidenceIds, ['evidence:removed-owner', 'evidence:removed-route']);
 
     const conflict = await persistSemanticChangeVerification(project, verification, empty.etag);
@@ -127,7 +127,7 @@ test('semantic change verification is revision-bound, CAS-protected, and pruned 
 
     const compacted = await compactSemanticAuthorityToCurrentAccepted(project);
     assert.equal(compacted.state, 'stored');
-    assert.deepEqual(compacted.ledger?.changeVerifications, []);
+    assert.deepEqual(compacted.ledger?.changeVerifications ?? [], []);
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });
@@ -175,7 +175,7 @@ test('semantic authority compaction keeps only current accepted meanings and dro
     assert.equal(compacted.ledger?.records[0]?.review.accepted, true);
     assert.deepEqual(compacted.ledger?.records[0]?.review.history, []);
     assert.deepEqual(compacted.ledger?.records[0]?.review.lineage, { predecessorMeaningIds: [], successorMeaningIds: [] });
-    assert.deepEqual(compacted.ledger?.changeVerifications, []);
+    assert.deepEqual(compacted.ledger?.changeVerifications ?? [], []);
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });
