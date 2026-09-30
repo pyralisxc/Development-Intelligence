@@ -1,5 +1,6 @@
 import { clearGraphCache, graphStatus } from './service.js';
-import { authorizedInstallationPortfolio, type GithubInstallationRepository } from './installationPortfolio.js';
+import { authorizedInstallationPortfolio } from './installationPortfolio.js';
+import type { GithubInstallationRepository } from '../source/repositoryCredential.js';
 
 export interface CanonicalPortfolioReconcileOptions {
   owners?: string[];

@@ -1,6 +1,6 @@
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads';
 import { reconcileCanonicalPortfolio, reconcileCanonicalProject, type CanonicalPortfolioReconcileItem, type CanonicalPortfolioReconcileOptions } from './canonicalPortfolio.js';
-import type { GithubInstallationRepository } from './installationPortfolio.js';
+import type { GithubInstallationRepository } from '../source/repositoryCredential.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../vercelRequestContext.js';
 
 interface WorkerInput {
@@ -92,15 +92,17 @@ export async function reconcileCanonicalPortfolioIsolated(options: CanonicalPort
 
 async function workerMain(input: WorkerInput): Promise<void> {
   const headers = input.oidcToken ? { 'x-vercel-oidc-token': input.oidcToken } : {};
-  const repository = {
-    name: input.project.split('/').at(-1) ?? input.project,
+  const [owner = '', name = input.project] = input.project.split('/');
+  const repository: GithubInstallationRepository = {
+    owner,
+    name,
     fullName: input.project,
     defaultBranch: input.defaultBranch,
     private: false,
     fork: false,
     archived: false,
     disabled: false,
-  } as GithubInstallationRepository;
+  };
   const item = await withVercelRequestContext(headers, async () => await reconcileCanonicalProject(repository));
   parentPort?.postMessage({ ok: true, item } satisfies WorkerEnvelope);
 }
