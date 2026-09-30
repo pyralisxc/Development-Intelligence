@@ -162,12 +162,41 @@ function changeCounts(diff: any): { added: number; removed: number; changed: num
   };
 }
 
+export function canonicalReconcileCronAuthorized(headers: Record<string, unknown>, secret = process.env.CRON_SECRET): boolean {
+  const expected = typeof secret === 'string' ? secret.trim() : '';
+  if (!expected) return false;
+  const raw = headers.authorization;
+  const authorization = Array.isArray(raw) ? raw[0] : typeof raw === 'string' ? raw : '';
+  return authorization === `Bearer ${expected}`;
+}
+
 export function createDevelopmentIntelligenceServer() {
   return http.createServer((req: any, res: any) => withVercelRequestContext(req.headers ?? {}, async () => {
     if (!validateHost(req, res)) return;
     const requestUrl = new URL(req.url ?? '/', 'http://development-intelligence.local');
     if (requestUrl.pathname === '/health' && req.method === 'GET') {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
+      return;
+    }
+    if (requestUrl.pathname === '/internal/reconcile-canonical' && req.method === 'GET') {
+      const cronSecret = process.env.CRON_SECRET?.trim();
+      if (!cronSecret) {
+        json(res, 503, { error: 'Canonical reconciliation cron is not configured' });
+        return;
+      }
+      if (!canonicalReconcileCronAuthorized(req.headers ?? {}, cronSecret)) {
+        json(res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      try {
+        const result = await reconcileCanonicalPortfolio({ limit: 12 });
+        json(res, 200, { trigger: 'vercel-cron', ...result });
+      } catch (error) {
+        json(res, (error as any)?.status ?? 500, {
+          error: error instanceof Error ? error.message : String(error),
+          trigger: 'vercel-cron',
+        });
+      }
       return;
     }
     if (await handleOAuthHttpRequest(req, res, requestUrl)) return;

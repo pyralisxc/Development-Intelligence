@@ -4,5 +4,11 @@
     "deploymentEnabled": {
       "work/**": false
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/internal/reconcile-canonical",
+      "schedule": "*/5 * * * *"
+    }
+  ]
 }

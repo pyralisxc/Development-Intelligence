@@ -285,3 +285,12 @@ There is deliberately little service-local recovery procedure:
 - damaged accepted checkpoint → regenerate/seal from the corresponding source revision and review the repair through Git.
 
 The canonical repository remains usable even if Development Intelligence is unavailable.
+
+## Automatic canonical currentness reconciliation
+
+Production registers a Vercel Cron request to `/internal/reconcile-canonical` every five minutes. Vercel supplies `Authorization: Bearer $CRON_SECRET`; the route fails closed when `CRON_SECRET` is missing or the bearer value does not match.
+
+The cron route calls the existing bounded canonical portfolio reconciler. For every authorized repository it re-resolves the provider-authoritative default branch, then uses the existing canonical update plane to load or advance current W. Ordinary query/read surfaces remain mutation-free.
+
+This central fallback intentionally catches default-branch changes made outside Conductor as well as missed provider events. Preview, work, and release branch pushes do not become canonical merely because they were pushed. A future Conductor post-promotion reconcile hint may reduce latency, but it is only an acceleration hint: DI remains responsible for validating the repository default branch before publishing canonical current state.
+
