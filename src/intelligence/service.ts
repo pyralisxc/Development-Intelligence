@@ -915,11 +915,35 @@ export async function graphContext(project: string, options: { ref?: string; gra
     const canonical = /^repo-([0-9a-f]{40}|[0-9a-f]{64})-([0-9a-f]{10})$/u.exec(options.graphId);
     if (canonical) {
       const sha = canonical[1]!;
+      const cachedCanonical = repositoryCache.get(cacheKey(project, sha, 'canonical'));
+      if (cachedCanonical) {
+        const value = await cachedCanonical.promise;
+        if (value.graph.graphId === options.graphId && value.revision.sha === sha) {
+          value.touchedAt = Date.now();
+          pruneGraphCaches(repositoryRetentionId(cacheKey(project, sha, 'canonical')));
+          return { graph: value.graph, revision: value.revision };
+        }
+      }
+
+      const cachedReplay = repositoryCache.get(cacheKey(project, sha, 'replay'));
+      if (cachedReplay) {
+        const value = await cachedReplay.promise;
+        if (value.graph.graphId === options.graphId && value.revision.sha === sha) {
+          value.touchedAt = Date.now();
+          pruneGraphCaches(repositoryRetentionId(cacheKey(project, sha, 'replay')));
+          return { graph: value.graph, revision: value.revision };
+        }
+      }
+
       let repository: CachedRepositoryGraph;
       try {
+        const current = await buildCachedRepositoryGraph(project);
+        if (current.revision.sha === sha && current.graph.graphId === options.graphId) {
+          return { graph: current.graph, revision: current.revision };
+        }
         repository = await buildCachedRepositoryGraph(project, `commit:${sha}`);
       } catch (error) {
-        repository = await buildCachedRepositoryGraph(project);
+        repository = await buildCachedRepositoryGraph(project, `commit:${sha}`);
         if (repository.revision.sha !== sha) throw error;
       }
       if (repository.graph.graphId !== options.graphId) throw new Error(`Canonical graph identifier does not match the current analyzer result: ${options.graphId}`);

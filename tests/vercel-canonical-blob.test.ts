@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
-import { clearGraphCache, graphStatus, scanGraph } from '../src/intelligence/service.js';
+import { clearGraphCache, currentGraph, graphCacheDiagnostics, graphStatus, scanGraph } from '../src/intelligence/service.js';
 import { searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
 import {
@@ -232,6 +232,22 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.equal(second.working.graphId, first.working.graphId);
     assert.equal(second.observability.queryArtifacts.state, 'referenced');
     assert.equal(item.blob.blobs.size, firstBlobCount, 'canonical hit must not republish derived artifacts');
+  } finally {
+    cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('canonical graphId lookup reuses the warm canonical cache instead of creating replay work', async () => {
+  const item = await fixture();
+  try {
+    const canonical = await graphStatus(item.project) as any;
+    assert.equal(canonical.observability.persistence.mode, 'vercel-private-blob');
+    assert.equal((graphCacheDiagnostics() as any).repository.entries, 1);
+
+    const byGraphId = await currentGraph(item.project, undefined, canonical.working.graphId);
+    assert.equal(byGraphId.graphId, canonical.working.graphId);
+    assert.equal(byGraphId.repositoryRevision, canonical.revision);
+    assert.equal((graphCacheDiagnostics() as any).repository.entries, 1, 'graphId lookup must reuse canonical cache provenance');
   } finally {
     cleanupEnv(); await item.blob.close(); await fs.rm(item.root, { recursive: true, force: true });
   }
