@@ -1121,7 +1121,7 @@ async function semanticLifecycleOverview(project: string): Promise<Record<string
       {
         stage: 'verification',
         authority: false,
-        description: 'Verification requires explicit evidence IDs and remains independent from acceptance. Verification can strengthen evidence, but only current-revision human acceptance approves a semantic change for Main promotion.',
+        description: 'Verification requires explicit evidence IDs and remains independent from acceptance. A trusted human or delegated agent may verify the factual SEM change itself; that verification can satisfy the Preview promotion gate without becoming semantic acceptance.',
       },
       {
         stage: 'evolution',
@@ -1131,7 +1131,7 @@ async function semanticLifecycleOverview(project: string): Promise<Record<string
       {
         stage: 'promotion',
         authority: 'preview-gate',
-        description: 'Only current-revision human acceptance satisfies a changed semantic promotion item. Previous acceptance and verification alone never silently approve a new semantic delta.',
+        description: 'A current-revision human acceptance or explicit current-revision SEM verification may satisfy a promotion item. Verification proves the observed change, not product intent; ambiguous or disputed changes remain directly auditable by SEM ID.',
       },
     ],
     authority: {

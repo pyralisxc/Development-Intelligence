@@ -6,7 +6,7 @@ import {
 } from './canonicalStore.js';
 import { workingToAcceptedGraph } from './checkpoint.js';
 import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph } from './canonicalStore.js';
-import type { SemanticMeaningReview } from './semanticReview.js';
+import type { SemanticChangeVerificationRecord, SemanticMeaningReview } from './semanticReview.js';
 import type { SemanticPromotionGate } from './semanticPromotion.js';
 
 const AUTHORITY_PATH = 'semantic/authority-v1.json';
@@ -28,6 +28,7 @@ export interface SemanticAuthorityLedger {
   generation: number;
   updatedAt: string;
   records: StoredSemanticAuthorityRecord[];
+  changeVerifications?: SemanticChangeVerificationRecord[];
 }
 
 export interface SemanticAuthorityLoad {
@@ -93,6 +94,22 @@ function validateReview(review: SemanticMeaningReview): void {
   if (review.verification && review.verification.evidenceIds.length < 1) throw new Error('Semantic verification must retain explicit evidence ids');
 }
 
+function validateChangeVerification(value: SemanticChangeVerificationRecord): void {
+  if (value.version !== 1 || !value.changeId || !/^SEM-[0-9A-F]{8}$/u.test(value.auditRef)) {
+    throw new Error('Semantic change verification identity is malformed');
+  }
+  if (!exactRevision(value.targetRevision) || value.targetRevision === null) {
+    throw new Error('Semantic change verification target revision must be an exact Git object id');
+  }
+  if (!value.actor?.id?.trim() || !['human', 'ai-model'].includes(value.actor.kind)) {
+    throw new Error('Semantic change verification actor must be human or ai-model');
+  }
+  if (!value.at || Number.isNaN(Date.parse(value.at))) throw new Error('Semantic change verification timestamp is invalid');
+  if (!Array.isArray(value.evidenceIds) || value.evidenceIds.length < 1 || value.evidenceIds.some(id => !id.trim())) {
+    throw new Error('Semantic change verification requires explicit evidence ids');
+  }
+}
+
 function validateLedger(value: unknown, expectedProject: string): SemanticAuthorityLedger {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Semantic authority ledger must be an object');
   const ledger = value as SemanticAuthorityLedger;
@@ -109,7 +126,17 @@ function validateLedger(value: unknown, expectedProject: string): SemanticAuthor
     }
     validateReview(item.review);
   }
-  return ledger;
+  const changeVerifications = Array.isArray((ledger as any).changeVerifications)
+    ? (ledger as any).changeVerifications as SemanticChangeVerificationRecord[]
+    : [];
+  if (changeVerifications.length > MAX_AUTHORITY_RECORDS) throw new Error('Semantic change verification set exceeds the bounded record limit');
+  const changeIds = new Set<string>();
+  for (const verification of changeVerifications) {
+    validateChangeVerification(verification);
+    if (changeIds.has(verification.changeId)) throw new Error('Semantic authority ledger contains duplicate semantic change verifications');
+    changeIds.add(verification.changeId);
+  }
+  return { ...ledger, changeVerifications };
 }
 
 export async function loadSemanticAuthority(project: string): Promise<SemanticAuthorityLoad> {
@@ -176,11 +203,55 @@ export async function persistSemanticReviews(
     generation: (current.ledger?.generation ?? 0) + 1,
     updatedAt: now,
     records,
+    changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
   };
   const body = JSON.stringify(ledger);
   if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');
   const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
   return { state: written.state, etag: written.etag, ledger: written.state === 'stored' ? ledger : current.ledger };
+}
+
+export async function persistSemanticChangeVerification(
+  project: string,
+  verification: SemanticChangeVerificationRecord,
+  expectedEtag: string | null,
+): Promise<SemanticAuthorityWrite> {
+  validateChangeVerification(verification);
+  const current = await loadSemanticAuthority(project);
+  if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
+  if (current.state === 'invalid') throw new Error(current.error ?? 'Semantic authority ledger is invalid');
+  if (current.etag !== expectedEtag) return { state: 'conflict', etag: current.etag, ledger: current.ledger };
+
+  const now = new Date().toISOString();
+  const changeVerifications = [
+    ...(current.ledger?.changeVerifications ?? []).filter(item => item.changeId !== verification.changeId),
+    {
+      ...verification,
+      actor: { ...verification.actor },
+      evidenceIds: [...new Set(verification.evidenceIds)].sort(),
+    },
+  ].sort((a, b) => a.changeId.localeCompare(b.changeId));
+  const ledger: SemanticAuthorityLedger = {
+    formatVersion: 1,
+    project,
+    generation: (current.ledger?.generation ?? 0) + 1,
+    updatedAt: now,
+    records: [...(current.ledger?.records ?? [])],
+    changeVerifications,
+  };
+  const body = JSON.stringify(ledger);
+  if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');
+  const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
+  return { state: written.state, etag: written.etag, ledger: written.state === 'stored' ? ledger : current.ledger };
+}
+
+export function semanticChangeVerificationsAtRevision(
+  ledger: SemanticAuthorityLedger | null,
+  revision: string | null,
+): SemanticChangeVerificationRecord[] {
+  return (ledger?.changeVerifications ?? [])
+    .filter(item => item.targetRevision === revision)
+    .map(item => ({ ...item, actor: { ...item.actor }, evidenceIds: [...item.evidenceIds] }));
 }
 
 export async function persistSemanticReview(
@@ -236,6 +307,7 @@ export async function compactSemanticAuthorityToCurrentAccepted(
     generation: current.ledger.generation + 1,
     updatedAt: now,
     records,
+    changeVerifications: [],
   };
   const body = JSON.stringify(ledger);
   if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');

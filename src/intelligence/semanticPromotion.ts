@@ -1,7 +1,7 @@
 import type { SemanticCandidate, SemanticCandidateKind } from './semanticBootstrap.js';
 import { stableHash } from '../util/hash.js';
 import { evaluateSemanticEvolution, type SemanticEvolutionAssessment, type SemanticRealizationStatus } from './semanticEvolution.js';
-import { semanticMeaningReview, type SemanticMeaningReview } from './semanticReview.js';
+import { semanticMeaningReview, type SemanticChangeVerificationRecord, type SemanticMeaningReview } from './semanticReview.js';
 
 export type SemanticPromotionApprovalBasis = 'ai-verified' | 'human-accepted' | 'human-verified';
 export type SemanticPromotionChangeKind = 'added' | Exclude<SemanticRealizationStatus, 'preserved'>;
@@ -39,6 +39,7 @@ export interface SemanticPromotionReviewItem {
   alternatives: SemanticPromotionMeaningSnapshot[];
   reasons: string[];
   evolution: SemanticEvolutionAssessment | null;
+  verification: SemanticChangeVerificationRecord | null;
 }
 
 export interface SemanticPromotionGate {
@@ -55,8 +56,8 @@ export interface SemanticPromotionGate {
     stableMeaningsOmitted: true;
     previousRevisionApprovalDoesNotApprovePreviewDelta: true;
     acceptedIsNotVerified: true;
-    approvalAlternatives: readonly ['human-accepted'];
-    verificationDoesNotApprovePromotion: true;
+    approvalAlternatives: readonly ['human-accepted', 'human-verified', 'ai-verified'];
+    verificationCanApprovePromotion: true;
     itemizedAuditManifest: true;
     stableAuditReferences: true;
     desiredOutcomeInferred: false;
@@ -75,6 +76,26 @@ function reviewApprovalBases(
   if (review.verification?.actor.kind === 'human') bases.push('human-verified');
   if (review.verification?.actor.kind === 'ai-model') bases.push('ai-verified');
   return bases;
+}
+
+function changeVerificationFor(
+  changeId: string,
+  targetRevision: string | null,
+  verifications: SemanticChangeVerificationRecord[],
+): SemanticChangeVerificationRecord | null {
+  if (!targetRevision) return null;
+  return verifications.find(item => item.changeId === changeId && item.targetRevision === targetRevision) ?? null;
+}
+
+function combinedApprovalBases(
+  review: SemanticMeaningReview | undefined,
+  targetRevision: string | null,
+  changeVerification: SemanticChangeVerificationRecord | null,
+): SemanticPromotionApprovalBasis[] {
+  const bases = reviewApprovalBases(review, targetRevision);
+  if (changeVerification?.actor.kind === 'human') bases.push('human-verified');
+  if (changeVerification?.actor.kind === 'ai-model') bases.push('ai-verified');
+  return [...new Set(bases)].sort() as SemanticPromotionApprovalBasis[];
 }
 
 function changeId(kind: SemanticPromotionChangeKind, meaningId: string, targetRevision: string | null): string {
@@ -139,10 +160,12 @@ export function buildSemanticPromotionGate(input: {
   baseMeanings: SemanticMeaningReview[];
   previewCandidates: SemanticCandidate[];
   previewReviews?: SemanticMeaningReview[];
+  changeVerifications?: SemanticChangeVerificationRecord[];
   baseRevision: string | null;
   previewRevision: string | null;
 }): SemanticPromotionGate {
   const previewReviews = input.previewReviews ?? [];
+  const changeVerifications = input.changeVerifications ?? [];
   const drafts: Array<Omit<SemanticPromotionReviewItem, 'auditRef' | 'ordinal'>> = [];
   const consumedCandidateIds = new Set<string>();
 
@@ -155,10 +178,12 @@ export function buildSemanticPromotionGate(input: {
 
     const candidate = evolution.matchedCandidate;
     const review = previewReviewForMeaning(previewReviews, base.meaningId, candidate?.id ?? null);
-    const approvalBases = reviewApprovalBases(review, input.previewRevision);
-    const approved = approvalBases.includes('human-accepted');
+    const currentChangeId = changeId(evolution.status, base.meaningId, input.previewRevision);
+    const verification = changeVerificationFor(currentChangeId, input.previewRevision, changeVerifications);
+    const approvalBases = combinedApprovalBases(review, input.previewRevision, verification);
+    const approved = approvalBases.length > 0;
     drafts.push({
-      changeId: changeId(evolution.status, base.meaningId, input.previewRevision),
+      changeId: currentChangeId,
       changeKind: evolution.status,
       meaningId: base.meaningId,
       candidateId: candidate?.id ?? null,
@@ -180,6 +205,7 @@ export function buildSemanticPromotionGate(input: {
       alternatives: evolution.alternatives.map(alternative => candidateSnapshot(alternative, null)),
       reasons: evolution.reasons,
       evolution,
+      verification,
     });
   }
 
@@ -190,10 +216,12 @@ export function buildSemanticPromotionGate(input: {
       && review.proposalRevision === input.previewRevision
     );
     const review = existingReview ?? semanticMeaningReview(candidate);
-    const approvalBases = reviewApprovalBases(existingReview, input.previewRevision);
-    const approved = approvalBases.includes('human-accepted');
+    const currentChangeId = changeId('added', review.meaningId, input.previewRevision);
+    const verification = changeVerificationFor(currentChangeId, input.previewRevision, changeVerifications);
+    const approvalBases = combinedApprovalBases(existingReview, input.previewRevision, verification);
+    const approved = approvalBases.length > 0;
     drafts.push({
-      changeId: changeId('added', review.meaningId, input.previewRevision),
+      changeId: currentChangeId,
       changeKind: 'added',
       meaningId: review.meaningId,
       candidateId: candidate.id,
@@ -211,6 +239,7 @@ export function buildSemanticPromotionGate(input: {
       alternatives: [],
       reasons: ['New evidence-qualified semantic candidate exists on Preview but was not matched to an accepted Main meaning'],
       evolution: null,
+      verification,
     });
   }
 
@@ -240,8 +269,8 @@ export function buildSemanticPromotionGate(input: {
       stableMeaningsOmitted: true,
       previousRevisionApprovalDoesNotApprovePreviewDelta: true,
       acceptedIsNotVerified: true,
-      approvalAlternatives: ['human-accepted'],
-      verificationDoesNotApprovePromotion: true,
+      approvalAlternatives: ['human-accepted', 'human-verified', 'ai-verified'],
+      verificationCanApprovePromotion: true,
       itemizedAuditManifest: true,
       stableAuditReferences: true,
       desiredOutcomeInferred: false,

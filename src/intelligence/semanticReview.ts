@@ -22,6 +22,17 @@ export interface SemanticVerificationRecord {
   rationale: string | null;
 }
 
+export interface SemanticChangeVerificationRecord {
+  version: 1;
+  changeId: string;
+  auditRef: string;
+  targetRevision: string;
+  actor: SemanticReviewActor;
+  at: string;
+  evidenceIds: string[];
+  rationale: string | null;
+}
+
 export interface SemanticMeaningLineage {
   predecessorMeaningIds: string[];
   successorMeaningIds: string[];
