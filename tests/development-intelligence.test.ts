@@ -1083,7 +1083,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 31);
+  assert.equal(identity.mcp.toolCount, 32);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
