@@ -24,11 +24,11 @@ Current accepted semantic A and the temporary Preview review state needed to est
 
 Remote analysis uses disposable exact-revision checkouts. Scratch files/caches are removed after use. Losing local process state must not lose accepted intelligence; hosted canonical persistence is the durable DI authority layer and Git remains the reconstructable source/history layer.
 
-### Deterministic compatibility/self-seal checkpoint
+### Deterministic checkpoint compatibility
 
-The legacy/self-test `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shards remains covered for tamper evidence, deterministic serialization, migration fallback, and DI's own Seal B packaging tests. Checkpoint reads recompute semantic topology from shard contents rather than trusting manifest counts/fingerprints alone.
+The legacy/self-test `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shard format remains covered for tamper evidence, deterministic serialization, and migration compatibility. Tests and the optional `self-seal` CI job generate it only in disposable workspaces/artifacts; no generated checkpoint is tracked as Development Intelligence semantic authority.
 
-The `action-smoke` GitHub Actions job invokes the repository's root composite action against Development Intelligence itself. This proves the published packaging path can install, build, and enforce DI's self-seal release contract independently of the ordinary repository verification command; it does not make repository-local checkpoints the authority model for inspected projects.
+The `action-smoke` GitHub Actions job invokes the repository's root composite action in checkpointless `analyze` mode. This proves the published packaging path can install, build, and analyze an exact checkout without repository-owned authority. The optional `self-seal` job separately proves legacy `seal`/`check` compatibility without committing or pushing generated files.
 
 ### Source provenance and safety
 

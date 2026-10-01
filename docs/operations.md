@@ -154,7 +154,7 @@ For an inspected repository:
 5. only after the repository's normal human/release gate does DI advance accepted semantic A for the promoted revision;
 6. do not commit a generated `.development-intelligence/` authority directory into the inspected repository.
 
-If canonical A is absent, stale, or contradictory, promotion fails closed and the migration/recovery path must make the discrepancy explicit rather than inventing acceptance.
+Semantic enforcement requires current canonical W plus durable accepted meaning that remains supported by current evidence; a legacy repository checkpoint is not a prerequisite. Stale, ambiguous, weakened, unsupported, or contradictory accepted meaning fails closed and requires explicit review rather than invented acceptance.
 
 ### Currentness interpretation
 
@@ -168,7 +168,7 @@ If canonical A is absent, stale, or contradictory, promotion fails closed and th
 - schema support;
 - integrity state.
 
-Evidence/analyzer drift alone does not manufacture product-semantic drift. Changed or unsupported semantic topology requires explicit review; repository-local legacy checkpoints are migration fallback only once DI canonical A exists.
+Evidence/analyzer drift alone does not manufacture product-semantic drift. Changed or unsupported semantic topology requires explicit review. A repository-local legacy checkpoint, when encountered during migration, is a one-way compatibility input rather than ongoing authority.
 
 ## Authentication
 
@@ -282,7 +282,7 @@ There is deliberately little service-local recovery procedure:
 - lost runtime snapshot → rescan if still needed;
 - lost host instance → regenerate from Git;
 - expired/lost OAuth authorization code → restart the client authorization flow;
-- damaged accepted checkpoint → regenerate/seal from the corresponding source revision and review the repair through Git.
+- damaged canonical accepted authority → reconstruct exact W from Git and re-establish acceptance through the semantic review/promotion lifecycle; use a legacy checkpoint only as an explicit migration input when one exists.
 
 The canonical repository remains usable even if Development Intelligence is unavailable.
 

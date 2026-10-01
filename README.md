@@ -36,7 +36,7 @@ Development Intelligence uses a revision-bound accepted/working/candidate lifecy
 
 Expectation/future overlays are optional caller evidence, not accepted current reality. Acceptance never implies verification, and repository-local generated files are not a second semantic authority.
 
-The deterministic `/.development-intelligence/` checkpoint format remains supported for DI's own self-seal and legacy migration/compatibility testing. Hosted inspected projects use DI canonical persistence instead of committing generated semantic authority into each repository.
+The deterministic `/.development-intelligence/` checkpoint format remains supported for explicit legacy migration/compatibility testing and may be generated ephemerally in CI. Development Intelligence itself and hosted inspected projects use DI canonical persistence instead of tracking generated semantic authority in Git.
 
 ## Public MCP surface
 
@@ -267,7 +267,7 @@ node dist/src/graphCli.js seal --repo-path /path/to/project --project project-id
 node dist/src/graphCli.js check --repo-path /path/to/project --project project-id
 ```
 
-`analyze` is checkpointless and is the normal repository-side integration. `seal` / `check` retain the deterministic `/.development-intelligence/` format for DI self-verification and legacy compatibility/migration; those files are not the hosted semantic authority for inspected repositories.
+`analyze` is checkpointless and is the normal repository-side integration and packaged-action default. `seal` / `check` retain the deterministic `/.development-intelligence/` format only for explicit compatibility/migration tests; generated checkpoint files are ephemeral and are not tracked semantic authority.
 
 Development Intelligence itself does not commit or merge inspected projects on behalf of callers merely to maintain graph state.
 
@@ -284,7 +284,7 @@ steps:
       mode: analyze
 ```
 
-`mode: analyze` builds and verifies the exact checkout without creating repository-owned semantic authority. `check` / `seal` remain compatibility/self-test modes for the legacy checkpoint format; semantic acceptance and promotion for hosted projects belong to DI canonical persistence and its review lifecycle.
+`mode: analyze` builds and verifies the exact checkout without creating repository-owned semantic authority and is the default. `check` / `seal` remain explicit compatibility/self-test modes for the legacy checkpoint format; semantic acceptance and promotion belong to DI canonical persistence and its review lifecycle.
 
 ## Project access configuration
 

@@ -101,7 +101,7 @@ Current boundaries are equally important:
 - Arbitrary external analyzers may contribute evidence only after a generic adapter contract exists; no plugin may dictate graph identity or lifecycle.
 - The service inspects and explains. It does not write inspected repositories or operate their providers.
 
-For mechanically current details, prefer the deployed `GET /health`, MCP tool schemas, `project_status`, `get_graph_schema`, DI canonical persistence/currentness, `package.json`, source, and CI over prose. Repository-local `.development-intelligence` files are legacy/self-test compatibility artifacts, not the semantic authority for inspected projects.
+For mechanically current details, prefer the deployed `GET /health`, MCP tool schemas, `project_status`, `get_graph_schema`, DI canonical persistence/currentness, `package.json`, source, and CI over prose. The `.development-intelligence` format is legacy/self-test compatibility machinery generated ephemerally when needed, not tracked semantic authority.
 
 ## Direction
 

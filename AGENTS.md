@@ -42,7 +42,7 @@ Keep each truth in its owner. Update an existing living document when its truth 
 
 Git remains source/history authority. Durable accepted semantic A, semantic-review history, and canonical current W for inspected projects live in Development Intelligence canonical persistence, keyed to exact project revisions. Inspected repositories must not maintain a second machine semantic authority.
 
-The `/.development-intelligence/` checkpoint format remains implementation/compatibility machinery for DI's own self-seal and legacy migration tests. Do not introduce or reseal that directory in inspected product repositories as their semantic authority.
+The `/.development-intelligence/` checkpoint format remains implementation/compatibility machinery generated only in ephemeral tests or CI artifacts. It is not tracked as semantic authority in Development Intelligence or inspected product repositories.
 
 ## Verification
 
