@@ -409,3 +409,34 @@ test('enforced semantic promotion blocks only pending Main-to-Preview delta and 
   assert.equal(ready.readyForMainSemanticPromotion, true);
   assert.notEqual(ready.digest, pending.digest, 'approval state must be part of the revalidation digest');
 });
+
+
+test('enforced baseline candidate snapshot suppresses pre-existing unaccepted Main candidates', () => {
+  const stableUnaccepted = candidate({
+    id: 'candidate:known-unaccepted',
+    scope: 'src/features/known',
+    name: 'Known',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+  const genuinelyNew = candidate({
+    id: 'candidate:new-after-baseline',
+    scope: 'src/features/new',
+    name: 'New After Baseline',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+  const gate = buildSemanticPromotionGate({
+    baseMeanings: [],
+    previewCandidates: [stableUnaccepted, genuinelyNew],
+    baseRevision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    previewRevision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    enrollmentState: 'enforced',
+    baselineRevision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    baselineCandidateIds: [stableUnaccepted.id],
+  });
+  assert.equal(gate.baselineCandidateCount, 1);
+  assert.match(gate.baselineCandidateDigest, /^[0-9a-f]{24}$/u);
+  assert.equal(gate.semanticDeltaCount, 1);
+  assert.equal(gate.items[0]?.candidateId, genuinelyNew.id);
+  assert.equal(gate.items.some(item => item.candidateId === stableUnaccepted.id), false);
+  assert.equal(gate.gateStatus, 'semantic-review-required');
+});

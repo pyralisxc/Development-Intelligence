@@ -339,6 +339,7 @@ test('semantic promotion enrollment is CAS-protected, non-enrolled by default, a
       actor: { kind: 'human', id: 'human:owner' },
       at: '2026-10-01T01:00:00.000Z',
       rationale: 'Begin semantic baseline review.',
+      baselineCandidateIds: [],
     }, empty.etag);
     assert.equal(advisory.state, 'stored');
     assert.equal(semanticPromotionEnrollmentState(advisory.ledger), 'advisory');
@@ -358,8 +359,10 @@ test('semantic promotion enrollment is CAS-protected, non-enrolled by default, a
       actor: { kind: 'human', id: 'human:owner' },
       at: '2026-10-01T01:02:00.000Z',
       rationale: 'Enable semantic release enforcement.',
+      baselineCandidateIds: ['semantic-candidate:baseline'],
     }, reviewed.etag);
     assert.equal(enforced.ledger?.enrollment?.baselineRevision, revision);
+    assert.deepEqual(enforced.ledger?.enrollment?.baselineCandidateIds, ['semantic-candidate:baseline']);
     assert.equal(semanticPromotionEnrollmentState(enforced.ledger), 'enforced');
 
     const conflict = await persistSemanticPromotionEnrollment(project, {

@@ -538,6 +538,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
   const defaultRevision = await resolveProjectRevision(input.project);
   const enrollmentState = semanticPromotionEnrollmentState(authority.ledger);
   const baselineRevision = authority.ledger?.enrollment?.baselineRevision ?? null;
+  const baselineCandidateIds = authority.ledger?.enrollment?.baselineCandidateIds ?? [];
   const targetIsCurrentAcceptedAuthority = enrollmentState === 'enforced'
     && baselineRevision === graph.repositoryRevision
     && defaultRevision.sha === graph.repositoryRevision;
@@ -550,6 +551,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
         previewRevision: graph.repositoryRevision,
         enrollmentState,
         baselineRevision,
+        baselineCandidateIds,
       })
     : buildSemanticPromotionGate({
         baseMeanings: acceptedMeanings,
@@ -562,6 +564,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
         previewRevision: graph.repositoryRevision,
         enrollmentState,
         baselineRevision,
+        baselineCandidateIds,
       });
 
   return {
@@ -586,6 +589,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       targetIsCurrentAcceptedAuthority,
       enrollmentState,
       baselineRevision,
+      baselineCandidateCount: baselineCandidateIds.length,
       baselineMatchesCurrentDefault: baselineRevision === null ? null : baselineRevision === defaultRevision.sha,
       candidateUniverseEligible: fullBootstrap.capacity.eligibleCandidateCount,
       candidateUniverseExhausted: fullBootstrap.capacity.exhausted,
@@ -626,6 +630,8 @@ export async function semanticPromotionGateSurface(input: SemanticReviewSurfaceI
     revision: surface.revision,
     enrollmentState: gate.enrollmentState,
     baselineRevision: gate.baselineRevision,
+    baselineCandidateCount: gate.baselineCandidateCount,
+    baselineCandidateDigest: gate.baselineCandidateDigest,
     baseRevision: gate.baseRevision,
     previewRevision: gate.previewRevision,
     currentDefaultRevision: surface.promotionAuditBasis.currentDefaultRevision,
@@ -656,6 +662,7 @@ export async function setSemanticPromotionEnrollment(input: SemanticPromotionEnr
   const defaultRevision = await resolveProjectRevision(input.project);
   const acceptedMeanings = latestAcceptedMeanings(authority.ledger);
   let baselineRevision: string | null = null;
+  let baselineCandidateIds: string[] = [];
 
   if (input.state === 'enforced') {
     const canonical = await repositoryGraphs(input.project);
@@ -666,8 +673,13 @@ export async function setSemanticPromotionEnrollment(input: SemanticPromotionEnr
       throw new Error('Enforced semantic promotion requires at least one explicitly accepted durable semantic meaning');
     }
     baselineRevision = defaultRevision.sha;
+    baselineCandidateIds = bootstrapSemanticCandidates(canonical.working, { limit: 1000 })
+      .candidates.map(candidate => candidate.id).sort();
   } else if (input.state === 'advisory' && acceptedMeanings.length) {
     baselineRevision = defaultRevision.sha;
+    const canonical = await repositoryGraphs(input.project);
+    baselineCandidateIds = bootstrapSemanticCandidates(canonical.working, { limit: 1000 })
+      .candidates.map(candidate => candidate.id).sort();
   }
 
   const expectedEtag = input.expectedEtag === undefined ? authority.etag : input.expectedEtag;
@@ -677,6 +689,7 @@ export async function setSemanticPromotionEnrollment(input: SemanticPromotionEnr
     actor,
     at,
     rationale: normalizeSemanticReviewRationale(input.rationale),
+    baselineCandidateIds,
   }, expectedEtag);
   return {
     state: written.state,
@@ -687,6 +700,7 @@ export async function setSemanticPromotionEnrollment(input: SemanticPromotionEnr
     generation: written.ledger?.generation ?? authority.ledger?.generation ?? 0,
     currentDefaultRevision: defaultRevision.sha,
     acceptedMeaningCount: acceptedMeanings.length,
+    baselineCandidateCount: written.ledger?.enrollment?.baselineCandidateIds.length ?? 0,
   };
 }
 

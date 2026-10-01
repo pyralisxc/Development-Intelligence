@@ -5,6 +5,7 @@ import {
   writeCanonicalDerivedObjectConditional,
 } from './canonicalStore.js';
 import { workingToAcceptedGraph } from './checkpoint.js';
+import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph } from './canonicalStore.js';
 import type { SemanticChangeVerificationRecord, SemanticMeaningReview, SemanticReviewActor } from './semanticReview.js';
 import type { SemanticPromotionEnrollmentState, SemanticPromotionGate } from './semanticPromotion.js';
@@ -21,6 +22,7 @@ export interface SemanticPromotionEnrollmentRecord {
   updatedAt: string;
   actor: SemanticReviewActor;
   rationale: string | null;
+  baselineCandidateIds: string[];
 }
 
 export interface StoredSemanticAuthorityRecord {
@@ -122,7 +124,7 @@ function validateChangeVerification(value: SemanticChangeVerificationRecord): vo
 }
 
 function copyEnrollment(value: SemanticPromotionEnrollmentRecord): SemanticPromotionEnrollmentRecord {
-  return { ...value, actor: { ...value.actor } };
+  return { ...value, actor: { ...value.actor }, baselineCandidateIds: [...(value.baselineCandidateIds ?? [])] };
 }
 
 function validateEnrollment(value: SemanticPromotionEnrollmentRecord): void {
@@ -135,6 +137,13 @@ function validateEnrollment(value: SemanticPromotionEnrollmentRecord): void {
   }
   if (!value.actor?.id?.trim() || value.actor.kind !== 'human') {
     throw new Error('Semantic promotion enrollment requires an explicit human actor');
+  }
+  if (!Array.isArray(value.baselineCandidateIds) || value.baselineCandidateIds.length > 1000) {
+    throw new Error('Semantic promotion enrollment candidate baseline is invalid');
+  }
+  const candidateIds = [...new Set(value.baselineCandidateIds)];
+  if (candidateIds.length !== value.baselineCandidateIds.length || candidateIds.some(id => !id.startsWith('semantic-candidate:'))) {
+    throw new Error('Semantic promotion enrollment candidate baseline contains invalid identities');
   }
   if (!value.enrolledAt || Number.isNaN(Date.parse(value.enrolledAt)) || !value.updatedAt || Number.isNaN(Date.parse(value.updatedAt))) {
     throw new Error('Semantic promotion enrollment timestamp is invalid');
@@ -307,6 +316,7 @@ export async function persistSemanticPromotionEnrollment(
     actor: SemanticReviewActor;
     at: string;
     rationale?: string | null;
+    baselineCandidateIds?: string[];
   },
   expectedEtag: string | null,
 ): Promise<SemanticAuthorityWrite> {
@@ -323,6 +333,9 @@ export async function persistSemanticPromotionEnrollment(
     updatedAt: input.at,
     actor: { ...input.actor },
     rationale: input.rationale?.trim() || null,
+    baselineCandidateIds: input.state === 'not-enrolled'
+      ? []
+      : [...new Set(input.baselineCandidateIds ?? current.ledger?.enrollment?.baselineCandidateIds ?? [])].sort(),
   };
   validateEnrollment(enrollment);
 
@@ -380,7 +393,7 @@ function currentAcceptedAuthorityRecords(ledger: SemanticAuthorityLedger | null)
 
 export async function compactSemanticAuthorityToCurrentAccepted(
   project: string,
-  options: { promotedRevision?: string } = {},
+  options: { promotedRevision?: string; baselineCandidateIds?: string[] } = {},
 ): Promise<SemanticAuthorityWrite> {
   const current = await loadSemanticAuthority(project);
   if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
@@ -393,7 +406,11 @@ export async function compactSemanticAuthorityToCurrentAccepted(
     ? {
         ...copyEnrollment(current.ledger.enrollment),
         ...(current.ledger.enrollment.state === 'enforced' && options.promotedRevision
-          ? { baselineRevision: options.promotedRevision, updatedAt: now }
+          ? {
+              baselineRevision: options.promotedRevision,
+              updatedAt: now,
+              baselineCandidateIds: [...new Set(options.baselineCandidateIds ?? current.ledger.enrollment.baselineCandidateIds ?? [])].sort(),
+            }
           : {}),
       }
     : undefined;
@@ -477,7 +494,12 @@ export async function promoteCanonicalAcceptedGraph(input: {
   // Main promotion is the retention boundary: temporary Preview review/lineage history
   // has served its purpose. Keep only the latest active accepted meaning records.
   // Exact historical understanding remains reconstructable from Git revisions.
-  const compacted = await compactSemanticAuthorityToCurrentAccepted(input.project, { promotedRevision: input.revision });
+  const promotedCandidateIds = bootstrapSemanticCandidates(loaded.record.working, { limit: 1000 })
+    .candidates.map(candidate => candidate.id).sort();
+  const compacted = await compactSemanticAuthorityToCurrentAccepted(input.project, {
+    promotedRevision: input.revision,
+    baselineCandidateIds: promotedCandidateIds,
+  });
   if (compacted.state === 'conflict') {
     // A concurrent review won the authority CAS after graph promotion. Do not delete
     // that newer state; the next successful promotion/maintenance pass can compact it.

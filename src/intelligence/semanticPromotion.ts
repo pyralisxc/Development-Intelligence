@@ -49,6 +49,8 @@ export interface SemanticPromotionGate {
   policyVersion: 2;
   enrollmentState: SemanticPromotionEnrollmentState;
   baselineRevision: string | null;
+  baselineCandidateCount: number;
+  baselineCandidateDigest: string;
   baseRevision: string | null;
   previewRevision: string | null;
   semanticDeltaCount: number;
@@ -77,6 +79,7 @@ export interface SemanticPromotionGate {
     notEnrolledBlocksMain: false;
     advisoryBlocksMain: false;
     exactRevisionDigest: true;
+    baselineCandidateSnapshot: true;
   };
 }
 
@@ -179,11 +182,14 @@ export function buildSemanticPromotionGate(input: {
   previewRevision: string | null;
   enrollmentState?: SemanticPromotionEnrollmentState;
   baselineRevision?: string | null;
+  baselineCandidateIds?: string[];
 }): SemanticPromotionGate {
   const previewReviews = input.previewReviews ?? [];
   const changeVerifications = input.changeVerifications ?? [];
   const drafts: Array<Omit<SemanticPromotionReviewItem, 'auditRef' | 'ordinal'>> = [];
   const consumedCandidateIds = new Set<string>();
+  const baselineCandidateIds = [...new Set(input.baselineCandidateIds ?? [])].sort();
+  const baselineCandidateIdSet = new Set(baselineCandidateIds);
 
   for (const base of input.baseMeanings) {
     if (!base.accepted) continue;
@@ -226,7 +232,7 @@ export function buildSemanticPromotionGate(input: {
   }
 
   for (const candidate of input.previewCandidates) {
-    if (consumedCandidateIds.has(candidate.id)) continue;
+    if (consumedCandidateIds.has(candidate.id) || baselineCandidateIdSet.has(candidate.id)) continue;
     const existingReview = previewReviews.find(review =>
       review.candidateId === candidate.id
       && review.proposalRevision === input.previewRevision
@@ -280,10 +286,12 @@ export function buildSemanticPromotionGate(input: {
     ? 'non-blocking'
     : pendingCount > 0 ? 'semantic-review-required' : 'ready';
   const pendingAuditRefs = items.filter(item => !item.approved).map(item => item.auditRef);
+  const baselineCandidateDigest = stableHash(['semantic-promotion-baseline.v1', baselineRevision, ...baselineCandidateIds]);
   const digest = stableHash([
     'semantic-promotion-gate.v2',
     enrollmentState,
     baselineRevision,
+    baselineCandidateDigest,
     input.baseRevision,
     input.previewRevision,
     ...items.map(item => [
@@ -303,6 +311,8 @@ export function buildSemanticPromotionGate(input: {
     policyVersion: 2,
     enrollmentState,
     baselineRevision,
+    baselineCandidateCount: baselineCandidateIds.length,
+    baselineCandidateDigest,
     baseRevision: input.baseRevision,
     previewRevision: input.previewRevision,
     semanticDeltaCount: items.length,
@@ -331,6 +341,7 @@ export function buildSemanticPromotionGate(input: {
       notEnrolledBlocksMain: false,
       advisoryBlocksMain: false,
       exactRevisionDigest: true,
+      baselineCandidateSnapshot: true,
     },
   };
 }
