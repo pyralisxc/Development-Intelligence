@@ -12,7 +12,7 @@
     },
     {
       "path": "/internal/vcr-retention",
-      "schedule": "17 4 * * *"
+      "schedule": "17 */6 * * *"
     }
   ]
 }

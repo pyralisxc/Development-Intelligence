@@ -219,10 +219,21 @@ export function createDevelopmentIntelligenceServer() {
         const projectId = process.env.VERCEL_PROJECT_ID?.trim() ?? '';
         const teamId = process.env.VERCEL_TEAM_ID?.trim() ?? '';
         const result = await applyVcrRetentionMaintenance({ token, projectId, teamId });
+        const maintenance = result as any;
+        console.info(JSON.stringify({
+          event: 'vcr-retention-complete',
+          beforeImages: maintenance.before?.images ?? null,
+          deletedImages: maintenance.deleted?.images ?? null,
+          deletedKnownBytes: maintenance.deleted?.knownBytes ?? null,
+          remainingImages: maintenance.after?.images ?? null,
+          verified: maintenance.after?.verified ?? null,
+        }));
         json(res, 200, { trigger: 'vercel-cron', maintenance: 'vcr-retention', ...result });
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(JSON.stringify({ event: 'vcr-retention-failed', error: message }));
         json(res, (error as any)?.status ?? 500, {
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
           trigger: 'vercel-cron',
           maintenance: 'vcr-retention',
         });

@@ -48,11 +48,11 @@ test('scheduled VCR maintenance deletes exact planned image ids and verifies pos
 });
 
 
-test('vercel schedules daily VCR retention maintenance independently of other cron jobs', async () => {
+test('vercel schedules bounded VCR retention maintenance independently of other cron jobs', async () => {
   const { promises: fs } = await import('node:fs');
   const config = JSON.parse(await fs.readFile('vercel.json', 'utf8')) as any;
   assert.deepEqual(
     config.crons.find((item: any) => item.path === '/internal/vcr-retention'),
-    { path: '/internal/vcr-retention', schedule: '17 4 * * *' },
+    { path: '/internal/vcr-retention', schedule: '17 */6 * * *' },
   );
 });
