@@ -444,6 +444,21 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       resolutions.push(resolution({ from: pending.ui.id, to: target.id, kind: 'handled_by', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${pending.line}`], layer: 'representation', checkpoint: false }));
       continue;
     }
+    const state = stateSetters.get(pending.handler);
+    if (targets.length === 0 && state) {
+      resolutions.push(resolution({
+        from: pending.ui.id,
+        to: state.binding.id,
+        kind: 'handled_by',
+        strategy: 'state-setter',
+        confidence: 1,
+        status: 'resolved',
+        evidence: [`${context.locatorBase}:${pending.line}`],
+        layer: 'representation',
+        checkpoint: false,
+      }));
+      continue;
+    }
     const owner = pending.ownerId ? symbolsByIdentity.get(pending.ownerId)?.observation : undefined;
     const props = pending.ownerId ? componentPropsByOwner.get(pending.ownerId) : undefined;
     if (targets.length === 0 && owner && props?.has(pending.handler)) {
