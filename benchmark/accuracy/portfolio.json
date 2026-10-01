@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "policy": {
+    "exactRevisionRequired": true,
+    "independentlyEstablishedGroundTruth": true,
+    "performanceMetricsGateCorrectness": false,
+    "competitorOutputsAreGroundTruth": false,
+    "directCrossBenchmarkRankingAllowed": false
+  },
+  "participants": [
+    {
+      "id": "cardforge",
+      "project": "CardForge",
+      "language": "typescript",
+      "ref": "commit:6d6788cf87dd37d7685d26fa10a15e06fa1208ba",
+      "benchmarkScript": "scripts/benchmark-cardforge.mjs",
+      "capabilities": [
+        "semantic-bootstrap",
+        "natural-language-investigation",
+        "interface-interaction",
+        "temporal-verification"
+      ]
+    },
+    {
+      "id": "game-studio-core",
+      "project": "Game-Studio-Core",
+      "language": "csharp",
+      "ref": "commit:55263c4c0a1ee80fb9d28e6d6c0750d30db4c59d",
+      "benchmarkScript": "scripts/benchmark-polyglot-portfolio.mjs",
+      "capabilities": [
+        "csharp-unity-structure",
+        "semantic-bootstrap",
+        "repository-audit",
+        "temporal-verification"
+      ]
+    },
+    {
+      "id": "medieval-sim",
+      "project": "Medieval-Sim",
+      "language": "java",
+      "ref": "commit:8f721556d9548dfd09378d337b06416415ee09e7",
+      "benchmarkScript": "scripts/benchmark-polyglot-portfolio.mjs",
+      "capabilities": [
+        "java-structure",
+        "semantic-bootstrap",
+        "repository-audit"
+      ]
+    },
+    {
+      "id": "ai-systems-control",
+      "project": "AI-Systems-Control",
+      "language": "typescript",
+      "ref": "commit:36c9162d94b974500535ce211aa018512432485c",
+      "benchmarkScript": "scripts/benchmark-polyglot-portfolio.mjs",
+      "capabilities": [
+        "typescript-web-structure",
+        "semantic-bootstrap",
+        "repository-audit"
+      ]
+    },
+    {
+      "id": "di-benchmark-gin",
+      "project": "DI-Benchmark-Gin",
+      "language": "go",
+      "ref": "commit:bae9b98d8d60fde4aa55a83185ba15a922f98bd7",
+      "benchmarkScript": "scripts/benchmark-gin.mjs",
+      "capabilities": [
+        "go-structure",
+        "semantic-bootstrap",
+        "repository-audit"
+      ]
+    },
+    {
+      "id": "external-amux-rust",
+      "project": "External-Amux-Rust",
+      "language": "rust",
+      "ref": "commit:7f87c55cd3e99642c4ca9ca5df54bfd663a2f097",
+      "benchmarkScript": "scripts/benchmark-amux.mjs",
+      "capabilities": [
+        "rust-structure",
+        "semantic-bootstrap",
+        "repository-audit"
+      ]
+    }
+  ]
+}

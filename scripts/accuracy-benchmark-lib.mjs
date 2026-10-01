@@ -17,6 +17,19 @@ export function relationshipKey(value) {
   return `${from}|${kind}|${to}`;
 }
 
+export function relationshipStateKey(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') throw new Error('relationship state must be a string key or object');
+  const { from, kind, to, status } = value;
+  if (![from, kind, to].every(item => typeof item === 'string' && item.length > 0)) {
+    throw new Error('relationship state objects require non-empty from, kind, and to');
+  }
+  if (!['resolved', 'candidate', 'unresolved'].includes(status)) {
+    throw new Error('relationship state objects require status resolved, candidate, or unresolved');
+  }
+  return `${from}|${kind}|${to}|${status}`;
+}
+
 function stringList(value, field) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || !item.length)) {
@@ -29,6 +42,43 @@ function relationshipList(value, field) {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
   return unique(value.map(relationshipKey));
+}
+
+function relationshipStateList(value, field) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  return unique(value.map(relationshipStateKey));
+}
+
+function relationshipStateTruthSet(value, field) {
+  if (value === undefined) return { required: [], forbidden: [], complete: false };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} must be an object`);
+  return {
+    required: relationshipStateList(value.required, `${field}.required`),
+    forbidden: relationshipStateList(value.forbidden, `${field}.forbidden`),
+    complete: value.complete === true,
+  };
+}
+
+function metricNumber(value, field) {
+  if (value === undefined || value === null) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${field} must be a non-negative finite number`);
+  return parsed;
+}
+
+function operationalMetrics(value) {
+  if (value === undefined) {
+    return { toolCalls: null, latencyMs: null, graphRecordWeight: null, graphNodes: null, graphEdges: null };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('observation.metrics must be an object');
+  return {
+    toolCalls: metricNumber(value.toolCalls, 'observation.metrics.toolCalls'),
+    latencyMs: metricNumber(value.latencyMs, 'observation.metrics.latencyMs'),
+    graphRecordWeight: metricNumber(value.graphRecordWeight, 'observation.metrics.graphRecordWeight'),
+    graphNodes: metricNumber(value.graphNodes, 'observation.metrics.graphNodes'),
+    graphEdges: metricNumber(value.graphEdges, 'observation.metrics.graphEdges'),
+  };
 }
 
 function truthSet(value, field, relationship = false) {
@@ -166,6 +216,8 @@ export function normalizeAccuracyCase(value) {
     groundTruth: {
       entities: truthSet(groundTruth.entities, 'case.groundTruth.entities'),
       relationships: truthSet(groundTruth.relationships, 'case.groundTruth.relationships', true),
+      relationshipStates: relationshipStateTruthSet(groundTruth.relationshipStates, 'case.groundTruth.relationshipStates'),
+      evidence: truthSet(groundTruth.evidence, 'case.groundTruth.evidence'),
       semanticCandidates: semanticTruthSet(groundTruth.semanticCandidates, 'case.groundTruth.semanticCandidates'),
       answerStatuses,
     },
@@ -180,8 +232,11 @@ export function normalizeAccuracyObservation(value) {
     caseId: value.caseId.trim(),
     entities: stringList(value.entities, 'observation.entities'),
     relationships: relationshipList(value.relationships, 'observation.relationships'),
+    relationshipStates: relationshipStateList(value.relationshipStates, 'observation.relationshipStates'),
+    evidence: stringList(value.evidence, 'observation.evidence'),
     semanticCandidates: semanticObservationList(value.semanticCandidates, 'observation.semanticCandidates'),
     answerStatus: typeof value.answerStatus === 'string' ? value.answerStatus : null,
+    metrics: operationalMetrics(value.metrics),
   };
 }
 
@@ -240,6 +295,8 @@ export function scoreAccuracyCase(caseInput, observationInput) {
 
   const entityScore = scoreSet(challenge.groundTruth.entities, observation.entities);
   const relationshipScore = scoreSet(challenge.groundTruth.relationships, observation.relationships);
+  const relationshipStateScore = scoreSet(challenge.groundTruth.relationshipStates, observation.relationshipStates);
+  const evidenceScore = scoreSet(challenge.groundTruth.evidence, observation.evidence);
   const semanticCandidateScore = scoreSemanticCandidates(challenge.groundTruth.semanticCandidates, observation.semanticCandidates);
   const allowedStatuses = challenge.groundTruth.answerStatuses;
   const answerStatusPass = allowedStatuses.length === 0 || (observation.answerStatus !== null && allowedStatuses.includes(observation.answerStatus));
@@ -251,8 +308,14 @@ export function scoreAccuracyCase(caseInput, observationInput) {
     && entityScore.forbiddenPresent.length === 0
     && relationshipScore.missingRequired.length === 0
     && relationshipScore.forbiddenPresent.length === 0
+    && relationshipStateScore.missingRequired.length === 0
+    && relationshipStateScore.forbiddenPresent.length === 0
+    && evidenceScore.missingRequired.length === 0
+    && evidenceScore.forbiddenPresent.length === 0
     && entityScore.falseObserved.length === 0
     && relationshipScore.falseObserved.length === 0
+    && relationshipStateScore.falseObserved.length === 0
+    && evidenceScore.falseObserved.length === 0
     && semanticPass
     && answerStatusPass;
 
@@ -263,7 +326,10 @@ export function scoreAccuracyCase(caseInput, observationInput) {
     pass,
     entityScore,
     relationshipScore,
+    relationshipStateScore,
+    evidenceScore,
     semanticCandidateScore,
+    operational: observation.metrics,
     answerStatus: {
       observed: observation.answerStatus,
       allowed: allowedStatuses,
@@ -277,19 +343,15 @@ function average(values) {
   return Number((values.reduce((total, value) => total + value, 0) / values.length).toFixed(6));
 }
 
-export function scoreAccuracySuite(cases, observations) {
-  if (!Array.isArray(cases) || !Array.isArray(observations)) throw new Error('cases and observations must be arrays');
-  const byId = new Map(observations.map(item => [item.caseId, item]));
-  const results = cases.map(item => {
-    const observation = byId.get(item.id);
-    if (!observation) throw new Error(`missing observation for case ${item.id}`);
-    return scoreAccuracyCase(item, observation);
-  });
+function scoreSummary(results) {
   const completeEntityPrecision = results.map(item => item.entityScore.precision).filter(value => value !== null);
   const completeRelationshipPrecision = results.map(item => item.relationshipScore.precision).filter(value => value !== null);
+  const completeRelationshipStatePrecision = results.map(item => item.relationshipStateScore.precision).filter(value => value !== null);
+  const completeEvidencePrecision = results.map(item => item.evidenceScore.precision).filter(value => value !== null);
   const semanticScores = results.map(item => item.semanticCandidateScore).filter(value => value !== null);
   const completeSemanticPrecision = semanticScores.map(item => item.precision).filter(value => value !== null);
   const completeSemanticFalsePositiveRates = semanticScores.map(item => item.falsePositiveRate).filter(value => value !== null);
+  const metric = field => results.map(item => item.operational[field]).filter(value => value !== null);
   return {
     cases: results.length,
     passed: results.filter(item => item.pass).length,
@@ -298,9 +360,50 @@ export function scoreAccuracySuite(cases, observations) {
     entityPrecision: average(completeEntityPrecision),
     relationshipRecall: average(results.map(item => item.relationshipScore.recall)),
     relationshipPrecision: average(completeRelationshipPrecision),
+    relationshipStateRecall: average(results.map(item => item.relationshipStateScore.recall)),
+    relationshipStatePrecision: average(completeRelationshipStatePrecision),
+    evidenceRecall: average(results.map(item => item.evidenceScore.recall)),
+    evidencePrecision: average(completeEvidencePrecision),
     semanticCandidateRecall: average(semanticScores.map(item => item.recall)),
     semanticCandidatePrecision: average(completeSemanticPrecision),
     semanticCandidateFalsePositiveRate: average(completeSemanticFalsePositiveRates),
+    operational: {
+      measuredCases: results.filter(item => Object.values(item.operational).some(value => value !== null)).length,
+      averageToolCalls: average(metric('toolCalls')),
+      averageLatencyMs: average(metric('latencyMs')),
+      averageGraphRecordWeight: average(metric('graphRecordWeight')),
+      averageGraphNodes: average(metric('graphNodes')),
+      averageGraphEdges: average(metric('graphEdges')),
+      correctnessGating: false,
+    },
+  };
+}
+
+function groupedScorecards(results, field) {
+  const groups = new Map();
+  for (const result of results) {
+    const key = result[field];
+    const items = groups.get(key) ?? [];
+    items.push(result);
+    groups.set(key, items);
+  }
+  return Object.fromEntries([...groups.entries()]
+    .sort(([left], [right]) => String(left).localeCompare(String(right)))
+    .map(([key, items]) => [key, scoreSummary(items)]));
+}
+
+export function scoreAccuracySuite(cases, observations) {
+  if (!Array.isArray(cases) || !Array.isArray(observations)) throw new Error('cases and observations must be arrays');
+  const byId = new Map(observations.map(item => [item.caseId, item]));
+  const results = cases.map(item => {
+    const observation = byId.get(item.id);
+    if (!observation) throw new Error(`missing observation for case ${item.id}`);
+    return scoreAccuracyCase(item, observation);
+  });
+  return {
+    ...scoreSummary(results),
+    byCapability: groupedScorecards(results, 'capability'),
+    byLanguage: groupedScorecards(results, 'language'),
     results,
   };
 }
