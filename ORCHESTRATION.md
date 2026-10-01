@@ -19,7 +19,7 @@ Do not copy volatile URLs, SHAs, secrets, deployment IDs, issue state, or provid
 
 ### Accepted main
 
-`main` is the accepted source branch. DI canonical persistence owns accepted semantic A and review history for inspected projects; Git owns their accepted source/history. Development Intelligence's own repository may carry an internal self-seal checkpoint as release-integrity evidence, but that file format is not the semantic authority model for inspected repositories.
+`main` is the accepted source branch. DI canonical persistence owns accepted semantic A and review history; Git owns accepted source/history. Development Intelligence does not track a generated semantic checkpoint: legacy seal/check format is generated only as disposable compatibility evidence.
 
 A clean `main` must pass the repository's normal verification plus DI's exact-candidate semantic/self-integrity gates. Provider/runtime state is separate and must be read from the provider when current deployment fact matters.
 
@@ -37,13 +37,13 @@ Development changes belong on bounded `work/*` branches and PRs created from an 
 
 The PR head is a proposal, not accepted truth. CI evidence applies only to the exact head SHA that produced it; after any source or checkpoint change, reevaluate the new head rather than carrying forward old green status.
 
-### Sealed candidate B
+### Candidate self-integrity evidence
 
-Use the `seal-b` PR label when a candidate is ready for checkpoint sealing.
+Use the `seal-b` PR label when a candidate needs explicit legacy checkpoint compatibility evidence in addition to normal verification.
 
-The repository workflow may generate and push a deterministic candidate B checkpoint onto the PR branch. That bot-generated seal commit changes the exact candidate SHA, so promotion requires a fresh verification pass on the **sealed head**, including packaged-action and benchmark gates.
+The workflow generates and checks that compatibility checkpoint only inside the CI workspace and uploads it as a bounded artifact. It never stages, commits, or pushes `.development-intelligence`, so the PR head remains the exact source candidate under review.
 
-A seal is not approval to merge. It only makes the candidate's accepted semantic projection reviewable and reproducible.
+A successful compatibility artifact is not approval to merge and is not semantic authority. The canonical semantic review/promotion lifecycle remains the authority boundary.
 
 ### Ephemeral PR preview
 
@@ -76,7 +76,7 @@ For a material change:
 3. Make the smallest coherent change; do not embed project-management state or provider secrets in source.
 4. Run `npm run verify` and preserve any relevant permanent regression evidence.
 5. Open the bounded PR against `preview` and let CI run the repository's packaged action and permanent benchmark gates.
-6. When a source-changing candidate is otherwise acceptable, request `seal-b`; then verify the exact sealed head again.
+6. When explicit checkpoint compatibility evidence is useful, request `seal-b`; verify that artifact on the same exact source head.
 7. Integrate the exact green candidate into `preview`; use the ephemeral PR preview only when pre-integration interactive review is materially useful.
 8. Exercise the accumulated Preview deployment and exact `branch:preview` intelligence surface until the tranche is coherent.
 9. Promote the exact accumulated Preview head to `main` only after its owner-approved promotion gate is satisfied, then reconcile Main back into Preview.
@@ -104,7 +104,7 @@ Do not:
 - treat a self-seal token-trigger quirk or skipped preview as a source-code failure without inspecting the exact check context;
 - infer that production changed merely because `main` changed;
 - infer that an ephemeral preview equals production;
-- promote candidate or derived Development Intelligence conclusions into accepted graph truth without the normal checkpoint lifecycle.
+- promote candidate or derived Development Intelligence conclusions into accepted semantic authority without the canonical semantic review/promotion lifecycle.
 
 When CI/provider state is ambiguous, inspect the exact PR head, exact base, individual check results, and provider state before changing code.
 
