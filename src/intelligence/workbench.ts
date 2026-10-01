@@ -12,6 +12,7 @@ import { auditSemanticCandidates } from './semanticAudit.js';
 import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
 import { graphRecordWeight } from './capacity.js';
 import { repositoryAudit } from './repositoryAudit.js';
+import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from './interfaceRuntimeObservation.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -1645,6 +1646,7 @@ export async function interfaceProjection(input: {
       transitions: [],
       effects: [],
       representation: [],
+      runtimeObservationContract: interfaceRuntimeObservationContract(),
       coverage: compactCoverage(graph),
       policy: { deterministic: true, persisted: false, semanticAuthority: false },
     };
@@ -1834,7 +1836,7 @@ export async function interfaceProjection(input: {
   };
 
   const uncertaintyEdges = touchingEdges.filter(edge => edge.status !== 'resolved');
-  const runtimeSources = graph.sources.filter(source => source.kind !== 'repository');
+  const runtimeSources = graph.sources.filter(isInterfaceRuntimeObservationSource);
   const observedKinds = new Set(nodes.map(node => node.kind));
   const unknowns: string[] = [];
   if (!runtimeSources.length) {
@@ -1883,6 +1885,7 @@ export async function interfaceProjection(input: {
     transitions,
     effects,
     representation,
+    runtimeObservationContract: interfaceRuntimeObservationContract(),
     runtimeObservations: {
       available: runtimeSources.length > 0,
       sources: runtimeSources.map(source => ({

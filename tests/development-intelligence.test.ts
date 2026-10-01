@@ -19,6 +19,7 @@ import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
 import { loadSemanticAuthority, promoteCanonicalAcceptedGraph } from '../src/intelligence/semanticAuthorityStore.js';
 import { reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from '../src/intelligence/semanticWorkflow.js';
+import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from '../src/intelligence/interfaceRuntimeObservation.js';
 
 async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, 'add', '.']);
@@ -835,6 +836,34 @@ test('multi-question investigation keeps one graph context and isolates question
   }
 });
 
+test('interface runtime observation contract is provider-neutral and does not confuse deployment evidence with runtime UI evidence', () => {
+  const contract = interfaceRuntimeObservationContract() as any;
+  assert.equal(contract.version, 1);
+  assert.equal(contract.plane, 'interface-runtime');
+  assert.equal(contract.providerNeutral, true);
+  assert.equal(contract.correlation.nameOnlyCrossPlaneResolutionAllowed, false);
+  assert.equal(contract.retention.rawHighCardinalityTelemetryRetainedByDefault, false);
+  assert.equal(contract.authority.runtimeObservationIsEvidence, true);
+  assert.equal(contract.authority.semanticAuthority, false);
+
+  assert.equal(isInterfaceRuntimeObservationSource({
+    id: 'runtime:https://example.test/app',
+    kind: 'runtime-http',
+    locator: 'https://example.test/app',
+    revision: null,
+    observedAt: new Date(0).toISOString(),
+    available: true,
+  }), true);
+  assert.equal(isInterfaceRuntimeObservationSource({
+    id: 'deployment:123',
+    kind: 'deployment',
+    locator: 'deployment:123',
+    revision: 'abc',
+    observedAt: new Date(0).toISOString(),
+    available: true,
+  }), false);
+});
+
 test('interface projection organizes UI interactions and effects without creating semantic authority', async () => {
   const fixture = await makeFixture();
   try {
@@ -856,6 +885,10 @@ test('interface projection organizes UI interactions and effects without creatin
     assert.ok(projection.effects.some((item: any) => item.kind === 'http-call'));
     assert.ok(projection.transitions.some((item: any) => item.kind === 'navigation-call'));
     assert.equal(projection.runtimeObservations.available, false);
+    assert.equal(projection.runtimeObservationContract.version, 1);
+    assert.equal(projection.runtimeObservationContract.providerNeutral, true);
+    assert.equal(projection.runtimeObservationContract.correlation.exactRepositoryRevisionRequiredForResolved, true);
+    assert.equal(projection.runtimeObservationContract.authority.semanticAuthority, false);
     assert.ok(projection.uncertainty.unknowns.some((value: string) => /runtime state transitions/i.test(value)));
 
     const direct = await callTool('inspect_interface', {
