@@ -252,9 +252,16 @@ export async function saveItem(id: string) {
     assert.equal(evolvedStorage.continuity.state, 'inherited');
     assert.equal(evolvedStorage.continuity.meaningId, accepted.meaningId);
     const meaningDelta = evolvedSurface.promotionAudit.items.find((item: any) => item.meaningId === accepted.meaningId);
-    assert.ok(meaningDelta, 'implementation change should remain an addressable semantic evolution item');
-    assert.equal(meaningDelta.sourceRevision, baseRevision);
-    assert.equal(meaningDelta.targetRevision, refactorRevision);
+    assert.equal(
+      meaningDelta,
+      undefined,
+      'implementation-only movement that preserves meaning must not manufacture a semantic release delta',
+    );
+    assert.equal(
+      evolvedSurface.promotionAudit.gateStatus,
+      'ready',
+      'stable accepted meaning should remain release-ready across implementation-only movement',
+    );
 
     const finalAnswer = await queryWorkbenchRequest({ project, text: 'What does this project do?' }) as any;
     assert.equal(finalAnswer.result.semanticUnderstanding.source, 'accepted-authority');
