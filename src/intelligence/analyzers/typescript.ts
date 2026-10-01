@@ -18,6 +18,15 @@ function unwrap(node: ts.Expression | undefined): ts.Expression | undefined {
   return current;
 }
 
+function variableFunctionExpression(node: ts.Expression | undefined): ts.ArrowFunction | ts.FunctionExpression | undefined {
+  const current = unwrap(node);
+  if (!current) return undefined;
+  if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) return current;
+  if (!ts.isCallExpression(current) || callLeafName(current.expression) !== 'useCallback') return undefined;
+  const callback = unwrap(current.arguments[0]);
+  return callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) ? callback : undefined;
+}
+
 function staticString(node: ts.Expression | undefined): string | undefined {
   const current = unwrap(node);
   return current && ts.isStringLiteralLike(current) ? current.text : undefined;
@@ -254,16 +263,19 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       scopeStack.push(`${memberScope}:${node.name.text}`);
       pushedFunction = true;
       pushedScope = true;
-    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
-      const parentFunction = functionOwner();
-      const nested = addSymbol(node.name.text, 'function', node);
-      const props = destructuredParameterNames(node.initializer.parameters);
-      if (props.size) componentPropsByOwner.set(nested.id, props);
-      if (parentFunction) resolutions.push(resolution({ from: parentFunction.id, to: nested.id, kind: 'contains', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'structural', checkpoint: false }));
-      functionStack.push(nested);
-      scopeStack.push(node.name.text);
-      pushedFunction = true;
-      pushedScope = true;
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const functionExpression = variableFunctionExpression(node.initializer);
+      if (functionExpression) {
+        const parentFunction = functionOwner();
+        const nested = addSymbol(node.name.text, 'function', node);
+        const props = destructuredParameterNames(functionExpression.parameters);
+        if (props.size) componentPropsByOwner.set(nested.id, props);
+        if (parentFunction) resolutions.push(resolution({ from: parentFunction.id, to: nested.id, kind: 'contains', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'structural', checkpoint: false }));
+        functionStack.push(nested);
+        scopeStack.push(node.name.text);
+        pushedFunction = true;
+        pushedScope = true;
+      }
     } else if (ts.isClassDeclaration(node) && node.name) {
       addSymbol(node.name.text, 'class', node);
       scopeStack.push(node.name.text);
