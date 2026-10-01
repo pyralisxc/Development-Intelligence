@@ -12,6 +12,7 @@ import { auditSemanticCandidates } from './semanticAudit.js';
 import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
 import { graphRecordWeight } from './capacity.js';
 import { repositoryAudit } from './repositoryAudit.js';
+import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from './interfaceRuntimeObservation.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -586,6 +587,23 @@ function implementationExplorationIntent(text: string): boolean {
   return asksMechanism && mechanism;
 }
 
+function implementationInventoryIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const asksInventory = /\b(?:what|which|show|list|explain|describe)\b/u.test(lower)
+    && /\b(?:already|currently|now|exist|exists|available|implemented|supported|present|have|has)\b/u.test(lower);
+  const inventory = /\b(?:capabilit(?:y|ies)|infrastructure|projections?|routers?|routing|benchmarks?|benchmarking|tooling|mechanisms?|pipelines?|services?|systems?)\b/u.test(lower);
+  const implementationContext = /\b(?:graph|semantic|interface|interaction|accuracy|benchmark|query|investigation|analysis|runtime|source|code|repository|repo|project)\b/u.test(lower);
+  return asksInventory && inventory && implementationContext;
+}
+
+function implementationMetaInquiryIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const asks = /\b(?:how|where|what|which|show|explain|describe)\b/u.test(lower);
+  const metaSubject = /\b(?:benchmarks?|benchmarking|scorecards?|scor(?:e|er|ing)|ground[- ]truth|corpus|corpora|manifests?|routers?|routing|projections?|tooling|pipelines?|planners?|index(?:ed|ing)?|shards?|sharding|caches?|metrics?|measure(?:d|ment|ments)|accuracy cases?)\b/u.test(lower);
+  const developmentContext = /\b(?:graph|semantic|interface|interaction|accuracy|benchmark|query|investigation|analysis|runtime|source|code|repository|repositories|repo|project|scripts?|tools?|calls?|relationships?|evidence)\b/u.test(lower);
+  return asks && metaSubject && developmentContext;
+}
+
 function implementationExplorationTerms(text: string): string[] {
   const stop = new Set([
     'about', 'against', 'also', 'another', 'between', 'broader', 'choice', 'current', 'does', 'doing',
@@ -944,8 +962,12 @@ export function planInvestigationQuestion(input: {
     )
     && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
+  const implementationInventory = implementationInventoryIntent(text);
+  const implementationMetaInquiry = implementationMetaInquiryIntent(text);
+
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
+  else if (implementationInventory || implementationMetaInquiry) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
@@ -1633,6 +1655,7 @@ export async function interfaceProjection(input: {
       transitions: [],
       effects: [],
       representation: [],
+      runtimeObservationContract: interfaceRuntimeObservationContract(),
       coverage: compactCoverage(graph),
       policy: { deterministic: true, persisted: false, semanticAuthority: false },
     };
@@ -1822,7 +1845,7 @@ export async function interfaceProjection(input: {
   };
 
   const uncertaintyEdges = touchingEdges.filter(edge => edge.status !== 'resolved');
-  const runtimeSources = graph.sources.filter(source => source.kind !== 'repository');
+  const runtimeSources = graph.sources.filter(isInterfaceRuntimeObservationSource);
   const observedKinds = new Set(nodes.map(node => node.kind));
   const unknowns: string[] = [];
   if (!runtimeSources.length) {
@@ -1871,6 +1894,7 @@ export async function interfaceProjection(input: {
     transitions,
     effects,
     representation,
+    runtimeObservationContract: interfaceRuntimeObservationContract(),
     runtimeObservations: {
       available: runtimeSources.length > 0,
       sources: runtimeSources.map(source => ({

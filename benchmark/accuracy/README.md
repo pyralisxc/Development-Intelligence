@@ -44,7 +44,7 @@ A case is machine-readable and revision-bound:
 
 `complete` is important. A benchmark must not count every unlisted observation as a false positive unless the ground-truth set is known to be exhaustive.
 
-Relationships are scored as exact `from | kind | to` triples. Candidate and unresolved behavior should be represented by dedicated cases instead of silently accepting a resolved edge.
+Relationships are scored as exact `from | kind | to` triples. When resolution quality matters, `groundTruth.relationshipStates` scores the same triple plus `resolved | candidate | unresolved` so a candidate edge cannot silently satisfy resolved truth. `groundTruth.evidence` can independently require or forbid exact evidence locators.
 
 ## Ground truth
 
@@ -67,7 +67,11 @@ The deterministic scorer reports:
 - recall;
 - precision only when the case declares complete ground truth;
 - answer-status calibration;
-- per-case pass/fail and suite totals.
+- evidence-locator correctness when ground truth is declared;
+- resolved/candidate/unresolved relationship-state calibration;
+- per-case pass/fail and suite totals;
+- grouped scorecards by capability and language;
+- operational observations (tool calls, latency, graph record weight, node count, edge count) reported separately from correctness gates.
 
 The first tranche keeps observation collection separate from scoring. That makes the scoring contract hermetic and lets later benchmark runners feed results from DI tools, compiler frontends, or pinned portfolio replays without changing correctness semantics.
 
@@ -77,7 +81,9 @@ Run the scorer with:
 npm run benchmark:accuracy -- benchmark/accuracy/cases.json benchmark/accuracy/observations.json
 ```
 
-The checked-in portfolio cases and automatic DI observation collector are added incrementally as their independent ground truth is established.
+The real-repository benchmark portfolio is declared in `benchmark/accuracy/portfolio.json`. It binds each participant to an immutable revision, language, benchmark runner, and capability set. Reviewed ground truth remains close to the runner that establishes it, while the manifest makes portfolio coverage inspectable without reverse-engineering the scripts.
+
+Correctness and operations stay deliberately separate: evidence/relationship-state mistakes can fail a case, while latency, tool-call count and graph size are measured but do not make correctness CI flaky.
 
 ## Semantic-candidate accuracy
 
