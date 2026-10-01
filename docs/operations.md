@@ -4,6 +4,8 @@
 
 Development Intelligence does not require a permanently administered graph database or persistent graph disk. Git remains source/history authority, while hosted canonical A/W and semantic-review authority use configured DI canonical persistence (currently Vercel Private Blob). Local checkouts, query artifacts, and analyzer caches remain reconstructable compute.
 
+Vercel container deployment is runtime-change scoped. `vercel.json` uses an ignored-build diff over runtime source, dependency manifests/lockfile, TypeScript runtime build configuration, `Dockerfile.vercel`, Vercel configuration, and Docker ignore rules. Documentation, tests, benchmarks, GitHub workflow edits, packaged-action-only edits, and other runtime-neutral repository changes do not rebuild or push a new container image. Preview/Main correctness remains owned by GitHub verification; runtime-affecting commits still deploy normally.
+
 Inspected repositories do not need a generated semantic checkpoint. Consumers should pin `pyralisxc/Development-Intelligence` to a reviewed full commit SHA and use checkpointless `mode: analyze` when they want repository-side CI evidence. DI canonical persistence owns semantic acceptance/review state; repository source and product/architecture documents retain their own authority roles.
 
 The legacy `check` / `seal` checkpoint modes remain for DI self-verification and migration compatibility, not as the normal authority model for inspected repositories.

@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- src package.json package-lock.json tsconfig.json tsconfig.runtime.json Dockerfile.vercel vercel.json .dockerignore",
   "git": {
     "deploymentEnabled": {
       "work/**": false
