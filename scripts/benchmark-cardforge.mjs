@@ -741,6 +741,10 @@ if (Number(scan.coverage?.eligibleFiles ?? 0) < 1 || Number(scan.coverage?.analy
 
 const semanticNodes = graph.nodes.filter(node => node.layer === 'semantic');
 const semanticEdges = graph.edges.filter(edge => edge.layer === 'semantic');
+const unresolvedHandledBy = graph.edges.filter(edge => edge.kind === 'handled_by' && edge.status === 'unresolved').length;
+const resolvedStateSetterHandledBy = graph.edges.filter(edge => edge.kind === 'handled_by' && edge.status === 'resolved' && edge.strategy === 'state-setter').length;
+const unresolvedResolvesTo = graph.edges.filter(edge => edge.kind === 'resolves_to' && edge.status === 'unresolved').length;
+if (resolvedStateSetterHandledBy < 1) throw new Error('CardForge benchmark expected at least one deterministically resolved JSX state-setter handler');
 const processMemory = process.memoryUsage();
 const processResources = process.resourceUsage();
 const report = {
@@ -771,6 +775,11 @@ const report = {
     conflicts: graph.explicitValueConflicts.length,
     candidateRelationships: semanticEdges.filter(edge => edge.status === 'candidate').length,
     unresolvedRelationships: semanticEdges.filter(edge => edge.status === 'unresolved').length,
+  },
+  relationshipUncertainty: {
+    unresolvedHandledBy,
+    resolvedStateSetterHandledBy,
+    unresolvedResolvesTo,
   },
   temporalVerification: {
     elapsedMs: Number(temporalElapsedMs.toFixed(3)),
@@ -1045,6 +1054,7 @@ const summary = [
   `- Resolved imports: **${relationshipCounts.imports ?? 0}**`,
   `- Import-to-definition resolutions: **${relationshipCounts.resolves_to ?? 0}**`,
   `- Call relationships: **${relationshipCounts.calls ?? 0}**`,
+  `- Handler resolution: **${resolvedStateSetterHandledBy} JSX state-setter handlers resolved / ${unresolvedHandledBy} handled_by unresolved / ${unresolvedResolvesTo} resolves_to unresolved**`,
   `- Grouped search: **${groupedSearch.results.length} queries / one graph context**`,
   `- Canonical graphId reconstructed after cache loss: **yes**`,
   `- CSS structure: **${kindQueries['css-selector'] ?? 0} selectors / ${kindQueries['css-at-rule'] ?? 0} at-rules / ${kindQueries['css-custom-property'] ?? 0} custom properties**`,
