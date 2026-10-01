@@ -914,6 +914,10 @@ export function planInvestigationQuestion(input: {
   const semanticLifecycleIntent =
     /\b(semantic|meaning|meanings)\b/u.test(lower)
     && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/u.test(lower);
+  const semanticLifecycleAuditIntent =
+    semanticLifecycleIntent
+    && /\b(gaps?|contradictions?|issues?|problems?|risks?|bugs?|weaknesses?)\b/u.test(lower)
+    && /\b(source|implementation|workflow|system|code)\b/u.test(lower);
   const repositorySemanticOrientationIntent =
     /\b(?:this|the)\s+(?:project|repository|repo|codebase)(?:['’]s)?\b/iu.test(text)
     && /\b(main|major|moving parts|wide view|orientation|orient|overview|what does .+ do)\b/u.test(lower);
@@ -943,7 +947,7 @@ export function planInvestigationQuestion(input: {
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
   else if (interfaceIntent) lane = 'interface';
-  else if (architectureSimplificationIntent) lane = 'repository-audit';
+  else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
   else if (implementationExplorationIntent(text)) lane = 'implementation-explanation';
   else if (/\b(what changed|changes?|diff|delta)\b/u.test(lower)) lane = 'change';
@@ -1216,6 +1220,7 @@ async function semanticLifecycleOverview(project: string): Promise<Record<string
   const humanAccepted = accepted.filter(review => review.acceptance?.actor.kind === 'human');
   const humanVerified = verified.filter(review => review.verification?.actor.kind === 'human');
   const aiVerified = verified.filter(review => review.verification?.actor.kind === 'ai-model');
+  const enrollment = authority.ledger?.enrollment ?? null;
 
   return {
     summary: 'Semantic meaning moves from evidence-backed proposal → shared AI/human review → independent acceptance and/or evidence-backed verification → stable meaning identity across revisions → explicit lineage for replacement, supersession, split, or merge → current-revision approval at the Preview→Main boundary. Acceptance never implies verification, and verification never implies acceptance.',
@@ -1263,6 +1268,12 @@ async function semanticLifecycleOverview(project: string): Promise<Record<string
       humanVerifiedMeanings: humanVerified.length,
       aiVerifiedMeanings: aiVerified.length,
     },
+    governance: {
+      enrollmentState: enrollment?.state ?? 'not-enrolled',
+      baselineRevision: enrollment?.baselineRevision ?? null,
+      baselineCandidateCount: enrollment?.baselineCandidateIds.length ?? 0,
+      gateCanBlockMain: enrollment?.state === 'enforced',
+    },
     policy: {
       sharedHumanAiReviewSurface: true,
       acceptanceImpliesVerification: false,
@@ -1277,6 +1288,57 @@ async function semanticLifecycleOverview(project: string): Promise<Record<string
       persisted: false,
     },
   };
+}
+
+function semanticLifecycleAnswer(question: string, overview: Record<string, unknown>): string {
+  const lower = question.toLowerCase();
+  const authority = (overview.authority ?? {}) as Record<string, unknown>;
+  const governance = (overview.governance ?? {}) as Record<string, unknown>;
+  const accepted = Number(authority.acceptedMeanings ?? 0);
+  const verified = Number(authority.verifiedMeanings ?? 0);
+  const enrollmentState = String(governance.enrollmentState ?? 'not-enrolled');
+  const baselineRevision = typeof governance.baselineRevision === 'string' ? governance.baselineRevision : null;
+  const baselineCandidateCount = Number(governance.baselineCandidateCount ?? 0);
+
+  if (/\b(gate|enroll(?:ed|ment)?|enforc(?:e|ed|ement)?|advisory|block(?:s|ing)? main)\b/u.test(lower)) {
+    if (enrollmentState === 'not-enrolled') {
+      return `The semantic promotion gate is not enrolled, so it is currently non-blocking. There is no enforced Preview→Main semantic baseline; accepted authority must be established and the gate explicitly enrolled before semantic changes can block Main.`;
+    }
+    if (enrollmentState === 'advisory') {
+      return `The semantic promotion gate is advisory, so it reports semantic deltas but does not block Main. The recorded baseline is ${baselineRevision ?? 'not set'} with ${baselineCandidateCount} baseline candidate(s).`;
+    }
+    return `The semantic promotion gate is enforced against baseline ${baselineRevision ?? 'unknown'} with ${baselineCandidateCount} baseline candidate(s). In enforced mode, unapproved current-revision semantic deltas can block Main until they are accepted or evidence-verified.`;
+  }
+
+  if (/\b(missing|remain(?:s|ing)?|still|before|baseline)\b/u.test(lower)
+    && /\b(semantic|accept(?:ed|ance)?|baseline|authority|main)\b/u.test(lower)) {
+    if (accepted === 0) {
+      return `DI does not yet have an accepted semantic baseline: there are 0 accepted active meanings and ${verified} verified active meaning(s), and gate enrollment is ${enrollmentState}. Establish accepted semantic authority first, then explicitly record/enforce a baseline revision for Preview→Main governance.`;
+    }
+    if (!baselineRevision) {
+      return `DI has ${accepted} accepted active semantic meaning(s), but no baseline revision is recorded and gate enrollment is ${enrollmentState}. The remaining governance step is to explicitly enroll the promotion gate against the accepted Main baseline.`;
+    }
+    return `DI has ${accepted} accepted active semantic meaning(s) and a recorded baseline at ${baselineRevision}. Gate enrollment is ${enrollmentState}; current Preview deltas still require revision-specific approval whenever enforcement is active.`;
+  }
+
+  return String(overview.summary ?? 'Semantic lifecycle explanation complete.');
+}
+
+function repositoryAuditAnswer(result: Record<string, any>): string {
+  const findings = Array.isArray(result.findings) ? result.findings : [];
+  const blockers = Array.isArray(result.coverageBlockers) ? result.coverageBlockers : [];
+  const targets = Array.isArray(result.investigationTargets) ? result.investigationTargets : [];
+  if (findings.length === 0 && blockers.length === 0) {
+    return targets.length
+      ? `No deterministic repository defects or coverage blockers were found on the pinned revision. DI did surface ${targets.length} investigation target(s); those are evidence-backed areas worth inspecting, not proven defects.`
+      : 'No deterministic repository defects or coverage blockers were found on the pinned revision.';
+  }
+  const summaries = findings
+    .slice(0, 3)
+    .map((item: any) => String(item.summary ?? item.message ?? '').trim())
+    .filter(Boolean);
+  const detail = summaries.length ? ` Leading findings: ${summaries.join(' ')}` : '';
+  return `Repository audit found ${findings.length} deterministic finding(s) and ${blockers.length} coverage blocker(s) on the pinned revision.${detail}`;
 }
 
 export async function scopeOrientation(input: {
@@ -2283,7 +2345,7 @@ export async function queryWorkbench(input: {
       intent: 'semantic-lifecycle',
       subject: null,
       routing: { tool: 'investigate', projection: 'semantic-lifecycle' },
-      answer: String((result as any).summary),
+      answer: semanticLifecycleAnswer(text, result),
       result,
     };
   }
@@ -2379,13 +2441,11 @@ export async function queryWorkbench(input: {
       ...(input.graphId ? { graphId: input.graphId } : {}),
       limit: 40,
     }) as any;
-    const findingTotal = Number(result.findingSummary?.total ?? result.findings?.length ?? 0);
-    const blockerTotal = Number(result.coverageBlockers?.length ?? 0);
     return {
       intent: 'repository-audit',
       subject: null,
       routing: { tool: 'audit_repository' },
-      answer: `Repository audit: ${findingTotal} deterministic finding(s) and ${blockerTotal} coverage blocker(s) on the pinned revision.`,
+      answer: repositoryAuditAnswer(result),
       result,
     };
   }
