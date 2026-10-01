@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   action-smoke:
-    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -38,7 +38,7 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run verify
       - name: Upload verified exact-revision build
-        if: (github.event_name == 'pull_request' && github.event.action != 'labeled') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        if: (github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@v4
         with:
           name: development-intelligence-verified-dist
@@ -104,7 +104,7 @@ jobs:
           retention-days: 1
 
   cardforge-benchmark:
-    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -145,7 +145,7 @@ jobs:
           retention-days: 1
 
   polyglot-portfolio-benchmark:
-    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -203,7 +203,7 @@ jobs:
 
 
   external-gin-benchmark:
-    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -245,7 +245,7 @@ jobs:
 
 
   external-amux-benchmark:
-    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -288,7 +288,7 @@ jobs:
           retention-days: 1
 
   capacity-benchmark:
-    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
