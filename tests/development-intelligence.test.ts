@@ -1059,6 +1059,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'inspect_interface',
     'audit_semantics',
     'semantic_review_surface',
+    'semantic_promotion_gate',
     'audit_semantic_authority_portfolio',
     'query_intelligence',
     'audit_repository',
@@ -1097,6 +1098,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('audit_semantics')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('semantic_review_surface')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('semantic_review_surface')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('semantic_promotion_gate')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('semantic_promotion_gate')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('audit_semantic_authority_portfolio')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('audit_semantic_authority_portfolio')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
@@ -1110,7 +1113,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 32, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 33, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -1128,7 +1131,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 32);
+  assert.equal(identity.mcp.toolCount, 33);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
