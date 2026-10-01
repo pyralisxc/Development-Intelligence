@@ -592,6 +592,7 @@ test('question planning separates lane, subject strategy, depth, and proof burde
   const cases = [
     { question: 'How is the Workbench interface implemented in source?', lane: 'interface', subjectStrategy: 'scope-or-entity' },
     { question: 'Where in source is accepted semantic meaning persisted and evolved?', lane: 'semantic-lifecycle', subjectStrategy: 'repository' },
+    { question: 'Are there source-backed implementation gaps or contradictions in semantic review, authority, and promotion workflow?', lane: 'repository-audit', subjectStrategy: 'repository' },
     { question: 'How does the adaptive query planner choose between indexed and sharded reads, and what evidence exposes that choice?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'How does Panel implementation persist accepted state?', lane: 'implementation-claim', proofMode: 'claim' },
     { question: 'Where is Panel implemented?', lane: 'code' },
@@ -1037,6 +1038,34 @@ test('scope orientation surfaces explainable local graph structure without an op
       semanticLifecycle.result.policy.promotionApprovalAlternatives,
       ['human-accepted', 'human-verified', 'ai-verified'],
     );
+
+    const lifecycleStateQuestions = await callTool('investigate', {
+      project: fixture.project,
+      questions: [
+        'What conditions make the semantic promotion gate enforced rather than advisory or not enrolled?',
+        'What is still missing before this repository has an accepted semantic baseline on main?',
+      ],
+    }) as any;
+    assert.deepEqual(
+      lifecycleStateQuestions.items.map((item: any) => item.intent),
+      ['semantic-lifecycle', 'semantic-lifecycle'],
+    );
+    assert.notEqual(
+      lifecycleStateQuestions.items[0].answer,
+      lifecycleStateQuestions.items[1].answer,
+      'distinct semantic lifecycle questions must not collapse to one static answer',
+    );
+    assert.match(lifecycleStateQuestions.items[0].answer, /not enrolled.*non-blocking/iu);
+    assert.match(lifecycleStateQuestions.items[1].answer, /does not yet have an accepted semantic baseline/iu);
+    assert.equal(lifecycleStateQuestions.items[0].result.governance.enrollmentState, 'not-enrolled');
+
+    const semanticImplementationAudit = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Are there source-backed implementation gaps or contradictions in semantic review, authority, and promotion workflow?',
+    }) as any;
+    assert.equal(semanticImplementationAudit.intent, 'repository-audit');
+    assert.equal(semanticImplementationAudit.routing.tool, 'audit_repository');
+    assert.match(semanticImplementationAudit.answer, /repository defects|deterministic finding/iu);
 
     const proposalToAuthority = await callTool('investigate', {
       project: fixture.project,
