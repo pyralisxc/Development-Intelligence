@@ -193,7 +193,7 @@ export function createDevelopmentIntelligenceServer() {
       try {
         const result = await reconcileCanonicalPortfolioIsolated({
           rotationEpochMs: Date.now(),
-          rotationIntervalMs: 60_000,
+          rotationIntervalMs: 5 * 60_000,
         });
         json(res, 200, { trigger: 'vercel-cron', ...result });
       } catch (error) {

@@ -8,7 +8,7 @@
   "crons": [
     {
       "path": "/internal/reconcile-canonical",
-      "schedule": "* * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/internal/vcr-retention",
