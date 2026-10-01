@@ -11,21 +11,51 @@
       "question": "Which implementation realizes /api/health?",
       "groundTruth": {
         "entities": {
-          "required": ["api:/api/health"],
+          "required": [
+            "api:/api/health"
+          ],
           "forbidden": [],
           "complete": false
         },
         "relationships": {
           "required": [
-            { "from": "api:/api/health", "kind": "implemented-by", "to": "symbol:handler" }
+            {
+              "from": "api:/api/health",
+              "kind": "implemented-by",
+              "to": "symbol:handler"
+            }
           ],
           "forbidden": [],
           "complete": false
         },
-        "answerStatuses": ["supported"]
+        "answerStatuses": [
+          "supported"
+        ],
+        "relationshipStates": {
+          "required": [
+            {
+              "from": "api:/api/health",
+              "kind": "implemented-by",
+              "to": "symbol:handler",
+              "status": "resolved"
+            }
+          ],
+          "forbidden": [],
+          "complete": true
+        },
+        "evidence": {
+          "required": [
+            "src/app/api/health/route.ts"
+          ],
+          "forbidden": [],
+          "complete": false
+        }
       },
       "provenance": [
-        { "kind": "source", "locator": "src/app/api/health/route.ts" }
+        {
+          "kind": "source",
+          "locator": "src/app/api/health/route.ts"
+        }
       ]
     },
     {
@@ -65,14 +95,22 @@
             }
           ],
           "forbidden": [
-            { "scope": "src/shared" }
+            {
+              "scope": "src/shared"
+            }
           ],
           "complete": true
         }
       },
       "provenance": [
-        { "kind": "source", "locator": "src/features/authentication" },
-        { "kind": "source", "locator": "src/features/editor" }
+        {
+          "kind": "source",
+          "locator": "src/features/authentication"
+        },
+        {
+          "kind": "source",
+          "locator": "src/features/editor"
+        }
       ]
     }
   ]

@@ -14,7 +14,25 @@
           "to": "symbol:handler"
         }
       ],
-      "answerStatus": "supported"
+      "answerStatus": "supported",
+      "relationshipStates": [
+        {
+          "from": "api:/api/health",
+          "kind": "implemented-by",
+          "to": "symbol:handler",
+          "status": "resolved"
+        }
+      ],
+      "evidence": [
+        "src/app/api/health/route.ts"
+      ],
+      "metrics": {
+        "toolCalls": 1,
+        "latencyMs": 12.4,
+        "graphRecordWeight": 1200,
+        "graphNodes": 700,
+        "graphEdges": 500
+      }
     }
   ]
 }

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   normalizeAccuracyCase,
   relationshipKey,
+  relationshipStateKey,
   scoreAccuracyCase,
   scoreAccuracySuite,
 } from './accuracy-benchmark-lib.mjs';
@@ -38,6 +39,7 @@ test('accuracy case format preserves exact revision and partial ground truth', (
   assert.equal(normalized.groundTruth.relationships.complete, true);
   assert.equal(normalized.groundTruth.semanticCandidates, null);
   assert.equal(relationshipKey({ from: 'a', kind: 'calls', to: 'b' }), 'a|calls|b');
+  assert.equal(relationshipStateKey({ from: 'a', kind: 'calls', to: 'b', status: 'candidate' }), 'a|calls|b|candidate');
 });
 
 test('case scoring reports recall and precision only where ground truth is complete', () => {
@@ -173,9 +175,52 @@ test('semantic candidate scoring detects proposal authority drift as a missed re
   assert.ok(score.semanticCandidateScore.missingRequired.some(value => value.startsWith('src/features/authentication|')));
 });
 
+test('evidence and relationship-state calibration are correctness dimensions while operational metrics remain observational', () => {
+  const calibrated = structuredClone(baseCase);
+  calibrated.id = 'typescript-route-calibration';
+  calibrated.groundTruth.relationshipStates = {
+    required: [{ from: 'api:/api/health', kind: 'implemented-by', to: 'symbol:route-handler', status: 'resolved' }],
+    forbidden: [{ from: 'api:/api/health', kind: 'implemented-by', to: 'symbol:route-handler', status: 'candidate' }],
+    complete: true,
+  };
+  calibrated.groundTruth.evidence = {
+    required: ['src/app/api/health/route.ts'],
+    forbidden: ['src/app/api/wrong/route.ts'],
+    complete: true,
+  };
+  const passing = scoreAccuracyCase(calibrated, {
+    caseId: calibrated.id,
+    entities: ['api:/api/health', 'symbol:route-handler'],
+    relationships: [{ from: 'api:/api/health', kind: 'implemented-by', to: 'symbol:route-handler' }],
+    relationshipStates: [{ from: 'api:/api/health', kind: 'implemented-by', to: 'symbol:route-handler', status: 'resolved' }],
+    evidence: ['src/app/api/health/route.ts'],
+    answerStatus: 'supported',
+    metrics: { toolCalls: 2, latencyMs: 999999, graphRecordWeight: 1500, graphNodes: 900, graphEdges: 600 },
+  });
+  assert.equal(passing.pass, true, 'wall-time observations must not become noisy correctness gates');
+  assert.equal(passing.relationshipStateScore.recall, 1);
+  assert.equal(passing.evidenceScore.precision, 1);
+  assert.equal(passing.operational.latencyMs, 999999);
+
+  const miscalibrated = scoreAccuracyCase(calibrated, {
+    caseId: calibrated.id,
+    entities: ['api:/api/health', 'symbol:route-handler'],
+    relationships: [{ from: 'api:/api/health', kind: 'implemented-by', to: 'symbol:route-handler' }],
+    relationshipStates: [{ from: 'api:/api/health', kind: 'implemented-by', to: 'symbol:route-handler', status: 'candidate' }],
+    evidence: ['src/app/api/wrong/route.ts'],
+    answerStatus: 'supported',
+  });
+  assert.equal(miscalibrated.pass, false);
+  assert.ok(miscalibrated.relationshipStateScore.missingRequired.length > 0);
+  assert.ok(miscalibrated.relationshipStateScore.forbiddenPresent.length > 0);
+  assert.ok(miscalibrated.evidenceScore.missingRequired.length > 0);
+  assert.ok(miscalibrated.evidenceScore.forbiddenPresent.length > 0);
+});
+
 test('suite scorecard aggregates durable correctness metrics', () => {
   const second = structuredClone(baseCase);
   second.id = 'typescript-route-absence';
+  second.language = 'csharp';
   second.groundTruth.relationships = { required: [], forbidden: [], complete: false };
   second.groundTruth.entities = { required: ['route:/'], forbidden: [], complete: true };
   const suite = scoreAccuracySuite([baseCase, second, semanticCase], [
@@ -184,6 +229,7 @@ test('suite scorecard aggregates durable correctness metrics', () => {
       entities: ['api:/api/health', 'symbol:route-handler'],
       relationships: [{ from: 'api:/api/health', kind: 'implemented-by', to: 'symbol:route-handler' }],
       answerStatus: 'supported',
+      metrics: { toolCalls: 1, latencyMs: 10, graphRecordWeight: 100, graphNodes: 60, graphEdges: 40 },
     },
     {
       caseId: second.id,
@@ -206,4 +252,10 @@ test('suite scorecard aggregates durable correctness metrics', () => {
   assert.equal(suite.semanticCandidateRecall, 1);
   assert.equal(suite.semanticCandidatePrecision, 1);
   assert.equal(suite.semanticCandidateFalsePositiveRate, 0);
+  assert.equal(suite.byLanguage.typescript.cases, 2);
+  assert.equal(suite.byLanguage.csharp.cases, 1);
+  assert.equal(suite.byCapability['semantic-bootstrap'].cases, 1);
+  assert.equal(suite.operational.measuredCases, 1);
+  assert.equal(suite.operational.averageToolCalls, 1);
+  assert.equal(suite.operational.correctnessGating, false);
 });
