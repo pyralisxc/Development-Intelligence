@@ -164,10 +164,11 @@ function recordIncludes(
   needle: string,
   fields: Array<string | null | undefined>,
 ): boolean {
+  const rawNeedle = needle.toLowerCase();
   const normalizedNeedle = normalizeName(needle);
   return fields.some(value => {
     if (typeof value !== 'string') return false;
-    if (value.toLowerCase().includes(needle)) return true;
+    if (value.toLowerCase().includes(rawNeedle)) return true;
     return Boolean(normalizedNeedle && normalizeName(value).includes(normalizedNeedle));
   });
 }
@@ -361,7 +362,7 @@ export function populatedQueryBuckets(index: CanonicalQueryIndexArtifact): strin
 }
 
 export function candidateQueryBuckets(index: CanonicalQueryIndexArtifact, query: string): string[] {
-  const needle = query.trim().toLowerCase();
+  const needle = query.trim();
   if (!needle) return populatedQueryBuckets(index);
   const buckets = new Set<string>();
   for (const [bucket, id, kind, layer, text] of index.nodeSearch) {

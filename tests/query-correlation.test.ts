@@ -105,3 +105,26 @@ test('adaptive query artifacts find normalized identifier variants without persi
   assert.ok(ids.has('node:camel'));
   assert.equal(artifacts.index.edgeSearch.length, 0, 'query discovery must not require persisted fuzzy relationship records');
 });
+
+
+test('adaptive query artifacts preserve camelCase query boundaries for natural-language source evidence', () => {
+  const statement = 'src/features/app-shell: creator interaction sessions, feature-owned action execution, and contextual-tool boundaries.';
+  const nodes: GraphNode[] = [{
+    id: 'node:architecture-statement',
+    sourceId: 'repo:docs/architecture.md',
+    kind: 'document-statement',
+    locator: 'docs/architecture.md:64',
+    field: 'statement',
+    value: statement,
+    raw: statement,
+    layer: 'structural',
+  }];
+  const artifacts = buildCanonicalQueryArtifacts(graph(nodes));
+  const buckets = candidateQueryBuckets(artifacts.index, 'createCreatorInteractionSession');
+  const detail = materializeQueryBuckets(artifacts, buckets);
+
+  assert.ok(
+    detail.nodes.some(node => node.id === 'node:architecture-statement'),
+    'camelCase query should recover normalized natural-language evidence without a persisted fuzzy edge',
+  );
+});
