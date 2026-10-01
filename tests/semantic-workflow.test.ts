@@ -383,14 +383,11 @@ test('semantic continuity can establish an enforced baseline without repository 
   const preserved = evaluateSemanticEvolution(meaning, [base], base.provenance.revision);
   assert.equal(preserved.status, 'preserved');
 
-  const changed = candidate({
-    id: 'candidate:zero-metadata',
-    scope: base.scope,
-    name: base.proposal.name,
-    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    files: 12,
-  });
-  const changedEvolution = evaluateSemanticEvolution(meaning, [changed], changed.provenance.revision);
-  assert.equal(changedEvolution.status, 'realization-changed');
-  assert.equal(changedEvolution.reviewRequired, true);
+  const unsupported = evaluateSemanticEvolution(
+    meaning,
+    [],
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  );
+  assert.equal(unsupported.status, 'unsupported');
+  assert.equal(unsupported.reviewRequired, true);
 });
