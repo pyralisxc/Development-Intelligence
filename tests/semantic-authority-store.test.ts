@@ -255,7 +255,7 @@ test('canonical semantic promotion requires a revision-bound ready gate and stor
     };
     await assert.rejects(
       promoteCanonicalAcceptedGraph({ project, repository, revision, gate: blockedGate }),
-      /not ready/i,
+      /not enforced and ready/i,
     );
 
     const readyGate: any = {
