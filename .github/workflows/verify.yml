@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action != 'labeled' }}
+
 jobs:
   action-smoke:
     runs-on: ubuntu-latest
@@ -95,9 +99,10 @@ jobs:
           path: .development-intelligence
           if-no-files-found: error
           include-hidden-files: true
-          retention-days: 7
+          retention-days: 1
 
   cardforge-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -135,9 +140,10 @@ jobs:
             benchmark-cardforge.json
             benchmark-cardforge.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
   polyglot-portfolio-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -191,10 +197,11 @@ jobs:
             benchmark-polyglot-portfolio.json
             benchmark-polyglot-portfolio.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
 
   external-gin-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -232,10 +239,11 @@ jobs:
             benchmark-gin.json
             benchmark-gin.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
 
   external-amux-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -275,9 +283,10 @@ jobs:
             benchmark-amux.json
             benchmark-amux.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
   capacity-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
