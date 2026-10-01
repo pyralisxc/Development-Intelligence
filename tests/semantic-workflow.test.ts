@@ -5,7 +5,7 @@ import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticAiPr
 
 import type { SemanticCandidate } from '../src/intelligence/semanticBootstrap.js';
 import { applySemanticReviewAction, semanticMeaningReview, type SemanticMeaningReview } from '../src/intelligence/semanticReview.js';
-import { supersedeSemanticMeaning } from '../src/intelligence/semanticEvolution.js';
+import { evaluateSemanticEvolution, supersedeSemanticMeaning } from '../src/intelligence/semanticEvolution.js';
 
 function candidate(input: { id: string; scope: string; name: string; revision: string; files?: number }): SemanticCandidate {
   return {
@@ -369,4 +369,25 @@ test('continuity authority does not resurrect an older accepted record after the
     acceptedMeaningsForContinuity(ledger, 'cccccccccccccccccccccccccccccccccccccccc'),
     [],
   );
+});
+
+
+test('semantic continuity can establish an enforced baseline without repository checkpoint authority', () => {
+  const base = candidate({
+    id: 'candidate:zero-metadata',
+    scope: 'src/features/zero-metadata',
+    name: 'Zero Metadata',
+    revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  });
+  const meaning = accepted(base);
+  const preserved = evaluateSemanticEvolution(meaning, [base], base.provenance.revision);
+  assert.equal(preserved.status, 'preserved');
+
+  const unsupported = evaluateSemanticEvolution(
+    meaning,
+    [],
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  );
+  assert.equal(unsupported.status, 'unsupported');
+  assert.equal(unsupported.reviewRequired, true);
 });

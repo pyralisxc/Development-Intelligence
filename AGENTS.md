@@ -25,8 +25,8 @@ Keep each truth in its owner. Update an existing living document when its truth 
 ## Non-negotiable invariants
 
 1. One canonical Development Intelligence graph model; do not create separate code/parity/provider graph authorities.
-2. Git/source is authoritative implementation evidence. The accepted graph is a rebuildable projection committed with the project that it describes.
-3. A/W/B lifecycle: accepted A lives in Git, working W is disposable, sealed B is committed with a candidate and becomes A through normal Git merge/history.
+2. Git/source is authoritative implementation evidence. Durable accepted semantic authority lives in DI canonical persistence and remains revision-bound to Git history.
+3. A/W/B lifecycle: accepted A is DI-owned semantic authority for an exact accepted source revision, working W is reconstructable evidence for an exact Git revision, and B is the exact candidate revision plus its semantic review delta before promotion.
 4. Optional expectation evidence may be overlaid by a caller, but Development Intelligence never requires a particular product/development methodology.
 5. No project-specific analyzer/extractor in generic production source.
 6. No required semantic project configuration or hidden source-authority hierarchy.
@@ -42,7 +42,7 @@ Keep each truth in its owner. Update an existing living document when its truth 
 
 Git remains source/history authority. Durable accepted semantic A, semantic-review history, and canonical current W for inspected projects live in Development Intelligence canonical persistence, keyed to exact project revisions. Inspected repositories must not maintain a second machine semantic authority.
 
-The `/.development-intelligence/` checkpoint format remains implementation/compatibility machinery for DI's own self-seal and legacy migration tests. Do not introduce or reseal that directory in inspected product repositories as their semantic authority.
+The `/.development-intelligence/` checkpoint format remains compatibility/migration machinery generated only in disposable tests or CI artifacts. Development Intelligence and inspected product repositories must not track it as machine semantic authority.
 
 ## Verification
 
