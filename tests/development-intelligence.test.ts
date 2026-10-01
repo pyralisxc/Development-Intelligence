@@ -411,18 +411,21 @@ test('zero-metadata semantic lifecycle persists accepted authority through enfor
     assert.equal(enrolled.enrollment?.baselineRevision, baseRevision);
     assert.ok((enrolled.baselineCandidateCount ?? 0) >= 1);
 
-    const candidateScopePath = path.join(fixture.source, candidate.scope);
-    const candidateStat = await fs.stat(candidateScopePath);
-    if (candidateStat.isFile()) {
-      const source = await fs.readFile(candidateScopePath, 'utf8');
-      await fs.writeFile(candidateScopePath, source + '\nexport const semanticLifecycleRealizationMarker = true;\n');
-    } else {
-      await fs.writeFile(
-        path.join(candidateScopePath, 'semantic-lifecycle-realization.ts'),
-        'export const semanticLifecycleRealizationMarker = true;\n',
-      );
-    }
-    const previewRevision = await commit(fixture.source, 'change accepted semantic realization');
+    const lifecycleFeatureDir = path.join(fixture.source, 'src', 'features', 'semantic-lifecycle');
+    await fs.mkdir(lifecycleFeatureDir, { recursive: true });
+    await fs.writeFile(path.join(lifecycleFeatureDir, 'index.tsx'), `
+import { useState } from 'react';
+export function SemanticLifecycleFeature() {
+  const [status, setStatus] = useState('idle');
+  async function runSemanticLifecycle() {
+    setStatus('saving');
+    await fetch('/api/semantic-lifecycle', { method: 'POST' });
+    setStatus('saved');
+  }
+  return <button onClick={runSemanticLifecycle}>{status}</button>;
+}
+`);
+    const previewRevision = await commit(fixture.source, 'add new semantic lifecycle feature');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'HEAD:preview']);
     clearGraphCache(fixture.project);
 
@@ -434,8 +437,11 @@ test('zero-metadata semantic lifecycle persists accepted authority through enfor
     assert.equal(previewSurface.promotionAudit.enrollmentState, 'enforced');
     assert.equal(previewSurface.promotionAudit.baseRevision, baseRevision);
     assert.equal(previewSurface.promotionAudit.previewRevision, previewRevision);
-    const deltaItem = previewSurface.promotionAudit.items.find((item: any) => item.meaningId === accepted.meaningId);
-    assert.ok(deltaItem, 'material realization change must produce one exact semantic promotion item');
+    const newCandidate = previewSurface.candidates.find((item: any) => item.scope === 'src/features/semantic-lifecycle');
+    assert.ok(newCandidate, 'Preview must derive the newly added zero-metadata feature candidate');
+    const deltaItem = previewSurface.promotionAudit.items.find((item: any) => item.candidateId === newCandidate.id);
+    assert.ok(deltaItem, 'new semantic candidate must produce one exact promotion item after the Main baseline');
+    assert.equal(deltaItem.changeKind, 'added');
     assert.equal(deltaItem.approved, false);
     assert.equal(previewSurface.promotionAudit.gateStatus, 'semantic-review-required');
 
