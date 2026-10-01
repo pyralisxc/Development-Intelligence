@@ -11,6 +11,8 @@ COPY src ./src
 COPY tests ./tests
 COPY scripts ./scripts
 COPY benchmark ./benchmark
+COPY action.yml ./action.yml
+COPY .github/workflows/verify.yml ./.github/workflows/verify.yml
 RUN npm run verify
 
 FROM base AS runtime
