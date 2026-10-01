@@ -14,7 +14,7 @@ import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.11.0-query-time-correlation';
+export const ANALYZER_VERSION = '2.12.0-npm-lockfile-compaction';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);

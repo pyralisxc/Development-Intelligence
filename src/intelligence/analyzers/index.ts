@@ -48,7 +48,7 @@ export const SOURCE_ANALYSIS_SUPPORT = [
   {
     technology: 'structured text',
     extensions: ['.json', '.md', '.mdx', '.html', '.htm'],
-    precision: 'format-specific structure and representation evidence',
+    precision: 'format-specific structure and representation evidence; npm lockfiles retain compact package/version identity while generated metadata remains source-searchable',
   },
   {
     technology: 'CSS',

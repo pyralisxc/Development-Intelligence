@@ -2,8 +2,8 @@
   "type": "meta",
   "schemaVersion": 2,
   "format": "sharded-ndjson",
-  "analyzerVersion": "2.11.0-query-time-correlation",
-  "sourceFingerprint": "6bf3777202871c693a59b2068528bd4c1bc09e11c695b26488f3108176eb501b",
+  "analyzerVersion": "2.12.0-npm-lockfile-compaction",
+  "sourceFingerprint": "1804ab5747f15e74d1e7e92194ca068789b228db8b84793ca77184be1961deb7",
   "topologyFingerprint": "48964db02d9f01cb95ae81ece885dc31db9600aa62ae747265da119dee2355c3",
   "evidenceFingerprint": "255294703a5c53e498ef0c1a39464390b696159ada8b9cae658a4fdb4a08619a",
   "shards": [
