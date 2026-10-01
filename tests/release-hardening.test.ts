@@ -153,6 +153,9 @@ test('Vercel container builds are skipped for runtime-neutral repository changes
   const { promises: fs } = await import('node:fs');
   const config = JSON.parse(await fs.readFile('vercel.json', 'utf8')) as any;
   assert.equal(typeof config.ignoreCommand, 'string');
+  assert.match(config.ignoreCommand, /VERCEL_GIT_PREVIOUS_SHA/);
+  assert.match(config.ignoreCommand, /VERCEL_GIT_COMMIT_SHA/);
+  assert.match(config.ignoreCommand, /git diff --quiet/);
   for (const required of [
     'src',
     'package.json',
