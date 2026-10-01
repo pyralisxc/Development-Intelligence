@@ -1,14 +1,14 @@
 name: Development Intelligence
-description: Analyze a caller repository without owning its semantics, or use legacy check/seal checkpoint compatibility during migration.
+description: Analyze a caller repository without owning its semantics; legacy check/seal modes remain available only for explicit compatibility and migration tests.
 
 inputs:
   project:
     description: Stable project identifier recorded in graph operations.
     required: true
   mode:
-    description: analyze performs checkpointless read-only analysis; check/seal are legacy checkpoint migration modes. The action never commits or pushes.
+    description: analyze performs checkpointless read-only analysis and is the normal mode; check/seal are explicit legacy compatibility/migration modes. The action never commits or pushes.
     required: false
-    default: check
+    default: analyze
 
 runs:
   using: composite
