@@ -6,12 +6,22 @@ import {
 } from './canonicalStore.js';
 import { workingToAcceptedGraph } from './checkpoint.js';
 import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph } from './canonicalStore.js';
-import type { SemanticChangeVerificationRecord, SemanticMeaningReview } from './semanticReview.js';
-import type { SemanticPromotionGate } from './semanticPromotion.js';
+import type { SemanticChangeVerificationRecord, SemanticMeaningReview, SemanticReviewActor } from './semanticReview.js';
+import type { SemanticPromotionEnrollmentState, SemanticPromotionGate } from './semanticPromotion.js';
 
 const AUTHORITY_PATH = 'semantic/authority-v1.json';
 const MAX_AUTHORITY_BYTES = 16 * 1024 * 1024;
 const MAX_AUTHORITY_RECORDS = 10_000;
+
+export interface SemanticPromotionEnrollmentRecord {
+  version: 1;
+  state: SemanticPromotionEnrollmentState;
+  baselineRevision: string | null;
+  enrolledAt: string;
+  updatedAt: string;
+  actor: SemanticReviewActor;
+  rationale: string | null;
+}
 
 export interface StoredSemanticAuthorityRecord {
   recordId: string;
@@ -29,6 +39,7 @@ export interface SemanticAuthorityLedger {
   updatedAt: string;
   records: StoredSemanticAuthorityRecord[];
   changeVerifications?: SemanticChangeVerificationRecord[];
+  enrollment?: SemanticPromotionEnrollmentRecord;
 }
 
 export interface SemanticAuthorityLoad {
@@ -110,6 +121,26 @@ function validateChangeVerification(value: SemanticChangeVerificationRecord): vo
   }
 }
 
+function copyEnrollment(value: SemanticPromotionEnrollmentRecord): SemanticPromotionEnrollmentRecord {
+  return { ...value, actor: { ...value.actor } };
+}
+
+function validateEnrollment(value: SemanticPromotionEnrollmentRecord): void {
+  if (value.version !== 1 || !['not-enrolled', 'advisory', 'enforced'].includes(value.state)) {
+    throw new Error('Semantic promotion enrollment state is invalid');
+  }
+  if (!exactRevision(value.baselineRevision)) throw new Error('Semantic promotion enrollment baseline revision is invalid');
+  if (value.state === 'enforced' && value.baselineRevision === null) {
+    throw new Error('Enforced semantic promotion requires an exact baseline revision');
+  }
+  if (!value.actor?.id?.trim() || value.actor.kind !== 'human') {
+    throw new Error('Semantic promotion enrollment requires an explicit human actor');
+  }
+  if (!value.enrolledAt || Number.isNaN(Date.parse(value.enrolledAt)) || !value.updatedAt || Number.isNaN(Date.parse(value.updatedAt))) {
+    throw new Error('Semantic promotion enrollment timestamp is invalid');
+  }
+}
+
 function validateLedger(value: unknown, expectedProject: string): SemanticAuthorityLedger {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Semantic authority ledger must be an object');
   const ledger = value as SemanticAuthorityLedger;
@@ -136,7 +167,13 @@ function validateLedger(value: unknown, expectedProject: string): SemanticAuthor
     if (changeIds.has(verification.changeId)) throw new Error('Semantic authority ledger contains duplicate semantic change verifications');
     changeIds.add(verification.changeId);
   }
-  return { ...ledger, changeVerifications };
+  const enrollment = (ledger as any).enrollment as SemanticPromotionEnrollmentRecord | undefined;
+  if (enrollment !== undefined) validateEnrollment(enrollment);
+  return {
+    ...ledger,
+    changeVerifications,
+    ...(enrollment ? { enrollment: copyEnrollment(enrollment) } : {}),
+  };
 }
 
 export async function loadSemanticAuthority(project: string): Promise<SemanticAuthorityLoad> {
@@ -204,6 +241,7 @@ export async function persistSemanticReviews(
     updatedAt: now,
     records,
     changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
+    ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
   };
   const body = JSON.stringify(ledger);
   if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');
@@ -238,6 +276,7 @@ export async function persistSemanticChangeVerification(
     updatedAt: now,
     records: [...(current.ledger?.records ?? [])],
     changeVerifications,
+    ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
   };
   const body = JSON.stringify(ledger);
   if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');
@@ -252,6 +291,54 @@ export function semanticChangeVerificationsAtRevision(
   return (ledger?.changeVerifications ?? [])
     .filter(item => item.targetRevision === revision)
     .map(item => ({ ...item, actor: { ...item.actor }, evidenceIds: [...item.evidenceIds] }));
+}
+
+export function semanticPromotionEnrollmentState(
+  ledger: SemanticAuthorityLedger | null,
+): SemanticPromotionEnrollmentState {
+  return ledger?.enrollment?.state ?? 'not-enrolled';
+}
+
+export async function persistSemanticPromotionEnrollment(
+  project: string,
+  input: {
+    state: SemanticPromotionEnrollmentState;
+    baselineRevision: string | null;
+    actor: SemanticReviewActor;
+    at: string;
+    rationale?: string | null;
+  },
+  expectedEtag: string | null,
+): Promise<SemanticAuthorityWrite> {
+  const current = await loadSemanticAuthority(project);
+  if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
+  if (current.state === 'invalid') throw new Error(current.error ?? 'Semantic authority ledger is invalid');
+  if (current.etag !== expectedEtag) return { state: 'conflict', etag: current.etag, ledger: current.ledger };
+
+  const enrollment: SemanticPromotionEnrollmentRecord = {
+    version: 1,
+    state: input.state,
+    baselineRevision: input.state === 'not-enrolled' ? null : input.baselineRevision,
+    enrolledAt: current.ledger?.enrollment?.enrolledAt ?? input.at,
+    updatedAt: input.at,
+    actor: { ...input.actor },
+    rationale: input.rationale?.trim() || null,
+  };
+  validateEnrollment(enrollment);
+
+  const ledger: SemanticAuthorityLedger = {
+    formatVersion: 1,
+    project,
+    generation: (current.ledger?.generation ?? 0) + 1,
+    updatedAt: input.at,
+    records: [...(current.ledger?.records ?? [])],
+    changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
+    enrollment,
+  };
+  const body = JSON.stringify(ledger);
+  if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');
+  const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
+  return { state: written.state, etag: written.etag, ledger: written.state === 'stored' ? ledger : current.ledger };
 }
 
 export async function persistSemanticReview(
@@ -293,6 +380,7 @@ function currentAcceptedAuthorityRecords(ledger: SemanticAuthorityLedger | null)
 
 export async function compactSemanticAuthorityToCurrentAccepted(
   project: string,
+  options: { promotedRevision?: string } = {},
 ): Promise<SemanticAuthorityWrite> {
   const current = await loadSemanticAuthority(project);
   if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
@@ -301,6 +389,14 @@ export async function compactSemanticAuthorityToCurrentAccepted(
 
   const records = currentAcceptedAuthorityRecords(current.ledger);
   const now = new Date().toISOString();
+  const enrollment = current.ledger.enrollment
+    ? {
+        ...copyEnrollment(current.ledger.enrollment),
+        ...(current.ledger.enrollment.state === 'enforced' && options.promotedRevision
+          ? { baselineRevision: options.promotedRevision, updatedAt: now }
+          : {}),
+      }
+    : undefined;
   const ledger: SemanticAuthorityLedger = {
     formatVersion: 1,
     project,
@@ -308,6 +404,7 @@ export async function compactSemanticAuthorityToCurrentAccepted(
     updatedAt: now,
     records,
     changeVerifications: [],
+    ...(enrollment ? { enrollment } : {}),
   };
   const body = JSON.stringify(ledger);
   if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic authority ledger exceeds the bounded storage size');
@@ -337,8 +434,13 @@ export async function promoteCanonicalAcceptedGraph(input: {
   revision: string;
   gate: SemanticPromotionGate;
 }): Promise<{ state: 'stored' | 'not-configured' | 'error'; error?: string }> {
-  if (!input.gate.readyForMainSemanticPromotion || input.gate.pendingCount !== 0) {
-    throw new Error('Semantic promotion gate is not ready for Main');
+  if (
+    input.gate.enrollmentState !== 'enforced'
+    || input.gate.gateStatus !== 'ready'
+    || !input.gate.readyForMainSemanticPromotion
+    || input.gate.blockingPendingCount !== 0
+  ) {
+    throw new Error('Semantic promotion gate is not enforced and ready for Main');
   }
   if (input.gate.previewRevision !== input.revision) {
     throw new Error('Semantic promotion gate revision does not match the canonical candidate revision');
@@ -375,7 +477,7 @@ export async function promoteCanonicalAcceptedGraph(input: {
   // Main promotion is the retention boundary: temporary Preview review/lineage history
   // has served its purpose. Keep only the latest active accepted meaning records.
   // Exact historical understanding remains reconstructable from Git revisions.
-  const compacted = await compactSemanticAuthorityToCurrentAccepted(input.project);
+  const compacted = await compactSemanticAuthorityToCurrentAccepted(input.project, { promotedRevision: input.revision });
   if (compacted.state === 'conflict') {
     // A concurrent review won the authority CAS after graph promotion. Do not delete
     // that newer state; the next successful promotion/maintenance pass can compact it.

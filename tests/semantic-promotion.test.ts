@@ -336,3 +336,76 @@ test('unapproved semantic delta blocks Main semantic promotion', () => {
   assert.deepEqual(gate.items[0]?.approvalBases, []);
   assert.equal(gate.items[0]?.reviewRequired, true);
 });
+
+
+test('not-enrolled and advisory semantic review remain visible but never block Main', () => {
+  const added = candidate({
+    id: 'candidate:unenrolled',
+    scope: 'src/features/unenrolled',
+    name: 'Unenrolled',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+
+  for (const enrollmentState of ['not-enrolled', 'advisory'] as const) {
+    const gate = buildSemanticPromotionGate({
+      baseMeanings: [],
+      previewCandidates: [added],
+      baseRevision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      previewRevision: added.provenance.revision,
+      enrollmentState,
+      baselineRevision: null,
+    });
+    assert.equal(gate.semanticDeltaCount, 1);
+    assert.equal(gate.pendingCount, 1, 'review work remains visible');
+    assert.equal(gate.blockingPendingCount, 0, 'unenforced review work must never block Main');
+    assert.equal(gate.gateStatus, 'non-blocking');
+    assert.equal(gate.blocksMain, false);
+    assert.equal(gate.readyForMainSemanticPromotion, false, 'non-blocking release is not semantic finalization');
+    assert.deepEqual(gate.pendingAuditRefs, [gate.items[0]!.auditRef]);
+    assert.match(gate.digest, /^[0-9a-f]{24}$/u);
+  }
+});
+
+test('enforced semantic promotion blocks only pending Main-to-Preview delta and exposes a stable digest', () => {
+  const main = accepted(candidate({
+    id: 'candidate:studio',
+    scope: 'src/features/studio',
+    name: 'Studio',
+    revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  }));
+  const preview = candidate({
+    id: 'candidate:studio',
+    scope: 'src/features/studio',
+    name: 'Studio',
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    files: 12,
+  });
+  const input = {
+    baseMeanings: [main],
+    previewCandidates: [preview],
+    baseRevision: main.proposalRevision,
+    previewRevision: preview.provenance.revision,
+    enrollmentState: 'enforced' as const,
+    baselineRevision: main.proposalRevision,
+  };
+  const pending = buildSemanticPromotionGate(input);
+  const repeated = buildSemanticPromotionGate(input);
+
+  assert.equal(pending.gateStatus, 'semantic-review-required');
+  assert.equal(pending.blocksMain, true);
+  assert.equal(pending.blockingPendingCount, 1);
+  assert.equal(pending.digest, repeated.digest);
+
+  const verified = applySemanticReviewAction(previewReview(preview, main.meaningId), {
+    kind: 'verify',
+    actor: { kind: 'ai-model', id: 'model:semantic-verifier' },
+    at: '2026-10-01T00:00:00.000Z',
+    evidenceIds: ['evidence:preview'],
+  });
+  const ready = buildSemanticPromotionGate({ ...input, previewReviews: [verified] });
+  assert.equal(ready.gateStatus, 'ready');
+  assert.equal(ready.blocksMain, false);
+  assert.equal(ready.blockingPendingCount, 0);
+  assert.equal(ready.readyForMainSemanticPromotion, true);
+  assert.notEqual(ready.digest, pending.digest, 'approval state must be part of the revalidation digest');
+});

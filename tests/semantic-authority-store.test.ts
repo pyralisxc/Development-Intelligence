@@ -11,9 +11,11 @@ import {
   latestAcceptedMeanings,
   loadSemanticAuthority,
   persistSemanticChangeVerification,
+  persistSemanticPromotionEnrollment,
   persistSemanticReview,
   persistSemanticReviews,
   promoteCanonicalAcceptedGraph,
+  semanticPromotionEnrollmentState,
   semanticReviewsAtRevision,
 } from '../src/intelligence/semanticAuthorityStore.js';
 import { makeCanonicalGraphRecord, saveCanonicalGraph, loadCanonicalGraph } from '../src/intelligence/canonicalStore.js';
@@ -245,15 +247,27 @@ test('canonical semantic promotion requires a revision-bound ready gate and stor
     assert.equal(stagedAuthority.state, 'stored');
 
     const blockedGate: any = {
-      version: 1, baseRevision: null, previewRevision: revision, semanticDeltaCount: 1, approvedCount: 0,
-      pendingCount: 1, readyForMainSemanticPromotion: false, items: [], policy: {},
+      version: 2, policyVersion: 2, enrollmentState: 'enforced', baselineRevision: revision,
+      baseRevision: revision, previewRevision: revision, semanticDeltaCount: 1, approvedCount: 0,
+      pendingCount: 1, blockingPendingCount: 1, gateStatus: 'semantic-review-required',
+      blocksMain: true, readyForMainSemanticPromotion: false, digest: 'fixture', pendingAuditRefs: ['SEM-00000000'],
+      items: [], policy: {},
     };
     await assert.rejects(
       promoteCanonicalAcceptedGraph({ project, repository, revision, gate: blockedGate }),
       /not ready/i,
     );
 
-    const readyGate: any = { ...blockedGate, approvedCount: 1, pendingCount: 0, readyForMainSemanticPromotion: true };
+    const readyGate: any = {
+      ...blockedGate,
+      approvedCount: 1,
+      pendingCount: 0,
+      blockingPendingCount: 0,
+      gateStatus: 'ready',
+      blocksMain: false,
+      readyForMainSemanticPromotion: true,
+      pendingAuditRefs: [],
+    };
     const promoted = await promoteCanonicalAcceptedGraph({ project, repository, revision, gate: readyGate });
     assert.equal(promoted.state, 'stored');
 
@@ -303,6 +317,94 @@ test('canonical record can carry an accepted A from an older exact revision whil
     assert.equal(loaded.record?.accepted?.repositoryRevision, oldRevision);
     assert.equal(loaded.record?.currentness.acceptedSemanticCurrent, true);
     assert.equal(loaded.record?.currentness.sourceCurrent, false);
+  } finally {
+    delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('semantic promotion enrollment is CAS-protected, non-enrolled by default, and preserved through review writes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-enrollment-'));
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const project = 'fixture/enrollment';
+    const revision = 'cccccccccccccccccccccccccccccccccccccccc';
+    const empty = await loadSemanticAuthority(project);
+    assert.equal(semanticPromotionEnrollmentState(empty.ledger), 'not-enrolled');
+
+    const advisory = await persistSemanticPromotionEnrollment(project, {
+      state: 'advisory',
+      baselineRevision: null,
+      actor: { kind: 'human', id: 'human:owner' },
+      at: '2026-10-01T01:00:00.000Z',
+      rationale: 'Begin semantic baseline review.',
+    }, empty.etag);
+    assert.equal(advisory.state, 'stored');
+    assert.equal(semanticPromotionEnrollmentState(advisory.ledger), 'advisory');
+
+    const accepted = applySemanticReviewAction(semanticMeaningReview(candidate('candidate:enrollment', revision)), {
+      kind: 'accept',
+      actor: { kind: 'human', id: 'human:owner' },
+      at: '2026-10-01T01:01:00.000Z',
+    });
+    const reviewed = await persistSemanticReview(project, accepted, advisory.etag);
+    assert.equal(reviewed.state, 'stored');
+    assert.equal(reviewed.ledger?.enrollment?.state, 'advisory', 'review writes must preserve enrollment policy');
+
+    const enforced = await persistSemanticPromotionEnrollment(project, {
+      state: 'enforced',
+      baselineRevision: revision,
+      actor: { kind: 'human', id: 'human:owner' },
+      at: '2026-10-01T01:02:00.000Z',
+      rationale: 'Enable semantic release enforcement.',
+    }, reviewed.etag);
+    assert.equal(enforced.ledger?.enrollment?.baselineRevision, revision);
+    assert.equal(semanticPromotionEnrollmentState(enforced.ledger), 'enforced');
+
+    const conflict = await persistSemanticPromotionEnrollment(project, {
+      state: 'advisory',
+      baselineRevision: revision,
+      actor: { kind: 'human', id: 'human:owner' },
+      at: '2026-10-01T01:03:00.000Z',
+    }, reviewed.etag);
+    assert.equal(conflict.state, 'conflict');
+  } finally {
+    delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('semantic accepted-graph promotion rejects non-enforced release gates', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-non-enforced-promotion-'));
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const project = 'fixture/non-enforced-promotion';
+    const repository = 'fixture/non-enforced-promotion';
+    const revision = 'dddddddddddddddddddddddddddddddddddddddd';
+    const initial = makeCanonicalGraphRecord({
+      project,
+      repository,
+      revision,
+      working: graph(project, revision, 'source-non-enforced'),
+      accepted: null,
+      currentness: {
+        acceptedSemanticCurrent: false, sourceCurrent: true, topologyCurrent: true, evidenceCurrent: true,
+        analyzerCurrent: true, schemaSupported: true, integrityCurrent: true, checkpointError: null,
+      },
+    });
+    assert.equal((await saveCanonicalGraph(initial)).saveState, 'stored');
+    const nonBlockingGate: any = {
+      version: 2, policyVersion: 2, enrollmentState: 'advisory', baselineRevision: null,
+      baseRevision: null, previewRevision: revision, semanticDeltaCount: 1, approvedCount: 0,
+      pendingCount: 1, blockingPendingCount: 0, gateStatus: 'non-blocking', blocksMain: false,
+      readyForMainSemanticPromotion: false, digest: 'fixture', pendingAuditRefs: ['SEM-00000001'],
+      items: [], policy: {},
+    };
+    await assert.rejects(
+      promoteCanonicalAcceptedGraph({ project, repository, revision, gate: nonBlockingGate }),
+      /not enforced and ready/i,
+    );
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });

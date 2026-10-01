@@ -5,6 +5,8 @@ import { semanticMeaningReview, type SemanticChangeVerificationRecord, type Sema
 
 export type SemanticPromotionApprovalBasis = 'ai-verified' | 'human-accepted' | 'human-verified';
 export type SemanticPromotionChangeKind = 'added' | Exclude<SemanticRealizationStatus, 'preserved'>;
+export type SemanticPromotionEnrollmentState = 'not-enrolled' | 'advisory' | 'enforced';
+export type SemanticPromotionGateStatus = 'non-blocking' | 'semantic-review-required' | 'ready';
 
 export interface SemanticPromotionMeaningSnapshot {
   revision: string | null;
@@ -43,13 +45,21 @@ export interface SemanticPromotionReviewItem {
 }
 
 export interface SemanticPromotionGate {
-  version: 1;
+  version: 2;
+  policyVersion: 2;
+  enrollmentState: SemanticPromotionEnrollmentState;
+  baselineRevision: string | null;
   baseRevision: string | null;
   previewRevision: string | null;
   semanticDeltaCount: number;
   approvedCount: number;
   pendingCount: number;
+  blockingPendingCount: number;
+  gateStatus: SemanticPromotionGateStatus;
+  blocksMain: boolean;
   readyForMainSemanticPromotion: boolean;
+  digest: string;
+  pendingAuditRefs: string[];
   items: SemanticPromotionReviewItem[];
   policy: {
     boundary: 'preview-to-main';
@@ -63,6 +73,10 @@ export interface SemanticPromotionGate {
     desiredOutcomeInferred: false;
     persisted: false;
     acceptedGraphAffected: false;
+    enforcementRequiresExplicitEnrollment: true;
+    notEnrolledBlocksMain: false;
+    advisoryBlocksMain: false;
+    exactRevisionDigest: true;
   };
 }
 
@@ -163,6 +177,8 @@ export function buildSemanticPromotionGate(input: {
   changeVerifications?: SemanticChangeVerificationRecord[];
   baseRevision: string | null;
   previewRevision: string | null;
+  enrollmentState?: SemanticPromotionEnrollmentState;
+  baselineRevision?: string | null;
 }): SemanticPromotionGate {
   const previewReviews = input.previewReviews ?? [];
   const changeVerifications = input.changeVerifications ?? [];
@@ -255,14 +271,49 @@ export function buildSemanticPromotionGate(input: {
   }));
 
   const approvedCount = items.filter(item => item.approved).length;
+  const pendingCount = items.length - approvedCount;
+  const enrollmentState = input.enrollmentState ?? 'enforced';
+  const baselineRevision = input.baselineRevision === undefined ? input.baseRevision : input.baselineRevision;
+  const enforced = enrollmentState === 'enforced';
+  const blockingPendingCount = enforced ? pendingCount : 0;
+  const gateStatus: SemanticPromotionGateStatus = !enforced
+    ? 'non-blocking'
+    : pendingCount > 0 ? 'semantic-review-required' : 'ready';
+  const pendingAuditRefs = items.filter(item => !item.approved).map(item => item.auditRef);
+  const digest = stableHash([
+    'semantic-promotion-gate.v2',
+    enrollmentState,
+    baselineRevision,
+    input.baseRevision,
+    input.previewRevision,
+    ...items.map(item => [
+      item.auditRef,
+      item.changeId,
+      item.changeKind,
+      item.meaningId,
+      item.candidateId,
+      item.sourceRevision,
+      item.targetRevision,
+      item.approved,
+      item.approvalBases,
+    ]),
+  ]);
   return {
-    version: 1,
+    version: 2,
+    policyVersion: 2,
+    enrollmentState,
+    baselineRevision,
     baseRevision: input.baseRevision,
     previewRevision: input.previewRevision,
     semanticDeltaCount: items.length,
     approvedCount,
-    pendingCount: items.length - approvedCount,
-    readyForMainSemanticPromotion: items.length === approvedCount,
+    pendingCount,
+    blockingPendingCount,
+    gateStatus,
+    blocksMain: gateStatus === 'semantic-review-required',
+    readyForMainSemanticPromotion: gateStatus === 'ready',
+    digest,
+    pendingAuditRefs,
     items,
     policy: {
       boundary: 'preview-to-main',
@@ -276,6 +327,10 @@ export function buildSemanticPromotionGate(input: {
       desiredOutcomeInferred: false,
       persisted: false,
       acceptedGraphAffected: false,
+      enforcementRequiresExplicitEnrollment: true,
+      notEnrolledBlocksMain: false,
+      advisoryBlocksMain: false,
+      exactRevisionDigest: true,
     },
   };
 }
