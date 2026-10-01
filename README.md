@@ -13,7 +13,7 @@ Read [Product direction](docs/product-direction.md) for the authoritative produc
 ## Core rules
 
 - Git/source remains authoritative implementation evidence.
-- Accepted graph history belongs to the project being inspected, not to a central Development Intelligence database.
+- Git owns source/history; DI canonical persistence owns durable accepted semantic authority and its revision-bound review state.
 - No project-specific extractors or required semantic project configuration.
 - Generic analyzers may understand languages, frameworks, protocols, and formats.
 - Raw names are preserved; naming differences are evidence rather than normalized away.
@@ -36,7 +36,7 @@ Development Intelligence uses a revision-bound accepted/working/candidate lifecy
 
 Expectation/future overlays are optional caller evidence, not accepted current reality. Acceptance never implies verification, and repository-local generated files are not a second semantic authority.
 
-The deterministic `/.development-intelligence/` checkpoint format remains supported for DI's own self-seal and legacy migration/compatibility testing. Hosted inspected projects use DI canonical persistence instead of committing generated semantic authority into each repository.
+The deterministic `/.development-intelligence/` checkpoint format remains supported only for explicit legacy migration/compatibility testing and disposable CI evidence. Development Intelligence itself and hosted inspected projects use DI canonical persistence and do not track generated checkpoint authority in Git.
 
 ## Public MCP surface
 
@@ -267,7 +267,7 @@ node dist/src/graphCli.js seal --repo-path /path/to/project --project project-id
 node dist/src/graphCli.js check --repo-path /path/to/project --project project-id
 ```
 
-`analyze` is checkpointless and is the normal repository-side integration. `seal` / `check` retain the deterministic `/.development-intelligence/` format for DI self-verification and legacy compatibility/migration; those files are not the hosted semantic authority for inspected repositories.
+`analyze` is checkpointless and is the normal repository-side integration. `seal` / `check` retain the deterministic `/.development-intelligence/` format only for explicit compatibility/migration tests; generated files are disposable evidence, never repository-owned semantic authority.
 
 Development Intelligence itself does not commit or merge inspected projects on behalf of callers merely to maintain graph state.
 
