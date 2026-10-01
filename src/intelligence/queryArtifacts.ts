@@ -7,6 +7,7 @@ import type {
   IntelligenceGraph,
   RelationshipStatus,
 } from '../types.js';
+import { normalizeName } from './model.js';
 
 export const QUERY_DETAIL_BUCKETS = 64;
 const BUCKET_KEYS = Array.from({ length: QUERY_DETAIL_BUCKETS }, (_, index) => index.toString(16).padStart(2, '0'));
@@ -148,12 +149,11 @@ export function queryBucketForSource(sourceId: string): string {
 function nodeTailText(node: GraphNode): string {
   return [node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)]
     .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
+    .join(' ');
 }
 
 function edgeTailText(edge: GraphEdge): string {
-  return edge.evidence.join(' ').toLowerCase();
+  return edge.evidence.join(' ');
 }
 
 function layerOf(value: { layer?: GraphNodeLayer }): GraphNodeLayer {
@@ -164,7 +164,13 @@ function recordIncludes(
   needle: string,
   fields: Array<string | null | undefined>,
 ): boolean {
-  return fields.some(value => typeof value === 'string' && value.toLowerCase().includes(needle));
+  const rawNeedle = needle.toLowerCase();
+  const normalizedNeedle = normalizeName(needle);
+  return fields.some(value => {
+    if (typeof value !== 'string') return false;
+    if (value.toLowerCase().includes(rawNeedle)) return true;
+    return Boolean(normalizedNeedle && normalizeName(value).includes(normalizedNeedle));
+  });
 }
 
 function coverageSummary(graph: IntelligenceGraph): CanonicalQueryIndexArtifact['coverage'] {
@@ -356,7 +362,7 @@ export function populatedQueryBuckets(index: CanonicalQueryIndexArtifact): strin
 }
 
 export function candidateQueryBuckets(index: CanonicalQueryIndexArtifact, query: string): string[] {
-  const needle = query.trim().toLowerCase();
+  const needle = query.trim();
   if (!needle) return populatedQueryBuckets(index);
   const buckets = new Set<string>();
   for (const [bucket, id, kind, layer, text] of index.nodeSearch) {

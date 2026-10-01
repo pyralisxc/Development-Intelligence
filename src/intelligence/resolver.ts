@@ -4,11 +4,27 @@ import { normalizeName, resolution } from './model.js';
 const GENERIC_VALUES = new Set(['true', 'false', 'null', 'undefined', 'open', 'close', 'save', 'delete', 'edit', 'cancel', 'ok', 'yes', 'no']);
 const DEDICATED_IDENTITY_KINDS = new Set(['import-binding', 'module', 'unity-asset-guid']);
 
-export function resolveCrossSource(observations: Observation[], existing: Resolution[]): Resolution[] {
-  const output = [...existing];
-  const seen = new Set(existing.map(item => item.id));
+export interface QueryCorrelationProjection {
+  total: number;
+  returned: number;
+  truncated: boolean;
+  items: Resolution[];
+}
+
+export function deriveQueryCorrelations(observations: Observation[], limit = 100): QueryCorrelationProjection {
+  const boundedLimit = Math.min(Math.max(Math.trunc(limit), 1), 1000);
+  const items: Resolution[] = [];
+  const seen = new Set<string>();
   const exactValues = new Map<string, Observation[]>();
   const names = new Map<string, Observation[]>();
+  let total = 0;
+
+  const add = (candidate: Resolution): void => {
+    if (seen.has(candidate.id)) return;
+    seen.add(candidate.id);
+    total += 1;
+    if (items.length < boundedLimit) items.push(candidate);
+  };
 
   for (const obs of observations) {
     if (typeof obs.value === 'string') {
@@ -36,16 +52,15 @@ export function resolveCrossSource(observations: Observation[], existing: Resolu
         const left = group[i]!;
         const right = group[j]!;
         if (left.sourceId === right.sourceId) continue;
-        const candidate = resolution({
+        add(resolution({
           from: left.id,
           to: right.id,
           kind: 'same_observed_value',
           strategy: 'exact-value',
           confidence: 0.75,
           status: 'candidate',
-          evidence: [`Both sources observed the exact value ${JSON.stringify(left.value)}`],
-        });
-        if (!seen.has(candidate.id)) { seen.add(candidate.id); output.push(candidate); }
+          evidence: [`Both returned observations share the exact value ${JSON.stringify(left.value)}`],
+        }));
       }
     }
   }
@@ -58,7 +73,7 @@ export function resolveCrossSource(observations: Observation[], existing: Resolu
         const right = group[j]!;
         if (left.sourceId === right.sourceId) continue;
         const sameExactName = left.name === right.name;
-        const candidate = resolution({
+        add(resolution({
           from: left.id,
           to: right.id,
           kind: sameExactName ? 'same_observed_name' : 'similar_identifier',
@@ -66,14 +81,21 @@ export function resolveCrossSource(observations: Observation[], existing: Resolu
           confidence: sameExactName ? 0.8 : 0.65,
           status: 'candidate',
           evidence: [sameExactName
-            ? `Both sources observed the exact name ${JSON.stringify(left.name)}`
+            ? `Both returned observations share the exact name ${JSON.stringify(left.name)}`
             : `Normalized names both resolve to ${JSON.stringify(normalizeName(left.name!))}`],
-        });
-        if (!seen.has(candidate.id)) { seen.add(candidate.id); output.push(candidate); }
+        }));
       }
     }
   }
-  return output;
+
+  return { total, returned: items.length, truncated: total > items.length, items };
+}
+
+export function resolveCrossSource(_observations: Observation[], existing: Resolution[]): Resolution[] {
+  // Lexical similarity remains useful for discovery, but it is not repository
+  // topology. Keep canonical W compact and derive these hypotheses only for a
+  // bounded query result through deriveQueryCorrelations().
+  return [...existing];
 }
 
 export function deriveNamingDivergences(observations: Observation[], resolutions: Resolution[]): NamingDivergence[] {

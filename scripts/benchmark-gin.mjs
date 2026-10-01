@@ -93,6 +93,13 @@ if (!reviewedSemanticAccuracy.pass) {
 if (reviewedSemanticAccuracy.semanticCandidateScore?.precision !== 1 || reviewedSemanticAccuracy.semanticCandidateScore?.recall !== 1) {
   throw new Error(`Gin reviewed semantic truth must remain 1.0 precision/recall within its bounded universe: ${JSON.stringify(reviewedSemanticAccuracy.semanticCandidateScore)}`);
 }
+const reviewedCorePackageScopes = ['binding', 'render'];
+const missingReviewedCorePackageScopes = reviewedCorePackageScopes.filter(scope =>
+  !semanticAudit.items.some(item => item.scope === scope && item.coreness.classification === 'core-candidate' && item.factuality.status === 'supported')
+);
+if (missingReviewedCorePackageScopes.length) {
+  throw new Error(`Gin reviewed package-boundary concepts must remain layout-neutral core candidates: ${missingReviewedCorePackageScopes.join(', ')}`);
+}
 function correctionScope(value) {
   return String(value).split('|', 1)[0].trim();
 }
@@ -219,6 +226,7 @@ const summary = [
   `- Semantic census: **${semanticBootstrap.candidates.length} evidence-qualified / ${semanticBootstrap.capacity.groupedScopeCount} grouped scopes / ${semanticBootstrap.capacity.rejectedScopeCount} rejected**`,
   `- Semantic factuality/core: **${semanticAudit.counts.factualitySupported} supported / ${semanticAudit.counts.factualityNeedsReview} need review / ${semanticAudit.counts.coreCandidates} core / ${semanticAudit.counts.supportingCandidates} supporting**`,
   `- Reviewed external semantic truth: **precision ${(reviewedSemanticAccuracy.semanticCandidateScore.precision * 100).toFixed(0)}% / recall ${(reviewedSemanticAccuracy.semanticCandidateScore.recall * 100).toFixed(0)}% / false-positive rate ${(reviewedSemanticAccuracy.semanticCandidateScore.falsePositiveRate * 100).toFixed(0)}% across ${reviewedSemanticTruth.groundTruth.semanticCandidates.required.length} independently reviewed scopes**`,
+  `- Reviewed layout-neutral core packages: **${reviewedCorePackageScopes.length - missingReviewedCorePackageScopes.length}/${reviewedCorePackageScopes.length} core**`,
   `- Reviewed semantic correction burden: **${reviewedCorrectionBurden.affectedScopeCount} affected scope(s) / ${reviewedCorrectionBurden.reviewedRequiredCount} required concepts (${(reviewedCorrectionBurden.rate * 100).toFixed(0)}%)**`,
   `- Orientation: **${orientation.analyzer.technology}/${orientation.analyzer.depth}** on \`${orientationSubject.name ?? orientationSubject.id}\``,
   '',

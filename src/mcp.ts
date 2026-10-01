@@ -195,6 +195,44 @@ function compactAssessment(value: any): any {
   });
 }
 
+function compactSemanticBootstrap(value: any): any {
+  if (!value || typeof value !== 'object') return value;
+  const candidates = Array.isArray(value.candidates)
+    ? value.candidates.map((candidate: any) => {
+        const provenance = candidate?.provenance && typeof candidate.provenance === 'object'
+          ? {
+              origin: candidate.provenance.origin,
+              producer: candidate.provenance.producer,
+              revision: candidate.provenance.revision,
+              ...(candidate.provenance.rationale ? { rationale: candidate.provenance.rationale } : {}),
+              ...(candidate.provenance.sourceCandidateId ? { sourceCandidateId: candidate.provenance.sourceCandidateId } : {}),
+              evidenceFamilies: candidate.provenance.evidenceFamilies,
+              nodeCount: Array.isArray(candidate.provenance.nodeIds) ? candidate.provenance.nodeIds.length : 0,
+              edgeCount: Array.isArray(candidate.provenance.edgeIds) ? candidate.provenance.edgeIds.length : 0,
+              evidenceCount: Array.isArray(candidate.provenance.evidenceIds) ? candidate.provenance.evidenceIds.length : 0,
+              sampleNodeIds: Array.isArray(candidate.provenance.nodeIds) ? candidate.provenance.nodeIds.slice(0, 4) : [],
+              sampleEdgeIds: Array.isArray(candidate.provenance.edgeIds) ? candidate.provenance.edgeIds.slice(0, 4) : [],
+              sampleEvidenceIds: Array.isArray(candidate.provenance.evidenceIds) ? candidate.provenance.evidenceIds.slice(0, 4) : [],
+            }
+          : candidate?.provenance;
+        const evidencePacket = candidate?.evidencePacket && typeof candidate.evidencePacket === 'object'
+          ? {
+              representativeNodes: Array.isArray(candidate.evidencePacket.representativeNodes) ? candidate.evidencePacket.representativeNodes.slice(0, 6) : [],
+              representativeEdges: Array.isArray(candidate.evidencePacket.representativeEdges) ? candidate.evidencePacket.representativeEdges.slice(0, 6) : [],
+              nodeCount: Array.isArray(candidate.evidencePacket.representativeNodes) ? candidate.evidencePacket.representativeNodes.length : 0,
+              edgeCount: Array.isArray(candidate.evidencePacket.representativeEdges) ? candidate.evidencePacket.representativeEdges.length : 0,
+            }
+          : candidate?.evidencePacket;
+        return compactCoverageEvidence({ ...candidate, provenance, evidencePacket });
+      })
+    : value.candidates;
+  return compactCoverageEvidence({
+    ...value,
+    candidates,
+    detailTools: ['audit_semantics', 'semantic_review_surface', 'get_evidence'],
+  });
+}
+
 function compactAgentResult(value: any): any {
   if (!value || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(item => compactAgentResult(item));
@@ -217,6 +255,7 @@ function compactAgentResult(value: any): any {
     return compactCoverageEvidence({
       ...value,
       changes,
+      semanticBootstrap: compactSemanticBootstrap(value.semanticBootstrap),
       findings: Array.isArray(value.findings) ? value.findings.map(compactFinding) : value.findings,
     });
   }
@@ -308,7 +347,7 @@ export const tools: ToolDefinition[] = [
   { name: 'list_sources', description: 'List Git, runtime, and configured read-only technical sources available to a project, including query/log/metrics capabilities.', inputSchema: objectSchema({ project: string, ref: string, graphId: string }, ['project']), handler: async args => await workbenchSources(s(args, 'project'), optString(args, 'ref'), optString(args, 'graphId')) },
   { name: 'query_source', description: 'Run a bounded read-only query against one explicitly configured technical source adapter. Query results are observations and never automatically become accepted topology.', inputSchema: objectSchema({ project: string, sourceId: string, capability: technicalCapabilitySchema, query: string, limit: integer, from: string, to: string }, ['project', 'sourceId', 'query']), handler: async args => await queryTechnicalSource({ project: s(args, 'project'), sourceId: s(args, 'sourceId'), capability: optString(args, 'capability') as TechnicalSourceCapability | undefined, query: s(args, 'query'), limit: typeof args.limit === 'number' ? args.limit : undefined, from: optString(args, 'from'), to: optString(args, 'to') }) },
   { name: 'scan_graph', description: 'Generate canonical source-derived W for an exact authorized Git revision selector, or an explicit ephemeral runtime-observation snapshot when urls are supplied. Returns compact coverage counts; use check_graph_coverage for file detail. Runtime scans never replace later ordinary project/ref queries.', inputSchema: objectSchema({ project: string, ref: string, urls: { type: 'array', items: { type: 'string', format: 'uri' }, maxItems: 20 } }, ['project']), handler: async args => { const graph = await scanGraph(s(args, 'project'), { ref: optString(args, 'ref'), urls: Array.isArray(args.urls) ? args.urls.filter(value => typeof value === 'string') as string[] : [] }); return { project: graph.project, graphId: graph.graphId, role: graph.role, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion, sourceFingerprint: graph.sourceFingerprint, topologyFingerprint: graph.topologyFingerprint, evidenceFingerprint: graph.evidenceFingerprint, sources: graph.sources, nodeCount: graph.nodes.length, semanticNodeCount: graph.nodes.filter(node => node.layer === 'semantic').length, edgeCount: graph.edges.length, evidenceCount: graph.evidence.length, explicitValueConflicts: graph.explicitValueConflicts, coverage: compactCoverage(graph.coverage), unavailableSourceIds: graph.unavailableSourceIds }; } },
-  { name: 'search_graph', description: 'Search entities, structural code, CSS representations, relationships, conflicts, and evidence context in canonical W or an explicit graph snapshot. Pass queries to evaluate up to 20 independent terms against one loaded graph and avoid repeated calls.', inputSchema: objectSchema(queryProperties, ['project']), handler: async args => await searchGraph({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), query: optString(args, 'query'), queries: Array.isArray(args.queries) ? args.queries as string[] : undefined, kinds: Array.isArray(args.kinds) ? args.kinds as string[] : undefined, sourceIds: Array.isArray(args.sourceIds) ? args.sourceIds as string[] : undefined, statuses: relationshipStatuses(args), layers: layers(args), limit: typeof args.limit === 'number' ? args.limit : undefined, offset: typeof args.offset === 'number' ? args.offset : undefined }) },
+  { name: 'search_graph', description: 'Search entities, structural code, CSS representations, relationships, conflicts, and evidence context in canonical W or an explicit graph snapshot. Bounded lexical correlations among returned observations are derived at query time, remain non-persisted/non-proof hypotheses, and do not trigger repository rebuilds. Pass queries to evaluate up to 20 independent terms against one loaded graph and avoid repeated calls.', inputSchema: objectSchema(queryProperties, ['project']), handler: async args => await searchGraph({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), query: optString(args, 'query'), queries: Array.isArray(args.queries) ? args.queries as string[] : undefined, kinds: Array.isArray(args.kinds) ? args.kinds as string[] : undefined, sourceIds: Array.isArray(args.sourceIds) ? args.sourceIds as string[] : undefined, statuses: relationshipStatuses(args), layers: layers(args), limit: typeof args.limit === 'number' ? args.limit : undefined, offset: typeof args.offset === 'number' ? args.offset : undefined }) },
   { name: 'trace_path', description: 'Traverse graph relationships around one exact or unambiguous entity. Resolved relationships are traversed by default; callers may explicitly include candidate or unresolved relationships.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, node: string, direction: { enum: ['inbound', 'outbound', 'both'] }, depth: integer, relationshipKinds: strings, status: relationshipStatusSchema, layers: layersSchema, limit: integer }, ['project', 'node']), handler: async args => await traceGraph({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), node: s(args, 'node'), direction: args.direction as any, depth: typeof args.depth === 'number' ? args.depth : undefined, relationshipKinds: Array.isArray(args.relationshipKinds) ? args.relationshipKinds as string[] : undefined, statuses: relationshipStatuses(args), layers: layers(args), limit: typeof args.limit === 'number' ? args.limit : undefined }) },
   { name: 'search_code', description: 'Search exact Git source at one immutable graph/revision context without requiring a persistent code index. filePattern defaults to regular-expression matching; set filePatternMode to literal, prefix, or glob when that is the intended path filter.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, pattern: string, filePattern: string, filePatternMode: filePatternModeSchema, regex: boolean, context: integer, limit: integer }, ['project', 'pattern']), handler: async args => await searchCode({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), pattern: s(args, 'pattern'), filePattern: optString(args, 'filePattern'), filePatternMode: optString(args, 'filePatternMode') as FilePatternMode | undefined, regex: args.regex === true, context: typeof args.context === 'number' ? args.context : undefined, limit: typeof args.limit === 'number' ? args.limit : undefined }) },
   { name: 'get_code_snippet', description: 'Read source around an exact or unambiguous graph node from the exact Git SHA that produced the selected graph.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, node: string, context: integer }, ['project', 'node']), handler: async args => await getCodeSnippet({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), node: s(args, 'node'), context: typeof args.context === 'number' ? args.context : undefined }) },

@@ -157,6 +157,37 @@ test('semantic audit separates factual support from explicit core facets without
   assert.equal(projection.items[0]?.authority.accepted, false);
 });
 
+test('semantic audit allows strongly corroborated multi-file direct scopes to be core without a feature-folder convention', () => {
+  const directCore = candidate({
+    id: 'direct-core',
+    scope: 'binding',
+    provenance: {
+      ...candidate({ id: 'tmp-direct', scope: 'x' }).provenance,
+      nodeIds: ['node:direct-core'],
+      edgeIds: ['edge:direct-core'],
+      evidenceFamilies: ['structure', 'relationship', 'api'],
+    },
+    support: {
+      scopeRole: 'direct',
+      scopeDepth: 1,
+      evidenceFamilyCount: 3,
+      fileCount: 8,
+      nodeCount: 30,
+      resolvedEdgeCount: 12,
+      motifKinds: [],
+    },
+  });
+  const projection = auditSemanticCandidates(graph([directCore]), bootstrap([directCore]), { limit: 10 });
+
+  assert.equal(projection.counts.coreCandidates, 1);
+  assert.equal(projection.items[0]?.coreness.classification, 'core-candidate');
+  assert.equal(projection.items[0]?.coreness.facets.functionalContainer, false);
+  assert.equal(projection.items[0]?.coreness.facets.multiFile, true);
+  assert.equal(projection.items[0]?.coreness.facets.evidenceDiverse, true);
+  assert.equal(projection.items[0]?.coreness.facets.relationshipRich, true);
+  assert.equal(projection.items[0]?.authority.accepted, false);
+});
+
 test('semantic factuality audit exposes broken provenance instead of promoting it', () => {
   const broken = candidate({
     id: 'broken',

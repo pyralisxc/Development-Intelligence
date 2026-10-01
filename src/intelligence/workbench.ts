@@ -905,6 +905,12 @@ export function planInvestigationQuestion(input: {
   const lower = text.toLowerCase();
   const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
   const interfaceIntent = /\b(interface|interaction|interactive|ui\b|state owners?|state controls?|what changes when|handlers?|click|drag|drop|scroll|pointer|overlay|navigation|surfaces?)\b/u.test(lower);
+  const architectureSimplificationIntent =
+    /\b(simplif\w*|over[- ]?complicat\w*|over[- ]?complex\w*|maintenance burden|unnecessary (?:abstraction|layer|indirection)s?)\b/u.test(lower)
+    || (
+      /\b(overlap\w*|duplicat\w*|redundan\w*|indirection)\b/u.test(lower)
+      && /\b(parts?|areas?|layers?|responsibilit\w*|architecture|architectural|implementation|system|project|repository|repo|codebase|paths?|flows?)\b/u.test(lower)
+    );
   const semanticLifecycleIntent =
     /\b(semantic|meaning|meanings)\b/u.test(lower)
     && /\b(propos(?:e|ed|al|als|ing)?|review(?:ed|ing)?|accept(?:ed|ance|ing)?|verif(?:y|ied|ication|ying)|authorit(?:y|ative)|evolv(?:e|ed|ing|ution)|preserv(?:e|ed|ing)|supersed(?:e|ed|ing)|split|merge(?:d|s|ing)?|replace(?:d|ment|s|ing)?|lineage|canonical|promot(?:e|ed|ion|ing))\b/u.test(lower);
@@ -937,6 +943,7 @@ export function planInvestigationQuestion(input: {
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
   else if (interfaceIntent) lane = 'interface';
+  else if (architectureSimplificationIntent) lane = 'repository-audit';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
   else if (implementationExplorationIntent(text)) lane = 'implementation-explanation';
   else if (/\b(what changed|changes?|diff|delta)\b/u.test(lower)) lane = 'change';

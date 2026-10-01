@@ -6,13 +6,23 @@ import { checkpointProjection, stableEdgeShape, stableNodeShape } from './reposi
 import { currentGraph, graphContext, loadCurrentQueryArtifactBuckets, loadCurrentQueryArtifacts, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
+import { normalizeName } from './model.js';
+import { deriveQueryCorrelations } from './resolver.js';
 
 function nodeText(node: GraphNode): string {
-  return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ').toLowerCase();
+  return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ');
 }
 
 function edgeText(edge: GraphEdge): string {
-  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...edge.evidence].join(' ').toLowerCase();
+  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...edge.evidence].join(' ');
+}
+
+function queryTextMatches(value: string, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  if (value.toLowerCase().includes(needle)) return true;
+  const normalizedNeedle = normalizeName(query);
+  return Boolean(normalizedNeedle && normalizeName(value).includes(normalizedNeedle));
 }
 
 function layersMatch(layer: GraphNodeLayer | undefined, layers: Set<GraphNodeLayer>): boolean {
@@ -42,7 +52,12 @@ export function findGraphNodeCandidates(graph: IntelligenceGraph, query: string,
   if (exactId) return [exactId];
   const exactName = graph.nodes.filter(node => node.name?.toLowerCase() === needle);
   if (exactName.length) return exactName.slice(0, limit);
-  return graph.nodes.filter(node => nodeText(node).includes(needle)).slice(0, limit);
+  const normalizedNeedle = normalizeName(query);
+  if (normalizedNeedle) {
+    const normalizedName = graph.nodes.filter(node => node.name && normalizeName(node.name) === normalizedNeedle);
+    if (normalizedName.length) return normalizedName.slice(0, limit);
+  }
+  return graph.nodes.filter(node => queryTextMatches(nodeText(node), query)).slice(0, limit);
 }
 
 function comparableItem<T extends { id: string }>(item: T): unknown {
@@ -324,7 +339,7 @@ interface SearchGraphInput {
 }
 
 function searchGraphMatches(graph: IntelligenceGraph, input: SearchGraphInput, requestedQuery?: string): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  const query = requestedQuery?.trim().toLowerCase();
+  const query = requestedQuery?.trim();
   const kinds = new Set(input.kinds ?? []);
   const sourceIds = new Set(input.sourceIds ?? []);
   const statuses = new Set(input.statuses ?? []);
@@ -333,13 +348,13 @@ function searchGraphMatches(graph: IntelligenceGraph, input: SearchGraphInput, r
     if (kinds.size && !kinds.has(node.kind)) return false;
     if (sourceIds.size && !sourceIds.has(node.sourceId)) return false;
     if (!layersMatch(node.layer, layers)) return false;
-    return !query || nodeText(node).includes(query);
+    return !query || queryTextMatches(nodeText(node), query);
   });
   const nodeIds = new Set(nodes.map(node => node.id));
   const edges = graph.edges.filter(edge => {
     if (statuses.size && !statuses.has(edge.status)) return false;
     if (!layersMatch(edge.layer, layers)) return false;
-    if (query && !edgeText(edge).includes(query) && !(edge.from && nodeIds.has(edge.from)) && !(edge.to && nodeIds.has(edge.to))) return false;
+    if (query && !queryTextMatches(edgeText(edge), query) && !(edge.from && nodeIds.has(edge.from)) && !(edge.to && nodeIds.has(edge.to))) return false;
     return true;
   });
   return { nodes, edges };
@@ -349,12 +364,31 @@ function searchGraphResult(graph: IntelligenceGraph, input: SearchGraphInput, re
   const { nodes, edges } = searchGraphMatches(graph, input, requestedQuery);
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
   const offset = Math.max(input.offset ?? 0, 0);
+  const returnedNodes = nodes.slice(offset, offset + limit);
+  const returnedEdges = edges.slice(offset, offset + limit);
+  const correlationsAllowed = Boolean(requestedQuery?.trim())
+    && (!input.statuses?.length || input.statuses.includes('candidate'));
+  const queryCorrelations = correlationsAllowed
+    ? deriveQueryCorrelations(returnedNodes, Math.min(limit, 100))
+    : null;
   return {
     ...(requestedQuery === undefined ? {} : { query: requestedQuery }),
     nodeTotal: nodes.length,
     edgeTotal: edges.length,
-    nodes: nodes.slice(offset, offset + limit),
-    edges: edges.slice(offset, offset + limit),
+    nodes: returnedNodes,
+    edges: returnedEdges,
+    ...(queryCorrelations ? {
+      queryCorrelations: {
+        ...queryCorrelations,
+        policy: {
+          persisted: false,
+          proofEligible: false,
+          derivedAtQueryTime: true,
+          source: 'returned-search-page',
+          repositoryRebuildRequired: false,
+        },
+      },
+    } : {}),
   };
 }
 
