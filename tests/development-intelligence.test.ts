@@ -597,6 +597,9 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'How does the adaptive query planner choose between indexed and sharded reads, and what evidence exposes that choice?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'What interface and interaction projection capabilities already exist?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'What graph accuracy benchmark infrastructure already exists?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'How do the polyglot portfolio, Gin, Amux, and CardForge benchmark scripts use the accuracy scoring contract, and which languages and exact pinned repositories do they cover?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'How are latency, external tool-call count, graph cost, candidate/unresolved relationship behavior, and evidence correctness measured across the benchmark suite?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Where are real checked-in accuracy cases or ground-truth corpora stored beyond cases.example.json?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'How does Panel implementation persist accepted state?', lane: 'implementation-claim', proofMode: 'claim' },
     { question: 'Where is Panel implemented?', lane: 'code' },
     { question: 'What does Panel depend on?', lane: 'trace' },
@@ -631,6 +634,9 @@ test('meta-capability inventory questions bypass domain entity resolution', asyn
     for (const question of [
       'What interface and interaction projection capabilities already exist?',
       'What graph accuracy benchmark infrastructure already exists?',
+      'How do the polyglot portfolio, Gin, Amux, and CardForge benchmark scripts use the accuracy scoring contract, and which languages and exact pinned repositories do they cover?',
+      'How are latency, external tool-call count, graph cost, candidate/unresolved relationship behavior, and evidence correctness measured across the benchmark suite?',
+      'Where are real checked-in accuracy cases or ground-truth corpora stored beyond cases.example.json?',
     ]) {
       const routed = await callTool('investigate', { project: fixture.project, question }) as any;
       assert.equal(routed.intent, 'implementation-explanation', question);

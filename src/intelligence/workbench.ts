@@ -596,6 +596,14 @@ function implementationInventoryIntent(text: string): boolean {
   return asksInventory && inventory && implementationContext;
 }
 
+function implementationMetaInquiryIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const asks = /\b(?:how|where|what|which|show|explain|describe)\b/u.test(lower);
+  const metaSubject = /\b(?:benchmarks?|benchmarking|scorecards?|scor(?:e|er|ing)|ground[- ]truth|corpus|corpora|manifests?|routers?|routing|projections?|tooling|pipelines?|planners?|index(?:ed|ing)?|shards?|sharding|caches?|metrics?|measure(?:d|ment|ments)|accuracy cases?)\b/u.test(lower);
+  const developmentContext = /\b(?:graph|semantic|interface|interaction|accuracy|benchmark|query|investigation|analysis|runtime|source|code|repository|repositories|repo|project|scripts?|tools?|calls?|relationships?|evidence)\b/u.test(lower);
+  return asks && metaSubject && developmentContext;
+}
+
 function implementationExplorationTerms(text: string): string[] {
   const stop = new Set([
     'about', 'against', 'also', 'another', 'between', 'broader', 'choice', 'current', 'does', 'doing',
@@ -955,10 +963,11 @@ export function planInvestigationQuestion(input: {
     && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
   const implementationInventory = implementationInventoryIntent(text);
+  const implementationMetaInquiry = implementationMetaInquiryIntent(text);
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
-  else if (implementationInventory) lane = 'implementation-explanation';
+  else if (implementationInventory || implementationMetaInquiry) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
