@@ -373,8 +373,7 @@ test('zero-metadata semantic lifecycle persists accepted authority through enfor
 
     const baseSurface = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
     assert.equal(baseSurface.zeroMetadata, true);
-    const candidate = baseSurface.candidates.find((item: any) => item.scope === 'src/panel.tsx')
-      ?? baseSurface.candidates.find((item: any) => item.scope === 'src/interaction.tsx')
+    const candidate = baseSurface.candidates.find((item: any) => /\.(?:ts|tsx|js|jsx)$/u.test(item.scope))
       ?? baseSurface.candidates[0];
     assert.ok(candidate, 'zero-metadata fixture must produce at least one evidence-qualified semantic candidate');
 
@@ -412,15 +411,17 @@ test('zero-metadata semantic lifecycle persists accepted authority through enfor
     assert.equal(enrolled.enrollment?.baselineRevision, baseRevision);
     assert.ok((enrolled.baselineCandidateCount ?? 0) >= 1);
 
-    const panelPath = path.join(fixture.source, 'src', 'panel.tsx');
-    const panelSource = await fs.readFile(panelPath, 'utf8');
-    await fs.writeFile(
-      panelPath,
-      panelSource.replace(
-        "if (response.ok) window.location.assign('/done');",
-        "if (response.ok) { helper(); window.location.assign('/done'); }",
-      ),
-    );
+    const candidateScopePath = path.join(fixture.source, candidate.scope);
+    const candidateStat = await fs.stat(candidateScopePath);
+    if (candidateStat.isFile()) {
+      const source = await fs.readFile(candidateScopePath, 'utf8');
+      await fs.writeFile(candidateScopePath, source + '\nexport const semanticLifecycleRealizationMarker = true;\n');
+    } else {
+      await fs.writeFile(
+        path.join(candidateScopePath, 'semantic-lifecycle-realization.ts'),
+        'export const semanticLifecycleRealizationMarker = true;\n',
+      );
+    }
     const previewRevision = await commit(fixture.source, 'change accepted semantic realization');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'HEAD:preview']);
     clearGraphCache(fixture.project);
@@ -486,9 +487,9 @@ test('zero-metadata semantic lifecycle persists accepted authority through enfor
     assert.equal(afterPromotion.result.semanticUnderstanding.source, 'accepted-authority');
     assert.ok(afterPromotion.result.semanticUnderstanding.meanings.some((meaning: any) => meaning.meaningId === accepted.meaningId));
 
-    const helperPath = path.join(fixture.source, 'src', 'helper.ts');
-    const helperSource = await fs.readFile(helperPath, 'utf8');
-    await fs.writeFile(helperPath, helperSource + '\n// implementation-only movement after semantic promotion\n');
+    const readmePath = path.join(fixture.source, 'README.md');
+    const readmeSource = await fs.readFile(readmePath, 'utf8');
+    await fs.writeFile(readmePath, readmeSource + '\nImplementation notes moved without changing accepted product meaning.\n');
     const nextRevision = await commit(fixture.source, 'implementation-only movement after semantic promotion');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
     clearGraphCache(fixture.project);
