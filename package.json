@@ -9,7 +9,8 @@
   },
   "scripts": {
     "build:server": "tsc -p tsconfig.json",
-    "build:runtime": "tsc -p tsconfig.runtime.json && npm run build:viewer",
+    "build:server:runtime": "tsc -p tsconfig.runtime.json",
+    "build:runtime": "npm run build:server:runtime && npm run build:viewer",
     "build:viewer": "esbuild src/viewerClient.ts --bundle --platform=browser --format=iife --target=es2022 --outfile=dist/public/viewer.js",
     "build": "npm run build:server && npm run build:viewer",
     "test": "npm run build && node --test dist/tests/*.test.js",
