@@ -13,7 +13,7 @@ COPY scripts ./scripts
 COPY benchmark ./benchmark
 COPY action.yml ./action.yml
 COPY .github/workflows/verify.yml ./.github/workflows/verify.yml
-RUN npm run verify
+RUN npm run build
 
 FROM base AS runtime
 WORKDIR /app
