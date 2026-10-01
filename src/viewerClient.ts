@@ -509,6 +509,9 @@ async function renderSemantics(epoch: number): Promise<void> {
   const authority = data.authority ?? {};
   const promotionAudit = data.promotionAudit ?? null;
   const promotionItems = Array.isArray(promotionAudit?.items) ? promotionAudit.items : [];
+  const enrollmentState = authority.enrollmentState ?? promotionAudit?.enrollmentState ?? 'not-enrolled';
+  const gateStatus = promotionAudit?.gateStatus ?? 'non-blocking';
+  const blockingPendingCount = Number(promotionAudit?.blockingPendingCount ?? 0);
   const writable = authority.state !== 'not-configured' && authority.state !== 'invalid';
   const accepted = candidates.filter((candidate: any) => candidate.review?.accepted).length;
   const verified = candidates.filter((candidate: any) => Boolean(candidate.review?.verification)).length;
@@ -526,7 +529,16 @@ async function renderSemantics(epoch: number): Promise<void> {
         <h3>Semantic authority</h3>
         <h2>Evidence → proposal → explicit review</h2>
         <p>${esc(storageMessage)}</p>
+        <p><span class="badge">${esc(enrollmentState)}</span> <span class="badge ${gateStatus === 'semantic-review-required' ? 'status-warn' : 'status-good'}">${esc(gateStatus)}</span> ${blockingPendingCount ? `<span class="badge status-warn">${esc(blockingPendingCount)} blocking</span>` : '<span class="badge status-good">non-blocking</span>'}</p>
         <p class="muted">This workspace never silently promotes a proposal. Acceptance records human authority; verification separately records evidence support. Current revision: ${esc(data.revision ?? 'unknown')}.</p>
+        ${writable ? `<div class="semantic-form">
+          <label>Release enforcement<select id="semantic-enrollment-state" class="semantic-input">
+            ${(['not-enrolled','advisory','enforced'] as const).map(state => `<option value="${state}"${enrollmentState === state ? ' selected' : ''}>${state}</option>`).join('')}
+          </select></label>
+          <label>Enrollment rationale<textarea id="semantic-enrollment-rationale" class="semantic-input" rows="2" placeholder="Why this release policy is changing"></textarea></label>
+        </div>
+        <button type="button" data-semantic-enrollment class="primary">Update semantic release policy</button>
+        <p class="muted">Enforced mode is accepted only when DI has a durable accepted Main semantic baseline. Changing this policy does not approve Main.</p>` : ''}
       </div>
       <div class="card">
         <h3>Current review state</h3>
@@ -545,7 +557,7 @@ async function renderSemantics(epoch: number): Promise<void> {
         <h3>Semantic change audit</h3>
         <h2>${esc(promotionAudit.semanticDeltaCount ?? 0)} individually addressable change(s)</h2>
         <p>Reference a change by its stable SEM ID when auditing with an agent. These items report what DI observes between accepted meaning and this revision; they do not infer whether the change was desirable.</p>
-        <p class="muted">Baseline ${esc(data.promotionAuditBasis?.currentDefaultRevision ?? 'none')} → target ${esc(data.promotionAuditBasis?.targetRevision ?? data.revision ?? 'unknown')} · full candidate census ${data.promotionAuditBasis?.candidateUniverseExhausted ? 'exhausted' : 'bounded'}.</p>
+        <p class="muted">Enrollment ${esc(promotionAudit.enrollmentState ?? enrollmentState)} · semantic baseline ${esc(promotionAudit.baselineRevision ?? 'none')} · comparison base ${esc(promotionAudit.baseRevision ?? 'none')} → target ${esc(promotionAudit.previewRevision ?? data.revision ?? 'unknown')} · ${esc(promotionAudit.pendingCount ?? 0)} review pending / ${esc(promotionAudit.blockingPendingCount ?? 0)} blocking · digest ${esc(promotionAudit.digest ?? 'unavailable')} · full candidate census ${data.promotionAuditBasis?.candidateUniverseExhausted ? 'exhausted' : 'bounded'}.</p>
       </div>
       <div class="semantic-grid" style="margin-top:13px">
         ${promotionItems.map((item: any, index: number) => semanticChangeAuditCard(item, index, writable)).join('') || empty('No semantic delta', 'DI found no semantic change requiring an audit item for this target revision.')}
@@ -555,6 +567,27 @@ async function renderSemantics(epoch: number): Promise<void> {
       ${candidates.map((candidate: any, index: number) => semanticCandidateCard(candidate, index, writable, candidates)).join('') || empty('No semantic candidates', 'This revision did not produce evidence-qualified semantic candidates.')}
     </div>`;
 
+  const runEnrollment = async () => {
+    const select = document.getElementById('semantic-enrollment-state') as HTMLSelectElement | null;
+    if (!select) return;
+    const rationale = (document.getElementById('semantic-enrollment-rationale') as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    const button = content.querySelector<HTMLButtonElement>('[data-semantic-enrollment]');
+    if (button) button.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/enrollment', {
+        state: select.value,
+        ...(rationale ? { rationale } : {}),
+        expectedEtag: authority.etag ?? null,
+      });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Semantic release policy: ${result.enrollmentState ?? select.value}. This policy does not approve Main.`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Semantic enrollment failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
   const runChangeVerification = async (button: HTMLButtonElement) => {
     const index = Number(button.dataset.semanticChangeIndex);
     const item = promotionItems[index];
@@ -720,6 +753,9 @@ async function renderSemantics(epoch: number): Promise<void> {
       await renderSemantics(epoch);
     }
   };
+
+  const enrollmentButton = content.querySelector<HTMLButtonElement>('[data-semantic-enrollment]');
+  if (enrollmentButton) enrollmentButton.addEventListener('click', () => void runEnrollment());
 
   for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-semantic-change-verify]'))) {
     button.addEventListener('click', () => void runChangeVerification(button));

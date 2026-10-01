@@ -1240,6 +1240,8 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(viewerJavaScript, /Semantic change audit/);
     assert.match(viewerJavaScript, /data-semantic-change-ref/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/change-verify/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/enrollment/);
+    assert.match(viewerJavaScript, /Update semantic release policy/);
     assert.match(viewerJavaScript, /Verify this SEM change/);
     assert.match(viewerJavaScript, /stable SEM ID/);
     assert.match(viewerJavaScript, /Split source across candidate group/);
@@ -1261,7 +1263,15 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(semanticsBody.policy.promotionAuditItemized, true);
     assert.equal(semanticsBody.policy.promotionAuditDesiredOutcomeInferred, false);
     assert.equal(semanticsBody.policy.promotionGateVerificationCanBeDelegated, true);
+    assert.equal(semanticsBody.policy.promotionEnrollmentExplicit, true);
+    assert.equal(semanticsBody.policy.nonEnrolledAndAdvisoryNeverBlockMain, true);
+    assert.equal(semanticsBody.authority.enrollmentState, 'not-enrolled');
     assert.ok(semanticsBody.promotionAudit);
+    assert.equal(semanticsBody.promotionAudit.enrollmentState, 'not-enrolled');
+    assert.equal(semanticsBody.promotionAudit.gateStatus, 'non-blocking');
+    assert.equal(semanticsBody.promotionAudit.blocksMain, false);
+    assert.equal(semanticsBody.promotionAudit.blockingPendingCount, 0);
+    assert.match(semanticsBody.promotionAudit.digest, /^[0-9a-f]{24}$/u);
     assert.equal(semanticsBody.promotionAudit.semanticDeltaCount, semanticsBody.promotionAudit.items.length);
     assert.ok(semanticsBody.promotionAudit.items.every((item: any, index: number) =>
       item.ordinal === index + 1
