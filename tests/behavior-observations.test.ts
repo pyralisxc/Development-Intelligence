@@ -123,3 +123,43 @@ export function UnknownHandler() {
   assert.equal(handled[0]?.status, 'unresolved');
   assert.match(handled[0]?.evidence[0] ?? '', /runExternalAction/u);
 });
+
+
+test('useCallback-bound variables reuse local function identity and own their callback behavior', () => {
+  const result = analyzeTypeScript({
+    source: source('CallbackPanel.tsx'),
+    locatorBase: 'CallbackPanel.tsx',
+    text: `
+export function CallbackPanel() {
+  const [query, setQuery] = useState('');
+  const refresh = useCallback(async (value: string) => {
+    setQuery(value);
+    await loadData(value);
+  }, []);
+  const direct = async () => {
+    await loadDirect();
+  };
+  return <button aria-label="Refresh" onClick={() => void refresh('next')}>Refresh</button>;
+}
+`,
+  });
+
+  const refresh = result.observations.find(item => item.kind === 'function' && item.name === 'refresh');
+  const direct = result.observations.find(item => item.kind === 'function' && item.name === 'direct');
+  const panel = result.observations.find(item => item.kind === 'function' && item.name === 'CallbackPanel');
+  assert.ok(refresh, 'useCallback variable should reuse the existing local function symbol model');
+  assert.ok(direct, 'direct arrow function identity must remain intact');
+  assert.ok(panel);
+  assert.ok(result.resolutions.some(edge => edge.kind === 'contains' && edge.from === panel!.id && edge.to === refresh!.id && edge.status === 'resolved'));
+
+  const handled = result.resolutions.filter(edge => edge.kind === 'handled_by');
+  assert.ok(handled.some(edge => edge.to === refresh!.id && edge.status === 'resolved' && edge.strategy === 'syntax'));
+  assert.equal(handled.some(edge => edge.status === 'unresolved' && edge.evidence.some(item => /refresh/u.test(item))), false);
+
+  const stateWrite = result.observations.find(item => item.kind === 'state-write' && item.name === 'query');
+  assert.ok(stateWrite);
+  assert.ok(
+    result.resolutions.some(edge => edge.kind === 'invokes' && edge.from === refresh!.id && edge.to === stateWrite!.id),
+    'behavior inside useCallback must be owned by the callback function rather than the outer component',
+  );
+});
