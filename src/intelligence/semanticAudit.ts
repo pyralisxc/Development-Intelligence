@@ -92,7 +92,6 @@ function auditCandidate(
 
   const factualityStatus: SemanticFactualityStatus = factualityReasons.length ? 'needs-review' : 'supported';
   const coreCandidate = factualityStatus === 'supported'
-    && facets.functionalContainer
     && facets.multiFile
     && facets.evidenceDiverse
     && (
