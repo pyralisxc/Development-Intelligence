@@ -149,12 +149,11 @@ export function queryBucketForSource(sourceId: string): string {
 function nodeTailText(node: GraphNode): string {
   return [node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)]
     .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
+    .join(' ');
 }
 
 function edgeTailText(edge: GraphEdge): string {
-  return edge.evidence.join(' ').toLowerCase();
+  return edge.evidence.join(' ');
 }
 
 function layerOf(value: { layer?: GraphNodeLayer }): GraphNodeLayer {

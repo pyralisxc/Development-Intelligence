@@ -10,11 +10,11 @@ import { normalizeName } from './model.js';
 import { deriveQueryCorrelations } from './resolver.js';
 
 function nodeText(node: GraphNode): string {
-  return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ').toLowerCase();
+  return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ');
 }
 
 function edgeText(edge: GraphEdge): string {
-  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...edge.evidence].join(' ').toLowerCase();
+  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...edge.evidence].join(' ');
 }
 
 function queryTextMatches(value: string, query: string): boolean {
