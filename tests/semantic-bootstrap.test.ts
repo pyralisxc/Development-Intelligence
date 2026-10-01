@@ -144,6 +144,49 @@ test('single-file HTTP-facing scopes qualify through API evidence without weaken
   assert.equal(result.candidates.some(candidate => candidate.scope.includes('utils')), false, 'weak single-file utility structure must remain rejected');
 });
 
+test('semantic bootstrap keeps repository support artifacts out of meaning while preserving flat source capabilities', () => {
+  const fixture = graph();
+  fixture.nodes = [];
+  fixture.edges = [];
+
+  const supportPaths = [
+    'README.md',
+    'CHANGELOG.md',
+    'context_test.go',
+    'router.spec.ts',
+    '.github/workflows/verify.yml',
+    'benchmark/load.mjs',
+    'config/runtime.json',
+    'package-lock.json',
+  ];
+  for (const [index, path] of supportPaths.entries()) {
+    const fileId = `file:support-${index}`;
+    const apiId = `api:support-${index}`;
+    fixture.nodes.push(
+      node(fileId, 'file', path),
+      node(apiId, 'http-call', `${path}:20:error.message`, '/support', 'representation'),
+    );
+    fixture.edges.push(edge(`support-contains-${index}`, fileId, apiId, 'calls'));
+  }
+
+  fixture.nodes.push(
+    node('file:context-flat', 'file', 'context.go'),
+    node('struct:context-flat', 'struct', 'context.go:61', 'Context'),
+    node('api:context-flat', 'http-call', 'context.go:67:error.message', '/request', 'representation'),
+  );
+  fixture.edges.push(
+    edge('context-flat-contains-struct', 'file:context-flat', 'struct:context-flat', 'contains'),
+    edge('context-flat-calls-api', 'struct:context-flat', 'api:context-flat', 'calls'),
+  );
+
+  const result = bootstrapSemanticCandidates(fixture, { limit: 100 });
+  assert.equal(result.capacity.groupedScopeCount, 1, 'support artifacts must remain graph evidence without becoming semantic groups');
+  assert.equal(result.capacity.eligibleCandidateCount, 1);
+  assert.deepEqual(result.candidates.map(candidate => candidate.scope), ['context.go']);
+  assert.equal(result.candidates[0]?.support.fileCount, 1, 'dotted locator suffixes must resolve back to the physical flat source file');
+  assert.ok(result.candidates[0]?.provenance.evidenceFamilies.includes('api'));
+});
+
 test('semantic candidate identities and ordering are deterministic across graph record ordering', () => {
   const left = bootstrapSemanticCandidates(graph(false), { limit: 10 });
   const right = bootstrapSemanticCandidates(graph(true), { limit: 10 });

@@ -95,7 +95,7 @@ const ROOT_SEGMENTS = new Set(['src', 'source', 'sources', 'lib', 'app', 'apps',
 const SUPPORT_SEGMENTS = new Set(['components', 'hooks', 'utils', 'utilities', 'helpers', 'shared', 'common', 'internal']);
 const CONTAINER_SEGMENTS = new Set(['features', 'feature', 'modules', 'module', 'domains', 'domain', 'services', 'service', 'screens', 'screen', 'pages', 'page', 'routes', 'route', 'api']);
 const GENERIC_FILE_STEMS = new Set(['index', 'main', 'mod', 'module', 'app', 'application', 'program', 'startup']);
-const TEST_OR_DOC_PATH = /(^|\/)(?:tests?|__tests__|fixtures?|docs?|examples?)(?:\/|$)/iu;
+const TEST_OR_DOC_PATH = /(^|\/)(?:tests?|__tests__|fixtures?|docs?|examples?|benchmarks?|config|\.github|\.gitlab)(?:\/|$)/iu;
 
 function sourceFile(locator: string): string | null {
   const clean = (locator.replace(/^repo:/u, '').split('#', 1)[0] ?? locator)
@@ -104,10 +104,13 @@ function sourceFile(locator: string): string | null {
 
   // Graph representations may append semantic locator suffixes that are not
   // line numbers (for example :selector:..., :state-write, :navigation).
-  // Resolve identity to the physical source file before semantic grouping so
-  // observations from one file cannot manufacture pseudo-file scopes.
-  const physicalFile = /^(.+\.[A-Za-z0-9]+)(?::.*)?$/u.exec(clean)?.[1] ?? null;
-  return physicalFile;
+  // Split at the first suffix colon after the final path separator instead of
+  // using a greedy extension match: suffixes such as :error.message must not
+  // manufacture a pseudo-file while multi-dot filenames remain intact.
+  const lastSlash = clean.lastIndexOf('/');
+  const suffixColon = clean.indexOf(':', lastSlash + 1);
+  const physicalFile = suffixColon >= 0 ? clean.slice(0, suffixColon) : clean;
+  return /(?:^|\/)[^/]+\.[A-Za-z0-9]+$/u.test(physicalFile) ? physicalFile : null;
 }
 
 function stem(value: string): string {
@@ -135,6 +138,13 @@ function scopeForPath(path: string): { scope: string; token: string; scopeRole: 
   const parts = path.split('/').filter(Boolean);
   if (!parts.length) return null;
   const file = parts[parts.length - 1]!;
+  if (
+    /\.(?:md|mdx|rst|adoc)$/iu.test(file)
+    || /(?:^|[._-])(?:test|tests|spec)(?:[._-]|$)/iu.test(file)
+    || /^.+(?:Test|Tests)\.(?:java|kt|kts|cs)$/u.test(file)
+    || /(?:^|[._-])benchmarks?(?:[._-]|$)/iu.test(file)
+    || /^(?:package(?:-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|go\.(?:mod|sum)|cargo\.(?:toml|lock)|pyproject\.toml|requirements(?:-[^/]*)?\.txt|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|composer\.(?:json|lock)|gemfile(?:\.lock)?|tsconfig(?:\.[^/]+)?\.json)$/iu.test(file)
+  ) return null;
   const directories = parts.slice(0, -1);
   let start = 0;
 
