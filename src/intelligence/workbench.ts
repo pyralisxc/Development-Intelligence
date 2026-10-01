@@ -586,6 +586,15 @@ function implementationExplorationIntent(text: string): boolean {
   return asksMechanism && mechanism;
 }
 
+function implementationInventoryIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const asksInventory = /\b(?:what|which|show|list|explain|describe)\b/u.test(lower)
+    && /\b(?:already|currently|now|exist|exists|available|implemented|supported|present|have|has)\b/u.test(lower);
+  const inventory = /\b(?:capabilit(?:y|ies)|infrastructure|projections?|routers?|routing|benchmarks?|benchmarking|tooling|mechanisms?|pipelines?|services?|systems?)\b/u.test(lower);
+  const implementationContext = /\b(?:graph|semantic|interface|interaction|accuracy|benchmark|query|investigation|analysis|runtime|source|code|repository|repo|project)\b/u.test(lower);
+  return asksInventory && inventory && implementationContext;
+}
+
 function implementationExplorationTerms(text: string): string[] {
   const stop = new Set([
     'about', 'against', 'also', 'another', 'between', 'broader', 'choice', 'current', 'does', 'doing',
@@ -944,8 +953,11 @@ export function planInvestigationQuestion(input: {
     )
     && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
+  const implementationInventory = implementationInventoryIntent(text);
+
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
+  else if (implementationInventory) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
