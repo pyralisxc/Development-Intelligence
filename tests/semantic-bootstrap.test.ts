@@ -168,6 +168,25 @@ test('semantic bootstrap keeps repository support artifacts out of meaning while
     );
     fixture.edges.push(edge(`support-contains-${index}`, fileId, apiId, 'calls'));
   }
+  fixture.nodes.push(
+    node(
+      'lock:scoped-package-version',
+      'structured-value',
+      'package-lock.json:packages.node_modules/@scope/pkg.version',
+      'version',
+      'representation',
+    ),
+    node(
+      'lock:scoped-package-resolved',
+      'structured-value',
+      'package-lock.json:packages.node_modules/@scope/pkg.resolved',
+      'resolved',
+      'representation',
+    ),
+  );
+  fixture.edges.push(
+    edge('lock-scoped-link', 'lock:scoped-package-version', 'lock:scoped-package-resolved', 'contains'),
+  );
 
   fixture.nodes.push(
     node('file:context-flat', 'file', 'context.go'),

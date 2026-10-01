@@ -101,16 +101,17 @@ function sourceFile(locator: string): string | null {
   const clean = (locator.replace(/^repo:/u, '').split('#', 1)[0] ?? locator)
     .replace(/^\.\//u, '')
     .replace(/\\/gu, '/');
+  const physicalFile = /(?:^|\/)[^/]+\.[A-Za-z0-9]+$/u;
 
-  // Graph representations may append semantic locator suffixes that are not
-  // line numbers (for example :selector:..., :state-write, :navigation).
-  // Split at the first suffix colon after the final path separator instead of
-  // using a greedy extension match: suffixes such as :error.message must not
-  // manufacture a pseudo-file while multi-dot filenames remain intact.
-  const lastSlash = clean.lastIndexOf('/');
-  const suffixColon = clean.indexOf(':', lastSlash + 1);
-  const physicalFile = suffixColon >= 0 ? clean.slice(0, suffixColon) : clean;
-  return /(?:^|\/)[^/]+\.[A-Za-z0-9]+$/u.test(physicalFile) ? physicalFile : null;
+  // Locator suffixes may themselves contain slashes (for example a JSON field
+  // path such as package-lock.json:packages.node_modules/@scope/pkg.version).
+  // Resolve the earliest colon whose prefix is already a valid physical file;
+  // otherwise the suffix can masquerade as nested repository directories.
+  for (let index = clean.indexOf(':'); index >= 0; index = clean.indexOf(':', index + 1)) {
+    const prefix = clean.slice(0, index);
+    if (physicalFile.test(prefix)) return prefix;
+  }
+  return physicalFile.test(clean) ? clean : null;
 }
 
 function stem(value: string): string {
