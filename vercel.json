@@ -8,11 +8,11 @@
   "crons": [
     {
       "path": "/internal/reconcile-canonical",
-      "schedule": "* * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/internal/vcr-retention",
-      "schedule": "17 4 * * *"
+      "schedule": "17 */6 * * *"
     }
   ]
 }
