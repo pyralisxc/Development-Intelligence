@@ -17,6 +17,8 @@ import { interfaceProjection, planInvestigationQuestion, projectOverview, projec
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
+import { loadSemanticAuthority, promoteCanonicalAcceptedGraph } from '../src/intelligence/semanticAuthorityStore.js';
+import { reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from '../src/intelligence/semanticWorkflow.js';
 
 async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, 'add', '.']);
@@ -349,6 +351,165 @@ export function helper() { return 'changed implementation'; }
       'inbound impact should reach a caller in panel.tsx',
     );
   } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('zero-metadata semantic lifecycle persists accepted authority through enforced promotion and revision continuity', async () => {
+  const fixture = await makeFixture();
+  const previousCanonicalDir = process.env.DEVINT_CANONICAL_GRAPH_DIR;
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(fixture.root, 'semantic-canonical');
+  try {
+    const registry = JSON.parse(await fs.readFile(fixture.config, 'utf8'));
+    registry[fixture.project].allowedRefs = ['refs/heads/main', 'refs/heads/preview'];
+    await fs.writeFile(fixture.config, JSON.stringify(registry, null, 2));
+
+    await fs.rm(path.join(fixture.source, '.development-intelligence'), { recursive: true, force: true });
+    const baseRevision = await commit(fixture.source, 'remove repository-local semantic authority');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    const baseGraph = await scanGraph(fixture.project);
+    assert.equal(baseGraph.repositoryRevision, baseRevision);
+
+    const baseSurface = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    assert.equal(baseSurface.zeroMetadata, true);
+    const candidate = baseSurface.candidates.find((item: any) => item.scope === 'src/panel.tsx')
+      ?? baseSurface.candidates.find((item: any) => item.scope === 'src/interaction.tsx')
+      ?? baseSurface.candidates[0];
+    assert.ok(candidate, 'zero-metadata fixture must produce at least one evidence-qualified semantic candidate');
+
+    const accepted = await reviewSemanticMeaning({
+      project: fixture.project,
+      candidateId: candidate.id,
+      command: { kind: 'accept', rationale: 'Fixture meaning reviewed for durable lifecycle proof.' },
+      actor: { kind: 'human', id: 'human:test-owner' },
+      at: '2026-10-01T15:00:00.000Z',
+    });
+    assert.equal(accepted.state, 'stored');
+    assert.equal(accepted.review.accepted, true);
+
+    const orientation = await queryWorkbench({
+      project: fixture.project,
+      text: 'What does this project do?',
+      semanticDepth: 'expanded',
+    }) as any;
+    assert.equal(orientation.intent, 'orientation');
+    assert.equal(orientation.result.semanticUnderstanding.source, 'accepted-authority');
+    assert.ok(
+      orientation.result.semanticUnderstanding.meanings.some((meaning: any) => meaning.meaningId === accepted.meaningId),
+      'ordinary repository questions must prefer the durable accepted semantic meaning',
+    );
+
+    const enrolled = await setSemanticPromotionEnrollment({
+      project: fixture.project,
+      state: 'enforced',
+      actor: { kind: 'human', id: 'human:test-owner' },
+      at: '2026-10-01T15:01:00.000Z',
+      rationale: 'Enable exact Main-to-Preview semantic release governance for the fixture.',
+    });
+    assert.equal(enrolled.state, 'stored');
+    assert.equal(enrolled.enrollmentState, 'enforced');
+    assert.equal(enrolled.enrollment?.baselineRevision, baseRevision);
+    assert.ok((enrolled.baselineCandidateCount ?? 0) >= 1);
+
+    const panelPath = path.join(fixture.source, 'src', 'panel.tsx');
+    const panelSource = await fs.readFile(panelPath, 'utf8');
+    await fs.writeFile(
+      panelPath,
+      panelSource.replace(
+        "if (response.ok) window.location.assign('/done');",
+        "if (response.ok) { helper(); window.location.assign('/done'); }",
+      ),
+    );
+    const previewRevision = await commit(fixture.source, 'change accepted semantic realization');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'HEAD:preview']);
+    clearGraphCache(fixture.project);
+
+    const previewSurface = await semanticReviewSurface({
+      project: fixture.project,
+      ref: 'branch:preview',
+      limit: 1000,
+    }) as any;
+    assert.equal(previewSurface.promotionAudit.enrollmentState, 'enforced');
+    assert.equal(previewSurface.promotionAudit.baseRevision, baseRevision);
+    assert.equal(previewSurface.promotionAudit.previewRevision, previewRevision);
+    const deltaItem = previewSurface.promotionAudit.items.find((item: any) => item.meaningId === accepted.meaningId);
+    assert.ok(deltaItem, 'material realization change must produce one exact semantic promotion item');
+    assert.equal(deltaItem.approved, false);
+    assert.equal(previewSurface.promotionAudit.gateStatus, 'semantic-review-required');
+
+    const verified = await verifySemanticPromotionChange({
+      project: fixture.project,
+      ref: 'branch:preview',
+      auditRef: deltaItem.auditRef,
+      evidenceIds: ['evidence:fixture-preview-realization'],
+      actor: { kind: 'ai-model', id: 'model:test-semantic-verifier' },
+      at: '2026-10-01T15:02:00.000Z',
+      rationale: 'Fixture evidence confirms the exact observed realization change.',
+    });
+    assert.equal(verified.state, 'stored');
+
+    const readySurface = await semanticReviewSurface({
+      project: fixture.project,
+      ref: 'branch:preview',
+      limit: 1000,
+    }) as any;
+    assert.equal(readySurface.promotionAudit.gateStatus, 'ready');
+    assert.equal(readySurface.promotionAudit.blockingPendingCount, 0);
+    assert.equal(readySurface.promotionAudit.readyForMainSemanticPromotion, true);
+
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'HEAD:main']);
+    clearGraphCache(fixture.project);
+    const promotedWorking = await scanGraph(fixture.project);
+    assert.equal(promotedWorking.repositoryRevision, previewRevision);
+
+    const promoted = await promoteCanonicalAcceptedGraph({
+      project: fixture.project,
+      repository: pathToFileURL(fixture.remote).href,
+      revision: previewRevision,
+      gate: readySurface.promotionAudit,
+    });
+    assert.equal(promoted.state, 'stored');
+
+    const promotedAuthority = await loadSemanticAuthority(fixture.project);
+    assert.equal(promotedAuthority.ledger?.enrollment?.baselineRevision, previewRevision);
+    assert.ok(
+      promotedAuthority.ledger?.records.some(record => record.review.meaningId === accepted.meaningId && record.review.accepted),
+      'semantic promotion must preserve the accepted meaning identity in DI-owned authority',
+    );
+
+    const afterPromotion = await queryWorkbench({
+      project: fixture.project,
+      text: 'What does this project do?',
+      semanticDepth: 'expanded',
+    }) as any;
+    assert.equal(afterPromotion.result.semanticUnderstanding.source, 'accepted-authority');
+    assert.ok(afterPromotion.result.semanticUnderstanding.meanings.some((meaning: any) => meaning.meaningId === accepted.meaningId));
+
+    const helperPath = path.join(fixture.source, 'src', 'helper.ts');
+    const helperSource = await fs.readFile(helperPath, 'utf8');
+    await fs.writeFile(helperPath, helperSource + '\n// implementation-only movement after semantic promotion\n');
+    const nextRevision = await commit(fixture.source, 'implementation-only movement after semantic promotion');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    const nextGraph = await scanGraph(fixture.project);
+    assert.equal(nextGraph.repositoryRevision, nextRevision);
+
+    const nextSurface = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    const continued = nextSurface.candidates.find((item: any) => item.continuity?.meaningId === accepted.meaningId);
+    assert.ok(continued, 'accepted meaning identity must remain discoverable on the next repository revision');
+
+    const nextOrientation = await queryWorkbench({
+      project: fixture.project,
+      text: 'What does this project do?',
+      semanticDepth: 'expanded',
+    }) as any;
+    assert.equal(nextOrientation.result.semanticUnderstanding.source, 'accepted-authority');
+    assert.ok(nextOrientation.result.semanticUnderstanding.meanings.some((meaning: any) => meaning.meaningId === accepted.meaningId));
+  } finally {
+    clearGraphCache(fixture.project);
+    if (previousCanonicalDir === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    else process.env.DEVINT_CANONICAL_GRAPH_DIR = previousCanonicalDir;
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
