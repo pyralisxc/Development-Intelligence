@@ -5,7 +5,7 @@ import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticAiPr
 
 import type { SemanticCandidate } from '../src/intelligence/semanticBootstrap.js';
 import { applySemanticReviewAction, semanticMeaningReview, type SemanticMeaningReview } from '../src/intelligence/semanticReview.js';
-import { supersedeSemanticMeaning } from '../src/intelligence/semanticEvolution.js';
+import { evaluateSemanticEvolution, supersedeSemanticMeaning } from '../src/intelligence/semanticEvolution.js';
 
 function candidate(input: { id: string; scope: string; name: string; revision: string; files?: number }): SemanticCandidate {
   return {
