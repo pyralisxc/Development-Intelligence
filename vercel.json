@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "ignoreCommand": "p=$VERCEL_GIT_PREVIOUS_SHA;c=$VERCEL_GIT_COMMIT_SHA;[ -n \"$p\" ]&&[ \"$p\" != \"$c\" ]&&git diff --quiet \"$p\" \"$c\" -- src package.json package-lock.json tsconfig.json tsconfig.runtime.json Dockerfile.vercel vercel.json .dockerignore",
   "git": {
     "deploymentEnabled": {
       "work/**": false
@@ -8,11 +9,11 @@
   "crons": [
     {
       "path": "/internal/reconcile-canonical",
-      "schedule": "* * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/internal/vcr-retention",
-      "schedule": "17 4 * * *"
+      "schedule": "17 */6 * * *"
     }
   ]
 }

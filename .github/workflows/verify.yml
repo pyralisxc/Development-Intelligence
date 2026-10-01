@@ -9,8 +9,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action != 'labeled' }}
+
 jobs:
   action-smoke:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,8 +34,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run verify
+      - name: Upload verified exact-revision build
+        if: (github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-intelligence-verified-dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
 
   production-parity:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -42,8 +56,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - run: npm ci --no-audit --no-fund
-      - run: npm run build
+          cache: npm
+      - run: npm ci --omit=dev --no-audit --no-fund
+      - name: Download verified exact-revision build
+        uses: actions/download-artifact@v4
+        with:
+          name: development-intelligence-verified-dist
+          path: dist
       - name: Wait for production to match the exact main revision and MCP contract
         run: >-
           node scripts/verify-hosted-production.mjs
@@ -65,6 +84,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run build
       - name: Generate and verify an ephemeral compatibility checkpoint
@@ -81,9 +101,10 @@ jobs:
           path: .development-intelligence
           if-no-files-found: error
           include-hidden-files: true
-          retention-days: 7
+          retention-days: 1
 
   cardforge-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -95,8 +116,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - run: npm ci --no-audit --no-fund
-      - run: npm run build
+          cache: npm
+      - run: npm ci --omit=dev --no-audit --no-fund
+      - name: Download verified exact-revision build
+        uses: actions/download-artifact@v4
+        with:
+          name: development-intelligence-verified-dist
+          path: dist
       - name: Check out pinned CardForge benchmark target
         uses: actions/checkout@v7
         with:
@@ -116,9 +142,10 @@ jobs:
             benchmark-cardforge.json
             benchmark-cardforge.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
   polyglot-portfolio-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -132,8 +159,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - run: npm ci --no-audit --no-fund
-      - run: npm run build
+          cache: npm
+      - run: npm ci --omit=dev --no-audit --no-fund
+      - name: Download verified exact-revision build
+        uses: actions/download-artifact@v4
+        with:
+          name: development-intelligence-verified-dist
+          path: dist
       - name: Check out pinned C#/Unity target
         uses: actions/checkout@v7
         with:
@@ -167,10 +199,11 @@ jobs:
             benchmark-polyglot-portfolio.json
             benchmark-polyglot-portfolio.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
 
   external-gin-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -182,8 +215,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - run: npm ci --no-audit --no-fund
-      - run: npm run build
+          cache: npm
+      - run: npm ci --omit=dev --no-audit --no-fund
+      - name: Download verified exact-revision build
+        uses: actions/download-artifact@v4
+        with:
+          name: development-intelligence-verified-dist
+          path: dist
       - name: Check out pinned external Go specimen
         uses: actions/checkout@v7
         with:
@@ -203,10 +241,11 @@ jobs:
             benchmark-gin.json
             benchmark-gin.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
 
   external-amux-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -220,8 +259,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - run: npm ci --no-audit --no-fund
-      - run: npm run build
+          cache: npm
+      - run: npm ci --omit=dev --no-audit --no-fund
+      - name: Download verified exact-revision build
+        uses: actions/download-artifact@v4
+        with:
+          name: development-intelligence-verified-dist
+          path: dist
       - name: Check out pinned external Rust specimen
         uses: actions/checkout@v7
         with:
@@ -241,9 +285,10 @@ jobs:
             benchmark-amux.json
             benchmark-amux.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
   capacity-benchmark:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -252,8 +297,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - run: npm ci --no-audit --no-fund
-      - run: npm run build
+          cache: npm
+      - run: npm ci --omit=dev --no-audit --no-fund
+      - name: Download verified exact-revision build
+        uses: actions/download-artifact@v4
+        with:
+          name: development-intelligence-verified-dist
+          path: dist
       - name: Measure deterministic scale and file-ceiling behavior
         run: |
           npm run benchmark:capacity
@@ -282,6 +332,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run build
       - name: Prepare isolated preview configuration

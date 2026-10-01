@@ -147,3 +147,28 @@ test('Vercel previews publish their exact branch origin without changing product
     VERCEL_BRANCH_URL: 'development-intelligence-git-main-owner.vercel.app',
   }), 'https://devint.cardforges.com');
 });
+
+
+test('Vercel container builds are skipped for runtime-neutral repository changes', async () => {
+  const { promises: fs } = await import('node:fs');
+  const config = JSON.parse(await fs.readFile('vercel.json', 'utf8')) as any;
+  assert.equal(typeof config.ignoreCommand, 'string');
+  assert.match(config.ignoreCommand, /VERCEL_GIT_PREVIOUS_SHA/);
+  assert.match(config.ignoreCommand, /VERCEL_GIT_COMMIT_SHA/);
+  assert.match(config.ignoreCommand, /git diff --quiet/);
+  for (const required of [
+    'src',
+    'package.json',
+    'package-lock.json',
+    'tsconfig.json',
+    'tsconfig.runtime.json',
+    'Dockerfile.vercel',
+    'vercel.json',
+    '.dockerignore',
+  ]) {
+    assert.match(config.ignoreCommand, new RegExp(`(?:^| )${required.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')}(?: |$)`));
+  }
+  for (const runtimeNeutral of ['.github', 'docs', 'tests', 'scripts', 'benchmark', 'action.yml']) {
+    assert.doesNotMatch(config.ignoreCommand, new RegExp(`(?:^| )${runtimeNeutral.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')}(?: |$)`));
+  }
+});

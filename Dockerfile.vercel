@@ -5,15 +5,11 @@ RUN apt-get update \
 
 FROM base AS build
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.json vercel.json ./
+COPY package.json package-lock.json tsconfig.json tsconfig.runtime.json ./
 RUN npm ci --no-audit --no-fund
 COPY src ./src
-COPY tests ./tests
-COPY scripts ./scripts
-COPY benchmark ./benchmark
-COPY action.yml ./action.yml
-COPY .github/workflows/verify.yml ./.github/workflows/verify.yml
-RUN npm run verify
+RUN npm run build:runtime \
+ && npm prune --omit=dev
 
 FROM base AS runtime
 WORKDIR /app
