@@ -370,3 +370,27 @@ test('continuity authority does not resurrect an older accepted record after the
     [],
   );
 });
+
+
+test('semantic continuity can establish an enforced baseline without repository checkpoint authority', () => {
+  const base = candidate({
+    id: 'candidate:zero-metadata',
+    scope: 'src/features/zero-metadata',
+    name: 'Zero Metadata',
+    revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  });
+  const meaning = accepted(base);
+  const preserved = evaluateSemanticEvolution(meaning, [base], base.provenance.revision);
+  assert.equal(preserved.status, 'preserved');
+
+  const changed = candidate({
+    id: 'candidate:zero-metadata',
+    scope: base.scope,
+    name: base.proposal.name,
+    revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    files: 12,
+  });
+  const changedEvolution = evaluateSemanticEvolution(meaning, [changed], changed.provenance.revision);
+  assert.equal(changedEvolution.status, 'realization-changed');
+  assert.equal(changedEvolution.reviewRequired, true);
+});

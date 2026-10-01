@@ -614,6 +614,8 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       promotionEnrollmentExplicit: true,
       nonEnrolledAndAdvisoryNeverBlockMain: true,
       enforcedRequiresAcceptedBaseline: true,
+      enforcedDoesNotRequireLegacyCheckpoint: true,
+      enforcedRequiresAcceptedMeaningsPreservedOnCurrentMain: true,
       acceptedGraphAffected: false,
     },
   };
@@ -666,15 +668,21 @@ export async function setSemanticPromotionEnrollment(input: SemanticPromotionEnr
 
   if (input.state === 'enforced') {
     const canonical = await repositoryGraphs(input.project);
-    if (!canonical.accepted || !canonical.acceptedCurrent || canonical.working.repositoryRevision !== defaultRevision.sha) {
-      throw new Error('Enforced semantic promotion requires a current accepted canonical Main baseline');
+    if (canonical.working.repositoryRevision !== defaultRevision.sha) {
+      throw new Error('Enforced semantic promotion requires current canonical Main W');
     }
     if (!acceptedMeanings.length) {
       throw new Error('Enforced semantic promotion requires at least one explicitly accepted durable semantic meaning');
     }
+    const baseline = bootstrapSemanticCandidates(canonical.working, { limit: 1000 });
+    const unstable = acceptedMeanings
+      .map(review => ({ review, evolution: evaluateSemanticEvolution(review, baseline.candidates, defaultRevision.sha) }))
+      .filter(item => item.evolution.status !== 'preserved');
+    if (unstable.length) {
+      throw new Error(`Enforced semantic promotion requires every active accepted meaning to be preserved on current Main; review required for ${unstable.map(item => item.review.meaningId).join(', ')}`);
+    }
     baselineRevision = defaultRevision.sha;
-    baselineCandidateIds = bootstrapSemanticCandidates(canonical.working, { limit: 1000 })
-      .candidates.map(candidate => candidate.id).sort();
+    baselineCandidateIds = baseline.candidates.map(candidate => candidate.id).sort();
   } else if (input.state === 'advisory' && acceptedMeanings.length) {
     baselineRevision = defaultRevision.sha;
     const canonical = await repositoryGraphs(input.project);
