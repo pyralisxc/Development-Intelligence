@@ -89,6 +89,20 @@ test('private auth separates owner browser sessions from agent bearer access', a
     });
     assert.equal(ownerSemanticWrite.status, 400, 'owner session should pass write auth before semantic request validation');
 
+    const agentEnrollmentWrite = await fetch(`${origin}/workbench/semantics/enrollment`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer agent-test-token' },
+      body: JSON.stringify({ project: 'fixture/private-auth', state: 'advisory' }),
+    });
+    assert.equal(agentEnrollmentWrite.status, 403, 'agent bearer access must not change semantic promotion enrollment');
+
+    const ownerEnrollmentWrite = await fetch(`${origin}/workbench/semantics/enrollment`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: cookie!.split(';')[0]! },
+      body: JSON.stringify({}),
+    });
+    assert.equal(ownerEnrollmentWrite.status, 400, 'owner session should pass enrollment write auth before request validation');
+
     const logout = await fetch(`${origin}/logout`, { redirect: 'manual', headers: { cookie: cookie!.split(';')[0]! } });
     assert.equal(logout.status, 303);
     assert.equal(logout.headers.get('location'), '/login');

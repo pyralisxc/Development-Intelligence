@@ -1059,6 +1059,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'inspect_interface',
     'audit_semantics',
     'semantic_review_surface',
+    'semantic_promotion_gate',
     'audit_semantic_authority_portfolio',
     'query_intelligence',
     'audit_repository',
@@ -1097,6 +1098,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('audit_semantics')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('semantic_review_surface')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('semantic_review_surface')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('semantic_promotion_gate')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('semantic_promotion_gate')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('audit_semantic_authority_portfolio')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('audit_semantic_authority_portfolio')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
@@ -1110,7 +1113,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 32, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 33, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -1128,7 +1131,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 32);
+  assert.equal(identity.mcp.toolCount, 33);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
@@ -1240,6 +1243,8 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(viewerJavaScript, /Semantic change audit/);
     assert.match(viewerJavaScript, /data-semantic-change-ref/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/change-verify/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/enrollment/);
+    assert.match(viewerJavaScript, /Update semantic release policy/);
     assert.match(viewerJavaScript, /Verify this SEM change/);
     assert.match(viewerJavaScript, /stable SEM ID/);
     assert.match(viewerJavaScript, /Split source across candidate group/);
@@ -1261,7 +1266,15 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(semanticsBody.policy.promotionAuditItemized, true);
     assert.equal(semanticsBody.policy.promotionAuditDesiredOutcomeInferred, false);
     assert.equal(semanticsBody.policy.promotionGateVerificationCanBeDelegated, true);
+    assert.equal(semanticsBody.policy.promotionEnrollmentExplicit, true);
+    assert.equal(semanticsBody.policy.nonEnrolledAndAdvisoryNeverBlockMain, true);
+    assert.equal(semanticsBody.authority.enrollmentState, 'not-enrolled');
     assert.ok(semanticsBody.promotionAudit);
+    assert.equal(semanticsBody.promotionAudit.enrollmentState, 'not-enrolled');
+    assert.equal(semanticsBody.promotionAudit.gateStatus, 'non-blocking');
+    assert.equal(semanticsBody.promotionAudit.blocksMain, false);
+    assert.equal(semanticsBody.promotionAudit.blockingPendingCount, 0);
+    assert.match(semanticsBody.promotionAudit.digest, /^[0-9a-f]{24}$/u);
     assert.equal(semanticsBody.promotionAudit.semanticDeltaCount, semanticsBody.promotionAudit.items.length);
     assert.ok(semanticsBody.promotionAudit.items.every((item: any, index: number) =>
       item.ordinal === index + 1

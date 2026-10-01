@@ -12,7 +12,7 @@ import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
-import { parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
+import { parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { currentVercelOidcToken, withVercelRequestContext } from './vercelRequestContext.js';
 import { applyVcrRetentionMaintenance } from './intelligence/vcrMaintenance.js';
@@ -406,6 +406,32 @@ export function createDevelopmentIntelligenceServer() {
           actor: identity.kind === 'human'
             ? { kind: 'human', id: identity.id }
             : { kind: 'ai-model', id: identity.id },
+          at: new Date().toISOString(),
+          ...(rationale === undefined ? {} : { rationale }),
+          ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
+        });
+        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
+      } catch (error) {
+        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (requestUrl.pathname === '/workbench/semantics/enrollment' && req.method === 'POST') {
+      if (!authorizeOwnerWrite(req, res)) return;
+      try {
+        const body = await readJson(req);
+        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
+        if (!['not-enrolled', 'advisory', 'enforced'].includes(body.state)) throw Object.assign(new Error('state must be not-enrolled, advisory, or enforced'), { status: 400 });
+        const rationale = body.rationale === undefined || body.rationale === null
+          ? undefined
+          : typeof body.rationale === 'string' ? body.rationale : (() => { throw Object.assign(new Error('rationale must be a string or null'), { status: 400 }); })();
+        if (body.expectedEtag !== undefined && body.expectedEtag !== null && typeof body.expectedEtag !== 'string') {
+          throw Object.assign(new Error('expectedEtag must be a string or null'), { status: 400 });
+        }
+        const result = await setSemanticPromotionEnrollment({
+          project: body.project,
+          state: body.state,
+          actor: { kind: 'human', id: 'human:owner' },
           at: new Date().toISOString(),
           ...(rationale === undefined ? {} : { rationale }),
           ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
