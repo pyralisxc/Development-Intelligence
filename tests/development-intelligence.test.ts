@@ -431,6 +431,8 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
     { question: 'What does this project do? Go deep across supporting systems and semantic layers.', lane: 'orientation', semanticDepth: 'expanded', completeness: 'expanded' },
     { question: 'Which current failures or warnings should be fixed first because they most limit DI\'s ability to audit itself and other repositories?', lane: 'repository-audit', subjectStrategy: 'repository' },
+    { question: 'What are the strongest candidates for simplification that preserve accepted semantic authority, deterministic evidence, and revision binding?', lane: 'repository-audit', subjectStrategy: 'repository' },
+    { question: 'Which parts overlap in responsibility or add unnecessary indirection?', lane: 'repository-audit', subjectStrategy: 'repository' },
     { question: 'Audit the evidence for Panel.', lane: 'evidence', subjectStrategy: 'entity-or-query' },
     { question: 'Give me a project status summary.', lane: 'overview', subjectStrategy: 'repository' },
     { question: 'How big is this project and what capacity limits are we near?', lane: 'statistics', subjectStrategy: 'repository' },
@@ -985,6 +987,20 @@ test('headless rich projections stay compact by default and preserve explicit de
     const overview = await callTool('project_overview', { project: fixture.project, subjects: ['Panel'] }) as any;
     assert.equal(overview.changes?.detail, undefined);
     assert.equal(overview.changes?.detailTool, 'diff_graph');
+    assert.ok(Array.isArray(overview.semanticBootstrap?.detailTools));
+    for (const candidate of overview.semanticBootstrap?.candidates ?? []) {
+      assert.equal(candidate.provenance?.nodeIds, undefined);
+      assert.equal(candidate.provenance?.edgeIds, undefined);
+      assert.equal(candidate.provenance?.evidenceIds, undefined);
+      assert.ok((candidate.provenance?.sampleNodeIds?.length ?? 0) <= 4);
+      assert.ok((candidate.provenance?.sampleEdgeIds?.length ?? 0) <= 4);
+      assert.ok((candidate.provenance?.sampleEvidenceIds?.length ?? 0) <= 4);
+      assert.equal(typeof candidate.provenance?.nodeCount, 'number');
+      assert.equal(typeof candidate.provenance?.edgeCount, 'number');
+      assert.equal(typeof candidate.provenance?.evidenceCount, 'number');
+      assert.ok((candidate.evidencePacket?.representativeNodes?.length ?? 0) <= 6);
+      assert.ok((candidate.evidencePacket?.representativeEdges?.length ?? 0) <= 6);
+    }
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }

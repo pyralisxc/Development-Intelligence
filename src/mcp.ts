@@ -195,6 +195,44 @@ function compactAssessment(value: any): any {
   });
 }
 
+function compactSemanticBootstrap(value: any): any {
+  if (!value || typeof value !== 'object') return value;
+  const candidates = Array.isArray(value.candidates)
+    ? value.candidates.map((candidate: any) => {
+        const provenance = candidate?.provenance && typeof candidate.provenance === 'object'
+          ? {
+              origin: candidate.provenance.origin,
+              producer: candidate.provenance.producer,
+              revision: candidate.provenance.revision,
+              ...(candidate.provenance.rationale ? { rationale: candidate.provenance.rationale } : {}),
+              ...(candidate.provenance.sourceCandidateId ? { sourceCandidateId: candidate.provenance.sourceCandidateId } : {}),
+              evidenceFamilies: candidate.provenance.evidenceFamilies,
+              nodeCount: Array.isArray(candidate.provenance.nodeIds) ? candidate.provenance.nodeIds.length : 0,
+              edgeCount: Array.isArray(candidate.provenance.edgeIds) ? candidate.provenance.edgeIds.length : 0,
+              evidenceCount: Array.isArray(candidate.provenance.evidenceIds) ? candidate.provenance.evidenceIds.length : 0,
+              sampleNodeIds: Array.isArray(candidate.provenance.nodeIds) ? candidate.provenance.nodeIds.slice(0, 4) : [],
+              sampleEdgeIds: Array.isArray(candidate.provenance.edgeIds) ? candidate.provenance.edgeIds.slice(0, 4) : [],
+              sampleEvidenceIds: Array.isArray(candidate.provenance.evidenceIds) ? candidate.provenance.evidenceIds.slice(0, 4) : [],
+            }
+          : candidate?.provenance;
+        const evidencePacket = candidate?.evidencePacket && typeof candidate.evidencePacket === 'object'
+          ? {
+              representativeNodes: Array.isArray(candidate.evidencePacket.representativeNodes) ? candidate.evidencePacket.representativeNodes.slice(0, 6) : [],
+              representativeEdges: Array.isArray(candidate.evidencePacket.representativeEdges) ? candidate.evidencePacket.representativeEdges.slice(0, 6) : [],
+              nodeCount: Array.isArray(candidate.evidencePacket.representativeNodes) ? candidate.evidencePacket.representativeNodes.length : 0,
+              edgeCount: Array.isArray(candidate.evidencePacket.representativeEdges) ? candidate.evidencePacket.representativeEdges.length : 0,
+            }
+          : candidate?.evidencePacket;
+        return compactCoverageEvidence({ ...candidate, provenance, evidencePacket });
+      })
+    : value.candidates;
+  return compactCoverageEvidence({
+    ...value,
+    candidates,
+    detailTools: ['audit_semantics', 'semantic_review_surface', 'get_evidence'],
+  });
+}
+
 function compactAgentResult(value: any): any {
   if (!value || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(item => compactAgentResult(item));
@@ -217,6 +255,7 @@ function compactAgentResult(value: any): any {
     return compactCoverageEvidence({
       ...value,
       changes,
+      semanticBootstrap: compactSemanticBootstrap(value.semanticBootstrap),
       findings: Array.isArray(value.findings) ? value.findings.map(compactFinding) : value.findings,
     });
   }
