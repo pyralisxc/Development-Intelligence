@@ -7,6 +7,7 @@ import type {
   IntelligenceGraph,
   RelationshipStatus,
 } from '../types.js';
+import { normalizeName } from './model.js';
 
 export const QUERY_DETAIL_BUCKETS = 64;
 const BUCKET_KEYS = Array.from({ length: QUERY_DETAIL_BUCKETS }, (_, index) => index.toString(16).padStart(2, '0'));
@@ -164,7 +165,12 @@ function recordIncludes(
   needle: string,
   fields: Array<string | null | undefined>,
 ): boolean {
-  return fields.some(value => typeof value === 'string' && value.toLowerCase().includes(needle));
+  const normalizedNeedle = normalizeName(needle);
+  return fields.some(value => {
+    if (typeof value !== 'string') return false;
+    if (value.toLowerCase().includes(needle)) return true;
+    return Boolean(normalizedNeedle && normalizeName(value).includes(normalizedNeedle));
+  });
 }
 
 function coverageSummary(graph: IntelligenceGraph): CanonicalQueryIndexArtifact['coverage'] {
