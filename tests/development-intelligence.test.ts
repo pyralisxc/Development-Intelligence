@@ -594,6 +594,8 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'Where in source is accepted semantic meaning persisted and evolved?', lane: 'semantic-lifecycle', subjectStrategy: 'repository' },
     { question: 'Are there source-backed implementation gaps or contradictions in semantic review, authority, and promotion workflow?', lane: 'repository-audit', subjectStrategy: 'repository' },
     { question: 'How does the adaptive query planner choose between indexed and sharded reads, and what evidence exposes that choice?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'What interface and interaction projection capabilities already exist?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'What graph accuracy benchmark infrastructure already exists?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'How does Panel implementation persist accepted state?', lane: 'implementation-claim', proofMode: 'claim' },
     { question: 'Where is Panel implemented?', lane: 'code' },
     { question: 'What does Panel depend on?', lane: 'trace' },
@@ -617,6 +619,28 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     if ('semanticDepth' in expected) assert.equal(plan.semanticDepth, expected.semanticDepth, expected.question);
     if ('completeness' in expected) assert.equal(plan.completeness, expected.completeness, expected.question);
     assert.equal(plan.continuity, 'immediate-exact-pronoun-only');
+  }
+});
+
+test('meta-capability inventory questions bypass domain entity resolution', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    for (const question of [
+      'What interface and interaction projection capabilities already exist?',
+      'What graph accuracy benchmark infrastructure already exists?',
+    ]) {
+      const routed = await callTool('investigate', { project: fixture.project, question }) as any;
+      assert.equal(routed.intent, 'implementation-explanation', question);
+      assert.equal(routed.routing.tool, 'search_code', question);
+      assert.equal(routed.routing.projection, 'implementation-mechanism', question);
+      assert.equal(routed.routing.questionPlan.subjectStrategy, 'source-keyword-evidence', question);
+      assert.equal(routed.routing.targetResolution.mode, 'source-keywords', question);
+      assert.equal(routed.subject, null, 'meta-capability inventory must not bind an incidental graph entity');
+    }
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
