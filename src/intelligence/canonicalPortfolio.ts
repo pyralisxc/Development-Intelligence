@@ -9,6 +9,7 @@ export interface CanonicalPortfolioReconcileOptions {
   limit?: number;
   rotationEpochMs?: number;
   rotationIntervalMs?: number;
+  recentActivityWindowMs?: number;
 }
 
 export function canonicalPortfolioRotationIndex(epochMs: number, candidateCount: number, intervalMs = 60_000): number {
@@ -16,6 +17,25 @@ export function canonicalPortfolioRotationIndex(epochMs: number, candidateCount:
   if (!Number.isInteger(candidateCount) || candidateCount <= 0) throw new Error('rotation candidate count must be a positive integer');
   if (!Number.isFinite(intervalMs) || intervalMs <= 0) throw new Error('rotation interval must be positive');
   return Math.floor(epochMs / intervalMs) % candidateCount;
+}
+
+export function canonicalPortfolioRecentActivityCandidate(
+  candidates: GithubInstallationRepository[],
+  epochMs: number,
+  windowMs = 5 * 60_000,
+): GithubInstallationRepository | null {
+  if (!Number.isFinite(epochMs) || epochMs < 0) throw new Error('recent activity epoch must be a finite non-negative timestamp');
+  if (!Number.isFinite(windowMs) || windowMs <= 0) throw new Error('recent activity window must be positive');
+  const threshold = epochMs - windowMs;
+  const futureToleranceMs = 60_000;
+  return candidates
+    .flatMap(repository => {
+      const pushedAtMs = repository.pushedAt ? Date.parse(repository.pushedAt) : Number.NaN;
+      if (!Number.isFinite(pushedAtMs) || pushedAtMs < threshold || pushedAtMs > epochMs + futureToleranceMs) return [];
+      return [{ repository, pushedAtMs }];
+    })
+    .sort((a, b) => b.pushedAtMs - a.pushedAtMs || a.repository.fullName.localeCompare(b.repository.fullName))
+    [0]?.repository ?? null;
 }
 
 export interface CanonicalPortfolioReconcileItem {
@@ -103,9 +123,13 @@ export async function reconcileCanonicalPortfolio(
   const rotationIndex = rotationRequested && activeCandidates.length
     ? canonicalPortfolioRotationIndex(options.rotationEpochMs!, activeCandidates.length, rotationIntervalMs)
     : null;
+  const recentActivityWindowMs = Math.max(1, Math.trunc(options.recentActivityWindowMs ?? rotationIntervalMs));
+  const recentActivityCandidate = rotationRequested && activeCandidates.length
+    ? canonicalPortfolioRecentActivityCandidate(activeCandidates, options.rotationEpochMs!, recentActivityWindowMs)
+    : null;
   const selectedCandidates = rotationIndex === null
     ? candidates.slice(0, limit)
-    : [activeCandidates[rotationIndex]!];
+    : [recentActivityCandidate ?? activeCandidates[rotationIndex]!];
 
   const items: CanonicalPortfolioReconcileItem[] = [];
   for (const repository of selectedCandidates) {
@@ -141,11 +165,18 @@ export async function reconcileCanonicalPortfolio(
       derivedState: 'canonical-current-graph',
       sequential: true,
       cacheEviction: 'per-repository',
-      selection: rotationRequested ? 'rotating-single-repository' : 'bounded-prefix',
+      selection: rotationRequested
+        ? recentActivityCandidate ? 'recent-provider-activity' : 'rotating-single-repository'
+        : 'bounded-prefix',
       ...(rotationRequested ? {
         rotationIndex,
         rotationSize: activeCandidates.length,
         rotationIntervalMs,
+        recentActivityWindowMs,
+        recentActivityProject: recentActivityCandidate?.fullName ?? null,
+        recentActivityPushedAt: recentActivityCandidate?.pushedAt ?? null,
+        providerActivityIsHintOnly: true,
+        canonicalRevisionAlwaysReresolved: true,
       } : {}),
       historicalRevisionsPersisted: false,
     },

@@ -26,6 +26,7 @@ export interface GithubInstallationRepository {
   disabled: boolean;
   private: boolean;
   fork: boolean;
+  pushedAt: string | null;
 }
 
 function githubRepository(repository: string): { owner: string; name: string } {
@@ -242,6 +243,7 @@ export async function listGithubInstallationRepositories(owner: string): Promise
         disabled?: boolean;
         private?: boolean;
         fork?: boolean;
+        pushed_at?: string | null;
         owner?: { login?: string };
       }>;
     }>(
@@ -253,6 +255,7 @@ export async function listGithubInstallationRepositories(owner: string): Promise
       const repositoryOwner = repository.owner?.login;
       if (!repositoryOwner || repositoryOwner.toLowerCase() !== owner.toLowerCase()) continue;
       if (!repository.name || !repository.full_name || !repository.default_branch) continue;
+      const pushedAtMs = typeof repository.pushed_at === 'string' ? Date.parse(repository.pushed_at) : Number.NaN;
       repositories.push({
         owner: repositoryOwner,
         name: repository.name,
@@ -262,6 +265,7 @@ export async function listGithubInstallationRepositories(owner: string): Promise
         disabled: repository.disabled === true,
         private: repository.private === true,
         fork: repository.fork === true,
+        pushedAt: Number.isFinite(pushedAtMs) ? new Date(pushedAtMs).toISOString() : null,
       });
     }
     if (batch.length < 100) break;
