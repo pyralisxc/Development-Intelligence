@@ -1941,7 +1941,12 @@ export async function interfaceProjection(input: {
 function querySubject(text: string, markers: RegExp[]): string {
   let value = text.trim();
   for (const marker of markers) value = value.replace(marker, ' ');
-  return value.replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/^[?!.,;]+|[?!.,;]+$/gu, '')
+    .trim();
 }
 
 function normalizedMention(value: string): string {
@@ -2053,7 +2058,7 @@ function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
     case 'trace':
       return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi];
     case 'evidence':
-      return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi];
+      return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the|exists?|existence|whether|and|also|it|this|that)\b/gi];
     case 'entity':
       return [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i];
     default:
@@ -2427,7 +2432,7 @@ export async function queryWorkbench(input: {
     }
     const subject = resolved.node?.id ?? resolved.query;
     if (subject) {
-      const direction = /used by|callers?|called by|consumers?|\bwhich\b.*\buses?\b|\bwhat\b.*\b(?:calls?|constructs?)\b/.test(lower)
+      const direction = /used by|callers?|called by|consumers?|^\s*what\s+depends?\s+on\b|^\s*which\b[^?]*\bdepends?\s+on\b|\bwhich\b.*\buses?\b|\bwhat\b.*\b(?:calls?|constructs?)\b/.test(lower)
         ? 'inbound'
         : /depend(?:s)? on|uses/.test(lower) ? 'outbound' : 'both';
       const result = await traceGraph({ project: input.project, ref: input.ref, graphId: input.graphId, node: subject, direction, depth: 2, statuses: ['resolved'], limit: 250 }) as any;

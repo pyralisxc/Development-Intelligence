@@ -600,6 +600,39 @@ test('shared investigation router maps ordinary questions to existing DI primiti
     assert.equal(directAssessment.interpretedSubject, 'Panel');
     assert.equal(directAssessment.answerStatus, 'supported');
 
+    const combinedAssessment = await callTool('query_intelligence', {
+      project: fixture.project,
+      question: 'Does Panel exist and what evidence supports it?',
+    }) as any;
+    assert.equal(combinedAssessment.interpretedSubject, 'Panel');
+    assert.equal(combinedAssessment.answerStatus, 'supported');
+
+    const combinedInvestigation = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Does Panel exist and what evidence supports it?',
+    }) as any;
+    assert.equal(combinedInvestigation.intent, 'evidence');
+    assert.equal(combinedInvestigation.routing.tool, 'inspect_entity');
+    assert.equal(combinedInvestigation.routing.targetResolution.node?.name, 'Panel');
+    assert.equal(combinedInvestigation.subject?.name, 'Panel');
+    assert.equal(combinedInvestigation.result.entity?.name, 'Panel');
+
+    const punctuationTrace = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What depends on Panel?',
+    }) as any;
+    assert.equal(punctuationTrace.intent, 'trace');
+    assert.equal(punctuationTrace.routing.targetResolution.node?.name, 'Panel');
+    assert.equal(punctuationTrace.routing.targetResolution.query, 'Panel');
+    assert.equal(punctuationTrace.routing.direction, 'inbound');
+
+    const outboundTrace = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does Panel depend on?',
+    }) as any;
+    assert.equal(outboundTrace.routing.targetResolution.node?.name, 'Panel');
+    assert.equal(outboundTrace.routing.direction, 'outbound');
+    assert.ok(outboundTrace.result.nodes.some((node: any) => node.name === 'helper'));
 
     const scopedOwner = await callTool('investigate', {
       project: fixture.project,
