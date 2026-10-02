@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import type { Server } from 'node:http';
 import test from 'node:test';
 import { canonicalReconcileCronAuthorized, createDevelopmentIntelligenceServer } from '../src/http.js';
-import { canonicalPortfolioRotationIndex } from '../src/intelligence/canonicalPortfolio.js';
+import { canonicalPortfolioRecentActivityCandidate, canonicalPortfolioRotationIndex } from '../src/intelligence/canonicalPortfolio.js';
 import { canonicalReconcileWorkerLimits, runCanonicalReconcileWorker } from '../src/intelligence/canonicalReconcileWorker.js';
 
 async function close(server: Server): Promise<void> {
@@ -31,6 +31,50 @@ test('canonical portfolio rotation deterministically assigns one repository per 
   assert.equal(canonicalPortfolioRotationIndex(2 * minute, 3), 2);
   assert.equal(canonicalPortfolioRotationIndex(3 * minute, 3), 0);
   assert.equal(canonicalPortfolioRotationIndex(5 * minute, 3), 2);
+});
+
+test('canonical recent-activity selection is bounded to the current provider activity window', () => {
+  const epoch = Date.parse('2026-10-02T05:30:00Z');
+  const repository = (fullName: string, pushedAt: string | null) => {
+    const [owner, name] = fullName.split('/');
+    return {
+      owner,
+      name,
+      fullName,
+      defaultBranch: 'main',
+      archived: false,
+      disabled: false,
+      private: false,
+      fork: false,
+      pushedAt,
+    };
+  };
+  const selected = canonicalPortfolioRecentActivityCandidate([
+    repository('pyralisxc/older', '2026-10-02T05:26:00Z'),
+    repository('pyralisxc/newer', '2026-10-02T05:29:30Z'),
+    repository('pyralisxc/stale', '2026-10-02T05:20:00Z'),
+  ] as any, epoch, 5 * 60_000);
+  assert.equal(selected?.fullName, 'pyralisxc/newer');
+  assert.equal(canonicalPortfolioRecentActivityCandidate([
+    repository('pyralisxc/stale', '2026-10-02T05:20:00Z'),
+  ] as any, epoch, 5 * 60_000), null);
+});
+
+test('provider activity is only a selection hint; repository identity still carries its default branch', () => {
+  const epoch = Date.parse('2026-10-02T05:30:00Z');
+  const selected = canonicalPortfolioRecentActivityCandidate([{
+    owner: 'pyralisxc',
+    name: 'example',
+    fullName: 'pyralisxc/example',
+    defaultBranch: 'main',
+    archived: false,
+    disabled: false,
+    private: false,
+    fork: false,
+    pushedAt: '2026-10-02T05:29:59Z',
+  }] as any, epoch, 5 * 60_000);
+  assert.equal(selected?.defaultBranch, 'main');
+  assert.equal(selected?.pushedAt, '2026-10-02T05:29:59Z');
 });
 
 test('canonical reconcile worker limits keep one repository inside one cron slot', () => {
