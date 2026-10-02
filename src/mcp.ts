@@ -13,6 +13,7 @@ import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import { inspectPortfolio, tracePortfolio, type PortfolioParticipantInput } from './intelligence/portfolio.js';
 import { semanticPromotionGateSurface, semanticReviewSurface } from './intelligence/semanticWorkflow.js';
 import { auditSemanticAuthorityPortfolio } from './intelligence/semanticAuthorityInventory.js';
+import { bootstrapSemanticAuthorityPortfolio } from './intelligence/semanticPortfolioBootstrap.js';
 import { stableHash } from './util/hash.js';
 import { recordToolExecution } from './observability.js';
 import type { GraphNodeLayer, GraphCoverageStatus, RelationshipStatus, TechnicalSourceCapability } from './types.js';
@@ -331,6 +332,30 @@ export const tools: ToolDefinition[] = [
   { name: 'semantic_review_surface', description: 'Return revision-bound intrinsic semantic candidates alongside any DI-owned persisted review state and authority-ledger metadata. This surface is read-only: accepting, amending, rejecting, or verifying meaning requires the separately authenticated owner review path.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, limit: integer }, ['project']), handler: async args => { const ref = optString(args, 'ref'); const graphId = optString(args, 'graphId'); return await semanticReviewSurface({ project: s(args, 'project'), ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }); }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'semantic_promotion_gate', description: 'Return the compact DI-owned Preview-to-Main semantic release contract: enrollment state, exact baseline/base/preview revisions, review counts, blocking count, gate status, stable digest, and pending SEM references. This tool is read-only and does not enroll semantics, approve release, or finalize accepted authority.', inputSchema: objectSchema({ project: string, ref: string, graphId: string }, ['project']), handler: async args => { const ref = optString(args, 'ref'); const graphId = optString(args, 'graphId'); return await semanticPromotionGateSurface({ project: s(args, 'project'), ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}) }); }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'audit_semantic_authority_portfolio', description: 'Enumerate authorized GitHub App repositories and report repository-local .development-intelligence authority remnants against DI canonical accepted A at each exact default-branch revision. Read-only: does not build graphs, mutate repositories, accept semantics, or remove checkpoints.', inputSchema: objectSchema({ owners: strings, repositories: strings, includeArchived: boolean, limit: integer }), handler: async args => await auditSemanticAuthorityPortfolio({ ...(Array.isArray(args.owners) ? { owners: args.owners.filter(value => typeof value === 'string') as string[] } : {}), ...(Array.isArray(args.repositories) ? { repositories: args.repositories.filter(value => typeof value === 'string') as string[] } : {}), ...(typeof args.includeArchived === 'boolean' ? { includeArchived: args.includeArchived } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
+  { name: 'bootstrap_semantic_authority_portfolio', description: 'Owner-approved mutation for establishing the first enforced semantic authority baseline across the authorized repository portfolio. Use only after explicit owner approval in the current control surface. Requires the exact confirmation literal, an owner-approved reference, and a rationale. DI independently reconciles and audits every repository, records durable acceptance as human authority, leaves unsupported/unreachable repositories untouched, and never creates cross-repository mega-authority.', inputSchema: objectSchema({
+    confirmation: { enum: ['owner-approved-portfolio-bootstrap'] },
+    ownerApprovalReference: { type: 'string', pattern: '^owner-approved:' },
+    rationale: string,
+    owners: strings,
+    repositories: strings,
+    includeArchived: boolean,
+    limit: integer,
+  }, ['confirmation', 'ownerApprovalReference', 'rationale']), handler: async args => {
+    if (args.confirmation !== 'owner-approved-portfolio-bootstrap') throw new Error('confirmation must be owner-approved-portfolio-bootstrap');
+    const approvalReference = s(args, 'ownerApprovalReference');
+    if (!approvalReference.startsWith('owner-approved:')) throw new Error('ownerApprovalReference must start with owner-approved:');
+    const rationale = s(args, 'rationale').trim();
+    if (!rationale) throw new Error('rationale must be non-empty');
+    return await bootstrapSemanticAuthorityPortfolio({
+      actor: { kind: 'human', id: 'human:chat-owner' },
+      at: new Date().toISOString(),
+      rationale: `${rationale}\nApproval: ${approvalReference}`,
+      ...(Array.isArray(args.owners) ? { owners: args.owners.filter(value => typeof value === 'string') as string[] } : {}),
+      ...(Array.isArray(args.repositories) ? { repositories: args.repositories.filter(value => typeof value === 'string') as string[] } : {}),
+      ...(typeof args.includeArchived === 'boolean' ? { includeArchived: args.includeArchived } : {}),
+      ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+    });
+  }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
   { name: 'query_intelligence', description: 'Evaluate a bounded technical question as revision-bound claims, proof bundles, capability realization, and generic audit findings over the canonical graph. Assessments are deterministic derived projections and never become graph authority or product intent. Pass requiredFacets only for caller-owned realization expectations.', inputSchema: objectSchema({ project: string, question: string, ref: string, graphId: string, requiredFacets: realizationFacetsSchema }, ['project', 'question']), handler: async args => { const ref = optString(args, 'ref'); const graphId = optString(args, 'graphId'); const requiredFacets = Array.isArray(args.requiredFacets) ? args.requiredFacets as RealizationFacet[] : undefined; return compactAgentResult(await queryIntelligence({ project: s(args, 'project'), question: s(args, 'question'), ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}), ...(requiredFacets?.length ? { requiredFacets } : {}) })); } },
   { name: 'audit_repository', description: 'Run a bounded revision-bound technical audit over one repository graph. Returns deterministic findings, coverage blockers, candidate/unresolved relationship concentrations, checkpoint/currentness context, and evidence-linked investigation targets without modifying the repository or creating work items.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, limit: integer }, ['project']), handler: async args => {
     const ref = optString(args, 'ref');

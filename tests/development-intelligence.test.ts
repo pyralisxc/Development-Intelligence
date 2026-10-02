@@ -1466,6 +1466,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'semantic_review_surface',
     'semantic_promotion_gate',
     'audit_semantic_authority_portfolio',
+    'bootstrap_semantic_authority_portfolio',
     'query_intelligence',
     'audit_repository',
     'inspect_portfolio',
@@ -1507,6 +1508,9 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('semantic_promotion_gate')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('audit_semantic_authority_portfolio')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('audit_semantic_authority_portfolio')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('bootstrap_semantic_authority_portfolio')?.annotations?.readOnlyHint, false);
+  assert.equal(byName.get('bootstrap_semantic_authority_portfolio')?.annotations?.destructiveHint, false);
+  assert.equal(byName.get('bootstrap_semantic_authority_portfolio')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_source')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('query_source')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('query_parity')?.annotations?.openWorldHint, true);
@@ -1518,9 +1522,31 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 33, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 34, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
+});
+
+test('semantic portfolio bootstrap MCP tool is explicit mutation and rejects missing owner approval contract', async () => {
+  const tool = listTools().find(item => item.name === 'bootstrap_semantic_authority_portfolio');
+  assert.ok(tool);
+  assert.equal(tool?.annotations?.readOnlyHint, false);
+  await assert.rejects(
+    callTool('bootstrap_semantic_authority_portfolio', {
+      confirmation: 'owner-approved-portfolio-bootstrap',
+      ownerApprovalReference: 'not-owner-approved',
+      rationale: 'test',
+    }),
+    /ownerApprovalReference/,
+  );
+  await assert.rejects(
+    callTool('bootstrap_semantic_authority_portfolio', {
+      confirmation: 'wrong',
+      ownerApprovalReference: 'owner-approved:test',
+      rationale: 'test',
+    }),
+    /enum|confirmation/u,
+  );
 });
 
 test('runtime identity only exposes exact deployment metadata and the MCP contract', () => {
