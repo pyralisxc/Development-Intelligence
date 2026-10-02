@@ -71,10 +71,6 @@ DEVINT_OAUTH_SCOPES=development-intelligence.read
 DEVINT_ALLOWED_HOSTS=<stable-vercel-hostname without https://>
 DEVINT_REQUIRE_SHARED_OAUTH_STATE=1
 
-# Scheduled VCR maintenance only. Store as a sensitive production credential.
-# Runtime OIDC still proves the deployment project/team identity; it is never
-# forwarded as a bearer credential to api.vercel.com management endpoints.
-DEVINT_VERCEL_VCR_TOKEN=<Vercel access token with access to this project/team>
 ```
 
 Vercel automatically sets `VERCEL`, so DI will also reject OAuth configuration there when the shared Redis state is missing.
@@ -227,4 +223,4 @@ npm run vcr:plan -- --repository dockerfile --apply "$VERCEL_PROJECT_ID"
 
 The apply path deletes only entries classified `delete`, one at a time, through Vercel's VCR image endpoint. Re-run the dry run after cleanup and confirm enough headroom exists before triggering another container deployment.
 
-Production registers `/internal/vcr-retention` every six hours. The route is protected by `CRON_SECRET`. Vercel's short-lived deployment OIDC token is used only to derive the current project/team identity; the management REST calls used by this planner require the separately configured `DEVINT_VERCEL_VCR_TOKEN`. The route fails closed when that credential is absent and explicitly refuses to reuse the deployment OIDC JWT as the management bearer token. The access token is never returned, logged, or copied into graph records. The maintenance path applies the same planner used by `npm run vcr:plan`, deletes exact image IDs sequentially, then re-reads VCR inventory and fails if any requested deletion remains present. Current READY production, one **distinct-SHA** READY rollback, latest READY Preview, production tags, and configured retention windows remain protected.
+Scheduled production VCR retention is owned by Conductor through its connected Vercel provider credential boundary. DI no longer exposes or schedules `/internal/vcr-retention` and does not require a long-lived Vercel management token for scheduled cleanup. The local `npm run vcr:plan` command remains available as an explicit operator dry-run/apply utility, using the same documented retention policy, but it is not the production scheduler.

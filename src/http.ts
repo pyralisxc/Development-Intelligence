@@ -15,8 +15,7 @@ import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalRec
 import { bootstrapSemanticPromotionBaseline, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
 import { bootstrapSemanticAuthorityPortfolio } from './intelligence/semanticPortfolioBootstrap.js';
 import type { TechnicalSourceCapability } from './types.js';
-import { currentVercelOidcToken, vercelOidcProjectIdentity, withVercelRequestContext } from './vercelRequestContext.js';
-import { applyVcrRetentionMaintenance } from './intelligence/vcrMaintenance.js';
+import { withVercelRequestContext } from './vercelRequestContext.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
@@ -201,50 +200,6 @@ export function createDevelopmentIntelligenceServer() {
         json(res, (error as any)?.status ?? 500, {
           error: error instanceof Error ? error.message : String(error),
           trigger: 'vercel-cron',
-        });
-      }
-      return;
-    }
-    if (requestUrl.pathname === '/internal/vcr-retention' && req.method === 'GET') {
-      const cronSecret = process.env.CRON_SECRET?.trim();
-      if (!cronSecret) {
-        json(res, 503, { error: 'VCR retention cron is not configured' });
-        return;
-      }
-      if (!canonicalReconcileCronAuthorized(req.headers ?? {}, cronSecret)) {
-        json(res, 401, { error: 'Unauthorized' });
-        return;
-      }
-      try {
-        const identityToken = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim() ?? '';
-        const oidcIdentity = vercelOidcProjectIdentity(identityToken);
-        const projectId = oidcIdentity?.projectId ?? process.env.VERCEL_PROJECT_ID?.trim() ?? '';
-        const teamId = oidcIdentity?.teamId ?? process.env.VERCEL_TEAM_ID?.trim() ?? '';
-        const accessToken = process.env.DEVINT_VERCEL_VCR_TOKEN?.trim() ?? '';
-        if (!accessToken) {
-          throw Object.assign(new Error('VCR retention management access token is not configured'), { status: 503 });
-        }
-        if (identityToken && accessToken === identityToken) {
-          throw Object.assign(new Error('VCR retention management access token must not reuse the Vercel deployment OIDC identity token'), { status: 503 });
-        }
-        const result = await applyVcrRetentionMaintenance({ accessToken, projectId, teamId });
-        const maintenance = result as any;
-        console.info(JSON.stringify({
-          event: 'vcr-retention-complete',
-          beforeImages: maintenance.before?.images ?? null,
-          deletedImages: maintenance.deleted?.images ?? null,
-          deletedKnownBytes: maintenance.deleted?.knownBytes ?? null,
-          remainingImages: maintenance.after?.images ?? null,
-          verified: maintenance.after?.verified ?? null,
-        }));
-        json(res, 200, { trigger: 'vercel-cron', maintenance: 'vcr-retention', ...result });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(JSON.stringify({ event: 'vcr-retention-failed', error: message }));
-        json(res, (error as any)?.status ?? 500, {
-          error: message,
-          trigger: 'vercel-cron',
-          maintenance: 'vcr-retention',
         });
       }
       return;
