@@ -611,10 +611,11 @@ test('shared investigation router maps ordinary questions to existing DI primiti
       project: fixture.project,
       question: 'Does Panel exist and what evidence supports it?',
     }) as any;
-    assert.equal(combinedInvestigation.intent, 'intelligence');
+    assert.equal(combinedInvestigation.intent, 'evidence');
+    assert.equal(combinedInvestigation.routing.tool, 'inspect_entity');
     assert.equal(combinedInvestigation.routing.targetResolution.node?.name, 'Panel');
-    assert.equal(combinedInvestigation.result.interpretedSubject, 'Panel');
-    assert.equal(combinedInvestigation.result.answerStatus, 'supported');
+    assert.equal(combinedInvestigation.subject?.name, 'Panel');
+    assert.equal(combinedInvestigation.result.entity?.name, 'Panel');
 
     const punctuationTrace = await callTool('investigate', {
       project: fixture.project,
