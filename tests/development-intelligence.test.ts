@@ -16,7 +16,7 @@ import { runtimeIdentity } from '../src/runtimeIdentity.js';
 import { interfaceProjection, planInvestigationQuestion, projectOverview, projectStatistics, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
-import { sourceFingerprint } from '../src/intelligence/repository.js';
+import { isRepositoryAnalysisIgnoredPath, sourceFingerprint } from '../src/intelligence/repository.js';
 import { loadSemanticAuthority, promoteCanonicalAcceptedGraph } from '../src/intelligence/semanticAuthorityStore.js';
 import { bootstrapSemanticPromotionBaseline, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from '../src/intelligence/semanticWorkflow.js';
 import { selectSupportedSemanticPortfolioCandidates } from '../src/intelligence/semanticPortfolioBootstrap.js';
@@ -136,6 +136,36 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
 }
 
 async function close(server: any) { await new Promise<void>(resolve => server.close(() => resolve())); }
+
+test('repository analysis excludes committed node_modules without broadly excluding similarly named or vendor source', () => {
+  assert.equal(isRepositoryAnalysisIgnoredPath('node_modules/pkg/index.js'), true);
+  assert.equal(isRepositoryAnalysisIgnoredPath('client/node_modules/pkg/index.ts'), true);
+  assert.equal(isRepositoryAnalysisIgnoredPath('server\\node_modules\\pkg\\index.js'), true);
+  assert.equal(isRepositoryAnalysisIgnoredPath('src/node_modules-helper.ts'), false);
+  assert.equal(isRepositoryAnalysisIgnoredPath('vendor/owned-source.ts'), false);
+});
+
+test('committed node_modules do not affect canonical source fingerprint or graph coverage', async () => {
+  const fixture = await makeFixture();
+  try {
+    const before = await sourceFingerprint(fixture.source);
+    const dependencyDir = path.join(fixture.source, 'client', 'node_modules', 'third-party');
+    await fs.mkdir(dependencyDir, { recursive: true });
+    await fs.writeFile(path.join(dependencyDir, 'index.ts'), 'export const dependencyCopy = "ignored";\n');
+    const revision = await commit(fixture.source, 'track installed dependency copy');
+    const after = await sourceFingerprint(fixture.source);
+    assert.equal(after, before, 'installed dependency copies must not change DI analyzed-source identity');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project) as any;
+    assert.equal(graph.repositoryRevision, revision);
+    assert.equal(graph.nodes.some((node: any) => String(node.locator ?? '').includes('/node_modules/') || String(node.locator ?? '').startsWith('node_modules/')), false);
+    assert.equal(graph.coverage.files.some((file: any) => String(file.path).includes('/node_modules/') || String(file.path).startsWith('node_modules/')), false);
+    assert.equal(graph.coverage.skippedFileLimitFiles, 0);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test('source fingerprints use Git content filters instead of platform-specific working bytes', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-portable-fingerprint-'));

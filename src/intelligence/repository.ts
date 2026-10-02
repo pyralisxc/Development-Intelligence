@@ -53,6 +53,13 @@ interface ModuleInfo {
   importedSpecifiers: string[];
 }
 
+export function isRepositoryAnalysisIgnoredPath(relative: string): boolean {
+  const normalized = relative.replace(/\\/gu, '/').replace(/^\.\//u, '');
+  return normalized === GRAPH_DIRECTORY
+    || normalized.startsWith(`${GRAPH_DIRECTORY}/`)
+    || /(^|\/)node_modules(?:\/|$)/u.test(normalized);
+}
+
 async function trackedFiles(root: string): Promise<TrackedFile[]> {
   const result = await runChecked('git', ['-C', root, 'ls-files', '-s', '-z']);
   const output: TrackedFile[] = [];
@@ -62,7 +69,7 @@ async function trackedFiles(root: string): Promise<TrackedFile[]> {
     const mode = match[1]!;
     const blob = match[2]!;
     const filePath = match[3]!;
-    if (filePath === GRAPH_DIRECTORY || filePath.startsWith(`${GRAPH_DIRECTORY}/`)) continue;
+    if (isRepositoryAnalysisIgnoredPath(filePath)) continue;
     output.push({ path: filePath, mode, blob });
   }
   return output.sort((a, b) => a.path.localeCompare(b.path));

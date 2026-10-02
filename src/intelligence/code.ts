@@ -4,7 +4,7 @@ import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/g
 import { runChecked } from '../util/process.js';
 import { graphContext } from './service.js';
 import { locatorFileAndLine } from './query.js';
-import { GRAPH_DIRECTORY } from './repository.js';
+import { isRepositoryAnalysisIgnoredPath } from './repository.js';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? 1_000_000);
 
@@ -50,7 +50,7 @@ function fileMatcher(pattern: string | undefined, mode: FilePatternMode): RegExp
 
 async function trackedTextFiles(root: string): Promise<string[]> {
   const result = await runChecked('git', ['-C', root, 'ls-files', '-z']);
-  return result.stdout.split('\0').filter(Boolean).filter(file => !file.startsWith(`${GRAPH_DIRECTORY}/`));
+  return result.stdout.split('\0').filter(Boolean).filter(file => !isRepositoryAnalysisIgnoredPath(file));
 }
 
 export async function searchCode(input: {
