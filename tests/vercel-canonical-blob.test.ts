@@ -15,7 +15,7 @@ import {
   releaseCanonicalQueryArtifactSlot,
 } from '../src/intelligence/queryArtifactStore.js';
 import { runChecked } from '../src/util/process.js';
-import { currentVercelOidcToken, withVercelRequestContext } from '../src/vercelRequestContext.js';
+import { currentVercelOidcToken, vercelOidcProjectIdentity, withVercelRequestContext } from '../src/vercelRequestContext.js';
 
 async function commit(repo: string, message: string): Promise<string> {
   await runChecked('git', ['-C', repo, 'add', '.']);
@@ -479,6 +479,34 @@ test('explicit historical revisions never read or write canonical Blob state', a
   }
 });
 
+
+test('Vercel OIDC project identity derives bounded VCR scope claims and fails closed on malformed tokens', () => {
+  const token = [
+    Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url'),
+    Buffer.from(JSON.stringify({
+      project_id: 'prj_Test123',
+      owner_id: 'team_Owner456',
+      project: 'development-intelligence',
+      environment: 'production',
+    })).toString('base64url'),
+    'signature',
+  ].join('.');
+  assert.deepEqual(vercelOidcProjectIdentity(token), {
+    projectId: 'prj_Test123',
+    teamId: 'team_Owner456',
+  });
+  assert.equal(vercelOidcProjectIdentity('not-a-jwt'), null);
+  assert.equal(vercelOidcProjectIdentity([
+    'header',
+    Buffer.from(JSON.stringify({ project_id: 'other_Test123', owner_id: 'team_Owner456' })).toString('base64url'),
+    'signature',
+  ].join('.')), null);
+  assert.equal(vercelOidcProjectIdentity([
+    'header',
+    Buffer.from(JSON.stringify({ project_id: 'prj_Test123', owner_id: 'user_Owner456' })).toString('base64url'),
+    'signature',
+  ].join('.')), null, 'VCR team scope must not reinterpret a personal owner id as teamId');
+});
 
 test('request-scoped Vercel OIDC authenticates canonical Blob without a runtime env token', async () => {
   const item = await fixture();
