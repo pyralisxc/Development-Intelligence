@@ -160,6 +160,8 @@ For the **first** enrolled semantic baseline, the owner-authenticated Workbench 
 
 The bootstrap action is a one-time authority migration path, not a shortcut around Preview/Main. It refuses stale review digests, non-current W, unsupported selected candidates, ambiguous lineage, or any revision other than provider-authoritative current Main.
 
+For an owner's first portfolio-wide baseline, Workbench also exposes **Bootstrap semantic authority across portfolio**. This is orchestration only: each authorized repository is reconciled to its exact provider-authoritative default branch, audited independently, and given its own authority ledger, enrollment record, accepted A, and gate. The portfolio action selects every current candidate whose deterministic factuality audit is supported, regardless of core/supporting structural classification, because the owner is explicitly delegating the first factual review to DI. Any unsupported, inaccessible, stale, or ambiguous repository is left untouched and reported. Repositories whose exact current semantic census is empty may enroll an empty enforced baseline; a non-empty census still requires explicit accepted meaning records. No cross-repository mega-authority is persisted.
+
 If canonical A is absent, stale, or contradictory, promotion fails closed and the migration/recovery path must make the discrepancy explicit rather than inventing acceptance.
 
 ### Currentness interpretation

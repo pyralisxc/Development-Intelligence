@@ -547,6 +547,13 @@ async function renderSemantics(epoch: number): Promise<void> {
           <button type="button" data-semantic-bootstrap class="primary">Bootstrap semantic gate on current Main</button>
           <p class="muted">Owner-only. This accepts only the explicitly listed core meaning(s), enrolls enforcement against the full current candidate census, and finalizes accepted A to this exact already-promoted Main revision.</p>
         </div>` : ''}
+        ${writable ? `<div class="semantic-bootstrap" style="margin-top:12px">
+          <h3>Portfolio first baseline</h3>
+          <p>One owner action can establish independent semantic baselines across every currently authorized repository. DI accepts every current candidate whose factuality audit is supported, records human acceptance per repository, and leaves inaccessible or unsupported repositories untouched and explicitly reported.</p>
+          <label>Portfolio rationale<textarea id="semantic-portfolio-bootstrap-rationale" class="semantic-input" rows="2">Establish first semantic authority across the authorized repository portfolio using DI's exact-revision factuality audit. Accept all source-supported current meanings, preserve separate authority per repository, and leave any unproven repository untouched.</textarea></label>
+          <button type="button" data-semantic-portfolio-bootstrap class="primary">Bootstrap semantic authority across portfolio</button>
+          <p class="muted">Owner-only. This may create many accepted meaning records. It never creates a cross-repository mega-graph or shared semantic authority.</p>
+        </div>` : ''}
         ${writable ? `<div class="semantic-form">
           <label>Release enforcement<select id="semantic-enrollment-state" class="semantic-input">
             ${(['not-enrolled','advisory','enforced'] as const).map(state => `<option value="${state}"${enrollmentState === state ? ' selected' : ''}>${state}</option>`).join('')}
@@ -582,6 +589,35 @@ async function renderSemantics(epoch: number): Promise<void> {
     <div class="semantic-grid" style="margin-top:13px">
       ${candidates.map((candidate: any, index: number) => semanticCandidateCard(candidate, index, writable, candidates)).join('') || empty('No semantic candidates', 'This revision did not produce evidence-qualified semantic candidates.')}
     </div>`;
+
+  const runPortfolioBootstrap = async () => {
+    const rationale = (document.getElementById('semantic-portfolio-bootstrap-rationale') as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    if (!rationale) {
+      semanticFlash = 'Portfolio semantic bootstrap requires an explicit rationale.';
+      await renderSemantics(epoch);
+      return;
+    }
+    if (!window.confirm('Accept every factually supported current semantic candidate across all authorized repositories? Repositories that cannot be proven will be left untouched and reported.')) return;
+    const button = content.querySelector<HTMLButtonElement>('[data-semantic-portfolio-bootstrap]');
+    if (button) button.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/portfolio-bootstrap', { rationale });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      const blocked = Number(result.counts?.blocked ?? 0);
+      const errors = Number(result.counts?.error ?? 0);
+      const stored = Number(result.counts?.stored ?? 0);
+      const current = Number(result.counts?.['already-current'] ?? 0);
+      const problemNames = Array.isArray(result.items)
+        ? result.items.filter((item: any) => item.outcome === 'blocked' || item.outcome === 'error').map((item: any) => item.project).slice(0, 5)
+        : [];
+      semanticFlash = `Portfolio semantic bootstrap: ${stored} stored, ${current} already current, ${blocked} blocked, ${errors} error.${problemNames.length ? ' Attention: ' + problemNames.join(', ') : ''}`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Portfolio semantic bootstrap failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
 
   const runBootstrap = async () => {
     if (!recommendedBaselineCandidateIds.length) return;
@@ -795,6 +831,9 @@ async function renderSemantics(epoch: number): Promise<void> {
       await renderSemantics(epoch);
     }
   };
+
+  const portfolioBootstrapButton = content.querySelector<HTMLButtonElement>('[data-semantic-portfolio-bootstrap]');
+  if (portfolioBootstrapButton) portfolioBootstrapButton.addEventListener('click', () => void runPortfolioBootstrap());
 
   const bootstrapButton = content.querySelector<HTMLButtonElement>('[data-semantic-bootstrap]');
   if (bootstrapButton) bootstrapButton.addEventListener('click', () => void runBootstrap());
