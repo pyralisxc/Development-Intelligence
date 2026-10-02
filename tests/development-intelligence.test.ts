@@ -19,6 +19,7 @@ import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
 import { loadSemanticAuthority, promoteCanonicalAcceptedGraph } from '../src/intelligence/semanticAuthorityStore.js';
 import { bootstrapSemanticPromotionBaseline, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from '../src/intelligence/semanticWorkflow.js';
+import { selectSupportedSemanticPortfolioCandidates } from '../src/intelligence/semanticPortfolioBootstrap.js';
 import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from '../src/intelligence/interfaceRuntimeObservation.js';
 
 async function commit(repo: string, message: string): Promise<string> {
@@ -354,6 +355,22 @@ export function helper() { return 'changed implementation'; }
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test('portfolio semantic bootstrap selection accepts supported core and supporting meanings but blocks unsupported candidates', () => {
+  const selection = selectSupportedSemanticPortfolioCandidates([
+    { id: 'core', scope: 'src/core', proposal: { name: 'Core', kind: 'capability' }, reviewAssessment: { supported: true, factuality: 'supported', classification: 'core-candidate' } },
+    { id: 'supporting', scope: 'src/support', proposal: { name: 'Supporting', kind: 'surface' }, reviewAssessment: { supported: true, factuality: 'supported', classification: 'supporting-candidate' } },
+    { id: 'unproven', scope: 'src/unknown', proposal: { name: 'Unknown', kind: 'feature' }, reviewAssessment: { supported: false, factuality: 'needs-review', classification: 'supporting-candidate' } },
+  ] as any);
+  assert.deepEqual(selection.selectedCandidateIds, ['core', 'supporting']);
+  assert.deepEqual(selection.unsupportedCandidateIds, ['unproven']);
+  assert.equal(selection.selected[0]?.classification, 'core-candidate');
+  assert.equal(selection.selected[1]?.classification, 'supporting-candidate');
+
+  const empty = selectSupportedSemanticPortfolioCandidates([]);
+  assert.deepEqual(empty.selectedCandidateIds, []);
+  assert.deepEqual(empty.unsupportedCandidateIds, []);
 });
 
 test('owner semantic bootstrap accepts explicit current meaning, enforces the gate, and finalizes exact Main A', async () => {
@@ -1597,7 +1614,9 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(viewerJavaScript, /\/workbench\/semantics\/change-verify/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/enrollment/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/bootstrap/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/portfolio-bootstrap/);
     assert.match(viewerJavaScript, /Bootstrap semantic gate on current Main/);
+    assert.match(viewerJavaScript, /Bootstrap semantic authority across portfolio/);
     assert.match(viewerJavaScript, /What this means:/);
     assert.match(viewerJavaScript, /Update semantic release policy/);
     assert.match(viewerJavaScript, /Verify this SEM change/);

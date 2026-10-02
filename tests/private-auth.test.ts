@@ -117,6 +117,20 @@ test('private auth separates owner browser sessions from agent bearer access', a
     });
     assert.equal(ownerBootstrapWrite.status, 400, 'owner session should pass semantic bootstrap auth before request validation');
 
+    const agentPortfolioBootstrapWrite = await fetch(`${origin}/workbench/semantics/portfolio-bootstrap`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer agent-test-token' },
+      body: JSON.stringify({ rationale: 'test' }),
+    });
+    assert.equal(agentPortfolioBootstrapWrite.status, 403, 'agent bearer access must not bootstrap portfolio semantic authority');
+
+    const ownerPortfolioBootstrapWrite = await fetch(`${origin}/workbench/semantics/portfolio-bootstrap`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: cookie!.split(';')[0]! },
+      body: JSON.stringify({}),
+    });
+    assert.equal(ownerPortfolioBootstrapWrite.status, 400, 'owner session should pass portfolio bootstrap auth before request validation');
+
     const logout = await fetch(`${origin}/logout`, { redirect: 'manual', headers: { cookie: cookie!.split(';')[0]! } });
     assert.equal(logout.status, 303);
     assert.equal(logout.headers.get('location'), '/login');

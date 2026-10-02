@@ -13,6 +13,7 @@ import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import { bootstrapSemanticPromotionBaseline, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
+import { bootstrapSemanticAuthorityPortfolio } from './intelligence/semanticPortfolioBootstrap.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { currentVercelOidcToken, vercelOidcProjectIdentity, withVercelRequestContext } from './vercelRequestContext.js';
 import { applyVcrRetentionMaintenance } from './intelligence/vcrMaintenance.js';
@@ -390,6 +391,23 @@ export function createDevelopmentIntelligenceServer() {
       }
       return;
     }
+    if (requestUrl.pathname === '/workbench/semantics/portfolio-bootstrap' && req.method === 'POST') {
+      if (!authorizeOwnerWrite(req, res)) return;
+      try {
+        const body = await readJson(req);
+        if (typeof body.rationale !== 'string' || !body.rationale.trim()) throw Object.assign(new Error('rationale must be non-empty'), { status: 400 });
+        const result = await bootstrapSemanticAuthorityPortfolio({
+          actor: { kind: 'human', id: 'human:owner' },
+          at: new Date().toISOString(),
+          rationale: body.rationale,
+          limit: 100,
+        });
+        json(res, 200, result);
+      } catch (error) {
+        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     if (requestUrl.pathname === '/workbench/semantics/bootstrap' && req.method === 'POST') {
       if (!authorizeOwnerWrite(req, res)) return;
       try {
@@ -400,8 +418,7 @@ export function createDevelopmentIntelligenceServer() {
           .filter((value): value is string => typeof value === 'string')
           .map(value => value.trim())
           .filter(Boolean))];
-        if (!candidateIds.length) throw Object.assign(new Error('candidateIds must include at least one semantic candidate'), { status: 400 });
-        if (candidateIds.length > 100) throw Object.assign(new Error('candidateIds supports at most 100 semantic candidates'), { status: 400 });
+        if (candidateIds.length > 1000) throw Object.assign(new Error('candidateIds supports at most 1000 semantic candidates'), { status: 400 });
         if (typeof body.rationale !== 'string' || !body.rationale.trim()) throw Object.assign(new Error('rationale must be non-empty'), { status: 400 });
         if (body.expectedDigest !== undefined && body.expectedDigest !== null && typeof body.expectedDigest !== 'string') {
           throw Object.assign(new Error('expectedDigest must be a string or null'), { status: 400 });
