@@ -2432,7 +2432,7 @@ export async function queryWorkbench(input: {
     }
     const subject = resolved.node?.id ?? resolved.query;
     if (subject) {
-      const direction = /used by|callers?|called by|consumers?|\bwhich\b.*\buses?\b|\bwhat\b.*\b(?:calls?|constructs?)\b/.test(lower)
+      const direction = /used by|callers?|called by|consumers?|^\s*what\s+depends?\s+on\b|^\s*which\b[^?]*\bdepends?\s+on\b|\bwhich\b.*\buses?\b|\bwhat\b.*\b(?:calls?|constructs?)\b/.test(lower)
         ? 'inbound'
         : /depend(?:s)? on|uses/.test(lower) ? 'outbound' : 'both';
       const result = await traceGraph({ project: input.project, ref: input.ref, graphId: input.graphId, node: subject, direction, depth: 2, statuses: ['resolved'], limit: 250 }) as any;

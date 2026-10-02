@@ -623,7 +623,15 @@ test('shared investigation router maps ordinary questions to existing DI primiti
     assert.equal(punctuationTrace.intent, 'trace');
     assert.equal(punctuationTrace.routing.targetResolution.node?.name, 'Panel');
     assert.equal(punctuationTrace.routing.targetResolution.query, 'Panel');
-    assert.ok(punctuationTrace.result.nodes.some((node: any) => node.name === 'helper'));
+    assert.equal(punctuationTrace.routing.direction, 'inbound');
+
+    const outboundTrace = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What does Panel depend on?',
+    }) as any;
+    assert.equal(outboundTrace.routing.targetResolution.node?.name, 'Panel');
+    assert.equal(outboundTrace.routing.direction, 'outbound');
+    assert.ok(outboundTrace.result.nodes.some((node: any) => node.name === 'helper'));
 
     const scopedOwner = await callTool('investigate', {
       project: fixture.project,
