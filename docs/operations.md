@@ -156,6 +156,10 @@ For an inspected repository:
 5. only after the repository's normal human/release gate does DI advance accepted semantic A for the promoted revision;
 6. do not commit a generated `.development-intelligence/` authority directory into the inspected repository.
 
+For the **first** enrolled semantic baseline, the owner-authenticated Workbench may use the current-Main bootstrap action. That action is intentionally unavailable to ordinary agent bearer access. It accepts only the explicitly selected current semantic candidates, enrolls `enforced` policy against the full exact-Main candidate census, requires the resulting gate to be `ready`, and then promotes canonical accepted A to that same already-promoted Main revision. The Workbench defaults this action to deterministic factuality-supported **core** candidates; supporting candidates remain proposals unless the owner explicitly accepts them.
+
+The bootstrap action is a one-time authority migration path, not a shortcut around Preview/Main. It refuses stale review digests, non-current W, unsupported selected candidates, ambiguous lineage, or any revision other than provider-authoritative current Main.
+
 If canonical A is absent, stale, or contradictory, promotion fails closed and the migration/recovery path must make the discrepancy explicit rather than inventing acceptance.
 
 ### Currentness interpretation
