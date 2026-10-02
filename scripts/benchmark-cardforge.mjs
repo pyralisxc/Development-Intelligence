@@ -547,6 +547,10 @@ const studioManualSchema = await callTool('get_graph_schema', { project, graphId
 const studioManualElapsedMs = Number(process.hrtime.bigint() - studioManualStarted) / 1_000_000;
 if (!Array.isArray(studioManualSearch.results) || studioManualSearch.results.length !== studioManualQueries.length) throw new Error('CardForge Studio manual decomposition search lost independent queries');
 if (!studioManualOrientation?.scope || Number(studioManualOrientation.scope.nodeCount ?? 0) < 1) throw new Error('CardForge Studio manual orientation did not resolve the feature scope');
+if (!Array.isArray(studioManualOrientation.responsibilities) || studioManualOrientation.responsibilities.length < 1) throw new Error('CardForge Studio orientation did not synthesize evidence-linked responsibilities');
+if (!studioManualOrientation.dependencies || !Array.isArray(studioManualOrientation.dependencies.outbound) || !Array.isArray(studioManualOrientation.dependencies.inbound)) throw new Error('CardForge Studio orientation did not aggregate scope-boundary dependencies');
+if (/^\d+ graph entities/u.test(String(studioManualOrientation.summary ?? ''))) throw new Error('CardForge Studio orientation regressed to topology-count prose');
+if (studioManualOrientation.policy?.summaryInfersProductIntent !== false || studioManualOrientation.policy?.responsibilitySynthesis !== 'observed-role-groups') throw new Error('CardForge Studio orientation crossed its deterministic synthesis boundary');
 if (Number(studioManualSource.total ?? 0) < 1) throw new Error('CardForge Studio source decomposition expected scroll/pointer/overlay evidence');
 if (!studioManualCoverage?.summary || !studioManualSchema?.nodeKinds) throw new Error('CardForge Studio manual decomposition expected coverage and schema context');
 

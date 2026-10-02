@@ -1056,6 +1056,14 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.ok(orientation.keyEntities.some((item: any) => item.name === 'Panel'));
     assert.ok(orientation.keyEntities.every((item: any) => typeof item.id === 'string' && typeof item.reason === 'string'));
     assert.ok(orientation.boundaries.some((item: any) => item.external?.locator === 'src/helper.ts'), 'file orientation should expose the helper boundary');
+    assert.ok(Array.isArray(orientation.responsibilities) && orientation.responsibilities.length > 0);
+    assert.ok(orientation.responsibilities.every((item: any) => typeof item.statement === 'string' && Array.isArray(item.evidenceNodeIds)));
+    assert.ok(orientation.roleGroups.some((item: any) => item.role === 'implementation' && item.entities.some((entity: any) => entity.name === 'Panel')));
+    assert.ok(orientation.dependencies.outbound.some((item: any) => item.external?.locator === 'src/helper.ts'), 'file orientation should aggregate helper as an outbound dependency');
+    assert.equal(/^\d+ graph entities/u.test(orientation.summary), false, 'scoped orientation should lead with observed responsibility rather than topology counts');
+    assert.equal(orientation.policy.responsibilitySynthesis, 'observed-role-groups');
+    assert.equal(orientation.policy.dependencyAggregation, 'resolved-boundary-edges');
+    assert.equal(orientation.policy.summaryInfersProductIntent, false);
 
     const area = await callTool('orient_scope', {
       project: fixture.project,
@@ -1077,6 +1085,9 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.equal(natural.routing.tool, 'orient_scope');
     assert.equal(natural.result.scope.kind, 'file');
     assert.equal(natural.result.rankBy, 'relationship-diversity');
+    assert.equal(natural.answer, natural.result.summary);
+    assert.equal(/^\d+ graph entities/u.test(natural.answer), false);
+    assert.ok(natural.result.responsibilities.some((item: any) => item.kind === 'implementation'));
 
     const missingScope = await callTool('investigate', {
       project: fixture.project,
