@@ -684,6 +684,14 @@ function implementationMetaInquiryIntent(text: string): boolean {
   return asks && metaSubject && developmentContext;
 }
 
+function deploymentPortabilityInquiryIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  const asks = /\b(?:can|could|does|do|is|are|what|which|how|where|show|explain|describe)\b/u.test(lower);
+  const deploymentTopic = /\b(?:self[- ]host(?:ed|ing)?|hosting|deploy(?:ed|ment|ments)?|portable|portability|vercel|docker|containers?|standalone|server startup|hardware|linux|macos|windows)\b/u.test(lower);
+  const operationalContext = /\b(?:runtime|server|provider|environment|configuration|config|packag(?:e|ing)|install(?:er|ation)?|storage|database|host|port|entrypoints?|dependencies|capabilit(?:y|ies)|infrastructure)\b/u.test(lower);
+  return asks && deploymentTopic && operationalContext;
+}
+
 function implementationExplorationTerms(text: string): string[] {
   const stop = new Set([
     'about', 'against', 'also', 'another', 'between', 'broader', 'choice', 'current', 'does', 'doing',
@@ -1044,10 +1052,11 @@ export function planInvestigationQuestion(input: {
 
   const implementationInventory = implementationInventoryIntent(text);
   const implementationMetaInquiry = implementationMetaInquiryIntent(text);
+  const deploymentPortabilityInquiry = deploymentPortabilityInquiryIntent(text);
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
-  else if (implementationInventory || implementationMetaInquiry) lane = 'implementation-explanation';
+  else if (implementationInventory || implementationMetaInquiry || deploymentPortabilityInquiry) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
