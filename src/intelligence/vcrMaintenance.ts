@@ -3,11 +3,11 @@ import { planVcrRetention } from './vcrRetention.js';
 type JsonRecord = Record<string, any>;
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-async function requestJson(fetcher: FetchLike, token: string, url: string, init?: RequestInit): Promise<any> {
+async function requestJson(fetcher: FetchLike, accessToken: string, url: string, init?: RequestInit): Promise<any> {
   const response = await fetcher(url, {
     ...init,
     headers: {
-      authorization: `Bearer ${token}`,
+      authorization: `Bearer ${accessToken}`,
       accept: 'application/json',
       ...(init?.headers ?? {}),
     },
@@ -17,13 +17,13 @@ async function requestJson(fetcher: FetchLike, token: string, url: string, init?
   return text ? JSON.parse(text) : null;
 }
 
-async function allPages(fetcher: FetchLike, token: string, basePath: string, collectionKey: string): Promise<JsonRecord[]> {
+async function allPages(fetcher: FetchLike, accessToken: string, basePath: string, collectionKey: string): Promise<JsonRecord[]> {
   const items: JsonRecord[] = [];
   let cursor: string | null = null;
   do {
     const url = new URL(basePath);
     if (cursor) url.searchParams.set('cursor', cursor);
-    const data = await requestJson(fetcher, token, url.toString());
+    const data = await requestJson(fetcher, accessToken, url.toString());
     const page = Array.isArray(data) ? data : data?.[collectionKey];
     if (!Array.isArray(page)) throw Object.assign(new Error(`Vercel response did not include ${collectionKey}[]`), { status: 502 });
     items.push(...page);
@@ -34,7 +34,7 @@ async function allPages(fetcher: FetchLike, token: string, basePath: string, col
 }
 
 export interface ApplyVcrRetentionOptions {
-  token: string;
+  accessToken: string;
   projectId: string;
   teamId: string;
   repository?: string;
@@ -43,14 +43,14 @@ export interface ApplyVcrRetentionOptions {
 }
 
 export async function applyVcrRetentionMaintenance({
-  token,
+  accessToken,
   projectId,
   teamId,
   repository = 'dockerfile',
   fetcher = fetch,
   now = Date.now(),
 }: ApplyVcrRetentionOptions): Promise<Record<string, unknown>> {
-  if (!token.trim()) throw Object.assign(new Error('Vercel OIDC token is unavailable for VCR maintenance'), { status: 503 });
+  if (!accessToken.trim()) throw Object.assign(new Error('Vercel management access token is unavailable for VCR maintenance'), { status: 503 });
   if (!projectId.trim() || !teamId.trim()) throw Object.assign(new Error('Vercel project/team identity is unavailable for VCR maintenance'), { status: 503 });
 
   const scope = `teamId=${encodeURIComponent(teamId)}&projectId=${encodeURIComponent(projectId)}`;
@@ -58,8 +58,8 @@ export async function applyVcrRetentionMaintenance({
   const deploymentPath = `https://api.vercel.com/v6/deployments?${scope}&limit=100`;
 
   const [images, deployments] = await Promise.all([
-    allPages(fetcher, token, imagePath, 'images'),
-    allPages(fetcher, token, deploymentPath, 'deployments'),
+    allPages(fetcher, accessToken, imagePath, 'images'),
+    allPages(fetcher, accessToken, deploymentPath, 'deployments'),
   ]);
   const plan = planVcrRetention({ images, deployments, now });
   const deletions = (plan.decisions as JsonRecord[]).filter(item => item.action === 'delete');
@@ -70,14 +70,14 @@ export async function applyVcrRetentionMaintenance({
     if (!id) throw Object.assign(new Error('Refusing to delete VCR candidate without an exact image ID'), { status: 500 });
     await requestJson(
       fetcher,
-      token,
+      accessToken,
       `https://api.vercel.com/v1/vcr/repository/${encodeURIComponent(repository)}/images/${encodeURIComponent(id)}?${scope}`,
       { method: 'DELETE' },
     );
     deleted.push({ id, sizeInBytes: Number(candidate.sizeInBytes ?? 0), reason: String(candidate.reason ?? 'retention policy') });
   }
 
-  const remainingImages = await allPages(fetcher, token, imagePath, 'images');
+  const remainingImages = await allPages(fetcher, accessToken, imagePath, 'images');
   const remainingIds = new Set(remainingImages.map(item => String(item.id ?? item.uid ?? item.imageId ?? '')));
   const undeleted = deleted.filter(item => remainingIds.has(item.id));
   if (undeleted.length) throw Object.assign(new Error(`VCR retention verification found ${undeleted.length} image(s) still present after deletion`), { status: 502 });
