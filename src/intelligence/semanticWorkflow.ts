@@ -30,7 +30,7 @@ import {
   type SemanticReviewAction,
   type SemanticReviewActor,
 } from './semanticReview.js';
-import { graphContext, repositoryGraphs } from './service.js';
+import { clearGraphCache, graphContext, repositoryGraphs } from './service.js';
 import { resolveProjectRevision } from '../source/git.js';
 import { getProjectConfig } from '../config/registry.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
@@ -887,6 +887,10 @@ export async function bootstrapSemanticPromotionBaseline(input: SemanticPromotio
     throw new Error(promoted.error ?? 'Semantic baseline bootstrap could not finalize accepted A');
   }
 
+  // Accepted A was durably rewritten for this exact revision. Drop the process
+  // copy so the transaction's read-back and subsequent Workbench/MCP reads
+  // cannot observe the pre-promotion canonical record.
+  clearGraphCache(input.project);
   const after = await repositoryGraphs(input.project);
   authority = await loadSemanticAuthority(input.project);
   const accepted = latestAcceptedMeanings(authority.ledger);
