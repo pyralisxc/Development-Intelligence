@@ -1941,7 +1941,12 @@ export async function interfaceProjection(input: {
 function querySubject(text: string, markers: RegExp[]): string {
   let value = text.trim();
   for (const marker of markers) value = value.replace(marker, ' ');
-  return value.replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/^[?!.,;]+|[?!.,;]+$/gu, '')
+    .trim();
 }
 
 function normalizedMention(value: string): string {
@@ -2053,7 +2058,7 @@ function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
     case 'trace':
       return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi];
     case 'evidence':
-      return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi];
+      return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the|exists?|existence|whether|and|also|it|this|that)\b/gi];
     case 'entity':
       return [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i];
     default:
