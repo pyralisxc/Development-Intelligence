@@ -731,10 +731,10 @@ export async function setSemanticPromotionEnrollment(input: SemanticPromotionEnr
     if (canonical.working.repositoryRevision !== defaultRevision.sha) {
       throw new Error('Enforced semantic promotion requires current canonical Main W');
     }
-    if (!acceptedMeanings.length) {
-      throw new Error('Enforced semantic promotion requires at least one explicitly accepted durable semantic meaning');
-    }
     const baseline = bootstrapSemanticCandidates(canonical.working, { limit: 1000 });
+    if (!acceptedMeanings.length && baseline.candidates.length > 0) {
+      throw new Error('Enforced semantic promotion requires explicitly accepted durable meaning when the current semantic census is non-empty');
+    }
     const unstable = acceptedMeanings
       .map(review => ({ review, evolution: evaluateSemanticEvolution(review, baseline.candidates, defaultRevision.sha) }))
       .filter(item => item.evolution.status !== 'preserved');
@@ -790,11 +790,13 @@ export async function bootstrapSemanticPromotionBaseline(input: SemanticPromotio
     throw new Error('Semantic baseline bootstrap digest changed; refresh the review surface before accepting authority');
   }
 
-  const candidateIds = [...new Set(input.candidateIds.map(value => value.trim()).filter(Boolean))].sort();
-  if (!candidateIds.length) throw new Error('Semantic baseline bootstrap requires at least one explicit candidate id');
-  if (candidateIds.length > 100) throw new Error('Semantic baseline bootstrap accepts at most 100 candidates');
-
   const bootstrap = bootstrapSemanticCandidates(canonical.working, { limit: 1000 });
+  const candidateIds = [...new Set(input.candidateIds.map(value => value.trim()).filter(Boolean))].sort();
+  if (!candidateIds.length && bootstrap.candidates.length > 0) {
+    throw new Error('Semantic baseline bootstrap requires explicit accepted candidates when the current semantic census is non-empty');
+  }
+  if (candidateIds.length > 1000) throw new Error('Semantic baseline bootstrap accepts at most 1000 candidates');
+
   const byId = new Map(bootstrap.candidates.map(candidate => [candidate.id, candidate]));
   const missing = candidateIds.filter(id => !byId.has(id));
   if (missing.length) throw new Error(`Semantic baseline candidate(s) are not present on current Main: ${missing.join(', ')}`);
