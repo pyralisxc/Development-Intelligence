@@ -14,7 +14,7 @@ import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.j
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import { bootstrapSemanticPromotionBaseline, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
 import type { TechnicalSourceCapability } from './types.js';
-import { currentVercelOidcToken, withVercelRequestContext } from './vercelRequestContext.js';
+import { currentVercelOidcToken, vercelOidcProjectIdentity, withVercelRequestContext } from './vercelRequestContext.js';
 import { applyVcrRetentionMaintenance } from './intelligence/vcrMaintenance.js';
 
 const MODERN_VERSION = '2026-07-28';
@@ -216,8 +216,9 @@ export function createDevelopmentIntelligenceServer() {
       }
       try {
         const token = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim() ?? '';
-        const projectId = process.env.VERCEL_PROJECT_ID?.trim() ?? '';
-        const teamId = process.env.VERCEL_TEAM_ID?.trim() ?? '';
+        const oidcIdentity = vercelOidcProjectIdentity(token);
+        const projectId = oidcIdentity?.projectId ?? process.env.VERCEL_PROJECT_ID?.trim() ?? '';
+        const teamId = oidcIdentity?.teamId ?? process.env.VERCEL_TEAM_ID?.trim() ?? '';
         const result = await applyVcrRetentionMaintenance({ token, projectId, teamId });
         const maintenance = result as any;
         console.info(JSON.stringify({
