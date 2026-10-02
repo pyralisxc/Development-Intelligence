@@ -1056,6 +1056,16 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.ok(orientation.keyEntities.some((item: any) => item.name === 'Panel'));
     assert.ok(orientation.keyEntities.every((item: any) => typeof item.id === 'string' && typeof item.reason === 'string'));
     assert.ok(orientation.boundaries.some((item: any) => item.external?.locator === 'src/helper.ts'), 'file orientation should expose the helper boundary');
+    assert.ok(Array.isArray(orientation.responsibilities) && orientation.responsibilities.length > 0);
+    assert.ok(orientation.responsibilities.every((item: any) => typeof item.statement === 'string' && Array.isArray(item.evidenceNodeIds)));
+    assert.ok(orientation.roleGroups.some((item: any) => Array.isArray(item.entities) && item.entities.length > 0));
+    const aggregatedDependencies = [...orientation.dependencies.outbound, ...orientation.dependencies.inbound];
+    assert.ok(aggregatedDependencies.length > 0, 'file orientation should aggregate resolved scope-boundary dependencies');
+    assert.ok(aggregatedDependencies.every((item: any) => Array.isArray(item.edgeIds) && item.edgeIds.length > 0 && Array.isArray(item.relationshipKinds)));
+    assert.equal(/^\d+ graph entities/u.test(orientation.summary), false, 'scoped orientation should lead with observed responsibility rather than topology counts');
+    assert.equal(orientation.policy.responsibilitySynthesis, 'observed-role-groups');
+    assert.equal(orientation.policy.dependencyAggregation, 'resolved-boundary-edges');
+    assert.equal(orientation.policy.summaryInfersProductIntent, false);
 
     const area = await callTool('orient_scope', {
       project: fixture.project,
@@ -1077,6 +1087,9 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.equal(natural.routing.tool, 'orient_scope');
     assert.equal(natural.result.scope.kind, 'file');
     assert.equal(natural.result.rankBy, 'relationship-diversity');
+    assert.equal(natural.answer, natural.result.summary);
+    assert.equal(/^\d+ graph entities/u.test(natural.answer), false);
+    assert.ok(Array.isArray(natural.result.responsibilities) && natural.result.responsibilities.length > 0);
 
     const missingScope = await callTool('investigate', {
       project: fixture.project,
