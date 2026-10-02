@@ -102,6 +102,7 @@ async function workerMain(input: WorkerInput): Promise<void> {
     fork: false,
     archived: false,
     disabled: false,
+    pushedAt: null,
   };
   const item = await withVercelRequestContext(headers, async () => await reconcileCanonicalProject(repository));
   parentPort?.postMessage({ ok: true, item } satisfies WorkerEnvelope);
