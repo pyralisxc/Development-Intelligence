@@ -696,6 +696,9 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'How do the polyglot portfolio, Gin, Amux, and CardForge benchmark scripts use the accuracy scoring contract, and which languages and exact pinned repositories do they cover?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'How are latency, external tool-call count, graph cost, candidate/unresolved relationship behavior, and evidence correctness measured across the benchmark suite?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Where are real checked-in accuracy cases or ground-truth corpora stored beyond cases.example.json?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Can this service run as a self-hosted server on arbitrary Linux, macOS, or Windows hardware without Vercel?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Which runtime capabilities are provider-neutral versus specifically Vercel-dependent?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Does this project include Docker or container packaging, standalone server startup, persistent storage abstraction, and environment-driven host and port configuration?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'How does Panel implementation persist accepted state?', lane: 'implementation-claim', proofMode: 'claim' },
     { question: 'Where is Panel implemented?', lane: 'code' },
     { question: 'What does Panel depend on?', lane: 'trace' },
@@ -733,6 +736,9 @@ test('meta-capability inventory questions bypass domain entity resolution', asyn
       'How do the polyglot portfolio, Gin, Amux, and CardForge benchmark scripts use the accuracy scoring contract, and which languages and exact pinned repositories do they cover?',
       'How are latency, external tool-call count, graph cost, candidate/unresolved relationship behavior, and evidence correctness measured across the benchmark suite?',
       'Where are real checked-in accuracy cases or ground-truth corpora stored beyond cases.example.json?',
+      'Can this service run as a self-hosted server on arbitrary Linux, macOS, or Windows hardware without Vercel?',
+      'Which runtime capabilities are provider-neutral versus specifically Vercel-dependent?',
+      'Does this project include Docker or container packaging, standalone server startup, persistent storage abstraction, and environment-driven host and port configuration?',
     ]) {
       const routed = await callTool('investigate', { project: fixture.project, question }) as any;
       assert.equal(routed.intent, 'implementation-explanation', question);
