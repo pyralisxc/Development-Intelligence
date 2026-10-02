@@ -12,7 +12,7 @@ import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
-import { parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
+import { bootstrapSemanticPromotionBaseline, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { currentVercelOidcToken, withVercelRequestContext } from './vercelRequestContext.js';
 import { applyVcrRetentionMaintenance } from './intelligence/vcrMaintenance.js';
@@ -386,6 +386,36 @@ export function createDevelopmentIntelligenceServer() {
         json(res, 200, result);
       } catch (error) {
         json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (requestUrl.pathname === '/workbench/semantics/bootstrap' && req.method === 'POST') {
+      if (!authorizeOwnerWrite(req, res)) return;
+      try {
+        const body = await readJson(req);
+        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
+        if (!Array.isArray(body.candidateIds)) throw Object.assign(new Error('candidateIds must be an array'), { status: 400 });
+        const candidateIds = [...new Set((body.candidateIds as unknown[])
+          .filter((value): value is string => typeof value === 'string')
+          .map(value => value.trim())
+          .filter(Boolean))];
+        if (!candidateIds.length) throw Object.assign(new Error('candidateIds must include at least one semantic candidate'), { status: 400 });
+        if (candidateIds.length > 100) throw Object.assign(new Error('candidateIds supports at most 100 semantic candidates'), { status: 400 });
+        if (typeof body.rationale !== 'string' || !body.rationale.trim()) throw Object.assign(new Error('rationale must be non-empty'), { status: 400 });
+        if (body.expectedDigest !== undefined && body.expectedDigest !== null && typeof body.expectedDigest !== 'string') {
+          throw Object.assign(new Error('expectedDigest must be a string or null'), { status: 400 });
+        }
+        const result = await bootstrapSemanticPromotionBaseline({
+          project: body.project,
+          candidateIds,
+          actor: { kind: 'human', id: 'human:owner' },
+          at: new Date().toISOString(),
+          rationale: body.rationale,
+          ...(body.expectedDigest === undefined ? {} : { expectedDigest: body.expectedDigest }),
+        });
+        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
+      } catch (error) {
+        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
