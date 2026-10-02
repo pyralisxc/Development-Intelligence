@@ -39,6 +39,7 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 | `DEVINT_GRAPH_CACHE_MAX_RECORDS` | Combined process-local retention budget across canonical graphs and runtime snapshots; defaults to 150,000 graph records |
 | `DEVINT_GRAPH_BUILD_CONCURRENCY` | Maximum unrelated cold graph builds allowed concurrently in one process; defaults to 1 |
 | `DEVINT_GRAPH_MAX_FILES` | Maximum eligible tracked files considered in one graph build |
+| analyzed source boundary | Git-tracked `node_modules` trees are excluded before fingerprinting, graph-capacity accounting, source search, and semantic analysis; dependency identity remains available through imports, manifests, and lockfiles |
 | `DEVINT_GRAPH_MAX_FILE_BYTES` | Maximum individual text file size analyzed |
 | `DEVINT_GRAPH_MAX_RUNTIME_BYTES` | Runtime response body cap |
 | `DEVINT_RUNTIME_TIMEOUT_MS` | Runtime GET timeout |
