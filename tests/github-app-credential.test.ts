@@ -148,8 +148,8 @@ test('GitHub App enumerates every readable repository for an authorized owner wi
       return Response.json({
         total_count: 3,
         repositories: [
-          { name: 'CardForge', full_name: 'pyralisxc/CardForge', default_branch: 'main', archived: false, disabled: false, private: false, fork: false, owner: { login: 'pyralisxc' } },
-          { name: 'Development-Intelligence', full_name: 'pyralisxc/Development-Intelligence', default_branch: 'main', archived: false, disabled: false, private: false, fork: false, owner: { login: 'pyralisxc' } },
+          { name: 'CardForge', full_name: 'pyralisxc/CardForge', default_branch: 'main', pushed_at: '2026-10-02T05:29:30Z', archived: false, disabled: false, private: false, fork: false, owner: { login: 'pyralisxc' } },
+          { name: 'Development-Intelligence', full_name: 'pyralisxc/Development-Intelligence', default_branch: 'main', pushed_at: null, archived: false, disabled: false, private: false, fork: false, owner: { login: 'pyralisxc' } },
           { name: 'other-owner-repo', full_name: 'someone/other-owner-repo', default_branch: 'main', archived: false, disabled: false, private: false, fork: false, owner: { login: 'someone' } },
         ],
       });
@@ -181,6 +181,8 @@ test('GitHub App enumerates every readable repository for an authorized owner wi
     const cached = await listGithubInstallationRepositories('pyralisxc');
     assert.deepEqual(cached.map(item => item.fullName), ['pyralisxc/CardForge', 'pyralisxc/Development-Intelligence']);
     const cardForge = repositories.find(item => item.fullName === 'pyralisxc/CardForge')!;
+    assert.equal(cardForge.pushedAt, '2026-10-02T05:29:30.000Z');
+    assert.equal(repositories.find(item => item.fullName === 'pyralisxc/Development-Intelligence')?.pushedAt, null);
     const inspected = await inspectGithubRepositoryPathAtDefaultBranch(cardForge, '.development-intelligence');
     assert.equal(inspected.revision, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     assert.deepEqual(inspected.entries.map(item => item.path), [
