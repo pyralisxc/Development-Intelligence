@@ -216,11 +216,18 @@ export function createDevelopmentIntelligenceServer() {
         return;
       }
       try {
-        const token = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim() ?? '';
-        const oidcIdentity = vercelOidcProjectIdentity(token);
+        const identityToken = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim() ?? '';
+        const oidcIdentity = vercelOidcProjectIdentity(identityToken);
         const projectId = oidcIdentity?.projectId ?? process.env.VERCEL_PROJECT_ID?.trim() ?? '';
         const teamId = oidcIdentity?.teamId ?? process.env.VERCEL_TEAM_ID?.trim() ?? '';
-        const result = await applyVcrRetentionMaintenance({ token, projectId, teamId });
+        const accessToken = process.env.DEVINT_VERCEL_VCR_TOKEN?.trim() ?? '';
+        if (!accessToken) {
+          throw Object.assign(new Error('VCR retention management access token is not configured'), { status: 503 });
+        }
+        if (identityToken && accessToken === identityToken) {
+          throw Object.assign(new Error('VCR retention management access token must not reuse the Vercel deployment OIDC identity token'), { status: 503 });
+        }
+        const result = await applyVcrRetentionMaintenance({ accessToken, projectId, teamId });
         const maintenance = result as any;
         console.info(JSON.stringify({
           event: 'vcr-retention-complete',
