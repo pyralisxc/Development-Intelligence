@@ -560,6 +560,86 @@ function orientationReason(metrics: ReturnType<typeof orientationMetric>, rankBy
   return String(metrics.crossFileReach) + ' neighboring file(s) and ' + String(metrics.crossAreaReach) + ' neighboring area(s) through resolved relationships.';
 }
 
+
+type OrientationRole =
+  | 'semantic'
+  | 'interface'
+  | 'implementation'
+  | 'effects'
+  | 'integration'
+  | 'representation'
+  | 'structural';
+
+function orientationRole(node: GraphNode): OrientationRole {
+  if (node.layer === 'semantic') return 'semantic';
+  if (node.layer === 'representation') return 'representation';
+  if (['route', 'api', 'ui-element', 'surface'].includes(node.kind)) return 'interface';
+  if (['function', 'method', 'constructor', 'class', 'interface'].includes(node.kind)) return 'implementation';
+  if (['state-binding', 'state-write', 'navigation-call', 'http-call', 'rpc-call', 'sql-reference'].includes(node.kind)) return 'effects';
+  if (['provider', 'mcp', 'mcp-tool'].includes(node.kind)) return 'integration';
+  return 'structural';
+}
+
+function orientationRoleStatement(role: OrientationRole, count: number, names: string[]): string {
+  const examples = semanticNameList(names, 3);
+  const suffix = examples ? `, including ${examples}` : '';
+  if (role === 'semantic') return `Represents ${count} evidence-linked semantic concept(s)${suffix}.`;
+  if (role === 'interface') return `Exposes ${count} route/API/UI interface entity or entities${suffix}.`;
+  if (role === 'implementation') return `Implements ${count} callable/type entity or entities${suffix}.`;
+  if (role === 'effects') return `Contains ${count} observed state/navigation/network/persistence effect entity or entities${suffix}.`;
+  if (role === 'integration') return `Connects ${count} provider/tool integration entity or entities${suffix}.`;
+  if (role === 'representation') return `Carries ${count} representation/layout/style observation(s)${suffix}.`;
+  return `Contains ${count} additional structural entity or entities${suffix}.`;
+}
+
+interface OrientationBoundarySummary {
+  edgeId: string;
+  direction: 'outbound' | 'inbound';
+  kind: string;
+  external: { id: string; name: string; kind: string; locator: string | null };
+}
+
+function orientationDependencies(
+  boundaries: OrientationBoundarySummary[],
+  direction: 'outbound' | 'inbound',
+  limit: number,
+): Array<{
+  external: OrientationBoundarySummary['external'];
+  relationshipKinds: string[];
+  edgeIds: string[];
+  relationshipCount: number;
+}> {
+  const grouped = new Map<string, {
+    external: OrientationBoundarySummary['external'];
+    kinds: Set<string>;
+    edgeIds: string[];
+  }>();
+  for (const boundary of boundaries) {
+    if (boundary.direction !== direction) continue;
+    const current = grouped.get(boundary.external.id) ?? {
+      external: boundary.external,
+      kinds: new Set<string>(),
+      edgeIds: [],
+    };
+    current.kinds.add(boundary.kind);
+    current.edgeIds.push(boundary.edgeId);
+    grouped.set(boundary.external.id, current);
+  }
+  return [...grouped.values()]
+    .map(item => ({
+      external: item.external,
+      relationshipKinds: [...item.kinds].sort(),
+      edgeIds: [...new Set(item.edgeIds)].sort(),
+      relationshipCount: item.edgeIds.length,
+    }))
+    .sort((a, b) =>
+      b.relationshipCount - a.relationshipCount
+      || b.relationshipKinds.length - a.relationshipKinds.length
+      || a.external.name.localeCompare(b.external.name)
+      || a.external.id.localeCompare(b.external.id))
+    .slice(0, Math.max(1, limit));
+}
+
 function semanticNameList(names: string[], limit: number): string {
   const unique = [...new Set(names.filter(Boolean))];
   const shown = unique.slice(0, limit);
@@ -1463,7 +1543,7 @@ export async function scopeOrientation(input: {
   const boundary = graph.edges
     .filter(edge => edge.status === 'resolved' && edge.from && edge.to && scopedSet.has(edge.from) !== scopedSet.has(edge.to))
     .slice(0, 200);
-  const boundarySummaries = boundary.map(edge => {
+  const boundarySummaries: OrientationBoundarySummary[] = boundary.map(edge => {
     const outbound = scopedSet.has(edge.from!);
     const externalId = outbound ? edge.to! : edge.from!;
     const external = byId.get(externalId);
@@ -1474,6 +1554,61 @@ export async function scopeOrientation(input: {
       external: { id: externalId, name: displayName(external, externalId), kind: external?.kind ?? 'unknown', locator: external?.locator ?? null },
     };
   });
+
+  const roleOrder: OrientationRole[] = ['semantic', 'interface', 'implementation', 'effects', 'integration', 'representation', 'structural'];
+  const roleGroups = roleOrder.flatMap(role => {
+    const members = nodes.filter(node => orientationRole(node) === role);
+    if (!members.length) return [];
+    const sorted = members
+      .map(node => ({ node, metrics: orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy) }))
+      .sort((a, b) =>
+        b.metrics.rankValue - a.metrics.rankValue
+        || b.metrics.relationshipDiversity - a.metrics.relationshipDiversity
+        || displayName(a.node).localeCompare(displayName(b.node)));
+    return [{
+      role,
+      count: members.length,
+      entities: sorted.slice(0, Math.min(limit, 8)).map(({ node, metrics }) => ({
+        id: node.id,
+        name: displayName(node),
+        kind: node.kind,
+        layer: node.layer ?? 'structural',
+        locator: node.locator,
+        metrics,
+      })),
+      evidenceNodeIds: members.map(node => node.id).sort().slice(0, 100),
+    }];
+  });
+  const dependencies = {
+    outbound: orientationDependencies(boundarySummaries, 'outbound', Math.min(limit, 12)),
+    inbound: orientationDependencies(boundarySummaries, 'inbound', Math.min(limit, 12)),
+  };
+  const responsibilities = roleGroups
+    .filter(group => group.role !== 'structural' || roleGroups.length === 1)
+    .slice(0, 6)
+    .map(group => ({
+      kind: group.role,
+      statement: orientationRoleStatement(group.role, group.count, group.entities.map(item => item.name)),
+      evidenceNodeIds: [...group.evidenceNodeIds],
+    }));
+  if (dependencies.outbound.length) {
+    const edgeIds = dependencies.outbound.flatMap(item => item.edgeIds);
+    responsibilities.push({
+      kind: 'outbound-dependencies' as any,
+      statement: `Depends outward on ${dependencies.outbound.length} observed external target(s) through ${new Set(dependencies.outbound.flatMap(item => item.relationshipKinds)).size} resolved relationship kind(s).`,
+      evidenceNodeIds: dependencies.outbound.map(item => item.external.id),
+      evidenceEdgeIds: [...new Set(edgeIds)].sort(),
+    } as any);
+  }
+  if (dependencies.inbound.length) {
+    const edgeIds = dependencies.inbound.flatMap(item => item.edgeIds);
+    responsibilities.push({
+      kind: 'inbound-dependents' as any,
+      statement: `Receives ${dependencies.inbound.length} observed external dependent/source target(s) through ${new Set(dependencies.inbound.flatMap(item => item.relationshipKinds)).size} resolved relationship kind(s).`,
+      evidenceNodeIds: dependencies.inbound.map(item => item.external.id),
+      evidenceEdgeIds: [...new Set(edgeIds)].sort(),
+    } as any);
+  }
 
   const nodeKinds: Record<string, number> = {};
   for (const node of nodes) nodeKinds[node.kind] = (nodeKinds[node.kind] ?? 0) + 1;
@@ -1506,8 +1641,13 @@ export async function scopeOrientation(input: {
     rankBy,
     summary: semanticUnderstanding
       ? String(semanticUnderstanding.summary)
-      : String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; key entities are ordered by ' + rankBy + '.',
+      : responsibilities.length
+        ? responsibilities.slice(0, 3).map(item => item.statement).join(' ')
+        : String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; no stronger bounded responsibility synthesis was available.',
     semanticUnderstanding,
+    responsibilities,
+    roleGroups,
+    dependencies,
     nodeKinds: Object.entries(nodeKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
     relationshipKinds: Object.entries(relationshipKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
     keyEntities,
@@ -1519,8 +1659,11 @@ export async function scopeOrientation(input: {
       subjectiveImportanceScore: false,
       rankFacet: rankBy,
       evidenceLinked: true,
+      responsibilitySynthesis: 'observed-role-groups',
+      dependencyAggregation: 'resolved-boundary-edges',
+      summaryInfersProductIntent: false,
       persisted: false,
-      note: 'Orientation ranks observed graph facets only. It does not assign architectural quality, severity, or product priority.',
+      note: 'Orientation ranks and synthesizes observed graph facets only. It does not assign architectural quality, severity, product priority, or product intent.',
     },
   };
 }
@@ -1941,7 +2084,12 @@ export async function interfaceProjection(input: {
 function querySubject(text: string, markers: RegExp[]): string {
   let value = text.trim();
   for (const marker of markers) value = value.replace(marker, ' ');
-  return value.replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/^[?!.,;]+|[?!.,;]+$/gu, '')
+    .trim();
 }
 
 function normalizedMention(value: string): string {
@@ -2053,7 +2201,7 @@ function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
     case 'trace':
       return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi];
     case 'evidence':
-      return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the)\b/gi];
+      return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the|exists?|existence|whether|and|also|it|this|that)\b/gi];
     case 'entity':
       return [/^\s*(what is|what's|show me|show|find|where is|inspect|tell me about)\s+/i];
     default:
@@ -2427,7 +2575,7 @@ export async function queryWorkbench(input: {
     }
     const subject = resolved.node?.id ?? resolved.query;
     if (subject) {
-      const direction = /used by|callers?|called by|consumers?|\bwhich\b.*\buses?\b|\bwhat\b.*\b(?:calls?|constructs?)\b/.test(lower)
+      const direction = /used by|callers?|called by|consumers?|^\s*what\s+depends?\s+on\b|^\s*which\b[^?]*\bdepends?\s+on\b|\bwhich\b.*\buses?\b|\bwhat\b.*\b(?:calls?|constructs?)\b/.test(lower)
         ? 'inbound'
         : /depend(?:s)? on|uses/.test(lower) ? 'outbound' : 'both';
       const result = await traceGraph({ project: input.project, ref: input.ref, graphId: input.graphId, node: subject, direction, depth: 2, statuses: ['resolved'], limit: 250 }) as any;
