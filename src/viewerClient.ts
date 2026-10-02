@@ -383,10 +383,12 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean,
   const lineageDisabled = lineageWritable ? '' : ' disabled';
   const actor = review?.acceptance?.actor ?? review?.verification?.actor;
   const authorityLine = actor ? `${actor.kind ?? 'reviewer'} · ${actor.id ?? 'unknown'}` : 'No accepted authority recorded';
+  const reviewAssessment = candidate.reviewAssessment ?? null;
+  const assessmentClass = reviewAssessment?.factuality === 'supported' ? 'status-good' : 'status-warn';
   return `<article class="card semantic-card" data-semantic-candidate="${esc(candidate.id)}">
     <div class="semantic-card-head">
       <div>
-        <div><span class="badge">${esc(proposal.kind ?? candidate.proposal?.kind ?? 'candidate')}</span> <span class="badge ${semanticStateClass(review)}">${esc(semanticStateLabel(review))}</span></div>
+        <div><span class="badge">${esc(proposal.kind ?? candidate.proposal?.kind ?? 'candidate')}</span> <span class="badge ${semanticStateClass(review)}">${esc(semanticStateLabel(review))}</span>${reviewAssessment ? ` <span class="badge ${assessmentClass}">${esc(reviewAssessment.classification ?? 'candidate')}</span>` : ''}</div>
         <h2>${esc(proposal.name ?? candidate.proposal?.name ?? candidate.id)}</h2>
         <p>${esc(proposal.description ?? candidate.proposal?.description ?? '')}</p>
       </div>
@@ -398,6 +400,7 @@ function semanticCandidateCard(candidate: any, index: number, writable: boolean,
       <span>${esc(candidate.provenance?.edgeIds?.length ?? 0)} relationships</span>
       <span>${esc(evidenceIds.length)} evidence records</span>
     </div>
+    ${reviewAssessment?.explanation ? `<p><strong>What this means:</strong> ${esc(reviewAssessment.explanation)}</p>` : ''}
     <p class="muted">Revision ${esc(candidate.provenance?.revision ?? 'unknown')} · ${esc(authorityLine)}. Acceptance and verification are independent.</p>
     ${continuity.state === 'ambiguous' ? `<p class="status-warn">Identity continuity is ambiguous. Review is read-only until explicit split/merge/replacement lineage resolves it.</p>` : continuity.state === 'inherited' ? `<p class="status-good">Stable semantic identity inherited from ${esc(continuity.sourceRevision ?? 'an earlier accepted revision')}.</p>` : ''}
     ${continuity.state === 'ambiguous' ? `<details class="semantic-lineage-editor" open>
@@ -511,6 +514,11 @@ async function renderSemantics(epoch: number): Promise<void> {
   const promotionItems = Array.isArray(promotionAudit?.items) ? promotionAudit.items : [];
   const enrollmentState = authority.enrollmentState ?? promotionAudit?.enrollmentState ?? 'not-enrolled';
   const gateStatus = promotionAudit?.gateStatus ?? 'non-blocking';
+  const gateExplanation = data.gateExplanation ?? {};
+  const recommendedBaselineCandidateIds = Array.isArray(gateExplanation.recommendedBaselineCandidateIds)
+    ? gateExplanation.recommendedBaselineCandidateIds
+    : [];
+  const recommendedBaselineCandidates = candidates.filter((candidate: any) => recommendedBaselineCandidateIds.includes(candidate.id));
   const blockingPendingCount = Number(promotionAudit?.blockingPendingCount ?? 0);
   const writable = authority.state !== 'not-configured' && authority.state !== 'invalid';
   const accepted = candidates.filter((candidate: any) => candidate.review?.accepted).length;
@@ -531,6 +539,14 @@ async function renderSemantics(epoch: number): Promise<void> {
         <p>${esc(storageMessage)}</p>
         <p><span class="badge">${esc(enrollmentState)}</span> <span class="badge ${gateStatus === 'semantic-review-required' ? 'status-warn' : 'status-good'}">${esc(gateStatus)}</span> ${blockingPendingCount ? `<span class="badge status-warn">${esc(blockingPendingCount)} blocking</span>` : '<span class="badge status-good">non-blocking</span>'}</p>
         <p class="muted">This workspace never silently promotes a proposal. Acceptance records human authority; verification separately records evidence support. Current revision: ${esc(data.revision ?? 'unknown')}.</p>
+        ${gateExplanation.behavior ? `<div class="semantic-proof"><span>Accepted A · ${esc(gateExplanation.acceptedGraphRevision ?? 'none')}</span><span>Working W · ${esc(gateExplanation.currentRevision ?? data.revision ?? 'unknown')}</span><span>${esc(gateExplanation.coreCandidateCount ?? 0)} core / ${esc(gateExplanation.supportingCandidateCount ?? 0)} supporting</span></div><p><strong>In plain language:</strong> ${esc(gateExplanation.behavior)} ${esc(gateExplanation.note ?? '')}</p>` : ''}
+        ${writable && enrollmentState !== 'enforced' && recommendedBaselineCandidates.length ? `<div class="semantic-bootstrap" style="margin-top:12px">
+          <h3>First semantic baseline</h3>
+          <p>Recommended durable core meaning: <strong>${recommendedBaselineCandidates.map((candidate: any) => esc(proposalName(candidate))).join(', ')}</strong>. Supporting candidates remain visible context and are not auto-accepted.</p>
+          <label>Bootstrap rationale<textarea id="semantic-bootstrap-rationale" class="semantic-input" rows="2">Establish the exact current Main revision as the first enforced semantic baseline using the evidence-supported core meaning while keeping supporting implementation candidates non-authoritative.</textarea></label>
+          <button type="button" data-semantic-bootstrap class="primary">Bootstrap semantic gate on current Main</button>
+          <p class="muted">Owner-only. This accepts only the explicitly listed core meaning(s), enrolls enforcement against the full current candidate census, and finalizes accepted A to this exact already-promoted Main revision.</p>
+        </div>` : ''}
         ${writable ? `<div class="semantic-form">
           <label>Release enforcement<select id="semantic-enrollment-state" class="semantic-input">
             ${(['not-enrolled','advisory','enforced'] as const).map(state => `<option value="${state}"${enrollmentState === state ? ' selected' : ''}>${state}</option>`).join('')}
@@ -566,6 +582,32 @@ async function renderSemantics(epoch: number): Promise<void> {
     <div class="semantic-grid" style="margin-top:13px">
       ${candidates.map((candidate: any, index: number) => semanticCandidateCard(candidate, index, writable, candidates)).join('') || empty('No semantic candidates', 'This revision did not produce evidence-qualified semantic candidates.')}
     </div>`;
+
+  const runBootstrap = async () => {
+    if (!recommendedBaselineCandidateIds.length) return;
+    const rationale = (document.getElementById('semantic-bootstrap-rationale') as HTMLTextAreaElement | null)?.value.trim() ?? '';
+    if (!rationale) {
+      semanticFlash = 'Semantic baseline bootstrap requires an explicit rationale.';
+      await renderSemantics(epoch);
+      return;
+    }
+    const button = content.querySelector<HTMLButtonElement>('[data-semantic-bootstrap]');
+    if (button) button.disabled = true;
+    try {
+      const result = await postJson('/workbench/semantics/bootstrap', {
+        candidateIds: recommendedBaselineCandidateIds,
+        rationale,
+        expectedDigest: promotionAudit?.digest ?? null,
+      });
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Semantic baseline established at ${result.acceptedGraphRevision ?? result.revision ?? 'current Main'} · gate ${result.enrollmentState ?? 'enforced'} / ${result.gateStatus ?? 'ready'}.`;
+      await renderSemantics(epoch);
+    } catch (error) {
+      if (!sectionIsCurrent(epoch, 'semantics')) return;
+      semanticFlash = `Semantic baseline bootstrap failed: ${error instanceof Error ? error.message : String(error)}`;
+      await renderSemantics(epoch);
+    }
+  };
 
   const runEnrollment = async () => {
     const select = document.getElementById('semantic-enrollment-state') as HTMLSelectElement | null;
@@ -753,6 +795,9 @@ async function renderSemantics(epoch: number): Promise<void> {
       await renderSemantics(epoch);
     }
   };
+
+  const bootstrapButton = content.querySelector<HTMLButtonElement>('[data-semantic-bootstrap]');
+  if (bootstrapButton) bootstrapButton.addEventListener('click', () => void runBootstrap());
 
   const enrollmentButton = content.querySelector<HTMLButtonElement>('[data-semantic-enrollment]');
   if (enrollmentButton) enrollmentButton.addEventListener('click', () => void runEnrollment());

@@ -2,6 +2,7 @@ import { bootstrapSemanticCandidates, type SemanticCandidate, type SemanticCandi
 import {
   latestAcceptedMeanings,
   loadSemanticAuthority,
+  promoteCanonicalAcceptedGraph,
   persistSemanticChangeVerification,
   persistSemanticPromotionEnrollment,
   persistSemanticReview,
@@ -31,6 +32,8 @@ import {
 } from './semanticReview.js';
 import { graphContext, repositoryGraphs } from './service.js';
 import { resolveProjectRevision } from '../source/git.js';
+import { getProjectConfig } from '../config/registry.js';
+import { auditSemanticCandidates } from './semanticAudit.js';
 import { buildSemanticPromotionGate, type SemanticPromotionEnrollmentState } from './semanticPromotion.js';
 
 export type SemanticReviewCommand =
@@ -99,6 +102,16 @@ export interface SemanticPromotionEnrollmentInput {
   rationale?: string | null;
   expectedEtag?: string | null;
 }
+
+export interface SemanticPromotionBootstrapInput {
+  project: string;
+  candidateIds: string[];
+  actor: SemanticReviewActor;
+  at: string;
+  rationale: string;
+  expectedDigest?: string | null;
+}
+
 
 export interface ReviewSemanticMeaningInput extends SemanticReviewSurfaceInput {
   candidateId: string;
@@ -506,6 +519,26 @@ export function semanticLineageTransaction(
   };
 }
 
+function semanticReviewAssessment(candidate: SemanticCandidate, auditItem: any) {
+  const factuality = auditItem?.factuality?.status ?? 'unknown';
+  const classification = auditItem?.coreness?.classification ?? 'supporting-candidate';
+  const supported = factuality === 'supported';
+  const recommendedForBaseline = supported && classification === 'core-candidate';
+  const explanation = recommendedForBaseline
+    ? `“${candidate.proposal.name}” is a core meaning candidate backed by multiple independent evidence families across the repository. Accepting it records the durable concept; it does not freeze its implementation.`
+    : supported
+      ? `“${candidate.proposal.name}” is source-supported supporting context. DI can keep using it as observed/derived context without making it durable accepted meaning unless the owner explicitly chooses to.`
+      : `“${candidate.proposal.name}” needs more evidence before it should become durable accepted meaning.`;
+  return {
+    factuality,
+    classification,
+    supported,
+    recommendedForBaseline,
+    explanation,
+    reasons: [...(auditItem?.coreness?.reasons ?? []), ...(auditItem?.factuality?.reasons ?? [])],
+  };
+}
+
 function authoritySummary(authority: SemanticAuthorityLoad) {
   return {
     state: authority.state,
@@ -531,11 +564,14 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
   });
   const bootstrap = bootstrapSemanticCandidates(graph, { limit });
   const fullBootstrap = limit === 1000 ? bootstrap : bootstrapSemanticCandidates(graph, { limit: 1000 });
+  const candidateAudit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
+  const auditByCandidate = new Map(candidateAudit.items.map(item => [item.candidateId, item]));
   const authority = await loadSemanticAuthority(input.project);
   const reviews = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision);
   const reviewsByCandidate = new Map(reviews.map(review => [review.candidateId, review]));
   const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
   const defaultRevision = await resolveProjectRevision(input.project);
+  const canonical = defaultRevision.sha === graph.repositoryRevision ? await repositoryGraphs(input.project) : null;
   const enrollmentState = semanticPromotionEnrollmentState(authority.ledger);
   const baselineRevision = authority.ledger?.enrollment?.baselineRevision ?? null;
   const baselineCandidateIds = authority.ledger?.enrollment?.baselineCandidateIds ?? [];
@@ -579,9 +615,30 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       ...candidate,
       review: reviewsByCandidate.get(candidate.id) ?? null,
       continuity: semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings),
+      reviewAssessment: semanticReviewAssessment(candidate, auditByCandidate.get(candidate.id)),
       aiProposalPacket: semanticAiProposalPacket(candidate),
     })),
     capacity: bootstrap.capacity,
+    gateExplanation: {
+      currentRevision: graph.repositoryRevision,
+      acceptedGraphRevision: canonical?.accepted?.repositoryRevision ?? null,
+      acceptedGraphCurrent: canonical?.acceptedCurrent ?? null,
+      enrollmentState,
+      behavior: enrollmentState === 'enforced'
+        ? 'Semantic release enforcement is active. Only exact Main-to-Preview meaning deltas require approval or evidence verification.'
+        : enrollmentState === 'advisory'
+          ? 'Semantic review is advisory. DI reports meaning deltas, but they cannot block Main until the owner establishes and enforces a baseline.'
+          : 'Semantic review is observing candidates but is not enrolled. Main can move because no owner-established semantic baseline is enforced yet.',
+      supportedCandidateCount: candidateAudit.items.filter(item => item.factuality.status === 'supported').length,
+      coreCandidateCount: candidateAudit.items.filter(item => item.factuality.status === 'supported' && item.coreness.classification === 'core-candidate').length,
+      supportingCandidateCount: candidateAudit.items.filter(item => item.factuality.status === 'supported' && item.coreness.classification === 'supporting-candidate').length,
+      recommendedBaselineCandidateIds: bootstrap.candidates
+        .filter(candidate => semanticReviewAssessment(candidate, auditByCandidate.get(candidate.id)).recommendedForBaseline)
+        .map(candidate => candidate.id),
+      note: canonical?.acceptedCurrent
+        ? 'Accepted semantic A and current working W already point at the same revision.'
+        : 'Current working W is newer than accepted semantic A. First-time bootstrap can accept explicit current meanings, enroll enforcement, and finalize A only on the exact current Main revision.',
+    },
     promotionAudit,
     promotionAuditBasis: {
       currentDefaultRevision: defaultRevision.sha,
@@ -616,6 +673,9 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       enforcedRequiresAcceptedBaseline: true,
       enforcedDoesNotRequireLegacyCheckpoint: true,
       enforcedRequiresAcceptedMeaningsPreservedOnCurrentMain: true,
+      ownerBootstrapRequiresAuthenticatedSession: true,
+      bootstrapDefaultsToSupportedCoreMeanings: true,
+      bootstrapFinalizesOnlyExactCurrentMain: true,
       acceptedGraphAffected: false,
     },
   };
@@ -709,6 +769,145 @@ export async function setSemanticPromotionEnrollment(input: SemanticPromotionEnr
     currentDefaultRevision: defaultRevision.sha,
     acceptedMeaningCount: acceptedMeanings.length,
     baselineCandidateCount: written.ledger?.enrollment?.baselineCandidateIds.length ?? 0,
+  };
+}
+
+export async function bootstrapSemanticPromotionBaseline(input: SemanticPromotionBootstrapInput) {
+  const actor = normalizeSemanticReviewActor(input.actor);
+  if (actor.kind !== 'human') throw new Error('Semantic baseline bootstrap requires an explicit human actor');
+  const at = normalizeSemanticReviewTimestamp(input.at);
+  const rationale = normalizeSemanticReviewRationale(input.rationale);
+  if (!rationale) throw new Error('Semantic baseline bootstrap requires an explicit rationale');
+
+  const defaultRevision = await resolveProjectRevision(input.project);
+  const canonical = await repositoryGraphs(input.project);
+  if (canonical.working.repositoryRevision !== defaultRevision.sha) {
+    throw new Error('Semantic baseline bootstrap requires current canonical Main W');
+  }
+
+  const initialSurface = await semanticReviewSurface({ project: input.project, limit: 1000 }) as any;
+  if (input.expectedDigest && initialSurface.promotionAudit?.digest !== input.expectedDigest) {
+    throw new Error('Semantic baseline bootstrap digest changed; refresh the review surface before accepting authority');
+  }
+
+  const candidateIds = [...new Set(input.candidateIds.map(value => value.trim()).filter(Boolean))].sort();
+  if (!candidateIds.length) throw new Error('Semantic baseline bootstrap requires at least one explicit candidate id');
+  if (candidateIds.length > 100) throw new Error('Semantic baseline bootstrap accepts at most 100 candidates');
+
+  const bootstrap = bootstrapSemanticCandidates(canonical.working, { limit: 1000 });
+  const byId = new Map(bootstrap.candidates.map(candidate => [candidate.id, candidate]));
+  const missing = candidateIds.filter(id => !byId.has(id));
+  if (missing.length) throw new Error(`Semantic baseline candidate(s) are not present on current Main: ${missing.join(', ')}`);
+
+  const audit = auditSemanticCandidates(canonical.working, bootstrap, { limit: bootstrap.candidates.length });
+  const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
+  const unsupported = candidateIds.filter(id => auditById.get(id)?.factuality.status !== 'supported');
+  if (unsupported.length) {
+    throw new Error(`Semantic baseline candidate(s) are not factually supported: ${unsupported.join(', ')}`);
+  }
+
+  let authority = await loadSemanticAuthority(input.project);
+  if (authority.state === 'not-configured') {
+    return { state: 'not-configured' as const, project: input.project };
+  }
+  if (authority.state === 'invalid') throw new Error(authority.error ?? 'Semantic authority ledger is invalid');
+
+  const existing = new Map(
+    semanticReviewsAtRevision(authority.ledger, defaultRevision.sha).map(review => [review.candidateId, review]),
+  );
+  const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, defaultRevision.sha);
+  const reviews = candidateIds.map(candidateId => {
+    const candidate = byId.get(candidateId)!;
+    const continuity = semanticReviewContinuity(candidate, bootstrap.candidates, acceptedMeanings);
+    if (continuity.state === 'ambiguous') {
+      throw new Error(`Semantic baseline candidate ${candidate.id} has ambiguous accepted-meaning continuity`);
+    }
+    const current = existing.get(candidate.id) ?? initialSemanticReview(candidate, bootstrap.candidates, acceptedMeanings);
+    return current.accepted
+      ? current
+      : applySemanticReviewAction(current, {
+          kind: 'accept',
+          actor,
+          at,
+          rationale,
+        });
+  });
+
+  const changedReviews = reviews.filter(review => !existing.get(review.candidateId)?.accepted);
+  let expectedEtag = authority.etag;
+  if (changedReviews.length) {
+    const written = await persistSemanticReviews(input.project, changedReviews, expectedEtag);
+    if (written.state !== 'stored') {
+      return {
+        state: written.state,
+        project: input.project,
+        etag: written.etag,
+        acceptedCandidateIds: candidateIds,
+      };
+    }
+    expectedEtag = written.etag;
+  }
+
+  const enrollment = await setSemanticPromotionEnrollment({
+    project: input.project,
+    state: 'enforced',
+    actor,
+    at,
+    rationale,
+    expectedEtag,
+  });
+  if (enrollment.state !== 'stored') {
+    return {
+      state: enrollment.state,
+      project: input.project,
+      etag: enrollment.etag,
+      acceptedCandidateIds: candidateIds,
+    };
+  }
+
+  const gate = await semanticPromotionGateSurface({ project: input.project });
+  if (
+    gate.enrollmentState !== 'enforced'
+    || gate.gateStatus !== 'ready'
+    || !gate.readyForMainSemanticPromotion
+    || gate.currentDefaultRevision !== defaultRevision.sha
+    || gate.previewRevision !== defaultRevision.sha
+  ) {
+    throw new Error('Semantic baseline bootstrap did not produce an enforced ready gate on exact current Main');
+  }
+
+  const config = await getProjectConfig(input.project);
+  const promoted = await promoteCanonicalAcceptedGraph({
+    project: input.project,
+    repository: config.repository,
+    revision: defaultRevision.sha,
+    gate: gate as any,
+  });
+  if (promoted.state !== 'stored') {
+    throw new Error(promoted.error ?? 'Semantic baseline bootstrap could not finalize accepted A');
+  }
+
+  const after = await repositoryGraphs(input.project);
+  authority = await loadSemanticAuthority(input.project);
+  const accepted = latestAcceptedMeanings(authority.ledger);
+  return {
+    state: 'stored' as const,
+    project: input.project,
+    revision: defaultRevision.sha,
+    enrollmentState: semanticPromotionEnrollmentState(authority.ledger),
+    gateStatus: gate.gateStatus,
+    gateDigest: gate.digest,
+    acceptedCandidateIds: candidateIds,
+    acceptedMeanings: accepted.map(review => ({
+      meaningId: review.meaningId,
+      candidateId: review.candidateId,
+      name: review.proposal.name,
+      kind: review.proposal.kind,
+      scope: review.scope,
+    })),
+    acceptedGraphRevision: after.accepted?.repositoryRevision ?? null,
+    acceptedGraphCurrent: after.acceptedCurrent,
+    currentness: after.currentness,
   };
 }
 

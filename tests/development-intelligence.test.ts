@@ -18,7 +18,7 @@ import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
 import { sourceFingerprint } from '../src/intelligence/repository.js';
 import { loadSemanticAuthority, promoteCanonicalAcceptedGraph } from '../src/intelligence/semanticAuthorityStore.js';
-import { reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from '../src/intelligence/semanticWorkflow.js';
+import { bootstrapSemanticPromotionBaseline, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from '../src/intelligence/semanticWorkflow.js';
 import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from '../src/intelligence/interfaceRuntimeObservation.js';
 
 async function commit(repo: string, message: string): Promise<string> {
@@ -352,6 +352,52 @@ export function helper() { return 'changed implementation'; }
       'inbound impact should reach a caller in panel.tsx',
     );
   } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('owner semantic bootstrap accepts explicit current meaning, enforces the gate, and finalizes exact Main A', async () => {
+  const fixture = await makeFixture();
+  const previousCanonicalDir = process.env.DEVINT_CANONICAL_GRAPH_DIR;
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(fixture.root, 'semantic-bootstrap-canonical');
+  try {
+    await fs.rm(path.join(fixture.source, '.development-intelligence'), { recursive: true, force: true });
+    const revision = await commit(fixture.source, 'bootstrap semantic gate from current main');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+
+    const before = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    const candidate = before.candidates.find((item: any) => item.reviewAssessment?.factuality === 'supported') ?? before.candidates[0];
+    assert.ok(candidate);
+    assert.equal(before.authority.enrollmentState, 'not-enrolled');
+
+    const result = await bootstrapSemanticPromotionBaseline({
+      project: fixture.project,
+      candidateIds: [candidate.id],
+      actor: { kind: 'human', id: 'human:test-owner' },
+      at: '2026-10-01T14:55:00.000Z',
+      rationale: 'Establish exact current Main as the first enforced semantic baseline.',
+      expectedDigest: before.promotionAudit.digest,
+    }) as any;
+
+    assert.equal(result.state, 'stored');
+    assert.equal(result.revision, revision);
+    assert.equal(result.enrollmentState, 'enforced');
+    assert.equal(result.gateStatus, 'ready');
+    assert.equal(result.acceptedGraphRevision, revision);
+    assert.equal(result.acceptedGraphCurrent, true);
+    assert.ok(result.acceptedMeanings.some((meaning: any) => meaning.candidateId === candidate.id));
+
+    const after = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    assert.equal(after.authority.enrollmentState, 'enforced');
+    assert.equal(after.gateExplanation.acceptedGraphRevision, revision);
+    assert.equal(after.gateExplanation.acceptedGraphCurrent, true);
+    assert.equal(after.promotionAudit.gateStatus, 'ready');
+    assert.equal(after.promotionAudit.blockingPendingCount, 0);
+  } finally {
+    if (previousCanonicalDir === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    else process.env.DEVINT_CANONICAL_GRAPH_DIR = previousCanonicalDir;
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
@@ -1504,6 +1550,9 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.match(viewerJavaScript, /data-semantic-change-ref/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/change-verify/);
     assert.match(viewerJavaScript, /\/workbench\/semantics\/enrollment/);
+    assert.match(viewerJavaScript, /\/workbench\/semantics\/bootstrap/);
+    assert.match(viewerJavaScript, /Bootstrap semantic gate on current Main/);
+    assert.match(viewerJavaScript, /What this means:/);
     assert.match(viewerJavaScript, /Update semantic release policy/);
     assert.match(viewerJavaScript, /Verify this SEM change/);
     assert.match(viewerJavaScript, /stable SEM ID/);
@@ -1528,6 +1577,12 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(semanticsBody.policy.promotionGateVerificationCanBeDelegated, true);
     assert.equal(semanticsBody.policy.promotionEnrollmentExplicit, true);
     assert.equal(semanticsBody.policy.nonEnrolledAndAdvisoryNeverBlockMain, true);
+    assert.equal(semanticsBody.policy.ownerBootstrapRequiresAuthenticatedSession, true);
+    assert.equal(semanticsBody.policy.bootstrapDefaultsToSupportedCoreMeanings, true);
+    assert.equal(semanticsBody.policy.bootstrapFinalizesOnlyExactCurrentMain, true);
+    assert.equal(typeof semanticsBody.gateExplanation.behavior, 'string');
+    assert.ok(Array.isArray(semanticsBody.gateExplanation.recommendedBaselineCandidateIds));
+    assert.ok(semanticsBody.candidates.every((candidate: any) => candidate.reviewAssessment?.factuality));
     assert.equal(semanticsBody.authority.enrollmentState, 'not-enrolled');
     assert.ok(semanticsBody.promotionAudit);
     assert.equal(semanticsBody.promotionAudit.enrollmentState, 'not-enrolled');
