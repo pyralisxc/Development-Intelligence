@@ -66,6 +66,13 @@ $keyHash = (Get-FileHash -LiteralPath $keyPath).Hash
 [IO.File]::WriteAllText((Join-Path $data 'config\service.json'), ($config | ConvertTo-Json -Depth 10))
 [IO.File]::WriteAllText((Join-Path $data 'test-data\retained-authority-fixture.json'), '{"fixtureOnly":true,"acceptedRevision":"retained"}')
 $configHash = (Get-FileHash (Join-Path $data 'config\service.json')).Hash
+$aclReceipt = @{}
+foreach ($target in @{dataRoot=$data;configDirectory=(Join-Path $data 'config');configFile=(Join-Path $data 'config\service.json');keyFile=$keyPath}.GetEnumerator()) {
+    $acl = Get-Acl -LiteralPath $target.Value
+    $aclReceipt[$target.Key] = @{owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;protected=$acl.AreAccessRulesProtected;rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object {@{sid=$_.IdentityReference.Value;rights=[long]$_.FileSystemRights;type=[string]$_.AccessControlType}})}
+}
+# Nonsecret native ACL evidence only; never serialize the configuration/key.
+$aclReceipt | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $PackageRoot 'credential-acl-receipt.json')
 $health = Manage 'Start'
 Assert ($health.descriptor.engineSha -eq $health.engineSha) 'Exact-source descriptor identity missing'
 Assert ($health.capabilities.repositoryAuthentication.configuration -eq 'locally-validated' -and $health.capabilities.repositoryAuthentication.providerAuthentication -eq 'not-probed') 'Restricted service did not validate protected key, or falsely claimed provider access'

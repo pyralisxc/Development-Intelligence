@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL,fileURLToPath } from 'node:url';
 import { assessCompatibility,observeHost,probeRemoteMetadata,validateConfiguration,validateDescriptor } from './compatibility.mjs';
 import { regularAncestors,verifyPayload } from './payload.mjs';
-import { loadManagedGithubApp } from './managed-credentials.mjs';
+import { loadManagedGithubApp,ManagedCredentialValidationError } from './managed-credentials.mjs';
 
 export async function runPreflight(root,descriptor,config,{installed=false,configDirectory}={}) {
   validateDescriptor(descriptor);
@@ -37,8 +37,8 @@ async function main() {
     const config=JSON.parse(await fs.readFile(configPath,'utf8'));
     const report=await runPreflight(root,descriptor,config,{installed:!descriptorPath,configDirectory:path.dirname(configPath)});
     process.stdout.write(JSON.stringify(report)+'\n'); process.exitCode=report.canActivate?0:2;
-  } catch {
-    process.stdout.write(JSON.stringify({formatVersion:1,canActivate:false,blocked:['invalid-preflight-input-or-integrity'],authorityWrites:false})+'\n'); process.exitCode=2;
+  } catch(error) {
+    process.stdout.write(JSON.stringify({formatVersion:1,canActivate:false,blocked:[error instanceof ManagedCredentialValidationError?error.code:'invalid-preflight-input-or-integrity'],authorityWrites:false})+'\n'); process.exitCode=2;
   }
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) await main();

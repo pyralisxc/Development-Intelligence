@@ -22,6 +22,13 @@ test('credential ACL policy rejects unrelated identities, service writes, untrus
   for(const acl of [{...safeAcl(),owner:'S-1-5-21-1'},{...safeAcl(),protected:false},{...safeAcl(),rules:[...safeAcl().rules,{sid:'S-1-1-0',type:'Allow',rights:1}]},{...safeAcl(),rules:[...safeAcl().rules,{sid:'S-1-5-19',type:'Allow',rights:1}]},{...safeAcl(),rules:[...safeAcl().rules,{sid:serviceSid,type:'Allow',rights:2}]},{...safeAcl(),rules:safeAcl().rules.filter(rule=>rule.sid!==serviceSid)}]) assert.throws(()=>validateSecretAcl(acl,{directory:true}));
 });
 
+test('native signed GRGX maps to file read/execute, never to a generic negative-mask exemption',()=>{
+  const acl=rights=>({...safeAcl(),rules:safeAcl().rules.map(rule=>rule.sid===serviceSid?{...rule,rights}:rule)});
+  assert.doesNotThrow(()=>validateSecretAcl(acl(-1610612736),{directory:true}));
+  assert.doesNotThrow(()=>validateSecretAcl(acl(0x1200a9),{directory:true}));
+  for(const rights of [0x20000000,0x40000000,0x10000000,-1073741824,-1,0xa0000002,0x100000001]) assert.throws(()=>validateSecretAcl(acl(rights),{directory:true}));
+});
+
 test('protected loader returns native memory key and local-only declaration, refuses bad files and links without disclosing material',async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'devint-fake-key-'));
   const directory=path.join(root,'config');await fs.mkdir(directory);
