@@ -9,9 +9,29 @@ $second = Get-ChildItem (Join-Path $PackageRoot '2.9.238') -Filter '*.msi' | Sel
 $unhealthy = Get-ChildItem (Join-Path $PackageRoot '2.9.239') -Filter '*.msi' | Select-Object -First 1
 $incompatible = Get-ChildItem (Join-Path $PackageRoot '2.9.240') -Filter '*.msi' | Select-Object -First 1
 function Assert($condition, [string]$message) { if (!$condition) { throw $message } }
+function Phase([ValidatePattern('^[a-z][a-z0-9-]{0,63}$')][string]$Label) {
+    if ($phaseEvents.Count -ge 64) { throw 'Fixture phase receipt bound exceeded' }
+    $phaseEvents.Add(@{phase=$Label;utc=[DateTime]::UtcNow.ToString('o');elapsedMs=$phaseClock.ElapsedMilliseconds})
+    [IO.File]::WriteAllText((Join-Path $PackageRoot 'lifecycle-phases.json'), (@{formatVersion=1;engineSha=$fixtureEngineSha;productionAccess=$false;phases=$phaseEvents.ToArray()} | ConvertTo-Json -Depth 5))
+    Write-Host ('DI_LIFECYCLE_PHASE ' + $Label)
+}
+$phaseClock = [Diagnostics.Stopwatch]::StartNew()
+$phaseEvents = [Collections.Generic.List[object]]::new()
+$fixtureEngineSha = (& git rev-parse HEAD).Trim()
+Assert ($fixtureEngineSha -match '^[a-f0-9]{40}$') 'Exact fixture engine identity required'
+function Msi-Exit([string[]]$Arguments) {
+    $p = Start-Process msiexec.exe -ArgumentList $Arguments -WindowStyle Hidden -PassThru
+    try {
+        if (!$p.WaitForExit(300000)) {
+            Phase 'msi-deadline-outcome-uncertain'
+            throw 'Fixture MSI deadline exceeded; operation outcome uncertain; do not retry this runner'
+        }
+        $p.ExitCode
+    } finally { $p.Dispose() }
+}
 function Msi([string]$verb, [string]$target) {
-    $p = Start-Process msiexec.exe -ArgumentList @($verb, ('"'+$target+'"'), '/qn', '/norestart', '/l*v', ('"'+$target+'.install.log"')) -WindowStyle Hidden -Wait -PassThru
-    Assert ($p.ExitCode -eq 0) "MSI operation failed: $($p.ExitCode)"
+    $exitCode = Msi-Exit -Arguments @($verb, ('"'+$target+'"'), '/qn', '/norestart', '/l*v', ('"'+$target+'.install.log"'))
+    Assert ($exitCode -eq 0) "MSI operation failed: $exitCode"
 }
 function Runtime {
     $svc = Get-CimInstance Win32_Service -Filter "Name='$name'"
@@ -19,10 +39,12 @@ function Runtime {
     Split-Path $Matches[1]
 }
 function Manage([string]$action) { & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action $action }
+function Health { Invoke-RestMethod 'http://127.0.0.1:8788/managed-health' -TimeoutSec 10 }
 function Rpc([string]$tool, $arguments) {
     $body = @{ jsonrpc='2.0'; id=1; method='tools/call'; params=@{ name=$tool; arguments=$arguments } } | ConvertTo-Json -Depth 20
-    Invoke-RestMethod 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Headers @{Authorization="Bearer $token"} -Body $body
+    Invoke-RestMethod 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Headers @{Authorization="Bearer $token"} -Body $body -TimeoutSec 60
 }
+Phase 'install-first'
 Msi '/i' $first.FullName
 $initial = Get-CimInstance Win32_Service -Filter "Name='$name'"
 Assert ($initial.State -eq 'Stopped' -and $initial.StartMode -eq 'Manual') 'Install must be stopped/manual'
@@ -34,7 +56,9 @@ $runtime = Runtime
 Assert (!(Test-Path (Join-Path $runtime 'app\dist\src\untracked-package-poison.js'))) 'Untracked caller source leaked into exact-SHA package'
 Assert ((Get-Acl (Join-Path $data 'scratch')).Sddl -match 'S-1-5-80-') 'Scratch must have service SID ACL'
 Assert ((Get-Acl $runtime).Sddl -notmatch '\(A;[^)]*;FA;;;LS\)') 'LocalService must not own binaries'
+Phase 'unconfigured-start-refusal'
 try { Manage 'Start'; throw 'Unconfigured start unexpectedly succeeded' } catch { Assert ($_.Exception.Message -match 'configuration') 'Wrong unconfigured failure' }
+Phase 'fixture-and-protected-credentials'
 $fixture = Join-Path $data 'test-data\repository'
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $samples = @{ 'sample.cs'='public class Sample { public int Count { get; set; } }'; 'Sample.java'='public class Sample { public int count() { return 1; } }'; 'sample.py'="def count():`n    return 1" }
@@ -75,11 +99,13 @@ foreach ($target in @{dataRoot=$data;configDirectory=(Join-Path $data 'config');
 }
 # Nonsecret native ACL evidence only; never serialize the configuration/key.
 $aclReceipt | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $PackageRoot 'credential-acl-receipt.json')
+Phase 'configured-start'
 $health = Manage 'Start'
 Assert ($health.descriptor.engineSha -eq $health.engineSha) 'Exact-source descriptor identity missing'
 Assert ($health.capabilities.repositoryAuthentication.configuration -eq 'locally-validated' -and $health.capabilities.repositoryAuthentication.providerAuthentication -eq 'not-probed') 'Restricted service did not validate protected key, or falsely claimed provider access'
 Assert ($health.capabilities.host.logicalProcessors -gt 0 -and $health.capabilities.host.totalMemoryBytes -gt 0) 'Observed node resource facts missing'
 Assert ($health.capabilities.declared.workloads.incrementalPublication -eq 'unsupported') 'Unsupported workload must not be advertised'
+Phase 'capability-preflight'
 $preflight = Manage 'Preflight'
 Assert ($preflight.canActivate -and $preflight.replay.softwareCompatibility -eq 'supported') 'Replay preflight failed'
 Assert ($preflight.remote.readCompatibility -eq 'unavailable' -and $preflight.remote.currentness -eq 'not-verified') 'Fake remote credential availability was not reported honestly'
@@ -87,6 +113,7 @@ Assert (($preflight | ConvertTo-Json -Depth 20) -notmatch [regex]::Escape($token
 Assert (($preflight | ConvertTo-Json -Depth 20) -notmatch [regex]::Escape(($fakePrivatePem -split "`n")[1])) 'Preflight disclosed private material'
 # Operator preflight refuses bad local material without stopping the valid
 # running service. Direct service start independently repeats the same checks.
+Phase 'credential-refusal-checks'
 $credentialManagement = Join-Path (Runtime) 'Manage-Trial.ps1'
 $protectedPid = $health.pid
 function Assert-CredentialRefusal {
@@ -95,7 +122,7 @@ function Assert-CredentialRefusal {
     $rejected = $false
     try { & $credentialManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash | Out-Null } catch { $rejected = $_.Exception.Message -match 'preflight refused' }
     Assert $rejected 'Invalid credential did not refuse update before disruption'
-    Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $protectedPid) 'Credential refusal disrupted valid service'
+    Assert ((Health).pid -eq $protectedPid) 'Credential refusal disrupted valid service'
 }
 [IO.File]::WriteAllText($keyPath,'malformed disposable fixture')
 Assert-CredentialRefusal
@@ -135,11 +162,12 @@ $restoredServiceConfig = Get-Acl -LiteralPath $serviceConfigPath
 $restoredServiceConfig.SetSecurityDescriptorSddlForm($serviceConfigSddl)
 Set-Acl -LiteralPath $serviceConfigPath -AclObject $restoredServiceConfig
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Fixture restoration changed key bytes'
-Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health' | ConvertTo-Json -Depth 20) -notmatch [regex]::Escape(($fakePrivatePem -split "`n")[1])) 'Health disclosed private material'
-Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $health.pid) 'Non-listening preflight disrupted the running service'
+Assert ((Health | ConvertTo-Json -Depth 20) -notmatch [regex]::Escape(($fakePrivatePem -split "`n")[1])) 'Health disclosed private material'
+Assert ((Health).pid -eq $health.pid) 'Non-listening preflight disrupted the running service'
 Assert ($health.role -eq 'compute-only' -and $health.authority -eq 'remote-read-only') 'Managed role must be fixed even with remote credentials configured'
+Phase 'compute-only-denials'
 foreach ($route in '/workbench/reconcile-canonical','/workbench/semantics/change-verify') {
-    $denied = Invoke-WebRequest ("http://127.0.0.1:8788"+$route) -Method Post -Headers @{Authorization="Bearer $token"} -ContentType 'application/json' -Body '{}' -SkipHttpErrorCheck
+    $denied = Invoke-WebRequest ("http://127.0.0.1:8788"+$route) -Method Post -Headers @{Authorization="Bearer $token"} -ContentType 'application/json' -Body '{}' -SkipHttpErrorCheck -TimeoutSec 10
     Assert ($denied.StatusCode -eq 403 -and $denied.Content -match 'COMPUTE_ONLY_AUTHORITY_DENIED') 'Managed authority mutation route was not denied'
 }
 $deniedScan = Rpc 'scan_graph' @{project='fixture'}
@@ -147,12 +175,14 @@ Assert ($deniedScan.result.isError -and ($deniedScan | ConvertTo-Json -Depth 10)
 $nodeProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($health.pid)"
 $owner = Invoke-CimMethod -InputObject $nodeProcess -MethodName GetOwner
 Assert ($owner.User -eq 'LOCAL SERVICE') 'Actual Node must run as LocalService'
+Phase 'exact-replay'
 $result = Rpc 'scan_graph' @{project='fixture';ref="commit:$revision"}
 Assert (!$result.PSObject.Properties['error'] -and !($result.result.PSObject.Properties['isError'] -and $result.result.isError)) 'Bundled Git/native parser exact-revision scan failed'
 $scan = $result.result.structuredContent
 Assert ($scan.revision -eq $revision -and $scan.nodeCount -gt 3) 'Actual scan must report the exact fixture revision'
 # scan_graph deliberately returns compact counts, not graph nodes. Inspect the
 # declared structural query surface to prove each bundled native parser ran.
+Phase 'native-symbols'
 $symbols = Rpc 'search_graph' @{project='fixture';ref="commit:$revision";kinds=@('class','method','function','property');layers=@('structural');limit=100}
 Assert (!$symbols.PSObject.Properties['error'] -and !($symbols.result.PSObject.Properties['isError'] -and $symbols.result.isError)) 'Native symbol query failed'
 $nodes = @($symbols.result.structuredContent.nodes)
@@ -160,12 +190,13 @@ Assert (@($nodes | Where-Object kind -eq 'class').Count -eq 2) 'C#/Java class pa
 Assert (@($nodes | Where-Object kind -eq 'property').Count -ge 1) 'C# property parsing failed'
 Assert (@($nodes | Where-Object kind -eq 'method').Count -ge 1) 'Java method parsing failed'
 Assert (@($nodes | Where-Object kind -eq 'function').Count -ge 1) 'Python function parsing failed'
-try { Invoke-WebRequest 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Body '{}' | Out-Null; throw 'Unauthorized request passed' } catch { Assert ($_.Exception.Response.StatusCode.value__ -eq 401) 'MCP must deny anonymous access' }
+try { Invoke-WebRequest 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Body '{}' -TimeoutSec 10 | Out-Null; throw 'Unauthorized request passed' } catch { Assert ($_.Exception.Response.StatusCode.value__ -eq 401) 'MCP must deny anonymous access' }
 $measure = Get-Process -Id $health.pid
 @{ pid=$health.pid; workingSetBytes=$measure.WorkingSet64; privateBytes=$measure.PrivateMemorySize64; cpuSeconds=$measure.CPU; engineSha=$health.engineSha } | ConvertTo-Json | Set-Content (Join-Path $PackageRoot 'resource-measurement.json')
 # After genuine parser/Git proof, substitute a disposable long-lived Git child
 # while the service is already running. This tests supervisor tree cleanup without
 # shipping a production test hook or weakening startup payload integrity.
+Phase 'process-tree-fixture'
 $probeSource = Join-Path $PackageRoot 'ChildProbe.cs'
 $probe = @'
 using System;
@@ -194,7 +225,7 @@ Copy-Item -LiteralPath $probeExe -Destination $gitExe -Force
 $job = Start-Job -ArgumentList $token,$revision -ScriptBlock {
     param($credential,$sha)
     $body = @{jsonrpc='2.0';id=1;method='tools/call';params=@{name='scan_graph';arguments=@{project='orphan';ref="commit:$sha"}}} | ConvertTo-Json -Depth 8
-    try { Invoke-RestMethod 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Headers @{Authorization="Bearer $credential"} -Body $body | Out-Null } catch { }
+    try { Invoke-RestMethod 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Headers @{Authorization="Bearer $credential"} -Body $body -TimeoutSec 45 | Out-Null } catch { }
 }
 $probeProcess = $null
 for ($attempt=0; $attempt -lt 40; $attempt++) {
@@ -207,26 +238,31 @@ Assert (!(Test-Path (Join-Path $data 'scratch\credential-leak.flag'))) 'Child pr
 Start-Sleep -Milliseconds 300
 $probeChildren = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($probeProcess.ProcessId)")
 Assert ($probeChildren.Count -gt 0) 'Nested owned Node child was not observed'
+Phase 'owned-child-stop'
 Manage 'Stop'
 Assert (!(Get-Process -Id $health.pid -ErrorAction SilentlyContinue)) 'Owned Node survived stop'
 foreach ($childId in @($probeProcess.ProcessId) + @($probeChildren.ProcessId)) { Assert (!(Get-Process -Id $childId -ErrorAction SilentlyContinue)) 'Owned active descendant survived stop' }
 Stop-Job $job
 Remove-Job $job -Force
 [IO.File]::WriteAllBytes($gitExe, $gitBytes)
+Phase 'restart-after-child-stop'
 Manage 'Start' | Out-Null
 $oldManagement = Join-Path (Runtime) 'Manage-Trial.ps1'
-$beforePreflight = (Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid
+$beforePreflight = (Health).pid
+Phase 'incompatible-update-refusal'
 $incompatibleRejected = $false
 try { & $oldManagement -Action Update -Msi $incompatible.FullName -ExpectedSha256 (Get-FileHash $incompatible.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $incompatibleRejected = $_.Exception.Message -match 'unsupported-config-format' }
 Assert $incompatibleRejected 'Known incompatible candidate was not refused before service disruption'
-Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Incompatible preflight stopped the running service'
+Assert ((Health).pid -eq $beforePreflight) 'Incompatible preflight stopped the running service'
 Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Incompatible preflight changed protected configuration'
 # An accidental direct MSI major upgrade must also stop before StopServices.
-$direct = Start-Process msiexec.exe -ArgumentList @('/i', ('"'+$incompatible.FullName+'"'), '/qn', '/norestart') -WindowStyle Hidden -Wait -PassThru
-Assert ($direct.ExitCode -ne 0) 'Raw MSI upgrade bypassed required descriptor preflight'
-Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Raw MSI refusal disrupted the existing service'
+Phase 'raw-msi-upgrade-refusal'
+$directExitCode = Msi-Exit -Arguments @('/i', ('"'+$incompatible.FullName+'"'), '/qn', '/norestart')
+Assert ($directExitCode -ne 0) 'Raw MSI upgrade bypassed required descriptor preflight'
+Assert ((Health).pid -eq $beforePreflight) 'Raw MSI refusal disrupted the existing service'
 # Internally inconsistent descriptor metadata is refused even when the caller
 # supplies the fixture MSI's correct outer hash.
+Phase 'corrupt-update-refusal'
 $corruptMsi = Join-Path $PackageRoot 'corrupt-descriptor.msi'
 Copy-Item -LiteralPath $second.FullName -Destination $corruptMsi
 $installer = New-Object -ComObject WindowsInstaller.Installer
@@ -240,27 +276,31 @@ $corruptDescriptorRejected = $false
 $corruptDescriptorError = 'no exception'
 try { & $oldManagement -Action Update -Msi $corruptMsi -ExpectedSha256 (Get-FileHash $corruptMsi).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $corruptDescriptorError = $_.Exception.Message; $corruptDescriptorRejected = $corruptDescriptorError -match 'descriptor integrity failure' }
 Assert $corruptDescriptorRejected "Corrupt descriptor refusal was not reached: $corruptDescriptorError"
-Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Corrupt descriptor refusal disrupted existing service'
+Assert ((Health).pid -eq $beforePreflight) 'Corrupt descriptor refusal disrupted existing service'
 $badHashRejected = $false
 try { & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 ('0'*64) -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $badHashRejected = $_.Exception.Message -match 'checksum mismatch' }
 Assert $badHashRejected 'Corrupt MSI input was not refused'
 $wrongPriorRejected = $false
 try { & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $second.FullName -PreviousSha256 (Get-FileHash $second.FullName).Hash } catch { $wrongPriorRejected = $_.Exception.Message -match 'does not match' }
 Assert $wrongPriorRejected 'Wrong known-good MSI identity was not refused'
-Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Preflight refusal stopped the running service'
+Assert ((Health).pid -eq $beforePreflight) 'Preflight refusal stopped the running service'
+Phase 'healthy-update'
 & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash
-Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').msiVersion -eq '2.9.238') 'Upgrade identity failed'
+Assert ((Health).msiVersion -eq '2.9.238') 'Upgrade identity failed'
 Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Upgrade changed protected configuration'
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Upgrade changed protected key'
+Phase 'restart-updated'
 Manage 'Restart' | Out-Null
+Phase 'unhealthy-update-rollback'
 $rollbackObserved = $false
 try {
     & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Update -Msi $unhealthy.FullName -ExpectedSha256 (Get-FileHash $unhealthy.FullName).Hash -PreviousMsi $second.FullName -PreviousSha256 (Get-FileHash $second.FullName).Hash
 } catch { $rollbackObserved = $_.Exception.Message -match 'known-good package restored' }
 Assert $rollbackObserved 'Unhealthy update did not report verified rollback'
-Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').msiVersion -eq '2.9.238') 'Rollback did not restore known-good service'
+Assert ((Health).msiVersion -eq '2.9.238') 'Rollback did not restore known-good service'
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Rollback changed protected key'
 # Real runtime corruption is refused by the installed integrity gate.
+Phase 'runtime-corruption-refusal'
 Manage 'Stop'
 $runtime = Runtime
 $nodeScript = Join-Path $runtime 'app\dist\src\http.js'
@@ -272,6 +312,7 @@ Assert $corruptionRejected 'Corrupt runtime was not rejected before activation'
 Stop-Service $name -ErrorAction SilentlyContinue
 [IO.File]::WriteAllBytes($nodeScript, $bytes)
 Manage 'Start' | Out-Null
+Phase 'fixture-backup-restore'
 $backup = Join-Path $PackageRoot 'fixture-backup'
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Backup -BackupDirectory $backup
 Assert (!(Test-Path (Join-Path $backup 'config'))) 'Backup must exclude credentials'
@@ -284,11 +325,13 @@ try { & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Restore -BackupDirector
 Assert $corruptBackupRejected 'Restore did not reject a corrupt backup'
 [IO.File]::WriteAllBytes($backupFixture, $backupBytes)
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Restore -BackupDirectory $backup
+Phase 'uninstall-retention'
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Uninstall -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash
 Assert (!(Get-Service $name -ErrorAction SilentlyContinue)) 'Uninstall left service registration'
 Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Uninstall removed protected configuration'
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Uninstall removed protected key'
 Assert (Test-Path (Join-Path $data 'test-data\retained-authority-fixture.json')) 'Uninstall removed protected fixture'
+Phase 'reinstall-start-stop'
 Msi '/i' $first.FullName
 Manage 'Start' | Out-Null
 Manage 'Stop'
@@ -300,11 +343,14 @@ $readonlyFile = Join-Path $readonlyDirectory 'readonly-object'
 [IO.File]::WriteAllText($readonlyFile, 'disposable Git object')
 [IO.File]::SetAttributes($readonlyFile, [IO.FileAttributes]::ReadOnly)
 [IO.File]::WriteAllText((Join-Path $runtime 'node\node.exe'), 'corrupt laboratory runtime')
+Phase 'corrupt-runtime-uninstall'
 Msi '/x' $first.FullName
 Assert (!(Test-Path (Join-Path $data 'scratch\abandoned.tmp'))) 'Cached MSI helper did not clean scratch with corrupt installed Node'
 Assert (!(Test-Path -LiteralPath $readonlyFile)) 'Cached MSI helper did not clean readonly Git scratch'
 Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Corrupt-runtime uninstall changed protected configuration'
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Corrupt-runtime uninstall changed protected key'
+Phase 'final-secret-exclusion'
 foreach ($log in Get-ChildItem (Join-Path $data 'logs') -File) { Assert ([IO.File]::ReadAllText($log.FullName) -notmatch [regex]::Escape(($fakePrivatePem -split "`n")[1])) 'Service logs disclosed private material' }
 foreach ($metadata in Get-ChildItem $PackageRoot -Recurse -File | Where-Object { $_.Name -in 'manifest.json','Package.wxs' -or $_.Name -like '*.msi.json' -or ($_.DirectoryName -eq $PackageRoot -and $_.Extension -eq '.json') }) { Assert ([IO.File]::ReadAllText($metadata.FullName) -notmatch [regex]::Escape(($fakePrivatePem -split "`n")[1])) 'Uploaded metadata disclosed private material' }
 @{ lifecycle='passed'; fixtureRevision=$revision; productionAccess=$false; unsigned=$true; rebootProof='not-run'; powerProof='not-run' } | ConvertTo-Json | Set-Content (Join-Path $PackageRoot 'lifecycle-result.json')
+Phase 'passed'

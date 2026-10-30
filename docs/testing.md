@@ -26,6 +26,8 @@ Managed private-source tests use only generated disposable RSA keys and fake pro
 
 The Windows workflow runs `packaging/windows/native-acl-transport.test.mjs` as an explicit serial pre-build step, before the parallel source suite. It proves the real isolated-environment executable, file/directory descriptor reads, JSON transport and missing-path refusal within the unchanged native deadline/output bounds. This is startup/transport proof, not a parallel-load or host-capacity benchmark; installed lifecycle still repeats native ACL validation under LocalService. The serial step preserves its own nonsecret timing receipt even if later source verification fails.
 
+Package artifacts are uploaded before the disposable lifecycle, separately from final evidence receipts. The lifecycle has a 15-minute step budget inside the 45-minute job budget, fixed phase/timestamp receipts (no configuration, environment or credential values), bounded HTTP clients and five-minute fixture MSI waits. A fixture MSI deadline reports an uncertain outcome without killing or retrying the installation; that disposable runner must be discarded, not reused for recovery acceptance. Later evidence upload is best effort, not a promise that cancellation preserves every receipt. Missing lifecycle success, an interrupted phase or a cancelled job never counts as acceptance. These harness bounds do not establish bounds for every operator/SCM/CIM call or prove installed behavior under contention.
+
 ### One intrinsic graph
 
 Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.
