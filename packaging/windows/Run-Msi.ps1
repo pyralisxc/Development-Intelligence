@@ -1,9 +1,7 @@
 param([Parameter(Mandatory)][string]$ReceiptPath,[Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{32}$')][string]$OperationId)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
-$PSModuleAutoLoadingPreference='None'
-foreach ($module in 'Microsoft.PowerShell.Utility','Microsoft.PowerShell.Management','Microsoft.PowerShell.Security') { Import-Module (Join-Path $PSHOME ('Modules\'+$module+'\'+$module+'.psd1')) -ErrorAction Stop }
-. (Join-Path $PSScriptRoot 'Operator-State.ps1')
+. ($PSScriptRoot+'/Operator-State.ps1')
 $packageGuard=$null
 try {
     Assert-OperatorDirectory (Split-Path $ReceiptPath)

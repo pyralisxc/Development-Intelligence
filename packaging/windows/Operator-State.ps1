@@ -1,5 +1,11 @@
 # Shared by the operator and its transient inbox-PowerShell MSI waiter. This is
 # an uncertainty fence, not installation authority or a second package database.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    # A Windows PowerShell child of pwsh may inherit PS7's PSModulePath. Resolve
+    # only inbox PS5 modules, never an incompatible ambient Security provider.
+    $PSModuleAutoLoadingPreference='None'
+    foreach ($module in 'Microsoft.PowerShell.Utility','Microsoft.PowerShell.Management','Microsoft.PowerShell.Security','CimCmdlets') { Import-Module ($PSHOME+'\Modules\'+$module+'\'+$module+'.psd1') -ErrorAction Stop }
+}
 function Assert-OperatorDirectory([string]$Directory) {
     for ($ancestor=[IO.Path]::GetFullPath($Directory);$ancestor;$ancestor=Split-Path $ancestor) {
         if ((Get-Item -LiteralPath $ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Operator reparse boundary refused' }

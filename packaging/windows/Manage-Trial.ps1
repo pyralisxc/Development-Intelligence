@@ -11,7 +11,7 @@ Set-StrictMode -Version Latest
 $serviceName = 'DevelopmentIntelligenceTrial'
 $data = Join-Path $env:ProgramData $serviceName
 $uri = 'http://127.0.0.1:8788/managed-health'
-. (Join-Path $PSScriptRoot 'Operator-State.ps1')
+. ($PSScriptRoot+'/Operator-State.ps1')
 $operatorDirectory=Join-Path $data 'config'
 $receiptPath=Join-Path $operatorDirectory 'operator-msi.json'
 $operatorScripts=$PSScriptRoot
