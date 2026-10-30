@@ -68,6 +68,9 @@ $rows=@(foreach($target in @(${literals})) {
   @{owner=$acl.GetOwner($sid).Value;protected=$acl.AreAccessRulesProtected;rules=$rules}
 })
 [Console]::Error.WriteLine('DI_ACL_COLLECTED')
+$PSModuleAutoLoadingPreference='None'
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+[Console]::Error.WriteLine('DI_ACL_JSON_READY')
 ConvertTo-Json -InputObject $rows -Depth 5 -Compress
 [Console]::Error.WriteLine('DI_ACL_OUTPUT')
 exit 0`;
@@ -77,8 +80,8 @@ exit 0`;
   stdout=await new Promise((resolve,reject)=>{
     const child=execFile(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env,windowsHide:true,timeout:NATIVE_ACL_QUERY_TIMEOUT_MS,maxBuffer:32*1024,encoding:'utf8'},(error,output,diagnostic)=>{
       if(!error) return resolve(output);
-      const progress=diagnostic.match(/DI_ACL_(STARTED|ACQUIRING|DESCRIPTOR|RULES|COLLECTED|OUTPUT)/g)?.at(-1);
-      const phase=({DI_ACL_STARTED:'descriptor',DI_ACL_ACQUIRING:'descriptor',DI_ACL_DESCRIPTOR:'rules',DI_ACL_RULES:'owner',DI_ACL_COLLECTED:'serialization',DI_ACL_OUTPUT:'after-output'})[progress]??'startup';
+      const progress=diagnostic.match(/DI_ACL_(STARTED|ACQUIRING|DESCRIPTOR|RULES|COLLECTED|JSON_READY|OUTPUT)/g)?.at(-1);
+      const phase=({DI_ACL_STARTED:'descriptor',DI_ACL_ACQUIRING:'descriptor',DI_ACL_DESCRIPTOR:'rules',DI_ACL_RULES:'owner',DI_ACL_COLLECTED:'json-module',DI_ACL_JSON_READY:'serialization',DI_ACL_OUTPUT:'after-output'})[progress]??'startup';
       reject(new ManagedCredentialValidationError(error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER'?'acl-query-output-bound':error.killed?`acl-query-timeout-${phase}`:typeof error.code==='number'?'acl-query-process':'acl-query-launch'));
     });
     // This command never consumes stdin. Close it rather than leave an open
