@@ -57,12 +57,12 @@ Copy-Item (Join-Path $source 'dist') $app -Recurse
 Copy-Item (Join-Path $source 'package.json'),(Join-Path $source 'package-lock.json') $app
 & npm.cmd ci --omit=dev --no-audit --no-fund --prefix $app
 if ($LASTEXITCODE -ne 0) { throw 'Production dependency packaging failed' }
-foreach ($name in 'managed-runtime.mjs','managed-preflight.mjs','compatibility.mjs','payload.mjs','Manage-Trial.ps1','WinSW-LICENSE.txt') { Copy-Item (Join-Path $packageSource $name) $payload }
+foreach ($name in 'managed-runtime.mjs','managed-preflight.mjs','managed-credentials.mjs','compatibility.mjs','payload.mjs','Manage-Trial.ps1','WinSW-LICENSE.txt') { Copy-Item (Join-Path $packageSource $name) $payload }
 $descriptorPath = Join-Path $payload 'compatibility.json'
 & node (Join-Path $packageSource 'create-descriptor.mjs') $source $sha $descriptorPath
 if ($LASTEXITCODE -ne 0) { throw 'Exact-source compatibility descriptor generation failed' }
 $descriptor = Get-Content -LiteralPath $descriptorPath -Raw | ConvertFrom-Json
-if ($LaboratoryIncompatible) { $descriptor.configFormats = @(2); [IO.File]::WriteAllText($descriptorPath, ($descriptor | ConvertTo-Json -Depth 15 -Compress)) }
+if ($LaboratoryIncompatible) { $descriptor.configFormats = @(99); [IO.File]::WriteAllText($descriptorPath, ($descriptor | ConvertTo-Json -Depth 15 -Compress)) }
 $descriptorJson = [IO.File]::ReadAllText($descriptorPath)
 $descriptorHash = (Get-FileHash -LiteralPath $descriptorPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $wrapper = @'

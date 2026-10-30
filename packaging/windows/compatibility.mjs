@@ -4,9 +4,22 @@ import fs from 'node:fs/promises';
 export const MANAGED_LIMITS = Object.freeze({ nodeHeapMB:768, buildConcurrency:1, graphCacheEntries:2, snapshotCacheEntries:1, graphCacheRecords:50000, scratchBytes:2*1024**3, scratchPollMs:5000, shutdownMs:15000, logKiB:1024, logFiles:4 });
 
 export function validateConfiguration(config) {
-  if (config?.formatVersion !== 1 || config.authMode !== 'bearer' || typeof config.agentToken !== 'string' || config.agentToken.trim().length < 32 || config.agentToken !== config.agentToken.trim()) throw new Error('Explicit formatVersion=1 bearer configuration with a token of at least 32 characters is required');
+  if (![1,2].includes(config?.formatVersion) || config.authMode !== 'bearer' || typeof config.agentToken !== 'string' || config.agentToken.trim().length < 32 || config.agentToken !== config.agentToken.trim()) throw new Error('Explicit supported bearer configuration with a token of at least 32 characters is required');
   if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects)) throw new Error('An explicit project access registry is required');
-  if (Object.keys(config).some(key => !['formatVersion','authMode','agentToken','projects','remoteStorage','requiredCapabilities'].includes(key))) throw new Error('Unknown managed configuration field');
+  if (Object.keys(config).some(key => !['formatVersion','authMode','agentToken','projects','remoteStorage','requiredCapabilities','githubApp'].includes(key))) throw new Error('Unknown managed configuration field');
+  const references=Object.values(config.projects).filter(project=>project?.credential?.type==='github-app-bound');
+  if (config.githubApp !== undefined) {
+    if (config.formatVersion!==2 || !config.githubApp || Object.keys(config.githubApp).some(key=>!['appId','privateKeyFile'].includes(key)) || !/^[1-9][0-9]*$/.test(config.githubApp.appId) || !Number.isSafeInteger(Number(config.githubApp.appId)) || typeof config.githubApp.appId!=='string' || config.githubApp.privateKeyFile!=='github-app.pem' || !references.length) throw new Error('Invalid explicit managed GitHub App configuration');
+  }
+  for(const project of Object.values(config.projects)) {
+    const credential=project?.credential;
+    if (credential && credential.type!=='none') {
+      if (config.formatVersion!==2 || !config.githubApp || credential.type!=='github-app-bound' || credential.binding!=='managed-github-app' || Object.keys(credential).some(key=>!['type','binding'].includes(key))) throw new Error('Unsupported managed repository credential reference');
+      let url;
+      try { url=new URL(project.repository); } catch { throw new Error('Invalid managed GitHub repository'); }
+      if(url.protocol!=='https:'||url.hostname.toLowerCase()!=='github.com'||url.port||url.username||url.password||url.search||url.hash||!/^\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+\/?$/.test(url.pathname)) throw new Error('Managed GitHub App references require explicit GitHub HTTPS repositories');
+    }
+  }
   if (config.remoteStorage && (typeof config.remoteStorage.storeId !== 'string' || !/^(?:store_)?[a-zA-Z0-9-]+$/.test(config.remoteStorage.storeId) || typeof config.remoteStorage.token !== 'string' || !config.remoteStorage.token)) throw new Error('Remote storage requires explicit storeId and token');
   if (config.requiredCapabilities !== undefined && (!Array.isArray(config.requiredCapabilities) || !config.requiredCapabilities.length || config.requiredCapabilities.some(item => !['immutable-replay','canonical-read'].includes(item)))) throw new Error('Unknown required managed capability');
   return config;
@@ -14,7 +27,7 @@ export function validateConfiguration(config) {
 
 export function createDescriptor(engine, identity, dependencies) {
   return {
-    formatVersion:1, packageFormatVersion:1, configFormats:[1], ...identity,
+    formatVersion:1, packageFormatVersion:1, configFormats:[1,2], ...identity,
     target:{platform:'win32',architecture:'x64',frameworkMinimumRelease:528040},
     role:'compute-only', authorityWrites:false, engine, dependencies, limits:MANAGED_LIMITS,
     workloads:{immutableReplay:'supported',canonicalRead:'requires-compatible-remote-generation',incrementalPublication:'unsupported',acceptedAuthorityWrite:'forbidden'},

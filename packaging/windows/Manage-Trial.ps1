@@ -33,7 +33,8 @@ function Assert-Package([string]$Root) {
     $manifest
 }
 function Wait-Health($manifest) {
-    for ($attempt = 0; $attempt -lt 45; $attempt++) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    while ([DateTime]::UtcNow -lt $deadline) {
         try {
             $health = Invoke-RestMethod $uri -TimeoutSec 2
             if ($health.ready -and $health.engineSha -eq $manifest.engineSha -and $health.packagingSha -eq $manifest.packagingSha -and $health.msiVersion -eq $manifest.msiVersion) {
@@ -133,7 +134,7 @@ function Invoke-Preflight([string]$root, [string]$DescriptorJson='', [switch]$Al
         $process = [Diagnostics.Process]::Start($start)
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (!$process.WaitForExit(30000)) { $process.Kill(); throw 'Compatibility preflight timed out before activation' }
+        if (!$process.WaitForExit(45000)) { $process.Kill(); throw 'Compatibility preflight timed out before activation' }
         $stdout = $stdoutTask.GetAwaiter().GetResult()
         [void]$stderrTask.GetAwaiter().GetResult()
         if (!$stdout) { throw 'Compatibility preflight failed before activation' }
