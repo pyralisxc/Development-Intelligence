@@ -87,11 +87,11 @@ function Msi-Identity([string]$target) {
     $result = @{}
     foreach ($property in 'ProductCode','UpgradeCode','ProductVersion','DI_ENGINE_SHA','DI_PACKAGING_SHA') {
         $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$property'")
-        $view.Execute()
+        [void]$view.Execute()
         $record = $view.Fetch()
         if (!$record) { throw 'MSI identity property missing' }
         $result[$property] = $record.StringData(1)
-        $view.Close()
+        [void]$view.Close()
     }
     if ($result.UpgradeCode -ne '{B09658F5-C884-4ACD-85D2-46AC3D82DA13}' -or $result.DI_ENGINE_SHA -notmatch '^[a-f0-9]{40}$' -or $result.DI_ENGINE_SHA -ne $result.DI_PACKAGING_SHA) { throw 'MSI is not a managed DI trial package' }
     $result
