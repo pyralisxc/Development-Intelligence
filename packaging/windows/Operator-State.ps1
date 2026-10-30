@@ -43,7 +43,9 @@ function Write-MsiReceipt([string]$Path,$Record) {
     $acl=Get-Acl -LiteralPath $temporary
     $acl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
     Set-Acl -LiteralPath $temporary -AclObject $acl
-    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary,$Path,$null) } else { [IO.File]::Move($temporary,$Path) }
+    # Windows PowerShell 5.1 otherwise coerces $null to an empty backup filename;
+    # .NET Framework rejects that path. Preserve a true native null string.
+    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary,$Path,[NullString]::Value) } else { [IO.File]::Move($temporary,$Path) }
 }
 function Assert-NoPendingMsi([string]$Path) {
     $record=Read-MsiReceipt $Path

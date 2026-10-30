@@ -28,7 +28,7 @@ try {
 $fake=Join-Path $root 'fake-waiter.ps1'
 $stateSource=(Join-Path $PSScriptRoot 'Operator-State.ps1').Replace("'","''")
 $receiptLiteral=$path.Replace("'","''")
-[IO.File]::WriteAllText($fake,". '$stateSource'`nStart-Sleep -Milliseconds 900`n`$r=Read-MsiReceipt '$receiptLiteral'`n`$r.state='terminal';`$r.msiPid=123;`$r.msiStartTicks='123';`$r.exitCode=0`nWrite-MsiReceipt '$receiptLiteral' `$r")
+[IO.File]::WriteAllText($fake,"`$ErrorActionPreference='Stop'`nSet-StrictMode -Version Latest`n. '$stateSource'`nStart-Sleep -Milliseconds 900`n`$r=Read-MsiReceipt '$receiptLiteral'`n`$r.state='terminal';`$r.msiPid=123;`$r.msiStartTicks='123';`$r.exitCode=0`nWrite-MsiReceipt '$receiptLiteral' `$r")
 $worker=Start-Process (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoProfile','-NonInteractive','-File',('"'+$fake+'"')) -WindowStyle Hidden -PassThru
 try {
     $uncertain=$false
