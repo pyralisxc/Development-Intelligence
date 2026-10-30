@@ -55,10 +55,15 @@ function Write-OperatorJson([string]$Path,$Record) {
     if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary,$Path,[NullString]::Value) } else { [IO.File]::Move($temporary,$Path) }
 }
 function Write-MsiReceipt([string]$Path,$Record) { Write-OperatorJson $Path $Record }
-function Test-MsiTools([string]$Root,[string]$ExpectedMetadataSha='') {
+function Test-MsiTools([string]$Root,[string]$ExpectedMetadataSha='',[switch]$InputBundle) {
     for($ancestor=[IO.Path]::GetFullPath($Root);$ancestor;$ancestor=Split-Path $ancestor){if((Get-Item -LiteralPath $ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Recovery tool reparse boundary refused'}}
+    if(!$InputBundle){Assert-OperatorDirectory $Root}
     if(Get-ChildItem -LiteralPath $Root -Force | Where-Object {$_.Name -notin @('Manage-Trial.ps1','Operator-State.ps1','Run-Msi.ps1','operator.json')}){throw 'Unexpected recovery tool inventory'}
     $metadataPath=Join-Path $Root 'operator.json'
+    if($InputBundle){
+        $item=Get-Item -LiteralPath $metadataPath -Force
+        if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.LinkType -eq 'HardLink' -or $item.Length -gt 32768){throw 'Invalid recovery metadata input'}
+    } else {Assert-OperatorFile $metadataPath}
     if ($ExpectedMetadataSha -and (Get-FileHash -LiteralPath $metadataPath).Hash.ToLowerInvariant() -ne $ExpectedMetadataSha) { throw 'Recovery tool metadata identity mismatch' }
     $metadata=Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
     if ($metadata.formatVersion -ne 1 -or $metadata.engineSha -notmatch '^[a-f0-9]{40}$') { throw 'Invalid recovery tool identity' }
@@ -66,6 +71,7 @@ function Test-MsiTools([string]$Root,[string]$ExpectedMetadataSha='') {
     if (@($metadata.files).Count -ne 3 -or (@($metadata.files.name | Sort-Object) -join ',') -ne (($expected | Sort-Object) -join ',')) { throw 'Recovery tool inventory mismatch' }
     foreach($entry in $metadata.files) {
         $target=Join-Path $Root $entry.name
+        if(!$InputBundle){Assert-OperatorFile $target}
         $item=Get-Item -LiteralPath $target -Force
         if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.LinkType -eq 'HardLink' -or $item.Length -gt 32768 -or $entry.sha256 -notmatch '^[a-f0-9]{64}$' -or (Get-FileHash -LiteralPath $target).Hash.ToLowerInvariant() -ne $entry.sha256){throw 'Recovery tool integrity failure'}
     }
@@ -82,7 +88,7 @@ function Preserve-MsiTools([string]$Source,[string]$ConfigDirectory) {
             if($entry.Count -ne 1){throw 'Owned recovery tool hash missing'}
             @{name=$name;sha256=$entry[0].sha256}
         })}
-    } else { $metadata=Test-MsiTools $Source }
+    } else { $metadata=Test-MsiTools $Source -InputBundle }
     $destination=Join-Path $ConfigDirectory 'operator-tools'
     if(!(Test-Path -LiteralPath $destination)) {
         New-Item -ItemType Directory -Path $destination | Out-Null

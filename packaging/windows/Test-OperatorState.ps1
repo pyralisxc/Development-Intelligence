@@ -23,6 +23,54 @@ try {
     try {$other=Enter-OperatorLock (Join-Path $root 'operator.lock');$other.Dispose()} catch {$locked=$true}
     Require $locked 'Concurrent mutation lock was not exclusive'
 } finally {$lock.Dispose()}
+# Protected recovery tools must remain non-replaceable, not merely hash-match at
+# one instant. External input has a separate integrity-only path before copying.
+$tools=Join-Path $root 'tools'
+New-Item -ItemType Directory -Path $tools | Out-Null
+$toolsAcl=Get-Acl -LiteralPath $tools
+$toolsAcl.SetAccessRuleProtection($true,$true)
+$toolsAcl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+Set-Acl -LiteralPath $tools -AclObject $toolsAcl
+$toolEntries=@(foreach($name in 'Manage-Trial.ps1','Operator-State.ps1','Run-Msi.ps1'){
+    $file=Join-Path $tools $name
+    [IO.File]::WriteAllText($file,'# inert fixture, never executed')
+    $fileAcl=Get-Acl -LiteralPath $file
+    $fileAcl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+    Set-Acl -LiteralPath $file -AclObject $fileAcl
+    @{name=$name;sha256=(Get-FileHash $file).Hash.ToLowerInvariant()}
+})
+$toolMeta=Join-Path $tools 'operator.json'
+Write-OperatorJson $toolMeta @{formatVersion=1;engineSha=('d'*40);files=$toolEntries}
+$toolMetaHash=(Get-FileHash $toolMeta).Hash.ToLowerInvariant()
+Test-MsiTools $tools $toolMetaHash | Out-Null
+foreach($name in 'Run-Msi.ps1','operator.json') {
+    $file=Join-Path $tools $name
+    $saved=(Get-Acl -LiteralPath $file).Sddl
+    $unsafe=Get-Acl -LiteralPath $file
+    $unsafe.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]'S-1-1-0','Write','Allow'))
+    Set-Acl -LiteralPath $file -AclObject $unsafe
+    $rejected=$false
+    try{Test-MsiTools $tools $toolMetaHash | Out-Null}catch{$rejected=$_.Exception.Message -match 'Operator state permits untrusted writes'}
+    Require $rejected 'Writable snapshot tool/metadata passed hash-only verification'
+    $restore=Get-Acl -LiteralPath $file
+    $restore.SetSecurityDescriptorSddlForm($saved)
+    Set-Acl -LiteralPath $file -AclObject $restore
+}
+$savedMeta=Join-Path $root 'retained-metadata.json'
+Move-Item -LiteralPath $toolMeta -Destination $savedMeta
+New-Item -ItemType HardLink -Path $toolMeta -Target $savedMeta | Out-Null
+$rejected=$false
+try{Test-MsiTools $tools $toolMetaHash | Out-Null}catch{$rejected=$_.Exception.Message -match 'Invalid operator state file'}
+Require $rejected 'Hard-linked recovery metadata was accepted'
+Remove-Item -LiteralPath $toolMeta -Force
+Move-Item -LiteralPath $savedMeta -Destination $toolMeta
+$originalMeta=[IO.File]::ReadAllBytes($toolMeta)
+[IO.File]::WriteAllText($toolMeta,('x'*32769))
+$rejected=$false
+try{Test-MsiTools $tools | Out-Null}catch{$rejected=$_.Exception.Message -match 'Invalid operator state file'}
+Require $rejected 'Oversized recovery metadata was accepted'
+[IO.File]::WriteAllBytes($toolMeta,$originalMeta)
+Test-MsiTools $tools $toolMetaHash | Out-Null
 # An actual separate inbox-PowerShell process writes terminal evidence only after
 # the caller's short wait has expired. No MSI or service is touched in this unit.
 $fake=Join-Path $root 'fake-waiter.ps1'
