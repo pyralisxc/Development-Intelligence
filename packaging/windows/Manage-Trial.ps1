@@ -312,7 +312,14 @@ switch ($Action) {
             # Any unresolved intent (including waiter/receipt failure, busy,
             # suspension or reboot-required success) forbids *all* recovery
             # mutations. Registration is not evidence that an MSI has exited.
-            Assert-NoPendingMsi $receiptPath
+            try {Assert-NoPendingMsi $receiptPath} catch {
+                # Keep the initiating failure available without replacing the
+                # no-mutation fence by recovery. Diagnostic callers serialize
+                # only exception types/numeric codes and a source line.
+                $uncertain=[InvalidOperationException]::new('DI_MSI_UNCERTAIN: unresolved MSI intent; use Reconcile, never kill or replay',$failure.Exception)
+                $uncertain.Data['operatorFailureLine']=$failure.InvocationInfo.ScriptLineNumber
+                throw $uncertain
+            }
             Stop-OwnedService
             # Explicit uninstall/reinstall permits a numerically older known-good MSI.
             # MSI owns all registration; no second package database or atomicity claim.

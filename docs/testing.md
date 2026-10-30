@@ -32,6 +32,8 @@ The installed workload/recovery fixture combines exact committed DI `src`/`packa
 
 Operator-state tests run only on disposable hosted Windows. They exercise exclusive file locking, create-before-launch fencing, a real inbox-PowerShell late-completion observer without killing it, corrupt/missing-PID refusal, deferred MSI results and execution of the real Update recovery catch with mutation sentinels. Installed lifecycle reuses the exact operator functions with a short internal caller wait (no shipped CLI fault flag), launches real MSI repair/uninstall, proves subsequent CLI mutation refusal, observes late terminal evidence and explicitly resolves without activation/replay. The retained external operator bundle must survive removal of installed scripts, including malformed installed-manifest removal. Normal update/rollback remains covered in the same lifecycle. Reboot-required codes are refusal/logic tests, not physical reboot or suspended-installer recovery acceptance.
 
+The receipt unit holds a real reader open while publishing a replacement and verifies both the old immutable snapshot and the new path contents. This protects Windows delete-sharing compatibility rather than relying on a timing race. Rollback diagnostics retain bounded exception types/HResults/source line and safe predefined messages plus the unresolved fence; they do not serialize raw configuration, credentials or arbitrary exception messages.
+
 ### One intrinsic graph
 
 Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.

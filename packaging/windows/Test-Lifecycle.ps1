@@ -345,9 +345,12 @@ try {
         'DI_MSI_UNCERTAIN: MSI deadline exceeded; waiter may still be running; use Reconcile'
     )
     $safeMessage=if($caught.Message -in $safeMessages -or $caught.Message -match '^DI_MSI_FAILED: terminal Windows Installer exit \d+$' -or $caught.Message -match '^DI_MSI_DEFERRED: suspended/busy/reboot-required outcome \d+; no automatic rollback$'){$caught.Message}else{$null}
+    $exceptionChain=[Collections.Generic.List[object]]::new()
+    for($node=$caught;$node -and $exceptionChain.Count -lt 6;$node=$node.InnerException){$exceptionChain.Add(@{type=$node.GetType().FullName;hresult=$node.HResult})}
+    $originalLine=if($caught.Data.Contains('operatorFailureLine')){$caught.Data['operatorFailureLine']}else{$null}
     $observation=$null
     try {$observation=& (Join-Path $PackageRoot '2.9.238\operator\Manage-Trial.ps1') -Action Reconcile} catch { }
-    @{verifiedRollbackReported=$rollbackObserved;exceptionType=$caught.GetType().FullName;safeCaughtMessage=$safeMessage;otherMessageRedacted=(!$safeMessage -and !$rollbackObserved);msi=$observation;originalWaiterPathExists=(Test-Path -LiteralPath (Join-Path (Split-Path $rollbackManagement) 'Run-Msi.ps1'));snapshotExists=(Test-Path -LiteralPath (Join-Path $data 'config\operator-tools\operator.json'));productionAccess=$false} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $PackageRoot 'rollback-observation.json')
+    @{verifiedRollbackReported=$rollbackObserved;exceptionType=$caught.GetType().FullName;exceptionChain=$exceptionChain.ToArray();originalFailureLine=$originalLine;safeCaughtMessage=$safeMessage;otherMessageRedacted=(!$safeMessage -and !$rollbackObserved);msi=$observation;originalWaiterPathExists=(Test-Path -LiteralPath (Join-Path (Split-Path $rollbackManagement) 'Run-Msi.ps1'));snapshotExists=(Test-Path -LiteralPath (Join-Path $data 'config\operator-tools\operator.json'));productionAccess=$false} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $PackageRoot 'rollback-observation.json')
 }
 Assert $rollbackObserved 'Unhealthy update did not report verified rollback'
 Assert ((Health).msiVersion -eq '2.9.238') 'Rollback did not restore known-good service'

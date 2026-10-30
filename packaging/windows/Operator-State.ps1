@@ -32,10 +32,20 @@ function Assert-OperatorFile([string]$Path) {
         }
     }
 }
-function Read-MsiReceipt([string]$Path) {
+function Open-OperatorReadStream([string]$Path) {
     Assert-OperatorFile $Path
+    # Atomic publishers need DELETE sharing. An open reader retains its old
+    # immutable file snapshot while the name is replaced; never read in-place.
+    $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    if($stream.Length -gt 32768){$stream.Dispose();throw 'Operator read bound exceeded'}
+    $stream
+}
+function Read-MsiReceipt([string]$Path) {
     if (!(Test-Path -LiteralPath $Path)) { return $null }
-    $record=[IO.File]::ReadAllText($Path) | ConvertFrom-Json
+    $stream=Open-OperatorReadStream $Path
+    $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true,1024,$false)
+    try {$json=$reader.ReadToEnd()} finally {$reader.Dispose();$stream.Dispose()}
+    $record=$json | ConvertFrom-Json
     if ($record.formatVersion -ne 1 -or $record.operationId -notmatch '^[a-f0-9]{32}$' -or $record.state -notin @('intent','starting','running','terminal','resolved') -or $record.sha256 -notmatch '^[a-f0-9]{64}$' -or $record.toolsSha256 -notmatch '^[a-f0-9]{64}$' -or $record.verb -notin @('/i','/x') -or $record.productCode -notmatch '^\{[A-Fa-f0-9-]{36}\}$') { throw 'Invalid MSI uncertainty receipt; mutation refused' }
     if ($record.state -in @('terminal','resolved') -and ($null -eq $record.exitCode -or [int]$record.exitCode -lt 0 -or [int]$record.exitCode -gt 65535 -or !$record.msiPid -or $record.msiStartTicks -notmatch '^\d+$')) { throw 'Invalid terminal MSI evidence' }
     $record
@@ -154,9 +164,22 @@ function Get-MsiObservation([string]$Path) {
 function Wait-MsiReceipt([string]$Path,[Diagnostics.Process]$Worker,[int]$TimeoutMs=300000) {
     $clock=[Diagnostics.Stopwatch]::StartNew()
     while ($clock.ElapsedMilliseconds -lt $TimeoutMs) {
-        $record=Read-MsiReceipt $Path
+        try {$record=Read-MsiReceipt $Path} catch {
+            # Retry only read observations within the original deadline. Trust,
+            # schema, permission and other failures still fail closed. No write,
+            # installer invocation or wait-budget reset is retried here.
+            if($_.Exception.GetBaseException().HResult -notin @(-2147024864,-2147024863,-2147024894)){throw}
+            Start-Sleep -Milliseconds 20
+            continue
+        }
+        if(!$record){throw 'DI_MSI_UNCERTAIN: intent unavailable during observation; mutation refused'}
         if ($record.state -eq 'terminal') { return $record }
-        if ($Worker.HasExited) { throw 'DI_MSI_UNCERTAIN: waiter exited without terminal evidence; mutation refused' }
+        if ($Worker.HasExited) {
+            # It may have published terminal evidence after our previous read.
+            $final=Read-MsiReceipt $Path
+            if($final -and $final.state -eq 'terminal'){return $final}
+            throw 'DI_MSI_UNCERTAIN: waiter exited without terminal evidence; mutation refused'
+        }
         [void]$Worker.WaitForExit([Math]::Min(100,[Math]::Max(1,$TimeoutMs-$clock.ElapsedMilliseconds)))
     }
     # Dispose closes only our handle. Neither waiter nor installer is killed.

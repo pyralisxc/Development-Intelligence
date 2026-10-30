@@ -20,6 +20,16 @@ foreach($status in 'StartPending','StopPending','ContinuePending','PausePending'
 $path=Join-Path $root 'receipt.json'
 $record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);toolsSha256=('c'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
 Write-MsiReceipt $path $record
+$oldReader=Open-OperatorReadStream $path
+try {
+    $replacement=$record.PSObject.Copy()
+    $replacement.state='starting'
+    Write-MsiReceipt $path $replacement
+    $reader=[IO.StreamReader]::new($oldReader,[Text.Encoding]::UTF8,$true,1024,$true)
+    try{$oldJson=$reader.ReadToEnd() | ConvertFrom-Json}finally{$reader.Dispose()}
+    Require ($oldJson.state -eq 'intent' -and (Read-MsiReceipt $path).state -eq 'starting') 'Atomic receipt replacement conflicted with active read snapshot'
+} finally {$oldReader.Dispose()}
+Write-MsiReceipt $path $record
 $blocked=$false
 try { Assert-NoPendingMsi $path } catch {$blocked=$_.Exception.Message -match 'DI_MSI_UNCERTAIN'}
 Require $blocked 'Create-before-launch intent did not fence mutation'
@@ -152,5 +162,5 @@ try {
     $refused=$false
     try {Assert-NoPendingMsi $path} catch {$refused=$true}
     Require $refused 'Corrupt uncertainty receipt failed open'
-    Write-Host 'DI_OPERATOR_STATE_TESTS passed: lock, intent, late completion, no kill/replay, deferred outcomes, missing PID, corruption'
+    Write-Host 'DI_OPERATOR_STATE_TESTS passed: atomic read snapshots, lock, intent, late completion, no kill/replay, deferred outcomes, missing PID, corruption'
 } finally {$worker.Dispose()}
