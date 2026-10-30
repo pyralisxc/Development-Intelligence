@@ -141,5 +141,10 @@ Assert (Test-Path (Join-Path $data 'test-data\retained-authority-fixture.json'))
 Msi '/i' $first.FullName
 Manage 'Start' | Out-Null
 Manage 'Stop'
+$runtime = Runtime
+[IO.File]::WriteAllText((Join-Path $data 'scratch\abandoned.tmp'), 'disposable')
+[IO.File]::WriteAllText((Join-Path $runtime 'node\node.exe'), 'corrupt laboratory runtime')
 Msi '/x' $first.FullName
+Assert (!(Test-Path (Join-Path $data 'scratch\abandoned.tmp'))) 'Cached MSI helper did not clean scratch with corrupt installed Node'
+Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Corrupt-runtime uninstall changed protected configuration'
 @{ lifecycle='passed'; fixtureRevision=$revision; productionAccess=$false; unsigned=$true; rebootProof='not-run'; powerProof='not-run' } | ConvertTo-Json | Set-Content (Join-Path $PackageRoot 'lifecycle-result.json')

@@ -92,6 +92,9 @@ $serviceSid = 'S-1-5-80-' + ((0..4 | ForEach-Object { [BitConverter]::ToUInt32($
 $admin = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
 $readAcl = $admin + "(A;OICI;GRGX;;;$serviceSid)"
 $writeAcl = $admin + "(A;OICI;FA;;;$serviceSid)"
+$cleanupExe = Join-Path $build 'ScratchCleanup.exe'
+& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe "/out:$cleanupExe" (Join-Path $PSScriptRoot 'ScratchCleanup.cs')
+if ($LASTEXITCODE -ne 0) { throw 'Cached MSI cleanup helper compilation failed' }
 $dataComponents = ''
 $directoryGuids = @{config='D5077B35-F411-445D-92BF-743B36B21AB6'; logs='36C61B39-EF82-44EB-B30E-979D10B1A2C4'; scratch='0E85F979-D1A1-4BD7-B9F2-6FBC1AA1F95D'; 'test-data'='A2138C7E-13B6-4CC2-902B-BE4DF23183FE'}
 foreach ($folder in 'config','logs','scratch','test-data') {
@@ -105,9 +108,10 @@ $xml = @"
   <MajorUpgrade DowngradeErrorMessage="Use explicit preserve-state rollback to the known-good MSI." Schedule="afterInstallInitialize" />
   <Property Id="DI_ENGINE_SHA" Value="$sha" />
   <Property Id="DI_PACKAGING_SHA" Value="$sha" />
-  <Property Id="NETFRAMEWORK48"><RegistrySearch Id="FrameworkRelease" Root="HKLM" Key="SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" Name="Release" Type="integer" Bitness="always64" /></Property>
-  <Launch Condition="Installed OR NETFRAMEWORK48 &gt;= 528040" Message="This trial requires an existing serviced .NET Framework 4.8 or later. Prerequisites are not installed automatically." />
-  <CustomAction Id="ClearOwnedScratch" FileRef="$(File-Id 'node\node.exe')File" ExeCommand="&quot;[#$(File-Id 'managed-runtime.mjs')File]&quot; --cleanup" Execute="deferred" Impersonate="no" Return="check" />
+  <Property Id="NETFRAMEWORK48"><RegistrySearch Id="FrameworkRelease" Root="HKLM" Key="SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" Name="Release" Type="raw" Bitness="always64" /></Property>
+  <Launch Condition="Installed OR (NETFRAMEWORK48 AND NETFRAMEWORK48 &gt;= &quot;#528040&quot;)" Message="This trial requires an existing serviced .NET Framework 4.8 or later. Prerequisites are not installed automatically." />
+  <Binary Id="ScratchCleanupBinary" SourceFile="$(Escape-Xml $cleanupExe)" />
+  <CustomAction Id="ClearOwnedScratch" BinaryRef="ScratchCleanupBinary" ExeCommand="" Execute="deferred" Impersonate="no" Return="check" />
   <InstallExecuteSequence><Custom Action="ClearOwnedScratch" After="StopServices" Condition="REMOVE=&quot;ALL&quot;" /></InstallExecuteSequence>
   <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
   <StandardDirectory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="Development Intelligence Trial"><Directory Id="RuntimeFolder" Name="$MsiVersion-$($sha.Substring(0,12))" /></Directory></StandardDirectory>

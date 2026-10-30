@@ -70,14 +70,6 @@ export async function verifyPayload(root) {
 async function main() {
   const root = path.dirname(fileURLToPath(import.meta.url));
   const dataRoot = path.join(process.env.ProgramData || 'C:\\ProgramData', SERVICE_NAME);
-  if (process.argv[2] === '--cleanup') {
-    const scratch = path.join(dataRoot, 'scratch');
-    try { await fs.access(scratch); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
-    await regularAncestors(scratch);
-    await scratchInventory(scratch);
-    for (const name of await fs.readdir(scratch)) await fs.rm(path.join(scratch, name), { recursive: true, force: true });
-    return;
-  }
   const manifest = await verifyPayload(root);
   await regularAncestors(path.join(dataRoot, 'config', 'service.json'));
   const config = validateConfiguration(JSON.parse(await fs.readFile(path.join(dataRoot, 'config', 'service.json'), 'utf8')));
