@@ -29,12 +29,19 @@ $fake=Join-Path $root 'fake-waiter.ps1'
 $stateSource=(Join-Path $PSScriptRoot 'Operator-State.ps1').Replace("'","''")
 $receiptLiteral=$path.Replace("'","''")
 [IO.File]::WriteAllText($fake,"`$ErrorActionPreference='Stop'`nSet-StrictMode -Version Latest`n. '$stateSource'`nStart-Sleep -Milliseconds 900`n`$r=Read-MsiReceipt '$receiptLiteral'`n`$r.state='terminal';`$r.msiPid=123;`$r.msiStartTicks='123';`$r.exitCode=0`nWrite-MsiReceipt '$receiptLiteral' `$r")
-$worker=Start-Process (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoProfile','-NonInteractive','-File',('"'+$fake+'"')) -WindowStyle Hidden -PassThru
+$fakeError=Join-Path $root 'fake-waiter-error.txt'
+$worker=Start-Process (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoProfile','-NonInteractive','-File',('"'+$fake+'"')) -WindowStyle Hidden -PassThru -RedirectStandardError $fakeError
 try {
     $uncertain=$false
     try {Wait-MsiReceipt $path $worker 30 | Out-Null} catch {$uncertain=$_.Exception.Message -match 'DI_MSI_UNCERTAIN'}
     Require ($uncertain -and !$worker.HasExited) 'Deadline killed waiter or claimed failure/success'
     Require ($worker.WaitForExit(15000)) 'Fake waiter did not retain completion'
+    if($worker.ExitCode -ne 0) {
+        # This isolated fixture exists before credentials/MSIs and contains only
+        # synthetic IDs. Bound its native error transport instead of hiding it.
+        if((Get-Item -LiteralPath $fakeError).Length -gt 32768){throw 'Fake waiter error output bound exceeded'}
+        throw ('Native fake-waiter exit '+$worker.ExitCode+': '+[IO.File]::ReadAllText($fakeError))
+    }
     $terminal=Read-MsiReceipt $path
     Require ($terminal.state -eq 'terminal' -and $terminal.exitCode -eq 0) 'Late terminal receipt missing'
     Require (!(Get-MsiObservation $path).mutationAllowed) 'Terminal result silently cleared fence'
