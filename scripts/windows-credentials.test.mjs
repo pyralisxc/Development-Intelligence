@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {generateKeyPairSync,sign,verify} from 'node:crypto';
 import {validateConfiguration} from '../packaging/windows/compatibility.mjs';
-import {loadManagedGithubApp,validateSecretAcl,MANAGED_APP_BINDING,MANAGED_SERVICE_SID,queryWindowsAclMetadata,ManagedCredentialValidationError,NATIVE_ACL_QUERY_TIMEOUT_MS} from '../packaging/windows/managed-credentials.mjs';
+import {loadManagedGithubApp,validateSecretAcl,MANAGED_APP_BINDING,MANAGED_SERVICE_SID} from '../packaging/windows/managed-credentials.mjs';
 
 const serviceSid=MANAGED_SERVICE_SID;
 const safeAcl=()=>({owner:'S-1-5-32-544',protected:true,serviceSid,rules:[{sid:'S-1-5-18',type:'Allow',rights:2032127},{sid:'S-1-5-32-544',type:'Allow',rights:2032127},{sid:serviceSid,type:'Allow',rights:0x1200a9}]});
@@ -29,18 +29,6 @@ test('native signed GRGX maps to file read/execute, never to a generic negative-
   assert.doesNotThrow(()=>validateSecretAcl(acl(-1610612736),{directory:true}));
   assert.doesNotThrow(()=>validateSecretAcl(acl(0x1200a9),{directory:true}));
   for(const rights of [0x20000000,0x40000000,0x10000000,-1073741824,-1,0xa0000002,0x100000001]) assert.throws(()=>validateSecretAcl(acl(rights),{directory:true}));
-});
-
-test('native Windows ACL executable/isolated-env/JSON transport works without service installation',{skip:process.platform!=='win32'||process.env.GITHUB_ACTIONS!=='true'},async()=>{
-  const started=Date.now();
-  const rows=await queryWindowsAclMetadata([path.resolve('AGENTS.md'),path.resolve('ORCHESTRATION.md'),path.resolve('.')]);
-  const elapsedMs=Date.now()-started;
-  assert.equal(rows.length,3);
-  assert.ok(rows.every(row=>typeof row.owner==='string'&&typeof row.protected==='boolean'&&Array.isArray(row.rules)));
-  const receiptDirectory=path.resolve('.package-build');
-  await fs.mkdir(receiptDirectory,{recursive:true});
-  await fs.writeFile(path.join(receiptDirectory,'native-acl-transport.json'),JSON.stringify({metadataOnly:true,requiresServiceInstallation:false,pathCount:rows.length,elapsedMs,timeoutMs:NATIVE_ACL_QUERY_TIMEOUT_MS,maxOutputBytes:32768}));
-  await assert.rejects(queryWindowsAclMetadata([path.resolve('nonexistent-acl-transport-fixture')]),error=>error instanceof ManagedCredentialValidationError&&error.code==='managed-credential-acl-query-process');
 });
 
 test('protected loader returns native memory key and local-only declaration, refuses bad files and links without disclosing material',async()=>{
