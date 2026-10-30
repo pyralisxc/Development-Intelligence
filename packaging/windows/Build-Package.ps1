@@ -40,7 +40,7 @@ Copy-Item (Join-Path $repo 'dist') $app -Recurse
 Copy-Item (Join-Path $repo 'package.json'),(Join-Path $repo 'package-lock.json') $app
 & npm.cmd ci --omit=dev --no-audit --no-fund --prefix $app
 if ($LASTEXITCODE -ne 0) { throw 'Production dependency packaging failed' }
-Copy-Item (Join-Path $PSScriptRoot 'managed-runtime.mjs'),(Join-Path $PSScriptRoot 'Manage-Trial.ps1') $payload
+Copy-Item (Join-Path $PSScriptRoot 'managed-runtime.mjs'),(Join-Path $PSScriptRoot 'Manage-Trial.ps1'),(Join-Path $PSScriptRoot 'WinSW-LICENSE.txt') $payload
 $wrapper = @'
 <service>
   <id>DevelopmentIntelligenceTrial</id>
@@ -105,6 +105,10 @@ $xml = @"
   <MajorUpgrade DowngradeErrorMessage="Use explicit preserve-state rollback to the known-good MSI." Schedule="afterInstallInitialize" />
   <Property Id="DI_ENGINE_SHA" Value="$sha" />
   <Property Id="DI_PACKAGING_SHA" Value="$sha" />
+  <Property Id="NETFRAMEWORK48"><RegistrySearch Id="FrameworkRelease" Root="HKLM" Key="SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" Name="Release" Type="integer" Bitness="always64" /></Property>
+  <Launch Condition="Installed OR NETFRAMEWORK48 &gt;= 528040" Message="This trial requires an existing serviced .NET Framework 4.8 or later. Prerequisites are not installed automatically." />
+  <CustomAction Id="ClearOwnedScratch" FileRef="$(File-Id 'node\node.exe')File" ExeCommand="&quot;[#$(File-Id 'managed-runtime.mjs')File]&quot; --cleanup" Execute="deferred" Impersonate="no" Return="check" />
+  <InstallExecuteSequence><Custom Action="ClearOwnedScratch" After="StopServices" Condition="REMOVE=&quot;ALL&quot;" /></InstallExecuteSequence>
   <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
   <StandardDirectory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="Development Intelligence Trial"><Directory Id="RuntimeFolder" Name="$MsiVersion-$($sha.Substring(0,12))" /></Directory></StandardDirectory>
   <StandardDirectory Id="CommonAppDataFolder"><Directory Id="TrialData" Name="DevelopmentIntelligenceTrial"><Component Id="TrialDataComponent" Guid="13B64628-E23F-4500-B6DC-075820786BBA" Permanent="yes"><CreateFolder><PermissionEx Sddl="$readAcl" /></CreateFolder></Component>$dataComponents</Directory></StandardDirectory>

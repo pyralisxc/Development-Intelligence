@@ -15,12 +15,15 @@ export function validateConfiguration(config) {
 }
 
 // Never follow junctions/symlinks or accept a caller-selected cleanup root.
-export async function scratchInventory(root) {
+export async function scratchInventory(root, transient = false) {
   const items = [];
   async function visit(directory) {
-    for (const name of await fs.readdir(directory)) {
+    let names;
+    try { names = await fs.readdir(directory); } catch (error) { if (transient && error.code === 'ENOENT') return; throw error; }
+    for (const name of names) {
       const target = path.join(directory, name);
-      const stat = await fs.lstat(target);
+      let stat;
+      try { stat = await fs.lstat(target); } catch (error) { if (transient && error.code === 'ENOENT') continue; throw error; }
       if (stat.isSymbolicLink()) throw new Error('Scratch contains a reparse link; operator inspection is required');
       if (stat.isDirectory()) await visit(target);
       else if (stat.isFile()) items.push({ path: target, bytes: stat.size });
@@ -33,11 +36,17 @@ export async function scratchInventory(root) {
   return items;
 }
 
-export async function verifyPayload(root) {
+async function regularAncestors(root) {
   for (let current = path.resolve(root); ; current = path.dirname(current)) {
     if ((await fs.lstat(current)).isSymbolicLink()) throw new Error('Reparse package ancestor refused');
     if (path.dirname(current) === current) break;
   }
+}
+
+export async function verifyPayload(root) {
+  await regularAncestors(root);
+  const manifestStat = await fs.lstat(path.join(root, 'manifest.json'));
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.size > 16 * 1024 ** 2) throw new Error('Invalid package manifest file');
   const manifest = JSON.parse(await fs.readFile(path.join(root, 'manifest.json'), 'utf8'));
   if (manifest.formatVersion !== 1 || !/^[a-f0-9]{40}$/.test(manifest.engineSha) || manifest.packagingSha !== manifest.engineSha || !Array.isArray(manifest.files) || !manifest.files.length) throw new Error('Invalid package identity');
   const actual = new Set((await scratchInventory(root)).map(item => path.relative(root, item.path).replaceAll('\\', '/').toLowerCase()));
@@ -60,8 +69,17 @@ export async function verifyPayload(root) {
 
 async function main() {
   const root = path.dirname(fileURLToPath(import.meta.url));
-  const manifest = await verifyPayload(root);
   const dataRoot = path.join(process.env.ProgramData || 'C:\\ProgramData', SERVICE_NAME);
+  if (process.argv[2] === '--cleanup') {
+    const scratch = path.join(dataRoot, 'scratch');
+    try { await fs.access(scratch); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    await regularAncestors(scratch);
+    await scratchInventory(scratch);
+    for (const name of await fs.readdir(scratch)) await fs.rm(path.join(scratch, name), { recursive: true, force: true });
+    return;
+  }
+  const manifest = await verifyPayload(root);
+  await regularAncestors(path.join(dataRoot, 'config', 'service.json'));
   const config = validateConfiguration(JSON.parse(await fs.readFile(path.join(dataRoot, 'config', 'service.json'), 'utf8')));
   const scratch = path.join(dataRoot, 'scratch');
   // Only inherited OS essentials survive. In particular PORT, NODE_OPTIONS,
@@ -102,7 +120,7 @@ async function main() {
   };
   const quotaTimer = setInterval(async () => {
     try {
-      const files = await scratchInventory(scratch);
+      const files = await scratchInventory(scratch, true);
       if (files.reduce((sum, item) => sum + item.bytes, 0) > 2 * 1024 ** 3) throw new Error('Scratch budget exceeded');
     } catch { console.error('Managed scratch budget/integrity failure; stopping'); shutdown(); }
   }, 5000);

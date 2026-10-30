@@ -11,7 +11,7 @@
   },
   "winsw": {
     "version": "2.12.0",
-    "url": "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe",
-    "sha256": "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"
+    "url": "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe",
+    "sha256": "b5066b7bbdfba1293e5d15cda3caaea88fbeab35bd5b38c41c913d492aadfc4f"
   }
 }
