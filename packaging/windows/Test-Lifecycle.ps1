@@ -67,11 +67,34 @@ $samples.GetEnumerator() | ForEach-Object { [IO.File]::WriteAllText((Join-Path $
 & git -C $fixture add .
 & git -C $fixture -c user.name=Fixture -c user.email=fixture@example.invalid commit -m fixture
 $revision = (& git -C $fixture rev-parse HEAD).Trim()
+$workload = Join-Path $data 'test-data\workload'
+$workloadSpec = (& node (Join-Path $PSScriptRoot 'workload-fixture.mjs') $workload) | ConvertFrom-Json
+Assert ($LASTEXITCODE -eq 0) 'Workload generation failed'
+$corpusArchive = Join-Path $PackageRoot 'engine-source.zip'
+& git archive --format=zip "--output=$corpusArchive" HEAD src package.json
+Assert ($LASTEXITCODE -eq 0) 'Exact committed engine corpus export failed'
+Expand-Archive -LiteralPath $corpusArchive -DestinationPath (Join-Path $workload 'engine')
+$inputFiles = @(Get-ChildItem -LiteralPath $workload -Recurse -File)
+$workloadSpec = @{synthetic=$workloadSpec;engineSourceSha=$fixtureEngineSha;engineArchiveSha256=(Get-FileHash $corpusArchive).Hash.ToLowerInvariant();totalFiles=$inputFiles.Count;totalSourceBytes=($inputFiles | Measure-Object Length -Sum).Sum}
+& git init --initial-branch=main $workload
+& git -C $workload add .
+& git -C $workload -c user.name=Fixture -c user.email=fixture@example.invalid commit -m historical-workload
+$workloadRevision = (& git -C $workload rev-parse HEAD).Trim()
+[IO.File]::WriteAllText((Join-Path $workload 'revision.ts'), 'export function latestOnly(): string { return "new"; }')
+& git -C $workload add .
+& git -C $workload -c user.name=Fixture -c user.email=fixture@example.invalid commit -m advance-main
+$workloadHead = (& git -C $workload rev-parse HEAD).Trim()
+Assert ($workloadRevision -match '^[a-f0-9]{40}$' -and $workloadHead -ne $workloadRevision) 'Distinct immutable workload revisions required'
+& icacls.exe $workload /setowner 'NT AUTHORITY\LocalService' /T /Q | Out-Null
+Assert ($LASTEXITCODE -eq 0) 'Workload ownership setup failed'
 & icacls.exe $fixture /setowner 'NT AUTHORITY\LocalService' /T /Q | Out-Null
 Assert ($LASTEXITCODE -eq 0) 'Fixture ownership setup failed'
 $token = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $project = @{ repository=([Uri]($fixture.Replace('\','/')+'/')).AbsoluteUri; defaultRef='main'; allowedRefs=@('main'); revisionPolicy='repository-history'; credential=@{type='none'} }
 $config = @{ formatVersion=2; authMode='bearer'; agentToken=$token; projects=@{ fixture=$project; orphan=$project; 'private-uncontacted'=@{repository='https://github.com/fixture/uncontacted.git';defaultRef='HEAD';credential=@{type='github-app-bound';binding='managed-github-app'}} }; githubApp=@{appId='123456';privateKeyFile='github-app.pem'}; remoteStorage=@{storeId='fixture-store';token='fixture-write-capable-looking-token'} }
+$workloadProject = $project.Clone()
+$workloadProject.repository = ([Uri]($workload.Replace('\','/')+'/')).AbsoluteUri
+$config.projects.workload = $workloadProject
 # Generated only on this disposable runner. Never contact the configured fake
 # private repository or write generated material to uploaded artifacts/logs.
 $rsa = [Security.Cryptography.RSA]::Create(2048)
@@ -100,7 +123,19 @@ foreach ($target in @{dataRoot=$data;configDirectory=(Join-Path $data 'config');
 # Nonsecret native ACL evidence only; never serialize the configuration/key.
 $aclReceipt | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $PackageRoot 'credential-acl-receipt.json')
 Phase 'configured-start'
-$health = Manage 'Start'
+# One finite CPU peer is controlled contention, not a saturation/capacity model.
+$peer = Start-Process node -ArgumentList @('-e','"const end=Date.now()+45000;while(Date.now()<end){}"') -WindowStyle Hidden -PassThru
+$startupClock = [Diagnostics.Stopwatch]::StartNew()
+try {
+    $health = Manage 'Start'
+    $peer.Refresh()
+    $startupMeasurement = @{elapsedMs=$startupClock.ElapsedMilliseconds;peerCpuSeconds=$peer.TotalProcessorTime.TotalSeconds;peerExitedBeforeReady=$peer.HasExited;peerMaximumMs=45000;peerCount=1}
+    Assert ($startupMeasurement.peerCpuSeconds -gt 0) 'Startup peer did not establish CPU work'
+    if ($peer.HasExited) { Assert ($peer.ExitCode -eq 0) 'Startup CPU peer failed before readiness' }
+} finally {
+    if (!$peer.HasExited) { $peer.Kill(); [void]$peer.WaitForExit(5000) }
+    $peer.Dispose()
+}
 Assert ($health.descriptor.engineSha -eq $health.engineSha) 'Exact-source descriptor identity missing'
 Assert ($health.capabilities.repositoryAuthentication.configuration -eq 'locally-validated' -and $health.capabilities.repositoryAuthentication.providerAuthentication -eq 'not-probed') 'Restricted service did not validate protected key, or falsely claimed provider access'
 Assert ($health.capabilities.host.logicalProcessors -gt 0 -and $health.capabilities.host.totalMemoryBytes -gt 0) 'Observed node resource facts missing'
@@ -193,6 +228,11 @@ Assert (@($nodes | Where-Object kind -eq 'function').Count -ge 1) 'Python functi
 try { Invoke-WebRequest 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Body '{}' -TimeoutSec 10 | Out-Null; throw 'Unauthorized request passed' } catch { Assert ($_.Exception.Response.StatusCode.value__ -eq 401) 'MCP must deny anonymous access' }
 $measure = Get-Process -Id $health.pid
 @{ pid=$health.pid; workingSetBytes=$measure.WorkingSet64; privateBytes=$measure.PrivateMemorySize64; cpuSeconds=$measure.CPU; engineSha=$health.engineSha } | ConvertTo-Json | Set-Content (Join-Path $PackageRoot 'resource-measurement.json')
+Phase 'workload-recovery'
+& (Join-Path $PSScriptRoot 'Test-WorkloadRecovery.ps1') -PackageRoot $PackageRoot -RuntimeRoot $runtime -Token $token -WorkloadPath $workload -Revision $workloadRevision -AdvancedHead $workloadHead -EngineSha $fixtureEngineSha -Spec $workloadSpec -Startup $startupMeasurement
+# Recovery deliberately changes the Node PID. Refresh the owned identity used by
+# the subsequent existing child-tree lifecycle proof.
+$health = Health
 # After genuine parser/Git proof, substitute a disposable long-lived Git child
 # while the service is already running. This tests supervisor tree cleanup without
 # shipping a production test hook or weakening startup payload integrity.
