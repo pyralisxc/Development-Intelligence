@@ -44,7 +44,8 @@ $revision = (& git -C $fixture rev-parse HEAD).Trim()
 & icacls.exe $fixture /setowner 'NT AUTHORITY\LocalService' /T /Q | Out-Null
 Assert ($LASTEXITCODE -eq 0) 'Fixture ownership setup failed'
 $token = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-$config = @{ formatVersion=1; authMode='bearer'; agentToken=$token; projects=@{ fixture=@{ repository=([Uri]($fixture.Replace('\','/')+'/')).AbsoluteUri; defaultRef='main'; allowedRefs=@('main'); revisionPolicy='repository-history'; credential=@{type='none'} } } }
+$project = @{ repository=([Uri]($fixture.Replace('\','/')+'/')).AbsoluteUri; defaultRef='main'; allowedRefs=@('main'); revisionPolicy='repository-history'; credential=@{type='none'} }
+$config = @{ formatVersion=1; authMode='bearer'; agentToken=$token; projects=@{ fixture=$project; orphan=$project } }
 [IO.File]::WriteAllText((Join-Path $data 'config\service.json'), ($config | ConvertTo-Json -Depth 10))
 [IO.File]::WriteAllText((Join-Path $data 'test-data\retained-authority-fixture.json'), '{"fixtureOnly":true,"acceptedRevision":"retained"}')
 $configHash = (Get-FileHash (Join-Path $data 'config\service.json')).Hash
@@ -59,8 +60,52 @@ Assert ($json -match $revision -and $json -match 'Sample') 'Actual graph must co
 try { Invoke-WebRequest 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Body '{}' | Out-Null; throw 'Unauthorized request passed' } catch { Assert ($_.Exception.Response.StatusCode.value__ -eq 401) 'MCP must deny anonymous access' }
 $measure = Get-Process -Id $health.pid
 @{ pid=$health.pid; workingSetBytes=$measure.WorkingSet64; privateBytes=$measure.PrivateMemorySize64; cpuSeconds=$measure.CPU; engineSha=$health.engineSha } | ConvertTo-Json | Set-Content (Join-Path $PackageRoot 'resource-measurement.json')
+# After genuine parser/Git proof, substitute a disposable long-lived Git child
+# while the service is already running. This tests supervisor tree cleanup without
+# shipping a production test hook or weakening startup payload integrity.
+$probeSource = Join-Path $PackageRoot 'ChildProbe.cs'
+$probe = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
+class ChildProbe {
+  static void Main() {
+    string here = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
+    string node = Path.GetFullPath(Path.Combine(here, "..", "..", "node", "node.exe"));
+    Process.Start(new ProcessStartInfo(node, "-e \"setInterval(()=>{},1000)\"") { UseShellExecute=false, CreateNoWindow=true });
+    Thread.Sleep(120000);
+  }
+}
+'@
+[IO.File]::WriteAllText($probeSource, $probe)
+$probeExe = Join-Path $PackageRoot 'ChildProbe.exe'
+& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe "/out:$probeExe" $probeSource
+Assert ($LASTEXITCODE -eq 0) 'Disposable process-tree probe compilation failed'
+$gitExe = Join-Path $runtime 'git\cmd\git.exe'
+$gitBytes = [IO.File]::ReadAllBytes($gitExe)
+Copy-Item -LiteralPath $probeExe -Destination $gitExe -Force
+$job = Start-Job -ArgumentList $token,$revision -ScriptBlock {
+    param($credential,$sha)
+    $body = @{jsonrpc='2.0';id=1;method='tools/call';params=@{name='scan_graph';arguments=@{project='orphan';ref="commit:$sha"}}} | ConvertTo-Json -Depth 8
+    try { Invoke-RestMethod 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Headers @{Authorization="Bearer $credential"} -Body $body | Out-Null } catch { }
+}
+$probeProcess = $null
+for ($attempt=0; $attempt -lt 40; $attempt++) {
+    $probeProcess = Get-CimInstance Win32_Process -Filter "Name='git.exe'" | Where-Object ExecutablePath -eq $gitExe | Select-Object -First 1
+    if ($probeProcess) { break }
+    Start-Sleep -Milliseconds 100
+}
+Assert ($null -ne $probeProcess) 'Active owned Git probe was not observed'
+Start-Sleep -Milliseconds 300
+$probeChildren = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($probeProcess.ProcessId)")
+Assert ($probeChildren.Count -gt 0) 'Nested owned Node child was not observed'
 Manage 'Stop'
 Assert (!(Get-Process -Id $health.pid -ErrorAction SilentlyContinue)) 'Owned Node survived stop'
+foreach ($childId in @($probeProcess.ProcessId) + @($probeChildren.ProcessId)) { Assert (!(Get-Process -Id $childId -ErrorAction SilentlyContinue)) 'Owned active descendant survived stop' }
+Stop-Job $job
+Remove-Job $job -Force
+[IO.File]::WriteAllBytes($gitExe, $gitBytes)
 Manage 'Start' | Out-Null
 $oldManagement = Join-Path (Runtime) 'Manage-Trial.ps1'
 & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash
