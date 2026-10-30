@@ -119,7 +119,15 @@ switch ($Action) {
     }
     'Stop' { Stop-OwnedService; Clear-OwnedScratch }
     'Restart' { Stop-OwnedService; Clear-OwnedScratch; & $PSCommandPath -Action Start }
-    'Uninstall' { Assert-Msi $Msi $ExpectedSha256; Stop-OwnedService; Clear-OwnedScratch; Invoke-Msi '/x' $Msi }
+    'Uninstall' {
+        Assert-Msi $Msi $ExpectedSha256
+        $identity = Msi-Identity $Msi
+        $installed = Get-Content -LiteralPath (Join-Path (Installed-Root) 'manifest.json') -Raw | ConvertFrom-Json
+        if ($identity.ProductVersion -ne $installed.msiVersion -or $identity.DI_ENGINE_SHA -ne $installed.engineSha) { throw 'Uninstall MSI does not match the installed DI package' }
+        Stop-OwnedService
+        Clear-OwnedScratch
+        Invoke-Msi '/x' $Msi
+    }
     'Update' {
         Assert-Msi $Msi $ExpectedSha256
         Assert-Msi $PreviousMsi $PreviousSha256
@@ -142,9 +150,12 @@ switch ($Action) {
             Stop-OwnedService
             # Explicit uninstall/reinstall permits a numerically older known-good MSI.
             # MSI owns all registration; no second package database or atomicity claim.
-            $installed = Assert-Package (Installed-Root)
-            if ($installed.msiVersion -eq $candidateIdentity.ProductVersion -and $installed.engineSha -eq $candidateIdentity.DI_ENGINE_SHA) { Invoke-Msi '/x' $Msi }
-            elseif ($installed.msiVersion -ne $old.msiVersion -or $installed.engineSha -ne $old.engineSha) { throw 'Update outcome is uncertain; automatic rollback refused for an unexpected installed identity' }
+            # Registration identifies the installed MSI even if candidate files or
+            # its manifest are corrupt. Recovery must not depend on failed bytes.
+            $candidateRegistered = Test-Path -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + $candidateIdentity.ProductCode)
+            $priorRegistered = Test-Path -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + $priorIdentity.ProductCode)
+            if ($candidateRegistered) { Invoke-Msi '/x' $Msi }
+            elseif (!$priorRegistered -and (Get-Service $serviceName -ErrorAction SilentlyContinue)) { throw 'Update outcome is uncertain; automatic rollback refused for an unexpected installed identity' }
             Invoke-Msi '/i' $PreviousMsi
             Start-Service $serviceName
             Wait-Health $old | Out-Null
