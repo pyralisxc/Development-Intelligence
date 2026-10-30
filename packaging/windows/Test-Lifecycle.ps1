@@ -130,6 +130,8 @@ try {
     $health = Manage 'Start'
     $peer.Refresh()
     $startupMeasurement = @{elapsedMs=$startupClock.ElapsedMilliseconds;peerCpuSeconds=$peer.TotalProcessorTime.TotalSeconds;peerExitedBeforeReady=$peer.HasExited;peerMaximumMs=45000;peerCount=1}
+    Assert ($startupMeasurement.peerCpuSeconds -gt 0) 'Startup peer did not establish CPU work'
+    if ($peer.HasExited) { Assert ($peer.ExitCode -eq 0) 'Startup CPU peer failed before readiness' }
 } finally {
     if (!$peer.HasExited) { $peer.Kill(); [void]$peer.WaitForExit(5000) }
     $peer.Dispose()
