@@ -136,19 +136,56 @@ function Convert-InstallerState([string]$Status,[bool]$CanShutdown) {
     if($CanShutdown){return 'busy'}
     'idle'
 }
-function Get-InstallerState {
-    $controller=$null
+function Get-InstallerFacts {
     try {
-        Add-Type -AssemblyName System.ServiceProcess
-        $controller=[ServiceProcess.ServiceController]::new('msiserver')
-        $controller.Refresh()
-        Convert-InstallerState ([string]$controller.Status) $controller.CanShutdown
-    } catch {'unavailable'} finally {if($controller){$controller.Dispose()}}
+        if(-not ('DiOperator.InstallerStatusV1' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace DiOperator {
+  public class InstallerFactsV1 { public uint currentState, controlsAccepted, processId, checkPoint, waitHint; public int error; }
+  public static class InstallerStatusV1 {
+    [StructLayout(LayoutKind.Sequential)] struct Status { public uint type,state,controls,win32Exit,serviceExit,checkpoint,waitHint,pid,flags; }
+    [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenSCManager(string machine,string database,uint access);
+    [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenService(IntPtr manager,string name,uint access);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool QueryServiceStatusEx(IntPtr service,int level,out Status status,int size,out int needed);
+    [DllImport("advapi32.dll")] static extern bool CloseServiceHandle(IntPtr handle);
+    public static InstallerFactsV1 Observe() {
+      var result=new InstallerFactsV1(); IntPtr manager=IntPtr.Zero,service=IntPtr.Zero;
+      try {
+        manager=OpenSCManager(null,null,1); // SC_MANAGER_CONNECT only
+        if(manager==IntPtr.Zero){result.error=Marshal.GetLastWin32Error();return result;}
+        service=OpenService(manager,"msiserver",4); // SERVICE_QUERY_STATUS only
+        if(service==IntPtr.Zero){result.error=Marshal.GetLastWin32Error();return result;}
+        Status status; int needed;
+        if(!QueryServiceStatusEx(service,0,out status,Marshal.SizeOf(typeof(Status)),out needed)){result.error=Marshal.GetLastWin32Error();return result;}
+        result.currentState=status.state;result.controlsAccepted=status.controls;result.processId=status.pid;result.checkPoint=status.checkpoint;result.waitHint=status.waitHint;
+        return result;
+      } finally {if(service!=IntPtr.Zero)CloseServiceHandle(service);if(manager!=IntPtr.Zero)CloseServiceHandle(manager);}
+    }
+  }
+}
+'@
+        }
+        $raw=[DiOperator.InstallerStatusV1]::Observe()
+        [pscustomobject]@{currentState=$raw.currentState;controlsAccepted=$raw.controlsAccepted;canStop=[bool]($raw.controlsAccepted -band 1);canShutdown=[bool]($raw.controlsAccepted -band 4);processId=$raw.processId;checkPoint=$raw.checkPoint;waitHint=$raw.waitHint;error=$raw.error;capturedAtUtc=[DateTime]::UtcNow.ToString('o')}
+    } catch {[pscustomobject]@{error=-1;currentState=0;controlsAccepted=0;canStop=$false;canShutdown=$false;processId=0;checkPoint=0;waitHint=0;capturedAtUtc=[DateTime]::UtcNow.ToString('o')}}
+}
+function Convert-InstallerFacts($Facts) {
+    if($Facts.error -ne 0){return 'unavailable'}
+    $status=switch([int]$Facts.currentState){1{'Stopped'};4{'Running'};default{'Unexpected'}}
+    # Keep the existing conservative policy until raw native evidence establishes
+    # which status/control combinations this installer actually reports.
+    Convert-InstallerState $status $Facts.canShutdown
+}
+function Get-InstallerState {
+    Convert-InstallerFacts (Get-InstallerFacts)
 }
 function Get-MsiObservation([string]$Path) {
     $record=Read-MsiReceipt $Path
-    $installerState=Get-InstallerState
-    if (!$record) { return [pscustomobject]@{state='none';installerState=$installerState;mutationAllowed=$true} }
+    $installerFacts=Get-InstallerFacts
+    $installerState=Convert-InstallerFacts $installerFacts
+    if (!$record) { return [pscustomobject]@{state='none';installerState=$installerState;installerObservation=$installerFacts;mutationAllowed=$true} }
     $workerObservation='not-established'
     if ($record.workerPid -and $record.workerStartTicks) {
         $worker=$null
@@ -159,7 +196,7 @@ function Get-MsiObservation([string]$Path) {
             else { $workerObservation='pid-reused' }
         } catch {$workerObservation='unavailable-or-exited'} finally {if($worker){$worker.Dispose()}}
     }
-    [pscustomobject]@{state=$record.state;operationId=$record.operationId;verb=$record.verb;packageSha256=$record.sha256;toolsSha256=$record.toolsSha256;productCode=$record.productCode;worker=$workerObservation;installerState=$installerState;exitCode=$record.exitCode;mutationAllowed=($record.state -eq 'resolved');replayPerformed=$false}
+    [pscustomobject]@{state=$record.state;operationId=$record.operationId;verb=$record.verb;packageSha256=$record.sha256;toolsSha256=$record.toolsSha256;productCode=$record.productCode;worker=$workerObservation;installerState=$installerState;installerObservation=$installerFacts;exitCode=$record.exitCode;mutationAllowed=($record.state -eq 'resolved');replayPerformed=$false}
 }
 function Wait-MsiReceipt([string]$Path,[Diagnostics.Process]$Worker,[int]$TimeoutMs=300000) {
     $clock=[Diagnostics.Stopwatch]::StartNew()
