@@ -120,17 +120,31 @@ function Assert-NoPendingMsi([string]$Path) {
     $record=Read-MsiReceipt $Path
     if ($record -and $record.state -ne 'resolved') { throw 'DI_MSI_UNCERTAIN: unresolved MSI intent; use Reconcile, never kill or replay' }
 }
+function Get-InstallerState {
+    $controller=$null
+    try {
+        Add-Type -AssemblyName System.ServiceProcess
+        $controller=[ServiceProcess.ServiceController]::new('msiserver')
+        $controller.Refresh()
+        if($controller.Status -ne 'Stopped' -and $controller.CanShutdown){return 'busy'}
+        'idle'
+    } catch {'unavailable'} finally {if($controller){$controller.Dispose()}}
+}
 function Get-MsiObservation([string]$Path) {
     $record=Read-MsiReceipt $Path
-    if (!$record) { return [pscustomobject]@{state='none';mutationAllowed=$true} }
+    $installerState=Get-InstallerState
+    if (!$record) { return [pscustomobject]@{state='none';installerState=$installerState;mutationAllowed=$true} }
     $workerObservation='not-established'
     if ($record.workerPid -and $record.workerStartTicks) {
-        $worker=Get-Process -Id $record.workerPid -ErrorAction SilentlyContinue
-        if (!$worker) { $workerObservation='not-observed' }
-        elseif ($worker.StartTime.ToUniversalTime().Ticks.ToString() -eq $record.workerStartTicks) { $workerObservation='running' }
-        else { $workerObservation='pid-reused' }
+        $worker=$null
+        try {
+            $worker=Get-Process -Id $record.workerPid -ErrorAction SilentlyContinue
+            if (!$worker) { $workerObservation='not-observed' }
+            elseif ($worker.StartTime.ToUniversalTime().Ticks.ToString() -eq $record.workerStartTicks) { $workerObservation='running' }
+            else { $workerObservation='pid-reused' }
+        } catch {$workerObservation='unavailable-or-exited'} finally {if($worker){$worker.Dispose()}}
     }
-    [pscustomobject]@{state=$record.state;operationId=$record.operationId;verb=$record.verb;packageSha256=$record.sha256;toolsSha256=$record.toolsSha256;productCode=$record.productCode;worker=$workerObservation;exitCode=$record.exitCode;mutationAllowed=($record.state -eq 'resolved');replayPerformed=$false}
+    [pscustomobject]@{state=$record.state;operationId=$record.operationId;verb=$record.verb;packageSha256=$record.sha256;toolsSha256=$record.toolsSha256;productCode=$record.productCode;worker=$workerObservation;installerState=$installerState;exitCode=$record.exitCode;mutationAllowed=($record.state -eq 'resolved');replayPerformed=$false}
 }
 function Wait-MsiReceipt([string]$Path,[Diagnostics.Process]$Worker,[int]$TimeoutMs=300000) {
     $clock=[Diagnostics.Stopwatch]::StartNew()

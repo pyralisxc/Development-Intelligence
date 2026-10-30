@@ -32,13 +32,16 @@ $refused=$false
 try {& $management -Action Start | Out-Null} catch {$refused=$_.Exception.Message -match 'DI_MSI_UNCERTAIN'}
 if(!$refused){throw 'Pending MSI allowed a new mutation'}
 $deadline=[Diagnostics.Stopwatch]::StartNew()
+$observedBusy=$false
 do {
     $observation=& $management -Action Reconcile
-    if($observation.state -eq 'terminal'){break}
+    if($observation.installerState -eq 'busy'){$observedBusy=$true}
+    if($observation.state -eq 'terminal' -and $observation.installerState -eq 'idle'){break}
     Start-Sleep -Milliseconds 200
 } while($deadline.ElapsedMilliseconds -lt 120000)
-if($observation.state -ne 'terminal' -or $observation.exitCode -ne 0 -or $observation.mutationAllowed){throw 'Real waiter did not retain successful terminal evidence behind fence'}
+@{stage='before-explicit-resolution';msi=$observation;elapsedMs=$deadline.ElapsedMilliseconds;observedBusy=$observedBusy;productionAccess=$false} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $PackageRoot ('operator-before-resolution-'+$(if($Verb -eq '/i'){'install'}else{'uninstall'})+'.json'))
+if($observation.state -ne 'terminal' -or $observation.exitCode -ne 0 -or $observation.mutationAllowed -or $observation.installerState -ne 'idle'){throw 'Real waiter terminal evidence and independently observed installer idle were not established behind fence'}
 $resolved=& $management -Action Resolve
 if(!$resolved.mutationAllowed){throw 'Explicit verified resolution did not release fence'}
 if((Get-Service $serviceName -ErrorAction SilentlyContinue) -and (Get-Service $serviceName).Status -ne 'Stopped'){throw 'Resolution unexpectedly activated a service'}
-@{verb=$Verb;approvedHashRefusal=$badPinRefused;malformedManifestRemoval=[bool]$CorruptManifest;deadlineObserved=$uncertain;pendingMutationRefused=$refused;terminalExitCode=$observation.exitCode;explicitResolution=$true;activationPerformed=$false;replayPerformed=$false;productionAccess=$false} | ConvertTo-Json | Set-Content (Join-Path $PackageRoot ('operator-reconciliation-'+$(if($Verb -eq '/i'){'install'}else{'uninstall'})+'.json'))
+@{verb=$Verb;approvedHashRefusal=$badPinRefused;malformedManifestRemoval=[bool]$CorruptManifest;deadlineObserved=$uncertain;pendingMutationRefused=$refused;terminalExitCode=$observation.exitCode;observedBusy=$observedBusy;observedIdleBeforeResolve=$true;explicitResolution=$true;activationPerformed=$false;replayPerformed=$false;productionAccess=$false} | ConvertTo-Json | Set-Content (Join-Path $PackageRoot ('operator-reconciliation-'+$(if($Verb -eq '/i'){'install'}else{'uninstall'})+'.json'))

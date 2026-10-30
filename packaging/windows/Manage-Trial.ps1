@@ -226,9 +226,9 @@ function Resolve-MsiReceipt {
     Test-MsiTools (Join-Path $operatorDirectory 'operator-tools') $record.toolsSha256 | Out-Null
     # Windows documents CanShutdown/SERVICE_ACCEPT_SHUTDOWN as the installer
     # service busy indication. It is an additional refusal, not completion proof.
-    Add-Type -AssemblyName System.ServiceProcess
-    $installerService=[ServiceProcess.ServiceController]::new('msiserver')
-    try { if ($installerService.Status -ne 'Stopped' -and $installerService.CanShutdown) { throw 'Windows Installer is busy; resolution refused' } } finally { $installerService.Dispose() }
+    $installerState=Get-InstallerState
+    if($installerState -eq 'busy'){throw 'Windows Installer is busy; resolution refused'}
+    if($installerState -ne 'idle'){throw 'Windows Installer state unavailable; resolution refused'}
     if ($record.exitCode -eq 1604) { throw 'Suspended installation requires native installer recovery; resolution refused' }
     if ($record.exitCode -in @(1641,3010)) {
         $boot=(Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 10).LastBootUpTime.ToUniversalTime().Ticks.ToString()

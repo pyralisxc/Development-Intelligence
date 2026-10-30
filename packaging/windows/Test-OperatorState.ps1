@@ -25,7 +25,7 @@ try {
 } finally {$lock.Dispose()}
 # Protected recovery tools must remain non-replaceable, not merely hash-match at
 # one instant. External input has a separate integrity-only path before copying.
-$tools=Join-Path $root 'tools'
+$tools=Join-Path $root 'operator-tools'
 New-Item -ItemType Directory -Path $tools | Out-Null
 $toolsAcl=Get-Acl -LiteralPath $tools
 $toolsAcl.SetAccessRuleProtection($true,$true)
@@ -100,6 +100,24 @@ try {
         try {Assert-TerminalMsi $terminal} catch {$refused=$_.Exception.Message -match 'DI_MSI_DEFERRED'}
         Require $refused 'Deferred outcome incorrectly allowed automatic rollback'
     }
+    $parseErrors=$null
+    $managerAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Manage-Trial.ps1'),[ref]$null,[ref]$parseErrors)
+    $resolveDefinition=@($managerAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Resolve-MsiReceipt'},$false))
+    Invoke-Expression $resolveDefinition[0].Extent.Text
+    $terminal.state='terminal';$terminal.exitCode=0;$terminal.toolsSha256=$toolMetaHash
+    Write-MsiReceipt $path $terminal
+    $receiptPath=$path;$operatorDirectory=$root
+    $originalInstallerState=${function:Get-InstallerState}
+    try {
+        function Get-InstallerState {'busy'}
+        $blocked=$false
+        try{Resolve-MsiReceipt | Out-Null}catch{$blocked=$_.Exception.Message -eq 'Windows Installer is busy; resolution refused'}
+        Require ($blocked -and (Read-MsiReceipt $path).state -eq 'terminal') 'Busy installer cleared terminal fence'
+        function Get-InstallerState {'unavailable'}
+        $blocked=$false
+        try{Resolve-MsiReceipt | Out-Null}catch{$blocked=$_.Exception.Message -eq 'Windows Installer state unavailable; resolution refused'}
+        Require ($blocked -and (Read-MsiReceipt $path).state -eq 'terminal') 'Unknown installer state cleared terminal fence'
+    } finally {Set-Item -Path Function:\Get-InstallerState -Value $originalInstallerState}
     $terminal.state='running';$terminal.workerPid=2147483647;$terminal.workerStartTicks='123';$terminal.exitCode=$null
     Write-MsiReceipt $path $terminal
     Require (!(Get-MsiObservation $path).mutationAllowed) 'Missing PID was treated as terminal completion'
