@@ -33,9 +33,9 @@ test('native signed GRGX maps to file read/execute, never to a generic negative-
 
 test('native Windows ACL executable/isolated-env/JSON transport works without service installation',{skip:process.platform!=='win32'||process.env.GITHUB_ACTIONS!=='true'},async()=>{
   const started=Date.now();
-  const rows=await queryWindowsAclMetadata([path.resolve('AGENTS.md'),path.resolve('ORCHESTRATION.md')]);
+  const rows=await queryWindowsAclMetadata([path.resolve('AGENTS.md'),path.resolve('ORCHESTRATION.md'),path.resolve('.')]);
   const elapsedMs=Date.now()-started;
-  assert.equal(rows.length,2);
+  assert.equal(rows.length,3);
   assert.ok(rows.every(row=>typeof row.owner==='string'&&typeof row.protected==='boolean'&&Array.isArray(row.rules)));
   const receiptDirectory=path.resolve('.package-build');
   await fs.mkdir(receiptDirectory,{recursive:true});

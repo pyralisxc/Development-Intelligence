@@ -49,14 +49,36 @@ export async function queryWindowsAclMetadata(targets) {
   // Read native ACL metadata only. Never include key bytes in arguments/output.
   // Fixed progress markers identify native transport stalls without returning
   // PowerShell errors, paths, ACLs or credential contents in failure reports.
-  const command=`$ErrorActionPreference='Stop'; [Console]::Error.WriteLine('DI_ACL_STARTED'); $sid=[Security.Principal.SecurityIdentifier]; $rows=@(foreach($target in @(${literals})) {$acl=Get-Acl -LiteralPath $target; $rules=@($acl.GetAccessRules($true,$true,$sid)|ForEach-Object {@{sid=$_.IdentityReference.Value;rights=[long]$_.FileSystemRights;type=[string]$_.AccessControlType;inheritOnly=[bool]($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)}}); @{owner=$acl.GetOwner($sid).Value;protected=$acl.AreAccessRulesProtected;rules=$rules}}); [Console]::Error.WriteLine('DI_ACL_COLLECTED'); ConvertTo-Json -InputObject $rows -Depth 5 -Compress; [Console]::Error.WriteLine('DI_ACL_OUTPUT'); exit 0`;
+  // Read the Windows descriptor directly through the Windows PowerShell/.NET
+  // Framework host: no provider/module discovery or account-name translation.
+  const command=`
+$ErrorActionPreference='Stop'
+[Console]::Error.WriteLine('DI_ACL_STARTED')
+$sid=[Security.Principal.SecurityIdentifier]
+$sections=[Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner
+$rows=@(foreach($target in @(${literals})) {
+  [Console]::Error.WriteLine('DI_ACL_ACQUIRING')
+  if([IO.Directory]::Exists($target)) {$acl=[IO.Directory]::GetAccessControl($target,$sections)}
+  else {$acl=[IO.File]::GetAccessControl($target,$sections)}
+  [Console]::Error.WriteLine('DI_ACL_DESCRIPTOR')
+  $rules=@(foreach($rule in $acl.GetAccessRules($true,$true,$sid)) {
+    @{sid=$rule.IdentityReference.Value;rights=[long]$rule.FileSystemRights;type=[string]$rule.AccessControlType;inheritOnly=[bool]($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)}
+  })
+  [Console]::Error.WriteLine('DI_ACL_RULES')
+  @{owner=$acl.GetOwner($sid).Value;protected=$acl.AreAccessRulesProtected;rules=$rules}
+})
+[Console]::Error.WriteLine('DI_ACL_COLLECTED')
+ConvertTo-Json -InputObject $rows -Depth 5 -Compress
+[Console]::Error.WriteLine('DI_ACL_OUTPUT')
+exit 0`;
   const systemRoot=process.env.SystemRoot||'C:\\Windows';
   const env=Object.fromEntries(['SystemRoot','WINDIR','COMSPEC','SystemDrive','ProgramData'].flatMap(key=>process.env[key]?[[key,process.env[key]]]:[]));
   let stdout;
   stdout=await new Promise((resolve,reject)=>{
     const child=execFile(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env,windowsHide:true,timeout:NATIVE_ACL_QUERY_TIMEOUT_MS,maxBuffer:32*1024,encoding:'utf8'},(error,output,diagnostic)=>{
       if(!error) return resolve(output);
-      const phase=diagnostic.includes('DI_ACL_OUTPUT')?'after-output':diagnostic.includes('DI_ACL_COLLECTED')?'serialization':diagnostic.includes('DI_ACL_STARTED')?'metadata':'startup';
+      const progress=diagnostic.match(/DI_ACL_(STARTED|ACQUIRING|DESCRIPTOR|RULES|COLLECTED|OUTPUT)/g)?.at(-1);
+      const phase=({DI_ACL_STARTED:'descriptor',DI_ACL_ACQUIRING:'descriptor',DI_ACL_DESCRIPTOR:'rules',DI_ACL_RULES:'owner',DI_ACL_COLLECTED:'serialization',DI_ACL_OUTPUT:'after-output'})[progress]??'startup';
       reject(new ManagedCredentialValidationError(error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER'?'acl-query-output-bound':error.killed?`acl-query-timeout-${phase}`:typeof error.code==='number'?'acl-query-process':'acl-query-launch'));
     });
     // This command never consumes stdin. Close it rather than leave an open
