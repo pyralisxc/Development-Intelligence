@@ -152,11 +152,13 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $database = $installer.OpenDatabase($corruptMsi,1)
 $view = $database.OpenView("UPDATE ``Property`` SET ``Value``='$('0'*64)' WHERE ``Property``='DI_DESCRIPTOR_SHA256'")
 [void]$view.Execute(); [void]$view.Close(); [void]$database.Commit()
+[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view)
 [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database)
 [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
 $corruptDescriptorRejected = $false
-try { & $oldManagement -Action Update -Msi $corruptMsi -ExpectedSha256 (Get-FileHash $corruptMsi).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $corruptDescriptorRejected = $_.Exception.Message -match 'descriptor integrity failure' }
-Assert $corruptDescriptorRejected 'Corrupt descriptor was not refused'
+$corruptDescriptorError = 'no exception'
+try { & $oldManagement -Action Update -Msi $corruptMsi -ExpectedSha256 (Get-FileHash $corruptMsi).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $corruptDescriptorError = $_.Exception.Message; $corruptDescriptorRejected = $corruptDescriptorError -match 'descriptor integrity failure' }
+Assert $corruptDescriptorRejected "Corrupt descriptor refusal was not reached: $corruptDescriptorError"
 Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Corrupt descriptor refusal disrupted existing service'
 $badHashRejected = $false
 try { & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 ('0'*64) -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $badHashRejected = $_.Exception.Message -match 'checksum mismatch' }
