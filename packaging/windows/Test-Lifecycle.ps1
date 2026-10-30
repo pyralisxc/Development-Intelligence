@@ -366,12 +366,20 @@ Assert $corruptBackupRejected 'Restore did not reject a corrupt backup'
 [IO.File]::WriteAllBytes($backupFixture, $backupBytes)
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Restore -BackupDirectory $backup
 Phase 'uninstall-retention'
+Phase 'inflight-msi-repair-reconciliation'
+& (Join-Path $PSScriptRoot 'Test-MsiReconciliation.ps1') -OperatorRoot (Join-Path $PackageRoot '2.9.238\operator') -MsiPath $second.FullName -Verb '/i' -PackageRoot $PackageRoot
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Uninstall -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash
 Assert (!(Get-Service $name -ErrorAction SilentlyContinue)) 'Uninstall left service registration'
 Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Uninstall removed protected configuration'
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Uninstall removed protected key'
 Assert (Test-Path (Join-Path $data 'test-data\retained-authority-fixture.json')) 'Uninstall removed protected fixture'
 Phase 'reinstall-start-stop'
+Msi '/i' $first.FullName
+Manage 'Start' | Out-Null
+Manage 'Stop'
+$runtime = Runtime
+Phase 'inflight-uninstall-reconciliation'
+& (Join-Path $PSScriptRoot 'Test-MsiReconciliation.ps1') -OperatorRoot (Join-Path $PackageRoot '2.9.237\operator') -MsiPath $first.FullName -Verb '/x' -PackageRoot $PackageRoot -CorruptManifest
 Msi '/i' $first.FullName
 Manage 'Start' | Out-Null
 Manage 'Stop'
