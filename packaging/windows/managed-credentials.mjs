@@ -7,6 +7,7 @@ import {regularAncestors} from './payload.mjs';
 import {validateConfiguration} from './compatibility.mjs';
 
 export const MANAGED_APP_BINDING='managed-github-app';
+export const NATIVE_ACL_QUERY_TIMEOUT_MS=15_000;
 // Same Windows service-SID derivation used by the MSI builder, not a trust hash.
 const sidBytes=createHash('sha1').update(Buffer.from('DEVELOPMENTINTELLIGENCETRIAL','utf16le')).digest();
 export const MANAGED_SERVICE_SID='S-1-5-80-'+Array.from({length:5},(_,index)=>sidBytes.readUInt32LE(index*4)).join('-');
@@ -51,7 +52,7 @@ export async function queryWindowsAclMetadata(targets) {
   const systemRoot=process.env.SystemRoot||'C:\\Windows';
   const env=Object.fromEntries(['SystemRoot','WINDIR','COMSPEC','SystemDrive','ProgramData'].flatMap(key=>process.env[key]?[[key,process.env[key]]]:[]));
   let stdout;
-  try { ({stdout}=await promisify(execFile)(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env,windowsHide:true,timeout:5000,maxBuffer:32*1024,encoding:'utf8'})); }
+  try { ({stdout}=await promisify(execFile)(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env,windowsHide:true,timeout:NATIVE_ACL_QUERY_TIMEOUT_MS,maxBuffer:32*1024,encoding:'utf8'})); }
   catch(error) { throw new ManagedCredentialValidationError(error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER'?'acl-query-output-bound':error.killed?'acl-query-timeout':typeof error.code==='number'?'acl-query-process':'acl-query-launch'); }
   try {
     const rows=JSON.parse(stdout.replace(/^\uFEFF/,''));
