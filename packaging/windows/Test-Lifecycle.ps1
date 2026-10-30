@@ -151,11 +151,11 @@ Assert (($preflight | ConvertTo-Json -Depth 20) -notmatch [regex]::Escape(($fake
 Phase 'credential-refusal-checks'
 $credentialManagement = Join-Path (Runtime) 'Manage-Trial.ps1'
 $protectedPid = $health.pid
-function Assert-CredentialRefusal {
+function Assert-CredentialRefusal([string]$ExpectedRefusal='preflight refused') {
     $report = Manage 'Preflight'
     Assert (!$report.canActivate) 'Unsafe credential material passed preflight'
     $rejected = $false
-    try { & $credentialManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash | Out-Null } catch { $rejected = $_.Exception.Message -match 'preflight refused' }
+    try { & $credentialManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash | Out-Null } catch { $rejected = $_.Exception.Message -match [regex]::Escape($ExpectedRefusal) }
     Assert $rejected 'Invalid credential did not refuse update before disruption'
     Assert ((Health).pid -eq $protectedPid) 'Credential refusal disrupted valid service'
 }
@@ -183,7 +183,7 @@ $configSddl = (Get-Acl -LiteralPath $configDirectory).Sddl
 $replaceableAcl = Get-Acl -LiteralPath $configDirectory
 $replaceableAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]'S-1-1-0','Write','Allow'))
 Set-Acl -LiteralPath $configDirectory -AclObject $replaceableAcl
-Assert-CredentialRefusal
+Assert-CredentialRefusal -ExpectedRefusal 'Operator directory permits untrusted writes'
 $restoredAcl = Get-Acl -LiteralPath $configDirectory
 $restoredAcl.SetSecurityDescriptorSddlForm($configSddl)
 Set-Acl -LiteralPath $configDirectory -AclObject $restoredAcl
