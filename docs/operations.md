@@ -25,6 +25,24 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 
 ## Configuration
 
+### Managed Windows compute trial
+
+The Windows package under `packaging/windows` is a per-machine x64 **unsigned laboratory artifact**. It bundles pinned Node 22, MinGit (including the askpass shell), native parsers, production dependencies and WinSW. MSI owns service registration/removal and major upgrades; WinSW supervises the process. The installer creates a manual, stopped `DevelopmentIntelligenceTrial` service under LocalService with an unrestricted service SID. No firewall rule, scheduled task, production credential, global PATH entry or global runtime is installed.
+
+Versioned binaries live under Program Files. ProgramData/DevelopmentIntelligenceTrial contains protected `config`, retained `test-data`, bounded rotating `logs`, and disposable `scratch`. Service-SID ACLs permit configuration reads and scratch/log writes; Administrators and SYSTEM retain control. The actual SID and ACL behavior is a disposable Windows CI acceptance gate, not an assumption based on installer XML.
+
+Activation requires an administrator-provided `config/service.json` with `formatVersion: 1`, `authMode: "bearer"`, an `agentToken` of at least 32 characters and an explicit `projects` access registry. Optional `remoteStorage` contains the approved remote Blob `storeId` and `token`. Never commit this file or put production credentials into trial CI. The launcher strips inherited provider/runtime settings, binds only 127.0.0.1:8788 and installs no reconciliation scheduler. Local canonical filesystem configuration is unavailable in this managed profile. Unconfigured startup fails closed.
+
+Remote DI persistence remains durable authority. Git/source remains implementation evidence. A compute node does not acquire semantic acceptance rights or become a concurrent production publisher by being installed. Initial trial state/credentials must be isolated from production; production publisher transfer and simultaneous nodes require separate publication coordination and approval. Existing source read/currentness guards remain unchanged.
+
+`Manage-Trial.ps1` provides Status, Start, Stop, Restart, Update, Uninstall, Backup and Restore. Update requires independently verified SHA256 values for both candidate and known-good MSI, stops owned work, installs the candidate and verifies exact managed health. An unhealthy candidate is removed and the prior MSI is reinstalled with protected state retained. This is explicit recoverable replacement, not a claim of atomic upgrade. Preserve both installers outside their installed version directories. Normal uninstall through this command clears owned scratch and removes the MSI-owned service/binaries while retaining configuration, credentials, logs and test fixtures. Direct MSI removal retains nonempty operational directories; use the management command for scratch cleanup. No shared credential revocation or remote deletion is implied. Backup/Restore covers only nonsecret lab fixtures; remote accepted authority requires its provider-owned recovery procedure.
+
+Scratch is cleared at each exclusive service start and managed stop, checked every five seconds against a 2 GiB budget, and never pruned during active work. A budget or link-integrity failure stops the service; this polling bound can temporarily overshoot and is not a filesystem hard quota. Logs rotate at 1 MiB with four retained files per stream. Warm graph counts/build concurrency are bounded independently; record budgets and V8 heap limits are not total-memory guarantees.
+
+Builds use `Build-Package.ps1 -MsiVersion <three-part-version>` from committed exact source and a verified `dist` build. Runtime archives are hash-pinned in `dependencies.json`; CI uses pinned Node and WiX 5.0.2. Each payload manifest records engine/package SHA, runtime versions, per-file hashes and MSI version. The external MSI metadata records the final MSI hash. Hashes establish artifact identity, not publisher trust: signing and trusted distribution remain later release gates. Do not bypass operating-system warnings.
+
+The `windows-package` workflow installs only on disposable GitHub-hosted Windows runners. Oakley source editing/build artifacts do not authorize installation there. Reboot, power-loss recovery, actual Oakley resource suitability and public TLS/OAuth/MCP connectivity remain later host acceptance.
+
 | Variable | Purpose |
 |---|---|
 | `DEVINT_PROJECTS_FILE` | Operational repository/ref/runtime/technical-source allowlist registry |

@@ -10,6 +10,12 @@ Permanent evidence protects durable Development Intelligence contracts, not hist
 
 ## Durable contracts
 
+### Managed Windows package lifecycle
+
+`windows-package` builds exact-source, unsigned x64 MSI candidates with app-private runtimes, then installs them on disposable Windows runners. It checks stopped/manual defaults, LocalService and service SID, protected directories, explicit activation, actual Git/native-parser graph construction, anonymous MCP denial, process/listener cleanup, distinct-version upgrade, unhealthy-candidate rollback, corruption refusal, retained configuration/fixture state, fixture-only backup/restore and uninstall/reinstall. It uploads MSI hashes, payload identity and bounded nonsecret lifecycle/resource receipts. No production secrets/storage or Oakley installation are involved.
+
+`scripts/windows-managed-package.test.mjs` protects fail-closed activation, payload tamper detection and scratch link boundaries. Service SID behavior, native parsers, real MSI rollback and Windows process cleanup require actual Windows evidence; XML or mocked service results cannot substitute. CI measurements are specimen results, not Oakley capacity acceptance. Reboot without login and power/network/host recovery remain explicit later installation acceptance.
+
 ### One intrinsic graph
 
 Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.

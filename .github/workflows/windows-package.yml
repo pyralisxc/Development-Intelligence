@@ -1,0 +1,56 @@
+name: windows-package
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [preview]
+permissions:
+  contents: read
+concurrency:
+  group: windows-package-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-lifecycle:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Build and verify exact source
+        run: |
+          npm ci --no-audit --no-fund
+          npm run verify
+      - name: Prepare pinned MSI compiler in disposable runner
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+      - name: Build two unsigned laboratory MSI versions
+        shell: pwsh
+        run: |
+          ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.237
+          ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.238
+          ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.239 -LaboratoryFailure
+      - name: Actual restricted service lifecycle in disposable Windows
+        shell: pwsh
+        run: ./packaging/windows/Test-Lifecycle.ps1 -PackageRoot "$env:GITHUB_WORKSPACE/.package-build"
+      - name: Preserve packages and bounded nonsecret evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-trial-UNSIGNED-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            .package-build/**/*.msi
+            .package-build/**/*.msi.json
+            .package-build/**/manifest.json
+            .package-build/**/Package.wxs
+            .package-build/*.json
+          retention-days: 7
+          if-no-files-found: warn
