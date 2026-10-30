@@ -24,6 +24,8 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
+      - name: Native ACL transport before parallel source verification
+        run: node --test packaging/windows/native-acl-transport.test.mjs
       - name: Build and verify exact source
         run: |
           npm ci --no-audit --no-fund
