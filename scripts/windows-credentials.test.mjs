@@ -5,9 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {generateKeyPairSync,sign,verify} from 'node:crypto';
 import {validateConfiguration} from '../packaging/windows/compatibility.mjs';
-import {loadManagedGithubApp,validateSecretAcl,MANAGED_APP_BINDING} from '../packaging/windows/managed-credentials.mjs';
+import {loadManagedGithubApp,validateSecretAcl,MANAGED_APP_BINDING,MANAGED_SERVICE_SID,queryWindowsAclMetadata,ManagedCredentialValidationError} from '../packaging/windows/managed-credentials.mjs';
 
-const serviceSid='S-1-5-80-1-2-3-4-5';
+const serviceSid=MANAGED_SERVICE_SID;
 const safeAcl=()=>({owner:'S-1-5-32-544',protected:true,serviceSid,rules:[{sid:'S-1-5-18',type:'Allow',rights:2032127},{sid:'S-1-5-32-544',type:'Allow',rights:2032127},{sid:serviceSid,type:'Allow',rights:0x1200a9}]});
 const config={formatVersion:2,authMode:'bearer',agentToken:'x'.repeat(32),githubApp:{appId:'123456',privateKeyFile:'github-app.pem'},projects:{fixture:{repository:'https://github.com/fixture/approved.git',defaultRef:'HEAD',credential:{type:'github-app-bound',binding:MANAGED_APP_BINDING}}}};
 
@@ -20,6 +20,8 @@ test('managed private sources require explicit format2 and narrow bound referenc
 test('credential ACL policy rejects unrelated identities, service writes, untrusted owner and replaceable directories',()=>{
   assert.doesNotThrow(()=>validateSecretAcl(safeAcl(),{directory:true}));
   for(const acl of [{...safeAcl(),owner:'S-1-5-21-1'},{...safeAcl(),protected:false},{...safeAcl(),rules:[...safeAcl().rules,{sid:'S-1-1-0',type:'Allow',rights:1}]},{...safeAcl(),rules:[...safeAcl().rules,{sid:'S-1-5-19',type:'Allow',rights:1}]},{...safeAcl(),rules:[...safeAcl().rules,{sid:serviceSid,type:'Allow',rights:2}]},{...safeAcl(),rules:safeAcl().rules.filter(rule=>rule.sid!==serviceSid)}]) assert.throws(()=>validateSecretAcl(acl,{directory:true}));
+  const forged='S-1-5-80-1-2-3-4-5';
+  assert.throws(()=>validateSecretAcl({...safeAcl(),serviceSid:forged,rules:safeAcl().rules.map(rule=>rule.sid===serviceSid?{...rule,sid:forged}:rule)}));
 });
 
 test('native signed GRGX maps to file read/execute, never to a generic negative-mask exemption',()=>{
@@ -27,6 +29,13 @@ test('native signed GRGX maps to file read/execute, never to a generic negative-
   assert.doesNotThrow(()=>validateSecretAcl(acl(-1610612736),{directory:true}));
   assert.doesNotThrow(()=>validateSecretAcl(acl(0x1200a9),{directory:true}));
   for(const rights of [0x20000000,0x40000000,0x10000000,-1073741824,-1,0xa0000002,0x100000001]) assert.throws(()=>validateSecretAcl(acl(rights),{directory:true}));
+});
+
+test('native Windows ACL executable/isolated-env/JSON transport works without service installation',{skip:process.platform!=='win32'||process.env.GITHUB_ACTIONS!=='true'},async()=>{
+  const rows=await queryWindowsAclMetadata([path.resolve('AGENTS.md'),path.resolve('ORCHESTRATION.md')]);
+  assert.equal(rows.length,2);
+  assert.ok(rows.every(row=>typeof row.owner==='string'&&typeof row.protected==='boolean'&&Array.isArray(row.rules)));
+  await assert.rejects(queryWindowsAclMetadata([path.resolve('nonexistent-acl-transport-fixture')]),error=>error instanceof ManagedCredentialValidationError&&error.code==='managed-credential-acl-query-process');
 });
 
 test('protected loader returns native memory key and local-only declaration, refuses bad files and links without disclosing material',async()=>{

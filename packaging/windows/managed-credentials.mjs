@@ -1,12 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {createPrivateKey} from 'node:crypto';
+import {createPrivateKey,createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {regularAncestors} from './payload.mjs';
 import {validateConfiguration} from './compatibility.mjs';
 
 export const MANAGED_APP_BINDING='managed-github-app';
+// Same Windows service-SID derivation used by the MSI builder, not a trust hash.
+const sidBytes=createHash('sha1').update(Buffer.from('DEVELOPMENTINTELLIGENCETRIAL','utf16le')).digest();
+export const MANAGED_SERVICE_SID='S-1-5-80-'+Array.from({length:5},(_,index)=>sidBytes.readUInt32LE(index*4)).join('-');
 const trustedOwners=new Set(['S-1-5-18','S-1-5-32-544']);
 const readExecute=0x1200a9;
 export class ManagedCredentialValidationError extends Error {
@@ -27,11 +30,11 @@ function fileSpecificRights(value) {
 }
 
 export function validateSecretAcl(acl,{directory=false}={}) {
-  if(!acl || !trustedOwners.has(acl.owner) || (directory&&!acl.protected) || !/^S-1-5-80-(?:\d+-){4}\d+$/.test(acl.serviceSid) || !Array.isArray(acl.rules) || !acl.rules.length) throw new Error('Protected credential ACL required');
+  if(!acl || !trustedOwners.has(acl.owner) || (directory&&!acl.protected) || !Array.isArray(acl.rules) || !acl.rules.length) throw new Error('Protected credential ACL required');
   let serviceRead=false;
   for(const rule of acl.rules) {
-    if(rule.type!=='Allow'||!Number.isSafeInteger(rule.rights)||(!trustedOwners.has(rule.sid)&&rule.sid!==acl.serviceSid)) throw new Error('Protected credential ACL required');
-    if(rule.sid===acl.serviceSid) {
+    if(rule.type!=='Allow'||!Number.isSafeInteger(rule.rights)||(!trustedOwners.has(rule.sid)&&rule.sid!==MANAGED_SERVICE_SID)) throw new Error('Protected credential ACL required');
+    if(rule.sid===MANAGED_SERVICE_SID) {
       const rights=fileSpecificRights(rule.rights);
       if(rights & ~readExecute) throw new Error('Service credential access must be read-only');
       if((rights&1)&&!rule.inheritOnly) serviceRead=true;
@@ -40,14 +43,21 @@ export function validateSecretAcl(acl,{directory=false}={}) {
   if(!serviceRead) throw new Error('Exact service SID credential read access required');
 }
 
-async function windowsAcls(targets) {
+export async function queryWindowsAclMetadata(targets) {
+  if(!Array.isArray(targets)||targets.length<1||targets.length>4||targets.some(target=>typeof target!=='string'||!path.isAbsolute(target))) throw new ManagedCredentialValidationError('acl-query-input');
   const literals=targets.map(target=>"'"+target.replaceAll("'","''")+"'").join(',');
   // Read native ACL metadata only. Never include key bytes in arguments/output.
-  const command=`$ErrorActionPreference='Stop'; $sid=[Security.Principal.SecurityIdentifier]; $service=([Security.Principal.NTAccount]'NT SERVICE\\DevelopmentIntelligenceTrial').Translate($sid).Value; $rows=@(foreach($target in @(${literals})) {$acl=Get-Acl -LiteralPath $target; $rules=@($acl.GetAccessRules($true,$true,$sid)|ForEach-Object {@{sid=$_.IdentityReference.Value;rights=[long]$_.FileSystemRights;type=[string]$_.AccessControlType;inheritOnly=[bool]($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)}}); @{owner=$acl.GetOwner($sid).Value;protected=$acl.AreAccessRulesProtected;serviceSid=$service;rules=$rules}}); ConvertTo-Json -InputObject $rows -Depth 5 -Compress`;
+  const command=`$ErrorActionPreference='Stop'; $sid=[Security.Principal.SecurityIdentifier]; $rows=@(foreach($target in @(${literals})) {$acl=Get-Acl -LiteralPath $target; $rules=@($acl.GetAccessRules($true,$true,$sid)|ForEach-Object {@{sid=$_.IdentityReference.Value;rights=[long]$_.FileSystemRights;type=[string]$_.AccessControlType;inheritOnly=[bool]($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)}}); @{owner=$acl.GetOwner($sid).Value;protected=$acl.AreAccessRulesProtected;rules=$rules}}); ConvertTo-Json -InputObject $rows -Depth 5 -Compress`;
   const systemRoot=process.env.SystemRoot||'C:\\Windows';
   const env=Object.fromEntries(['SystemRoot','WINDIR','COMSPEC','SystemDrive','ProgramData'].flatMap(key=>process.env[key]?[[key,process.env[key]]]:[]));
-  const {stdout}=await promisify(execFile)(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env,windowsHide:true,timeout:5000,maxBuffer:32*1024,encoding:'utf8'});
-  return JSON.parse(stdout.replace(/^\uFEFF/,''));
+  let stdout;
+  try { ({stdout}=await promisify(execFile)(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env,windowsHide:true,timeout:5000,maxBuffer:32*1024,encoding:'utf8'})); }
+  catch(error) { throw new ManagedCredentialValidationError(error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER'?'acl-query-output-bound':error.killed?'acl-query-timeout':typeof error.code==='number'?'acl-query-process':'acl-query-launch'); }
+  try {
+    const rows=JSON.parse(stdout.replace(/^\uFEFF/,''));
+    if(!Array.isArray(rows)||rows.length!==targets.length||rows.some(row=>typeof row?.owner!=='string'||typeof row.protected!=='boolean'||!Array.isArray(row.rules))) throw new Error('shape');
+    return rows;
+  } catch { throw new ManagedCredentialValidationError('acl-query-output-shape'); }
 }
 
 /** Returns a native key object, never an environment-backed PEM. */
@@ -70,7 +80,7 @@ export async function loadManagedGithubApp(config,configDirectory,{inspectAcl}={
     }
     const targets=[path.dirname(configDirectory),configDirectory,configPath,...(config.githubApp?[keyPath]:[])];
     stage='acl-query';
-    const acls=inspectAcl?await Promise.all(targets.map(inspectAcl)):await windowsAcls(targets);
+    const acls=inspectAcl?await Promise.all(targets.map(inspectAcl)):await queryWindowsAclMetadata(targets);
     if(!Array.isArray(acls)||acls.length!==targets.length) throw new Error('acl');
     acls.forEach((acl,index)=>{stage=['data-root-acl','config-directory-acl','config-file-acl','key-file-acl'][index];validateSecretAcl(acl,{directory:index<2});});
     if(!config.githubApp) return {summary:{configuration:'not-configured',protectedConfiguration:'locally-validated',providerAuthentication:'not-probed',sourceReachability:'not-probed'}};
@@ -80,6 +90,6 @@ export async function loadManagedGithubApp(config,configDirectory,{inspectAcl}={
     const privateKey=createPrivateKey(bytes);
     if(privateKey.asymmetricKeyType!=='rsa'||(privateKey.asymmetricKeyDetails?.modulusLength??0)<2048) throw new Error('key');
     return {appId:config.githubApp.appId,privateKey,repositories:Object.values(config.projects).filter(project=>project.credential?.type==='github-app-bound').map(project=>project.repository),summary:{configuration:'locally-validated',credentialHandling:'process-memory-key-object',providerAuthentication:'not-probed',sourceReachability:'not-probed'}};
-  } catch { throw new ManagedCredentialValidationError(stage); }
+  } catch(error) { if(error instanceof ManagedCredentialValidationError) throw error; throw new ManagedCredentialValidationError(stage); }
   finally { bytes?.fill(0); }
 }

@@ -56,6 +56,8 @@ $rsa.Dispose()
 $keyPath = Join-Path $data 'config\github-app.pem'
 [IO.File]::WriteAllText($keyPath,$fakePrivatePem)
 $serviceSid = ([Security.Principal.NTAccount]"NT SERVICE\$name").Translate([Security.Principal.SecurityIdentifier])
+$policySid = (& node --input-type=module -e "import {MANAGED_SERVICE_SID} from './packaging/windows/managed-credentials.mjs'; console.log(MANAGED_SERVICE_SID)").Trim()
+Assert ($serviceSid.Value -eq $policySid) 'Pinned policy service SID differs from actual installed Windows service identity'
 $keyAcl = [Security.AccessControl.FileSecurity]::new()
 $keyAcl.SetAccessRuleProtection($true,$false)
 $keyAcl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
