@@ -13,6 +13,7 @@ test('managed activation requires explicit credentials and rejects arbitrary env
   assert.throws(() => validateConfiguration({ ...valid, agentToken: ' '.repeat(32) }));
   assert.throws(() => validateConfiguration({ ...valid, DEVINT_CANONICAL_GRAPH_DIR: '/authority' }));
   assert.throws(() => validateConfiguration({ ...valid, remoteStorage: {} }));
+  assert.throws(() => validateConfiguration({ ...valid, role: 'publisher' }));
 });
 
 test('package verification rejects changed bytes and escaping manifest paths', async () => {

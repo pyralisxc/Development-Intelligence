@@ -30,6 +30,7 @@ Assert (!(Test-Path (Join-Path $data 'config\service.json'))) 'Installer must no
 $sidConfig = & sc.exe qsidtype $name
 Assert (($sidConfig -join '') -match 'UNRESTRICTED') 'Service SID was not installed'
 $runtime = Runtime
+Assert (!(Test-Path (Join-Path $runtime 'app\dist\src\untracked-package-poison.js'))) 'Untracked caller source leaked into exact-SHA package'
 Assert ((Get-Acl (Join-Path $data 'scratch')).Sddl -match 'S-1-5-80-') 'Scratch must have service SID ACL'
 Assert ((Get-Acl $runtime).Sddl -notmatch '\(A;[^)]*;FA;;;LS\)') 'LocalService must not own binaries'
 try { Manage 'Start'; throw 'Unconfigured start unexpectedly succeeded' } catch { Assert ($_.Exception.Message -match 'configuration') 'Wrong unconfigured failure' }
@@ -45,11 +46,18 @@ $revision = (& git -C $fixture rev-parse HEAD).Trim()
 Assert ($LASTEXITCODE -eq 0) 'Fixture ownership setup failed'
 $token = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $project = @{ repository=([Uri]($fixture.Replace('\','/')+'/')).AbsoluteUri; defaultRef='main'; allowedRefs=@('main'); revisionPolicy='repository-history'; credential=@{type='none'} }
-$config = @{ formatVersion=1; authMode='bearer'; agentToken=$token; projects=@{ fixture=$project; orphan=$project } }
+$config = @{ formatVersion=1; authMode='bearer'; agentToken=$token; projects=@{ fixture=$project; orphan=$project }; remoteStorage=@{storeId='fixture-store';token='fixture-write-capable-looking-token'} }
 [IO.File]::WriteAllText((Join-Path $data 'config\service.json'), ($config | ConvertTo-Json -Depth 10))
 [IO.File]::WriteAllText((Join-Path $data 'test-data\retained-authority-fixture.json'), '{"fixtureOnly":true,"acceptedRevision":"retained"}')
 $configHash = (Get-FileHash (Join-Path $data 'config\service.json')).Hash
 $health = Manage 'Start'
+Assert ($health.role -eq 'compute-only' -and $health.authority -eq 'remote-read-only') 'Managed role must be fixed even with remote credentials configured'
+foreach ($route in '/workbench/reconcile-canonical','/workbench/semantics/change-verify') {
+    $denied = Invoke-WebRequest ("http://127.0.0.1:8788"+$route) -Method Post -Headers @{Authorization="Bearer $token"} -ContentType 'application/json' -Body '{}' -SkipHttpErrorCheck
+    Assert ($denied.StatusCode -eq 403 -and $denied.Content -match 'COMPUTE_ONLY_AUTHORITY_DENIED') 'Managed authority mutation route was not denied'
+}
+$deniedScan = Rpc 'scan_graph' @{project='fixture'}
+Assert ($deniedScan.result.isError -and ($deniedScan | ConvertTo-Json -Depth 10) -match 'immutable') 'Current/default W publication must be denied'
 $nodeProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($health.pid)"
 $owner = Invoke-CimMethod -InputObject $nodeProcess -MethodName GetOwner
 Assert ($owner.User -eq 'LOCAL SERVICE') 'Actual Node must run as LocalService'
@@ -150,6 +158,13 @@ Manage 'Start' | Out-Null
 $backup = Join-Path $PackageRoot 'fixture-backup'
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Backup -BackupDirectory $backup
 Assert (!(Test-Path (Join-Path $backup 'config'))) 'Backup must exclude credentials'
+$backupFixture = Join-Path $backup 'test-data\retained-authority-fixture.json'
+$backupBytes = [IO.File]::ReadAllBytes($backupFixture)
+[IO.File]::WriteAllText($backupFixture, 'corrupt backup fixture')
+$corruptBackupRejected = $false
+try { & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Restore -BackupDirectory $backup } catch { $corruptBackupRejected = $_.Exception.Message -match 'Backup integrity' }
+Assert $corruptBackupRejected 'Restore did not reject a corrupt backup'
+[IO.File]::WriteAllBytes($backupFixture, $backupBytes)
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Restore -BackupDirectory $backup
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Uninstall -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash
 Assert (!(Get-Service $name -ErrorAction SilentlyContinue)) 'Uninstall left service registration'

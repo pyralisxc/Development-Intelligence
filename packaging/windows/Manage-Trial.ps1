@@ -101,6 +101,18 @@ function Installed-Root {
     if (!$service -or $service.PathName -notmatch '^"?(.+DevelopmentIntelligenceTrial\.exe)"?$') { throw 'Owned MSI service path unavailable' }
     Split-Path $Matches[1]
 }
+function Fixture-Inventory([string]$root) {
+    $root = [IO.Path]::GetFullPath($root)
+    if (!(Get-Item -LiteralPath $root -Force).PSIsContainer) { throw 'Regular fixture directory required' }
+    for ($ancestor = $root; $ancestor; $ancestor = Split-Path $ancestor) {
+        if ((Get-Item -LiteralPath $ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse fixture ancestor refused' }
+    }
+    $entries = @(Get-ChildItem -LiteralPath $root -Recurse -Force)
+    if ($entries | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'Reparse fixture tree refused' }
+    foreach ($item in $entries | Where-Object { !$_.PSIsContainer } | Sort-Object FullName) {
+        [PSCustomObject]@{ path=$item.FullName.Substring($root.Length).TrimStart([IO.Path]::DirectorySeparatorChar).Replace('\','/'); sha256=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
+}
 if ($Action -eq 'Status') {
     $service = Get-Service $serviceName -ErrorAction SilentlyContinue
     $health = $null
@@ -164,19 +176,50 @@ switch ($Action) {
     }
     'Backup' {
         if (!$BackupDirectory -or (Test-Path -LiteralPath $BackupDirectory)) { throw 'A new backup directory is required' }
+        Stop-OwnedService
         New-Item -ItemType Directory -Path $BackupDirectory | Out-Null
         # This compute package owns no local canonical state. Only nonsecret lab
         # fixtures are portable; configuration/tokens/logs are deliberately excluded.
         $source = Join-Path $data 'test-data'
-        if ((Get-Item -LiteralPath $source).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse backup root refused' }
-        if (Get-ChildItem -LiteralPath $source -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'Reparse backup refused' }
-        Copy-Item -LiteralPath $source -Destination $BackupDirectory -Recurse
+        $files = @(Fixture-Inventory $source)
+        $target = Join-Path $BackupDirectory 'test-data'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        foreach ($file in $files) {
+            $destination = Join-Path $target $file.path
+            New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+            [IO.File]::Copy((Join-Path $source $file.path), $destination, $false)
+            if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $file.sha256) { throw 'Backup integrity changed during copy' }
+        }
+        @{formatVersion=1; scope='nonsecret-lab-fixtures'; files=$files} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $BackupDirectory 'backup.json')
     }
     'Restore' {
         Stop-OwnedService
         $source = Join-Path $BackupDirectory 'test-data'
-        if (!(Test-Path -LiteralPath $source) -or (Get-Item -LiteralPath $source).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Regular fixture backup required' }
-        if (Get-ChildItem -LiteralPath $source -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'Reparse restore refused' }
-        Copy-Item -Path (Join-Path $source '*') -Destination (Join-Path $data 'test-data') -Recurse -Force
+        $manifestPath = Join-Path $BackupDirectory 'backup.json'
+        $manifestItem = Get-Item -LiteralPath $manifestPath -Force
+        if ($manifestItem.PSIsContainer -or $manifestItem.Length -gt 16MB -or ($manifestItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Backup integrity manifest file is invalid' }
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($manifest.formatVersion -ne 1 -or $manifest.scope -ne 'nonsecret-lab-fixtures') { throw 'Backup integrity manifest is invalid' }
+        $actual = @(Fixture-Inventory $source)
+        $expected = @{}
+        foreach ($file in $manifest.files) {
+            if ($expected.ContainsKey($file.path) -or [IO.Path]::IsPathRooted($file.path) -or $file.path -match '[\\:]|(^|/)\.\.?(/|$)|//') { throw 'Backup integrity path is invalid' }
+            $expected[$file.path] = $file.sha256
+        }
+        if ($actual.Count -ne $expected.Count) { throw 'Backup integrity inventory mismatch' }
+        foreach ($file in $actual) { if (!$expected.ContainsKey($file.path) -or $expected[$file.path] -ne $file.sha256) { throw 'Backup integrity hash mismatch' } }
+        $target = Join-Path $data 'test-data'
+        @(Fixture-Inventory $target) | Out-Null
+        foreach ($file in $actual) {
+            $destination = Join-Path $target $file.path
+            New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+            if ([IO.File]::Exists($destination)) {
+                $attributes = [IO.File]::GetAttributes($destination)
+                if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse restore target refused' }
+                [IO.File]::SetAttributes($destination, ($attributes -band (-bnot [IO.FileAttributes]::ReadOnly)))
+            }
+            [IO.File]::Copy((Join-Path $source $file.path), $destination, $true)
+            if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $file.sha256) { throw 'Restored fixture integrity mismatch' }
+        }
     }
 }

@@ -1,4 +1,5 @@
 import { getProjectConfig } from '../config/registry.js';
+import { computeOnly } from '../config/runtimeRole.js';
 import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { changedFilesBetweenRevisions, revisionIdentity, withResolvedProjectCheckoutObserved, resolveProjectRevision, type ProjectCheckoutTiming, type ProjectRevision } from '../source/git.js';
@@ -175,7 +176,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
   const revision = await resolveProjectRevision(project, ref);
   const revisionResolutionMs = elapsedMs(resolutionStarted);
   const config = await getProjectConfig(project);
-  const canonicalEligible = ref === undefined || ref === config.defaultRef;
+  const canonicalEligible = !computeOnly() && (ref === undefined || ref === config.defaultRef);
   const cacheScope: RepositoryCacheScope = canonicalEligible ? 'canonical' : 'replay';
   const key = cacheKey(project, revision.sha, cacheScope);
   let entry = repositoryCache.get(key);

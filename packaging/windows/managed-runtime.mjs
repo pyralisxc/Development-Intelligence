@@ -81,7 +81,7 @@ async function main() {
   Object.assign(process.env, osEnvironment, {
     PATH: `${path.join(root, 'git', 'cmd')};${path.join(root, 'git', 'usr', 'bin')};${osEnvironment.SystemRoot}\\System32`,
     TEMP: scratch, TMP: scratch, HOME: scratch, USERPROFILE: scratch,
-    NODE_ENV: 'production', DEVINT_BUILD_SHA: manifest.engineSha,
+    NODE_ENV: 'production', DEVINT_BUILD_SHA: manifest.engineSha, DEVINT_COMPUTE_ONLY: '1',
     DEVINT_AUTH_MODE: 'bearer', DEVINT_BEARER_TOKEN: config.agentToken,
     DEVINT_HOST: '127.0.0.1', DEVINT_PORT: '8788', DEVINT_ALLOWED_HOSTS: '127.0.0.1,localhost',
     DEVINT_PROJECTS_JSON: JSON.stringify(config.projects), DEVINT_SCRATCH_DIR: scratch,
@@ -99,7 +99,7 @@ async function main() {
   server.on('request', (req, res) => {
     if (req.url === '/managed-health') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ready: true, engineSha: manifest.engineSha, packagingSha: manifest.packagingSha, msiVersion: manifest.msiVersion, pid: process.pid, node: process.version, scheduler: 'disabled', authority: 'remote' }));
+      res.end(JSON.stringify({ ready: true, engineSha: manifest.engineSha, packagingSha: manifest.packagingSha, msiVersion: manifest.msiVersion, pid: process.pid, node: process.version, scheduler: 'disabled', role: 'compute-only', authority: 'remote-read-only' }));
     } else for (const handler of handlers) handler.call(server, req, res);
   });
   let closing = false;

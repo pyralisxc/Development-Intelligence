@@ -14,7 +14,23 @@ $build = [IO.Path]::GetFullPath((Join-Path $Output $MsiVersion))
 if (Test-Path -LiteralPath $build) { throw 'Use a fresh output/version directory' }
 $payload = Join-Path $build 'payload'
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
-$pins = Get-Content (Join-Path $PSScriptRoot 'dependencies.json') -Raw | ConvertFrom-Json
+# Build from the exact tracked snapshot, never an ignored/stale caller dist or
+# untracked source file. Do not clean or overwrite the caller's generated files.
+$sourceZip = Join-Path $build 'source.zip'
+& git -C $repo archive --format=zip "--output=$sourceZip" $sha
+if ($LASTEXITCODE -ne 0) { throw 'Exact source archive failed' }
+$source = Join-Path $build 'source'
+Expand-Archive -LiteralPath $sourceZip -DestinationPath $source
+$packageSource = Join-Path $source 'packaging\windows'
+$pins = Get-Content (Join-Path $packageSource 'dependencies.json') -Raw | ConvertFrom-Json
+if ((& node -p 'process.versions.node').Trim() -ne $pins.node.version) { throw 'Build requires the pinned Node runtime; no prerequisite is installed automatically' }
+Push-Location $source
+try {
+    & npm.cmd ci --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw 'Exact source dependencies failed' }
+    & npm.cmd run build:runtime
+    if ($LASTEXITCODE -ne 0) { throw 'Exact source runtime build failed' }
+} finally { Pop-Location }
 foreach ($name in 'node','git','winsw') {
     $pin = $pins.$name
     $download = Join-Path $build "$name.download"
@@ -36,11 +52,11 @@ foreach ($name in 'node','git','winsw') {
 if (!(Test-Path (Join-Path $payload 'git\usr\bin\sh.exe'))) { throw 'Git askpass requires bundled sh.exe' }
 $app = Join-Path $payload 'app'
 New-Item -ItemType Directory -Path $app | Out-Null
-Copy-Item (Join-Path $repo 'dist') $app -Recurse
-Copy-Item (Join-Path $repo 'package.json'),(Join-Path $repo 'package-lock.json') $app
+Copy-Item (Join-Path $source 'dist') $app -Recurse
+Copy-Item (Join-Path $source 'package.json'),(Join-Path $source 'package-lock.json') $app
 & npm.cmd ci --omit=dev --no-audit --no-fund --prefix $app
 if ($LASTEXITCODE -ne 0) { throw 'Production dependency packaging failed' }
-Copy-Item (Join-Path $PSScriptRoot 'managed-runtime.mjs'),(Join-Path $PSScriptRoot 'Manage-Trial.ps1'),(Join-Path $PSScriptRoot 'WinSW-LICENSE.txt') $payload
+Copy-Item (Join-Path $packageSource 'managed-runtime.mjs'),(Join-Path $packageSource 'Manage-Trial.ps1'),(Join-Path $packageSource 'WinSW-LICENSE.txt') $payload
 $wrapper = @'
 <service>
   <id>DevelopmentIntelligenceTrial</id>
@@ -62,7 +78,7 @@ $files = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object Full
     if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse payload refused' }
     @{ path = [IO.Path]::GetRelativePath($payload, $_.FullName).Replace('\','/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 })
-$manifest = @{ formatVersion=1; engineSha=$sha; packagingSha=$sha; msiVersion=$MsiVersion; unsignedLaboratoryArtifact=$true; platform='win32-x64'; dependencies=$pins; files=$files }
+$manifest = @{ formatVersion=1; engineSha=$sha; packagingSha=$sha; buildSource='git-archive'; msiVersion=$MsiVersion; unsignedLaboratoryArtifact=$true; laboratoryFailure=[bool]$LaboratoryFailure; platform='win32-x64'; dependencies=$pins; files=$files }
 [IO.File]::WriteAllText((Join-Path $payload 'manifest.json'), ($manifest | ConvertTo-Json -Depth 8))
 function Escape-Xml([string]$value) { [Security.SecurityElement]::Escape($value) }
 function File-Id([string]$value) {
@@ -93,7 +109,7 @@ $admin = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
 $readAcl = $admin + "(A;OICI;GRGX;;;$serviceSid)"
 $writeAcl = $admin + "(A;OICI;FA;;;$serviceSid)"
 $cleanupExe = Join-Path $build 'ScratchCleanup.exe'
-& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe "/out:$cleanupExe" (Join-Path $PSScriptRoot 'ScratchCleanup.cs')
+& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe "/out:$cleanupExe" (Join-Path $packageSource 'ScratchCleanup.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Cached MSI cleanup helper compilation failed' }
 $dataComponents = ''
 $directoryGuids = @{config='D5077B35-F411-445D-92BF-743B36B21AB6'; logs='36C61B39-EF82-44EB-B30E-979D10B1A2C4'; scratch='0E85F979-D1A1-4BD7-B9F2-6FBC1AA1F95D'; 'test-data'='A2138C7E-13B6-4CC2-902B-BE4DF23183FE'}

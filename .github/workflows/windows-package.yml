@@ -35,6 +35,10 @@ jobs:
       - name: Build two unsigned laboratory MSI versions
         shell: pwsh
         run: |
+          # Poison ignored output and add untracked input. Packaging must rebuild
+          # only tracked exact-SHA source, independently of the caller's dist.
+          Set-Content dist/src/http.js 'throw new Error("stale caller output must not ship")'
+          Set-Content src/untracked-package-poison.ts 'throw new Error("untracked input must not ship")'
           ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.237
           ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.238
           ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.239 -LaboratoryFailure
