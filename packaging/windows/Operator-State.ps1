@@ -120,14 +120,19 @@ function Assert-NoPendingMsi([string]$Path) {
     $record=Read-MsiReceipt $Path
     if ($record -and $record.state -ne 'resolved') { throw 'DI_MSI_UNCERTAIN: unresolved MSI intent; use Reconcile, never kill or replay' }
 }
+function Convert-InstallerState([string]$Status,[bool]$CanShutdown) {
+    if($Status -eq 'Stopped'){return 'idle'}
+    if($Status -ne 'Running'){return 'unavailable'}
+    if($CanShutdown){return 'busy'}
+    'idle'
+}
 function Get-InstallerState {
     $controller=$null
     try {
         Add-Type -AssemblyName System.ServiceProcess
         $controller=[ServiceProcess.ServiceController]::new('msiserver')
         $controller.Refresh()
-        if($controller.Status -ne 'Stopped' -and $controller.CanShutdown){return 'busy'}
-        'idle'
+        Convert-InstallerState ([string]$controller.Status) $controller.CanShutdown
     } catch {'unavailable'} finally {if($controller){$controller.Dispose()}}
 }
 function Get-MsiObservation([string]$Path) {

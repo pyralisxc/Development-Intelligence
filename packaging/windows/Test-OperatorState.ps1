@@ -11,6 +11,12 @@ $acl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
 foreach($sid in 'S-1-5-18','S-1-5-32-544') {$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]$sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))}
 Set-Acl -LiteralPath $root -AclObject $acl
 Assert-OperatorDirectory $root
+Require ((Convert-InstallerState 'Running' $true) -eq 'busy') 'Running installer busy state lost'
+Require ((Convert-InstallerState 'Running' $false) -eq 'idle') 'Observed running/idle state lost'
+Require ((Convert-InstallerState 'Stopped' $false) -eq 'idle') 'Stopped installer not idle'
+foreach($status in 'StartPending','StopPending','ContinuePending','PausePending','Paused','Unexpected') {
+    Require ((Convert-InstallerState $status $false) -eq 'unavailable') 'Transitional installer state incorrectly became idle'
+}
 $path=Join-Path $root 'receipt.json'
 $record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);toolsSha256=('c'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
 Write-MsiReceipt $path $record

@@ -123,27 +123,35 @@ function Invoke-Msi([string]$verb, [string]$target, [string]$ApprovedSha, [strin
     if ($terminal.exitCode -ne 0) { throw "DI_MSI_FAILED: terminal Windows Installer exit $($terminal.exitCode)" }
     } finally { $packageGuard.Dispose() }
 }
+function Read-MsiProperty($Database,[string]$Property) {
+    $view=$null;$row=$null
+    try {
+        $view=$Database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$Property'")
+        [void]$view.Execute()
+        $row=$view.Fetch()
+        if($row){[string]$row.StringData(1)}
+    } finally {
+        if($row){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($row)}
+        if($view){try{[void]$view.Close()}finally{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view)}}
+    }
+}
 function Msi-Identity([string]$target) {
-    $installer = New-Object -ComObject WindowsInstaller.Installer
-    $database = $installer.OpenDatabase($target, 0)
-    $result = @{}
-    foreach ($property in 'ProductCode','UpgradeCode','ProductVersion','DI_ENGINE_SHA','DI_PACKAGING_SHA') {
-        $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$property'")
-        [void]$view.Execute()
-        $record = $view.Fetch()
-        if (!$record) { throw 'MSI identity property missing' }
-        $result[$property] = $record.StringData(1)
-        [void]$view.Close()
+    $installer=$null;$database=$null
+    try {
+        $installer=New-Object -ComObject WindowsInstaller.Installer
+        $database=$installer.OpenDatabase($target,0)
+        $result=@{}
+        foreach($property in 'ProductCode','UpgradeCode','ProductVersion','DI_ENGINE_SHA','DI_PACKAGING_SHA') {
+            $result[$property]=Read-MsiProperty $database $property
+            if(!$result[$property]){throw 'MSI identity property missing'}
+        }
+        foreach($property in 'DI_DESCRIPTOR_JSON','DI_DESCRIPTOR_SHA256'){$result[$property]=Read-MsiProperty $database $property}
+        if ($result.UpgradeCode -ne '{B09658F5-C884-4ACD-85D2-46AC3D82DA13}' -or $result.DI_ENGINE_SHA -notmatch '^[a-f0-9]{40}$' -or $result.DI_ENGINE_SHA -ne $result.DI_PACKAGING_SHA) { throw 'MSI is not a managed DI trial package' }
+        $result
+    } finally {
+        if($database){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database)}
+        if($installer){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)}
     }
-    foreach ($property in 'DI_DESCRIPTOR_JSON','DI_DESCRIPTOR_SHA256') {
-        $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$property'")
-        [void]$view.Execute()
-        $record = $view.Fetch()
-        $result[$property] = if ($record) { $record.StringData(1) } else { $null }
-        [void]$view.Close()
-    }
-    if ($result.UpgradeCode -ne '{B09658F5-C884-4ACD-85D2-46AC3D82DA13}' -or $result.DI_ENGINE_SHA -notmatch '^[a-f0-9]{40}$' -or $result.DI_ENGINE_SHA -ne $result.DI_PACKAGING_SHA) { throw 'MSI is not a managed DI trial package' }
-    $result
 }
 function Invoke-Preflight([string]$root, [string]$DescriptorJson='', [switch]$AllowBlocked) {
     $temporary = $null
