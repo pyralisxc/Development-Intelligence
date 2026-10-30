@@ -26,9 +26,15 @@ internal static class ScratchCleanup {
             var files = new List<string>();
             var directories = new List<string>();
             Inspect(root, files, directories);
-            foreach (string file in files) { Regular(file); File.Delete(file); }
+            foreach (string file in files) {
+                Regular(file);
+                File.SetAttributes(file, File.GetAttributes(file) & ~FileAttributes.ReadOnly);
+                Regular(file);
+                File.Delete(file);
+            }
             foreach (string directory in directories) {
                 Regular(directory);
+                File.SetAttributes(directory, File.GetAttributes(directory) & ~FileAttributes.ReadOnly);
                 if (!String.Equals(directory, root, StringComparison.OrdinalIgnoreCase)) Directory.Delete(directory, false);
             }
             return 0;

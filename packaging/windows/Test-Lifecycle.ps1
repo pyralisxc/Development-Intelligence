@@ -108,6 +108,14 @@ Remove-Job $job -Force
 [IO.File]::WriteAllBytes($gitExe, $gitBytes)
 Manage 'Start' | Out-Null
 $oldManagement = Join-Path (Runtime) 'Manage-Trial.ps1'
+$beforePreflight = (Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid
+$badHashRejected = $false
+try { & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 ('0'*64) -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $badHashRejected = $_.Exception.Message -match 'checksum mismatch' }
+Assert $badHashRejected 'Corrupt MSI input was not refused'
+$wrongPriorRejected = $false
+try { & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $second.FullName -PreviousSha256 (Get-FileHash $second.FullName).Hash } catch { $wrongPriorRejected = $_.Exception.Message -match 'does not match' }
+Assert $wrongPriorRejected 'Wrong known-good MSI identity was not refused'
+Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Preflight refusal stopped the running service'
 & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash
 Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').msiVersion -eq '2.9.238') 'Upgrade identity failed'
 Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Upgrade changed protected configuration'
@@ -143,8 +151,14 @@ Manage 'Start' | Out-Null
 Manage 'Stop'
 $runtime = Runtime
 [IO.File]::WriteAllText((Join-Path $data 'scratch\abandoned.tmp'), 'disposable')
+$readonlyDirectory = Join-Path $data 'scratch\abandoned-checkout\.git\objects'
+New-Item -ItemType Directory -Path $readonlyDirectory -Force | Out-Null
+$readonlyFile = Join-Path $readonlyDirectory 'readonly-object'
+[IO.File]::WriteAllText($readonlyFile, 'disposable Git object')
+[IO.File]::SetAttributes($readonlyFile, [IO.FileAttributes]::ReadOnly)
 [IO.File]::WriteAllText((Join-Path $runtime 'node\node.exe'), 'corrupt laboratory runtime')
 Msi '/x' $first.FullName
 Assert (!(Test-Path (Join-Path $data 'scratch\abandoned.tmp'))) 'Cached MSI helper did not clean scratch with corrupt installed Node'
+Assert (!(Test-Path -LiteralPath $readonlyFile)) 'Cached MSI helper did not clean readonly Git scratch'
 Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Corrupt-runtime uninstall changed protected configuration'
 @{ lifecycle='passed'; fixtureRevision=$revision; productionAccess=$false; unsigned=$true; rebootProof='not-run'; powerProof='not-run' } | ConvertTo-Json | Set-Content (Join-Path $PackageRoot 'lifecycle-result.json')
