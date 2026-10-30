@@ -202,8 +202,10 @@ export interface GraphCoverage {
 
 export type GraphRole = 'A' | 'W' | 'B';
 
+export const GRAPH_SCHEMA_VERSION = 2 as const;
+
 export interface IntelligenceGraph {
-  schemaVersion: 2;
+  schemaVersion: typeof GRAPH_SCHEMA_VERSION;
   analyzerVersion: string;
   graphId: string;
   project: string;

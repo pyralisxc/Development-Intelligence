@@ -18,7 +18,9 @@ Permanent evidence protects durable Development Intelligence contracts, not hist
 
 Compute-only tests configure fake remote write credentials and prove the three durable writer boundaries and mutating HTTP/MCP entries cannot issue writes. Remote accepted-state reads, immutable source replay and cache-loss graphId reconstruction remain available. The actual managed Windows fixture also configures fake remote credentials and proves its fixed role denies reconciliation, semantic verification and current-W publication. Packaging CI poisons ignored `dist` and untracked source before building; the installer must contain only runtime rebuilt from the exact Git archive.
 
-Fixture backup/restore uses exact inventory and SHA256 checks, rejects corrupt backup bytes before copying, excludes configuration/secrets and never represents remote accepted-authority recovery. Same-engine MSI version transitions establish installer lifecycle behavior; cross-schema/analyzer compatibility remains separate future release proof.
+Fixture backup/restore uses exact inventory and SHA256 checks, rejects corrupt backup bytes before copying, excludes configuration/secrets and never represents remote accepted-authority recovery. Same-engine MSI version transitions establish installer lifecycle behavior, not real cross-schema data migration.
+
+`scripts/windows-preflight.test.mjs` protects package/config/host incompatibility refusal, the distinction between replay and remote read compatibility, bounded multi-project GET-only probes and honest availability/authority uncertainty. Disposable Windows lifecycle additionally checks exact installed descriptor identity, non-listening preflight, incompatible and corrupt candidate refusal without changing the running PID/configuration, and raw major-upgrade gating. These tests do not certify arbitrary future analyzer/schema migrations, private-source credentials or representative long-running/failure workloads.
 
 ### One intrinsic graph
 
