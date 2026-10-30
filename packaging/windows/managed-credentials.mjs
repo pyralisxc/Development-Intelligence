@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createPrivateKey,createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
 import {regularAncestors} from './payload.mjs';
 import {validateConfiguration} from './compatibility.mjs';
 
@@ -48,12 +47,22 @@ export async function queryWindowsAclMetadata(targets) {
   if(!Array.isArray(targets)||targets.length<1||targets.length>4||targets.some(target=>typeof target!=='string'||!path.isAbsolute(target))) throw new ManagedCredentialValidationError('acl-query-input');
   const literals=targets.map(target=>"'"+target.replaceAll("'","''")+"'").join(',');
   // Read native ACL metadata only. Never include key bytes in arguments/output.
-  const command=`$ErrorActionPreference='Stop'; $sid=[Security.Principal.SecurityIdentifier]; $rows=@(foreach($target in @(${literals})) {$acl=Get-Acl -LiteralPath $target; $rules=@($acl.GetAccessRules($true,$true,$sid)|ForEach-Object {@{sid=$_.IdentityReference.Value;rights=[long]$_.FileSystemRights;type=[string]$_.AccessControlType;inheritOnly=[bool]($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)}}); @{owner=$acl.GetOwner($sid).Value;protected=$acl.AreAccessRulesProtected;rules=$rules}}); ConvertTo-Json -InputObject $rows -Depth 5 -Compress`;
+  // Fixed progress markers identify native transport stalls without returning
+  // PowerShell errors, paths, ACLs or credential contents in failure reports.
+  const command=`$ErrorActionPreference='Stop'; [Console]::Error.WriteLine('DI_ACL_STARTED'); $sid=[Security.Principal.SecurityIdentifier]; $rows=@(foreach($target in @(${literals})) {$acl=Get-Acl -LiteralPath $target; $rules=@($acl.GetAccessRules($true,$true,$sid)|ForEach-Object {@{sid=$_.IdentityReference.Value;rights=[long]$_.FileSystemRights;type=[string]$_.AccessControlType;inheritOnly=[bool]($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)}}); @{owner=$acl.GetOwner($sid).Value;protected=$acl.AreAccessRulesProtected;rules=$rules}}); [Console]::Error.WriteLine('DI_ACL_COLLECTED'); ConvertTo-Json -InputObject $rows -Depth 5 -Compress; [Console]::Error.WriteLine('DI_ACL_OUTPUT'); exit 0`;
   const systemRoot=process.env.SystemRoot||'C:\\Windows';
   const env=Object.fromEntries(['SystemRoot','WINDIR','COMSPEC','SystemDrive','ProgramData'].flatMap(key=>process.env[key]?[[key,process.env[key]]]:[]));
   let stdout;
-  try { ({stdout}=await promisify(execFile)(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env,windowsHide:true,timeout:NATIVE_ACL_QUERY_TIMEOUT_MS,maxBuffer:32*1024,encoding:'utf8'})); }
-  catch(error) { throw new ManagedCredentialValidationError(error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER'?'acl-query-output-bound':error.killed?'acl-query-timeout':typeof error.code==='number'?'acl-query-process':'acl-query-launch'); }
+  stdout=await new Promise((resolve,reject)=>{
+    const child=execFile(path.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env,windowsHide:true,timeout:NATIVE_ACL_QUERY_TIMEOUT_MS,maxBuffer:32*1024,encoding:'utf8'},(error,output,diagnostic)=>{
+      if(!error) return resolve(output);
+      const phase=diagnostic.includes('DI_ACL_OUTPUT')?'after-output':diagnostic.includes('DI_ACL_COLLECTED')?'serialization':diagnostic.includes('DI_ACL_STARTED')?'metadata':'startup';
+      reject(new ManagedCredentialValidationError(error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER'?'acl-query-output-bound':error.killed?`acl-query-timeout-${phase}`:typeof error.code==='number'?'acl-query-process':'acl-query-launch'));
+    });
+    // This command never consumes stdin. Close it rather than leave an open
+    // parent pipe in a noninteractive Windows PowerShell host.
+    child.stdin?.end();
+  });
   try {
     const rows=JSON.parse(stdout.replace(/^\uFEFF/,''));
     if(!Array.isArray(rows)||rows.length!==targets.length||rows.some(row=>typeof row?.owner!=='string'||typeof row.protected!=='boolean'||!Array.isArray(row.rules))) throw new Error('shape');
