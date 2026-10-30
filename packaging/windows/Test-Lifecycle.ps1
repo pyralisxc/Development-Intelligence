@@ -7,6 +7,7 @@ $data = Join-Path $env:ProgramData $name
 $first = Get-ChildItem (Join-Path $PackageRoot '2.9.237') -Filter '*.msi' | Select-Object -First 1
 $second = Get-ChildItem (Join-Path $PackageRoot '2.9.238') -Filter '*.msi' | Select-Object -First 1
 $unhealthy = Get-ChildItem (Join-Path $PackageRoot '2.9.239') -Filter '*.msi' | Select-Object -First 1
+$incompatible = Get-ChildItem (Join-Path $PackageRoot '2.9.240') -Filter '*.msi' | Select-Object -First 1
 function Assert($condition, [string]$message) { if (!$condition) { throw $message } }
 function Msi([string]$verb, [string]$target) {
     $p = Start-Process msiexec.exe -ArgumentList @($verb, ('"'+$target+'"'), '/qn', '/norestart', '/l*v', ('"'+$target+'.install.log"')) -WindowStyle Hidden -Wait -PassThru
@@ -51,6 +52,14 @@ $config = @{ formatVersion=1; authMode='bearer'; agentToken=$token; projects=@{ 
 [IO.File]::WriteAllText((Join-Path $data 'test-data\retained-authority-fixture.json'), '{"fixtureOnly":true,"acceptedRevision":"retained"}')
 $configHash = (Get-FileHash (Join-Path $data 'config\service.json')).Hash
 $health = Manage 'Start'
+Assert ($health.descriptor.engineSha -eq $health.engineSha) 'Exact-source descriptor identity missing'
+Assert ($health.capabilities.host.logicalProcessors -gt 0 -and $health.capabilities.host.totalMemoryBytes -gt 0) 'Observed node resource facts missing'
+Assert ($health.capabilities.declared.workloads.incrementalPublication -eq 'unsupported') 'Unsupported workload must not be advertised'
+$preflight = Manage 'Preflight'
+Assert ($preflight.canActivate -and $preflight.replay.softwareCompatibility -eq 'supported') 'Replay preflight failed'
+Assert ($preflight.remote.readCompatibility -eq 'unavailable' -and $preflight.remote.currentness -eq 'not-verified') 'Fake remote credential availability was not reported honestly'
+Assert (($preflight | ConvertTo-Json -Depth 20) -notmatch [regex]::Escape($token)) 'Preflight disclosed credentials'
+Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $health.pid) 'Non-listening preflight disrupted the running service'
 Assert ($health.role -eq 'compute-only' -and $health.authority -eq 'remote-read-only') 'Managed role must be fixed even with remote credentials configured'
 foreach ($route in '/workbench/reconcile-canonical','/workbench/semantics/change-verify') {
     $denied = Invoke-WebRequest ("http://127.0.0.1:8788"+$route) -Method Post -Headers @{Authorization="Bearer $token"} -ContentType 'application/json' -Body '{}' -SkipHttpErrorCheck
@@ -126,6 +135,31 @@ Remove-Job $job -Force
 Manage 'Start' | Out-Null
 $oldManagement = Join-Path (Runtime) 'Manage-Trial.ps1'
 $beforePreflight = (Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid
+$incompatibleRejected = $false
+try { & $oldManagement -Action Update -Msi $incompatible.FullName -ExpectedSha256 (Get-FileHash $incompatible.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $incompatibleRejected = $_.Exception.Message -match 'unsupported-config-format' }
+Assert $incompatibleRejected 'Known incompatible candidate was not refused before service disruption'
+Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Incompatible preflight stopped the running service'
+Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Incompatible preflight changed protected configuration'
+# An accidental direct MSI major upgrade must also stop before StopServices.
+$direct = Start-Process msiexec.exe -ArgumentList @('/i', ('"'+$incompatible.FullName+'"'), '/qn', '/norestart') -WindowStyle Hidden -Wait -PassThru
+Assert ($direct.ExitCode -ne 0) 'Raw MSI upgrade bypassed required descriptor preflight'
+Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Raw MSI refusal disrupted the existing service'
+# Internally inconsistent descriptor metadata is refused even when the caller
+# supplies the fixture MSI's correct outer hash.
+$corruptMsi = Join-Path $PackageRoot 'corrupt-descriptor.msi'
+Copy-Item -LiteralPath $second.FullName -Destination $corruptMsi
+$installer = New-Object -ComObject WindowsInstaller.Installer
+$database = $installer.OpenDatabase($corruptMsi,1)
+$view = $database.OpenView("UPDATE ``Property`` SET ``Value``='$('0'*64)' WHERE ``Property``='DI_DESCRIPTOR_SHA256'")
+[void]$view.Execute(); [void]$view.Close(); [void]$database.Commit()
+[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view)
+[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database)
+[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
+$corruptDescriptorRejected = $false
+$corruptDescriptorError = 'no exception'
+try { & $oldManagement -Action Update -Msi $corruptMsi -ExpectedSha256 (Get-FileHash $corruptMsi).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $corruptDescriptorError = $_.Exception.Message; $corruptDescriptorRejected = $corruptDescriptorError -match 'descriptor integrity failure' }
+Assert $corruptDescriptorRejected "Corrupt descriptor refusal was not reached: $corruptDescriptorError"
+Assert ((Invoke-RestMethod 'http://127.0.0.1:8788/managed-health').pid -eq $beforePreflight) 'Corrupt descriptor refusal disrupted existing service'
 $badHashRejected = $false
 try { & $oldManagement -Action Update -Msi $second.FullName -ExpectedSha256 ('0'*64) -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash } catch { $badHashRejected = $_.Exception.Message -match 'checksum mismatch' }
 Assert $badHashRejected 'Corrupt MSI input was not refused'

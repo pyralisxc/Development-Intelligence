@@ -42,6 +42,7 @@ jobs:
           ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.237
           ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.238
           ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.239 -LaboratoryFailure
+          ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.240 -LaboratoryIncompatible
       - name: Actual restricted service lifecycle in disposable Windows
         shell: pwsh
         run: ./packaging/windows/Test-Lifecycle.ps1 -PackageRoot "$env:GITHUB_WORKSPACE/.package-build"

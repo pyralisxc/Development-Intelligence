@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('Status','Start','Stop','Restart','Update','Uninstall','Backup','Restore')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('Status','Preflight','Start','Stop','Restart','Update','Uninstall','Backup','Restore')][string]$Action,
     [string]$Msi,
     [string]$ExpectedSha256,
     [string]$PreviousMsi,
@@ -77,8 +77,10 @@ function Assert-Msi([string]$target, [string]$hash) {
     if ($hash -notmatch '^[a-fA-F0-9]{64}$' -or ![IO.Path]::IsPathRooted($target) -or [IO.Path]::GetExtension($target) -ne '.msi') { throw 'Absolute MSI path and independently verified SHA256 required' }
     if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $hash) { throw 'MSI checksum mismatch' }
 }
-function Invoke-Msi([string]$verb, [string]$target) {
-    $process = Start-Process msiexec.exe -ArgumentList @($verb, ('"' + $target + '"'), '/qn', '/norestart') -WindowStyle Hidden -Wait -PassThru
+function Invoke-Msi([string]$verb, [string]$target, [string]$PreflightHash='') {
+    $arguments = @($verb, ('"' + $target + '"'), '/qn', '/norestart')
+    if ($PreflightHash) { $arguments += "DI_CHECKED_DESCRIPTOR_SHA256=$PreflightHash" }
+    $process = Start-Process msiexec.exe -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Windows Installer returned $($process.ExitCode)" }
 }
 function Msi-Identity([string]$target) {
@@ -93,8 +95,62 @@ function Msi-Identity([string]$target) {
         $result[$property] = $record.StringData(1)
         [void]$view.Close()
     }
+    foreach ($property in 'DI_DESCRIPTOR_JSON','DI_DESCRIPTOR_SHA256') {
+        $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$property'")
+        [void]$view.Execute()
+        $record = $view.Fetch()
+        $result[$property] = if ($record) { $record.StringData(1) } else { $null }
+        [void]$view.Close()
+    }
     if ($result.UpgradeCode -ne '{B09658F5-C884-4ACD-85D2-46AC3D82DA13}' -or $result.DI_ENGINE_SHA -notmatch '^[a-f0-9]{40}$' -or $result.DI_ENGINE_SHA -ne $result.DI_PACKAGING_SHA) { throw 'MSI is not a managed DI trial package' }
     $result
+}
+function Invoke-Preflight([string]$root, [string]$DescriptorJson='', [switch]$AllowBlocked) {
+    $temporary = $null
+    try {
+        $arguments = @((Join-Path $PSScriptRoot 'managed-preflight.mjs'), '--root', $root, '--config', (Join-Path $data 'config\service.json'))
+        if ($DescriptorJson) {
+            $temporary = [IO.Path]::GetTempFileName()
+            [IO.File]::WriteAllText($temporary, $DescriptorJson)
+            $arguments += @('--descriptor',$temporary)
+        }
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = Join-Path $root 'node\node.exe'
+        # Arguments contain only controlled paths; Windows paths cannot contain quotes.
+        $start.Arguments = ($arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $start.EnvironmentVariables.Clear()
+        foreach ($name in 'SystemRoot','WINDIR','COMSPEC','ProgramData','SystemDrive') {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) { $start.EnvironmentVariables[$name] = $value }
+        }
+        $start.EnvironmentVariables['NODE_OPTIONS'] = ''
+        $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+        $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+        $process = [Diagnostics.Process]::Start($start)
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (!$process.WaitForExit(30000)) { $process.Kill(); throw 'Compatibility preflight timed out before activation' }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        [void]$stderrTask.GetAwaiter().GetResult()
+        if (!$stdout) { throw 'Compatibility preflight failed before activation' }
+        $report = $stdout | ConvertFrom-Json
+        if ((!$report.canActivate -or $process.ExitCode -ne 0) -and !$AllowBlocked) { throw ('Compatibility preflight refused before activation: ' + ($report.blocked -join ', ')) }
+        $report
+    } finally {
+        if ($temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+function Assert-CandidateDescriptor($identity) {
+    if (!$identity.DI_DESCRIPTOR_JSON -or $identity.DI_DESCRIPTOR_SHA256 -notmatch '^[a-f0-9]{64}$') { throw 'Candidate has no supported compatibility descriptor' }
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { $actual = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($identity.DI_DESCRIPTOR_JSON)))).Replace('-','').ToLowerInvariant() } finally { $hash.Dispose() }
+    if ($actual -ne $identity.DI_DESCRIPTOR_SHA256) { throw 'Candidate compatibility descriptor integrity failure' }
+    $descriptor = $identity.DI_DESCRIPTOR_JSON | ConvertFrom-Json
+    if ($descriptor.engineSha -ne $identity.DI_ENGINE_SHA -or $descriptor.packagingSha -ne $identity.DI_PACKAGING_SHA) { throw 'Candidate compatibility descriptor identity failure' }
 }
 function Installed-Root {
     $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
@@ -120,11 +176,13 @@ if ($Action -eq 'Status') {
     [PSCustomObject]@{ serviceStatus=if ($service) { [string]$service.Status } else { 'NotInstalled' }; configured=(Test-Path (Join-Path $data 'config\service.json')); health=$health }
     return
 }
+if ($Action -eq 'Preflight') { Invoke-Preflight (Installed-Root) -AllowBlocked; return }
 Assert-Administrator
 switch ($Action) {
     'Start' {
         $manifest = Assert-Package (Installed-Root)
         if (!(Test-Path (Join-Path $data 'config\service.json'))) { throw 'Explicit protected configuration required before activation' }
+        Invoke-Preflight (Installed-Root) | Out-Null
         if ((Get-Service $serviceName).Status -eq 'Stopped' -and (Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction SilentlyContinue)) { throw 'Port is occupied; refusing activation' }
         Start-Service $serviceName
         Wait-Health $manifest
@@ -148,12 +206,14 @@ switch ($Action) {
         $candidateIdentity = Msi-Identity $Msi
         if ($priorIdentity.ProductVersion -ne $old.msiVersion -or $priorIdentity.DI_ENGINE_SHA -ne $old.engineSha) { throw 'Known-good MSI does not match the currently installed package' }
         if ([version]$candidateIdentity.ProductVersion -le [version]$old.msiVersion) { throw 'Update requires a newer MSI version' }
+        Assert-CandidateDescriptor $candidateIdentity
+        Invoke-Preflight (Installed-Root) $candidateIdentity.DI_DESCRIPTOR_JSON | Out-Null
         if ((Get-Service $serviceName).Status -ne 'Running') { throw 'Validated update requires the configured known-good service running' }
         Wait-Health $old | Out-Null
         Stop-OwnedService
         Clear-OwnedScratch
         try {
-            Invoke-Msi '/i' $Msi
+            Invoke-Msi '/i' $Msi $candidateIdentity.DI_DESCRIPTOR_SHA256
             $candidate = Assert-Package (Installed-Root)
             Start-Service $serviceName
             Wait-Health $candidate

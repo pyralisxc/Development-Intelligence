@@ -1,12 +1,13 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$MsiVersion,
     [string]$Output = (Join-Path $PSScriptRoot '..\..\.package-build'),
-    [switch]$LaboratoryFailure
+    [switch]$LaboratoryFailure,
+    [switch]$LaboratoryIncompatible
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-if ($LaboratoryFailure -and ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted')) { throw 'Fault injection is restricted to disposable CI' }
+if (($LaboratoryFailure -or $LaboratoryIncompatible) -and ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted')) { throw 'Fault injection is restricted to disposable CI' }
 $sha = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sha -notmatch '^[0-9a-f]{40}$') { throw 'Exact Git identity required' }
 if (& git -C $repo status --porcelain --untracked-files=no) { throw 'Package must be built from committed source' }
@@ -56,7 +57,14 @@ Copy-Item (Join-Path $source 'dist') $app -Recurse
 Copy-Item (Join-Path $source 'package.json'),(Join-Path $source 'package-lock.json') $app
 & npm.cmd ci --omit=dev --no-audit --no-fund --prefix $app
 if ($LASTEXITCODE -ne 0) { throw 'Production dependency packaging failed' }
-Copy-Item (Join-Path $packageSource 'managed-runtime.mjs'),(Join-Path $packageSource 'Manage-Trial.ps1'),(Join-Path $packageSource 'WinSW-LICENSE.txt') $payload
+foreach ($name in 'managed-runtime.mjs','managed-preflight.mjs','compatibility.mjs','payload.mjs','Manage-Trial.ps1','WinSW-LICENSE.txt') { Copy-Item (Join-Path $packageSource $name) $payload }
+$descriptorPath = Join-Path $payload 'compatibility.json'
+& node (Join-Path $packageSource 'create-descriptor.mjs') $source $sha $descriptorPath
+if ($LASTEXITCODE -ne 0) { throw 'Exact-source compatibility descriptor generation failed' }
+$descriptor = Get-Content -LiteralPath $descriptorPath -Raw | ConvertFrom-Json
+if ($LaboratoryIncompatible) { $descriptor.configFormats = @(2); [IO.File]::WriteAllText($descriptorPath, ($descriptor | ConvertTo-Json -Depth 15 -Compress)) }
+$descriptorJson = [IO.File]::ReadAllText($descriptorPath)
+$descriptorHash = (Get-FileHash -LiteralPath $descriptorPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $wrapper = @'
 <service>
   <id>DevelopmentIntelligenceTrial</id>
@@ -72,13 +80,14 @@ $wrapper = @'
   <log mode="roll-by-size"><sizeThreshold>1024</sizeThreshold><keepFiles>4</keepFiles></log>
 </service>
 '@
+$wrapper = $wrapper.Replace('--max-old-space-size=768', "--max-old-space-size=$($descriptor.limits.nodeHeapMB)")
 if ($LaboratoryFailure) { $wrapper = $wrapper.Replace('--max-old-space-size=768', '--deliberately-invalid-laboratory-flag') }
 [IO.File]::WriteAllText((Join-Path $payload 'DevelopmentIntelligenceTrial.xml'), $wrapper)
 $files = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object FullName | ForEach-Object {
     if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse payload refused' }
     @{ path = [IO.Path]::GetRelativePath($payload, $_.FullName).Replace('\','/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 })
-$manifest = @{ formatVersion=1; engineSha=$sha; packagingSha=$sha; buildSource='git-archive'; msiVersion=$MsiVersion; unsignedLaboratoryArtifact=$true; laboratoryFailure=[bool]$LaboratoryFailure; platform='win32-x64'; dependencies=$pins; files=$files }
+$manifest = @{ formatVersion=1; engineSha=$sha; packagingSha=$sha; buildSource='git-archive'; msiVersion=$MsiVersion; unsignedLaboratoryArtifact=$true; laboratoryFailure=([bool]$LaboratoryFailure -or [bool]$LaboratoryIncompatible); platform='win32-x64'; descriptor=$descriptor; dependencies=$pins; files=$files }
 [IO.File]::WriteAllText((Join-Path $payload 'manifest.json'), ($manifest | ConvertTo-Json -Depth 8))
 function Escape-Xml([string]$value) { [Security.SecurityElement]::Escape($value) }
 function File-Id([string]$value) {
@@ -124,6 +133,10 @@ $xml = @"
   <MajorUpgrade DowngradeErrorMessage="Use explicit preserve-state rollback to the known-good MSI." Schedule="afterInstallInitialize" />
   <Property Id="DI_ENGINE_SHA" Value="$sha" />
   <Property Id="DI_PACKAGING_SHA" Value="$sha" />
+  <Property Id="DI_DESCRIPTOR_JSON" Value="$(Escape-Xml $descriptorJson)" />
+  <Property Id="DI_DESCRIPTOR_SHA256" Value="$descriptorHash" />
+  <Property Id="DI_CHECKED_DESCRIPTOR_SHA256" Secure="yes" />
+  <Launch Condition="Installed OR NOT WIX_UPGRADE_DETECTED OR DI_CHECKED_DESCRIPTOR_SHA256=&quot;$descriptorHash&quot;" Message="Use the supported manager Update command to preflight compatibility before replacing the installed service." />
   <Property Id="NETFRAMEWORK48"><RegistrySearch Id="FrameworkRelease" Root="HKLM" Key="SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" Name="Release" Type="raw" Bitness="always64" /></Property>
   <Launch Condition="Installed OR (NETFRAMEWORK48 AND NETFRAMEWORK48 &gt;= &quot;#528040&quot;)" Message="This trial requires an existing serviced .NET Framework 4.8 or later. Prerequisites are not installed automatically." />
   <Binary Id="ScratchCleanupBinary" SourceFile="$(Escape-Xml $cleanupExe)" />
