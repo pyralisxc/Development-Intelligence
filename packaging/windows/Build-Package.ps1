@@ -93,9 +93,10 @@ $admin = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
 $readAcl = $admin + "(A;OICI;GRGX;;;$serviceSid)"
 $writeAcl = $admin + "(A;OICI;FA;;;$serviceSid)"
 $dataComponents = ''
+$directoryGuids = @{config='D5077B35-F411-445D-92BF-743B36B21AB6'; logs='36C61B39-EF82-44EB-B30E-979D10B1A2C4'; scratch='0E85F979-D1A1-4BD7-B9F2-6FBC1AA1F95D'; 'test-data'='A2138C7E-13B6-4CC2-902B-BE4DF23183FE'}
 foreach ($folder in 'config','logs','scratch','test-data') {
     $sddl = if ($folder -in 'logs','scratch') { $writeAcl } else { $readAcl }
-    $dataComponents += '<Directory Id="Data'+$folder.Replace('-','')+'" Name="'+$folder+'"><Component Id="Data'+$folder.Replace('-','')+'Component" Guid="*" Permanent="yes"><CreateFolder><PermissionEx Sddl="'+$sddl+'" /></CreateFolder></Component></Directory>'
+    $dataComponents += '<Directory Id="Data'+$folder.Replace('-','')+'" Name="'+$folder+'"><Component Id="Data'+$folder.Replace('-','')+'Component" Guid="'+$directoryGuids[$folder]+'" Permanent="yes"><CreateFolder><PermissionEx Sddl="'+$sddl+'" /></CreateFolder></Component></Directory>'
     $refs.Add('<ComponentRef Id="Data'+$folder.Replace('-','')+'Component" />')
 }
 $xml = @"
@@ -106,7 +107,7 @@ $xml = @"
   <Property Id="DI_PACKAGING_SHA" Value="$sha" />
   <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
   <StandardDirectory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="Development Intelligence Trial"><Directory Id="RuntimeFolder" Name="$MsiVersion-$($sha.Substring(0,12))" /></Directory></StandardDirectory>
-  <StandardDirectory Id="CommonAppDataFolder"><Directory Id="TrialData" Name="DevelopmentIntelligenceTrial"><Component Id="TrialDataComponent" Guid="*" Permanent="yes"><CreateFolder><PermissionEx Sddl="$readAcl" /></CreateFolder></Component>$dataComponents</Directory></StandardDirectory>
+  <StandardDirectory Id="CommonAppDataFolder"><Directory Id="TrialData" Name="DevelopmentIntelligenceTrial"><Component Id="TrialDataComponent" Guid="13B64628-E23F-4500-B6DC-075820786BBA" Permanent="yes"><CreateFolder><PermissionEx Sddl="$readAcl" /></CreateFolder></Component>$dataComponents</Directory></StandardDirectory>
   $($components -join "`n")
   <Feature Id="Complete" Title="Managed trial" Level="1"><ComponentRef Id="TrialDataComponent" />$($refs -join "`n")</Feature>
  </Package>
