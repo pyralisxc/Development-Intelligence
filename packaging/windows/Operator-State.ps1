@@ -7,6 +7,7 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
     foreach ($module in 'Microsoft.PowerShell.Utility','Microsoft.PowerShell.Management','Microsoft.PowerShell.Security','CimCmdlets') { Import-Module ($PSHOME+'\Modules\'+$module+'\'+$module+'.psd1') -ErrorAction Stop }
 }
 function Assert-OperatorDirectory([string]$Directory) {
+    if (!(Get-Item -LiteralPath $Directory -Force).PSIsContainer) { throw 'Operator directory required' }
     for ($ancestor=[IO.Path]::GetFullPath($Directory);$ancestor;$ancestor=Split-Path $ancestor) {
         if ((Get-Item -LiteralPath $ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Operator reparse boundary refused' }
     }
@@ -35,11 +36,11 @@ function Read-MsiReceipt([string]$Path) {
     Assert-OperatorFile $Path
     if (!(Test-Path -LiteralPath $Path)) { return $null }
     $record=[IO.File]::ReadAllText($Path) | ConvertFrom-Json
-    if ($record.formatVersion -ne 1 -or $record.operationId -notmatch '^[a-f0-9]{32}$' -or $record.state -notin @('intent','starting','running','terminal','resolved') -or $record.sha256 -notmatch '^[a-f0-9]{64}$' -or $record.verb -notin @('/i','/x') -or $record.productCode -notmatch '^\{[A-Fa-f0-9-]{36}\}$') { throw 'Invalid MSI uncertainty receipt; mutation refused' }
+    if ($record.formatVersion -ne 1 -or $record.operationId -notmatch '^[a-f0-9]{32}$' -or $record.state -notin @('intent','starting','running','terminal','resolved') -or $record.sha256 -notmatch '^[a-f0-9]{64}$' -or $record.toolsSha256 -notmatch '^[a-f0-9]{64}$' -or $record.verb -notin @('/i','/x') -or $record.productCode -notmatch '^\{[A-Fa-f0-9-]{36}\}$') { throw 'Invalid MSI uncertainty receipt; mutation refused' }
     if ($record.state -in @('terminal','resolved') -and ($null -eq $record.exitCode -or [int]$record.exitCode -lt 0 -or [int]$record.exitCode -gt 65535 -or !$record.msiPid -or $record.msiStartTicks -notmatch '^\d+$')) { throw 'Invalid terminal MSI evidence' }
     $record
 }
-function Write-MsiReceipt([string]$Path,$Record) {
+function Write-OperatorJson([string]$Path,$Record) {
     Assert-OperatorFile $Path
     $temporary=$Path+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
     $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Record | ConvertTo-Json -Depth 8 -Compress))
@@ -52,6 +53,62 @@ function Write-MsiReceipt([string]$Path,$Record) {
     # Windows PowerShell 5.1 otherwise coerces $null to an empty backup filename;
     # .NET Framework rejects that path. Preserve a true native null string.
     if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary,$Path,[NullString]::Value) } else { [IO.File]::Move($temporary,$Path) }
+}
+function Write-MsiReceipt([string]$Path,$Record) { Write-OperatorJson $Path $Record }
+function Test-MsiTools([string]$Root,[string]$ExpectedMetadataSha='') {
+    for($ancestor=[IO.Path]::GetFullPath($Root);$ancestor;$ancestor=Split-Path $ancestor){if((Get-Item -LiteralPath $ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Recovery tool reparse boundary refused'}}
+    if(Get-ChildItem -LiteralPath $Root -Force | Where-Object {$_.Name -notin @('Manage-Trial.ps1','Operator-State.ps1','Run-Msi.ps1','operator.json')}){throw 'Unexpected recovery tool inventory'}
+    $metadataPath=Join-Path $Root 'operator.json'
+    if ($ExpectedMetadataSha -and (Get-FileHash -LiteralPath $metadataPath).Hash.ToLowerInvariant() -ne $ExpectedMetadataSha) { throw 'Recovery tool metadata identity mismatch' }
+    $metadata=Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+    if ($metadata.formatVersion -ne 1 -or $metadata.engineSha -notmatch '^[a-f0-9]{40}$') { throw 'Invalid recovery tool identity' }
+    $expected=@('Manage-Trial.ps1','Operator-State.ps1','Run-Msi.ps1')
+    if (@($metadata.files).Count -ne 3 -or (@($metadata.files.name | Sort-Object) -join ',') -ne (($expected | Sort-Object) -join ',')) { throw 'Recovery tool inventory mismatch' }
+    foreach($entry in $metadata.files) {
+        $target=Join-Path $Root $entry.name
+        $item=Get-Item -LiteralPath $target -Force
+        if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.LinkType -eq 'HardLink' -or $item.Length -gt 32768 -or $entry.sha256 -notmatch '^[a-f0-9]{64}$' -or (Get-FileHash -LiteralPath $target).Hash.ToLowerInvariant() -ne $entry.sha256){throw 'Recovery tool integrity failure'}
+    }
+    $metadata
+}
+function Preserve-MsiTools([string]$Source,[string]$ConfigDirectory) {
+    Assert-NoPendingMsi (Join-Path $ConfigDirectory 'operator-msi.json')
+    $names=@('Manage-Trial.ps1','Operator-State.ps1','Run-Msi.ps1')
+    $sourceManifest=Join-Path $Source 'manifest.json'
+    if(Test-Path -LiteralPath $sourceManifest) {
+        $manifest=Get-Content -LiteralPath $sourceManifest -Raw | ConvertFrom-Json
+        $metadata=@{formatVersion=1;engineSha=$manifest.engineSha;files=@(foreach($name in $names){
+            $entry=@($manifest.files | Where-Object path -eq $name)
+            if($entry.Count -ne 1){throw 'Owned recovery tool hash missing'}
+            @{name=$name;sha256=$entry[0].sha256}
+        })}
+    } else { $metadata=Test-MsiTools $Source }
+    $destination=Join-Path $ConfigDirectory 'operator-tools'
+    if(!(Test-Path -LiteralPath $destination)) {
+        New-Item -ItemType Directory -Path $destination | Out-Null
+        $acl=[Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetAccessRuleProtection($true,$false)
+        $acl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+        foreach($sid in 'S-1-5-18','S-1-5-32-544'){$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]$sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))}
+        Set-Acl -LiteralPath $destination -AclObject $acl
+    }
+    Assert-OperatorDirectory $destination
+    if([IO.Path]::GetFullPath($Source) -eq [IO.Path]::GetFullPath($destination)){Test-MsiTools $destination | Out-Null; return $destination}
+    if(Get-ChildItem -LiteralPath $destination -Force | Where-Object {$_.Name -notin ($names+@('operator.json'))}){throw 'Unexpected recovery tool inventory; inspection required'}
+    foreach($entry in $metadata.files) {
+        $sourcePath=Join-Path $Source $entry.name
+        $sourceItem=Get-Item -LiteralPath $sourcePath -Force
+        if($sourceItem.PSIsContainer -or ($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $sourceItem.LinkType -eq 'HardLink' -or $sourceItem.Length -gt 32768 -or (Get-FileHash -LiteralPath $sourcePath).Hash.ToLowerInvariant() -ne $entry.sha256){throw 'Owned recovery tool integrity failure'}
+        $target=Join-Path $destination $entry.name
+        Assert-OperatorFile $target
+        [IO.File]::Copy($sourcePath,$target,$true)
+        $acl=Get-Acl -LiteralPath $target
+        $acl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+        Set-Acl -LiteralPath $target -AclObject $acl
+    }
+    Write-OperatorJson (Join-Path $destination 'operator.json') $metadata
+    Test-MsiTools $destination | Out-Null
+    $destination
 }
 function Assert-NoPendingMsi([string]$Path) {
     $record=Read-MsiReceipt $Path
@@ -67,7 +124,7 @@ function Get-MsiObservation([string]$Path) {
         elseif ($worker.StartTime.ToUniversalTime().Ticks.ToString() -eq $record.workerStartTicks) { $workerObservation='running' }
         else { $workerObservation='pid-reused' }
     }
-    [pscustomobject]@{state=$record.state;operationId=$record.operationId;verb=$record.verb;packageSha256=$record.sha256;productCode=$record.productCode;worker=$workerObservation;exitCode=$record.exitCode;mutationAllowed=($record.state -eq 'resolved');replayPerformed=$false}
+    [pscustomobject]@{state=$record.state;operationId=$record.operationId;verb=$record.verb;packageSha256=$record.sha256;toolsSha256=$record.toolsSha256;productCode=$record.productCode;worker=$workerObservation;exitCode=$record.exitCode;mutationAllowed=($record.state -eq 'resolved');replayPerformed=$false}
 }
 function Wait-MsiReceipt([string]$Path,[Diagnostics.Process]$Worker,[int]$TimeoutMs=300000) {
     $clock=[Diagnostics.Stopwatch]::StartNew()

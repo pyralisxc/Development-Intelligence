@@ -106,7 +106,8 @@ function Invoke-Msi([string]$verb, [string]$target, [string]$ApprovedSha, [strin
         }
     } catch { $before=$null }
     $boot=(Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 10).LastBootUpTime.ToUniversalTime().Ticks.ToString()
-    $record=[pscustomobject]@{formatVersion=1;operationId=[Guid]::NewGuid().ToString('N');state='intent';verb=$verb;packagePath=[IO.Path]::GetFullPath($target);sha256=$ApprovedSha.ToLowerInvariant();productCode=$identity.ProductCode;engineSha=$identity.DI_ENGINE_SHA;msiVersion=$identity.ProductVersion;descriptorHash=$PreflightHash;beforeEngineSha=if($before){$before.engineSha}else{$null};beforeVersion=if($before){$before.msiVersion}else{$null};bootTicks=$boot;workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
+    Test-MsiTools $operatorScripts | Out-Null
+    $record=[pscustomobject]@{formatVersion=1;operationId=[Guid]::NewGuid().ToString('N');state='intent';verb=$verb;packagePath=[IO.Path]::GetFullPath($target);sha256=$ApprovedSha.ToLowerInvariant();productCode=$identity.ProductCode;engineSha=$identity.DI_ENGINE_SHA;msiVersion=$identity.ProductVersion;descriptorHash=$PreflightHash;toolsSha256=(Get-FileHash -LiteralPath (Join-Path $operatorScripts 'operator.json')).Hash.ToLowerInvariant();beforeEngineSha=if($before){$before.engineSha}else{$null};beforeVersion=if($before){$before.msiVersion}else{$null};bootTicks=$boot;workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
     Write-MsiReceipt $receiptPath $record
     $start=[Diagnostics.ProcessStartInfo]::new()
     $start.FileName=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -222,6 +223,7 @@ function Resolve-MsiReceipt {
     $record=Read-MsiReceipt $receiptPath
     if (!$record -or $record.state -eq 'resolved') { Get-MsiObservation $receiptPath; return }
     if ($record.state -ne 'terminal') { throw 'DI_MSI_UNCERTAIN: no retained terminal evidence; resolution refused' }
+    Test-MsiTools (Join-Path $operatorDirectory 'operator-tools') $record.toolsSha256 | Out-Null
     # Windows documents CanShutdown/SERVICE_ACCEPT_SHUTDOWN as the installer
     # service busy indication. It is an additional refusal, not completion proof.
     Add-Type -AssemblyName System.ServiceProcess
@@ -263,6 +265,7 @@ Assert-OperatorDirectory $operatorDirectory
 $operatorLock=Enter-OperatorLock (Join-Path $operatorDirectory 'operator.lock')
 try {
 if ($Action -ne 'Resolve') { Assert-NoPendingMsi $receiptPath }
+if ($Action -in @('Update','Uninstall')) { $operatorScripts=Preserve-MsiTools $operatorScripts $operatorDirectory }
 switch ($Action) {
     'Start' { Start-OwnedService }
     'Resolve' { Resolve-MsiReceipt }

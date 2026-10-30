@@ -333,9 +333,22 @@ Phase 'restart-updated'
 Manage 'Restart' | Out-Null
 Phase 'unhealthy-update-rollback'
 $rollbackObserved = $false
+$rollbackManagement=Join-Path (Runtime) 'Manage-Trial.ps1'
 try {
-    & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Update -Msi $unhealthy.FullName -ExpectedSha256 (Get-FileHash $unhealthy.FullName).Hash -PreviousMsi $second.FullName -PreviousSha256 (Get-FileHash $second.FullName).Hash
-} catch { $rollbackObserved = $_.Exception.Message -match 'known-good package restored' }
+    & $rollbackManagement -Action Update -Msi $unhealthy.FullName -ExpectedSha256 (Get-FileHash $unhealthy.FullName).Hash -PreviousMsi $second.FullName -PreviousSha256 (Get-FileHash $second.FullName).Hash
+} catch {
+    $caught=$_.Exception
+    $rollbackObserved = $caught.Message -match 'known-good package restored'
+    $safeMessages=@(
+        'DI_MSI_UNCERTAIN: unresolved MSI intent; use Reconcile, never kill or replay',
+        'DI_MSI_UNCERTAIN: waiter exited without terminal evidence; mutation refused',
+        'DI_MSI_UNCERTAIN: MSI deadline exceeded; waiter may still be running; use Reconcile'
+    )
+    $safeMessage=if($caught.Message -in $safeMessages -or $caught.Message -match '^DI_MSI_FAILED: terminal Windows Installer exit \d+$' -or $caught.Message -match '^DI_MSI_DEFERRED: suspended/busy/reboot-required outcome \d+; no automatic rollback$'){$caught.Message}else{$null}
+    $observation=$null
+    try {$observation=& (Join-Path $PackageRoot '2.9.238\operator\Manage-Trial.ps1') -Action Reconcile} catch { }
+    @{verifiedRollbackReported=$rollbackObserved;exceptionType=$caught.GetType().FullName;safeCaughtMessage=$safeMessage;otherMessageRedacted=(!$safeMessage -and !$rollbackObserved);msi=$observation;originalWaiterPathExists=(Test-Path -LiteralPath (Join-Path (Split-Path $rollbackManagement) 'Run-Msi.ps1'));snapshotExists=(Test-Path -LiteralPath (Join-Path $data 'config\operator-tools\operator.json'));productionAccess=$false} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $PackageRoot 'rollback-observation.json')
+}
 Assert $rollbackObserved 'Unhealthy update did not report verified rollback'
 Assert ((Health).msiVersion -eq '2.9.238') 'Rollback did not restore known-good service'
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Rollback changed protected key'

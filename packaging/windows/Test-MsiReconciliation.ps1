@@ -18,6 +18,7 @@ foreach($definition in $ast.FindAll({param($node) $node -is [Management.Automati
 $operatorLock=Enter-OperatorLock (Join-Path $operatorDirectory 'operator.lock')
 $uncertain=$false
 try {
+    $operatorScripts=Preserve-MsiTools $operatorScripts $operatorDirectory
     $originalReceiptHash=if(Test-Path -LiteralPath $receiptPath){(Get-FileHash $receiptPath).Hash}else{''}
     $badPinRefused=$false
     try {Invoke-Msi $Verb $MsiPath ('0'*64) '' 1} catch {$badPinRefused=$_.Exception.Message -match 'checksum mismatch'}

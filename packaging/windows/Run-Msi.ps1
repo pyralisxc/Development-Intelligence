@@ -7,6 +7,7 @@ try {
     Assert-OperatorDirectory (Split-Path $ReceiptPath)
     $record=Read-MsiReceipt $ReceiptPath
     if ($record.operationId -ne $OperationId -or $record.state -ne 'intent') { throw 'Invalid MSI launch intent' }
+    Test-MsiTools $PSScriptRoot $record.toolsSha256 | Out-Null
     $record.state='starting'
     $record.workerPid=$PID
     $record.workerStartTicks=(Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString()

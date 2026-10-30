@@ -161,5 +161,5 @@ if ($LASTEXITCODE -ne 0) { throw 'MSI build failed' }
 $operator=Join-Path $build 'operator'
 New-Item -ItemType Directory -Path $operator | Out-Null
 foreach ($name in 'Manage-Trial.ps1','Operator-State.ps1','Run-Msi.ps1') { Copy-Item (Join-Path $packageSource $name) $operator }
-@{engineSha=$sha;unsignedLaboratoryArtifact=$true;files=@(Get-ChildItem -LiteralPath $operator -File | ForEach-Object {@{name=$_.Name;sha256=(Get-FileHash $_.FullName).Hash.ToLowerInvariant()}})} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $operator 'operator.json')
+@{formatVersion=1;engineSha=$sha;unsignedLaboratoryArtifact=$true;files=@(Get-ChildItem -LiteralPath $operator -File | ForEach-Object {@{name=$_.Name;sha256=(Get-FileHash $_.FullName).Hash.ToLowerInvariant()}})} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $operator 'operator.json')
 Write-Output $msi

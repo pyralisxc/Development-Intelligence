@@ -12,7 +12,7 @@ foreach($sid in 'S-1-5-18','S-1-5-32-544') {$acl.AddAccessRule([Security.AccessC
 Set-Acl -LiteralPath $root -AclObject $acl
 Assert-OperatorDirectory $root
 $path=Join-Path $root 'receipt.json'
-$record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
+$record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);toolsSha256=('c'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
 Write-MsiReceipt $path $record
 $blocked=$false
 try { Assert-NoPendingMsi $path } catch {$blocked=$_.Exception.Message -match 'DI_MSI_UNCERTAIN'}
