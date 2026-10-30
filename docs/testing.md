@@ -10,6 +10,16 @@ Permanent evidence protects durable Development Intelligence contracts, not hist
 
 ## Durable contracts
 
+### Managed Windows package lifecycle
+
+`windows-package` builds exact-source, unsigned x64 MSI candidates with app-private runtimes, then installs them on disposable Windows runners. It checks stopped/manual defaults, LocalService and service SID, protected directories, explicit activation, actual Git/native-parser graph construction, anonymous MCP denial, process/listener cleanup, distinct-version upgrade, unhealthy-candidate rollback, corruption refusal, retained configuration/fixture state, fixture-only backup/restore and uninstall/reinstall. It uploads MSI hashes, payload identity and bounded nonsecret lifecycle/resource receipts. No production secrets/storage or Oakley installation are involved.
+
+`scripts/windows-managed-package.test.mjs` protects fail-closed activation, payload tamper detection and scratch link boundaries. Service SID behavior, native parsers, real MSI rollback and Windows process cleanup require actual Windows evidence; XML or mocked service results cannot substitute. CI measurements are specimen results, not Oakley capacity acceptance. Reboot without login and power/network/host recovery remain explicit later installation acceptance.
+
+Compute-only tests configure fake remote write credentials and prove the three durable writer boundaries and mutating HTTP/MCP entries cannot issue writes. Remote accepted-state reads, immutable source replay and cache-loss graphId reconstruction remain available. The actual managed Windows fixture also configures fake remote credentials and proves its fixed role denies reconciliation, semantic verification and current-W publication. Packaging CI poisons ignored `dist` and untracked source before building; the installer must contain only runtime rebuilt from the exact Git archive.
+
+Fixture backup/restore uses exact inventory and SHA256 checks, rejects corrupt backup bytes before copying, excludes configuration/secrets and never represents remote accepted-authority recovery. Same-engine MSI version transitions establish installer lifecycle behavior; cross-schema/analyzer compatibility remains separate future release proof.
+
 ### One intrinsic graph
 
 Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.

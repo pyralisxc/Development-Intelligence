@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { computeOnly } from './config/runtimeRole.js';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { authMode, authorize, authorizeOwnerWrite, authorizeSemanticGateWrite, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
@@ -176,6 +177,14 @@ export function createDevelopmentIntelligenceServer() {
   return http.createServer((req: any, res: any) => withVercelRequestContext(req.headers ?? {}, async () => {
     if (!validateHost(req, res)) return;
     const requestUrl = new URL(req.url ?? '/', 'http://development-intelligence.local');
+    if (computeOnly() && (
+      requestUrl.pathname === '/internal/reconcile-canonical'
+      || requestUrl.pathname === '/workbench/reconcile-canonical'
+      || (req.method === 'POST' && requestUrl.pathname.startsWith('/workbench/semantics/'))
+    )) {
+      json(res, 403, { error: 'This compute-only runtime cannot publish canonical or accepted authority', code: 'COMPUTE_ONLY_AUTHORITY_DENIED' });
+      return;
+    }
     if (requestUrl.pathname === '/health' && req.method === 'GET') {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;

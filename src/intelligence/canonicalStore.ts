@@ -5,6 +5,7 @@ import { stableHash } from '../util/hash.js';
 import { assertGraphIntegrity } from './integrity.js';
 import { ANALYZER_VERSION } from './repository.js';
 import { currentVercelOidcToken } from '../vercelRequestContext.js';
+import { assertAuthorityWritesAllowed } from '../config/runtimeRole.js';
 
 export interface CanonicalGraphCurrentness {
   acceptedSemanticCurrent: boolean;
@@ -373,6 +374,7 @@ export async function writeCanonicalDerivedObjectConditional(
   contentType: string,
   expectedEtag: string | null,
 ): Promise<CanonicalDerivedConditionalWriteResult> {
+  assertAuthorityWritesAllowed();
   assertDerivedRelativePath(relativePath);
   const selected = backend();
   if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) {
@@ -431,6 +433,7 @@ export async function writeCanonicalDerivedObject(
   body: string | Uint8Array,
   contentType = 'application/octet-stream',
 ): Promise<boolean> {
+  assertAuthorityWritesAllowed();
   assertDerivedRelativePath(relativePath);
   const selected = backend();
   if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return false;
@@ -599,6 +602,7 @@ async function saveToBlob(selected: BlobBackend, record: CanonicalGraphRecord, p
 }
 
 export async function saveCanonicalGraph(record: CanonicalGraphRecord): Promise<CanonicalPersistenceDiagnostics> {
+  assertAuthorityWritesAllowed();
   assertExactRevision(record.revision);
   const selected = backend();
   const diagnostics = baseDiagnostics(selected);

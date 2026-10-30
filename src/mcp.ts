@@ -1,4 +1,5 @@
 import { listPublicProjects, resolveProjectRevision, revisionIdentity } from './source/git.js';
+import { computeOnly, assertAuthorityWritesAllowed } from './config/runtimeRole.js';
 import { listAuthorizedGithubOwners } from './config/registry.js';
 import { projectStatus } from './projectStatus.js';
 import { scanGraph } from './intelligence/service.js';
@@ -400,6 +401,12 @@ export function toolContract(): { toolCount: number; contractFingerprint: string
 export async function callTool(name: string, args: Record<string, unknown> = {}) {
   const tool = tools.find(item => item.name === name);
   if (!tool) throw new Error(`Unknown tool: ${name}`);
+  if (computeOnly()) {
+    if (tool.annotations?.readOnlyHint === false) assertAuthorityWritesAllowed();
+    if (name === 'scan_graph' && !(typeof args.ref === 'string' && /^commit:[a-f0-9]{40}$/i.test(args.ref))) {
+      throw Object.assign(new Error('Compute-only scan_graph requires an immutable commit:<full-sha> replay'), { status: 403 });
+    }
+  }
   validateAgainstSchema(tool.inputSchema, args);
   const project = typeof args.project === 'string' && args.project ? args.project : null;
   const startedAt = new Date().toISOString();
