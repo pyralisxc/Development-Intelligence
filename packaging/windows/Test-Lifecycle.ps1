@@ -54,7 +54,7 @@ $nodeProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($health.pid)"
 $owner = Invoke-CimMethod -InputObject $nodeProcess -MethodName GetOwner
 Assert ($owner.User -eq 'LOCAL SERVICE') 'Actual Node must run as LocalService'
 $result = Rpc 'scan_graph' @{project='fixture';ref="commit:$revision"}
-Assert (!$result.error -and !$result.result.isError) 'Bundled Git/native parser exact-revision scan failed'
+Assert (!$result.PSObject.Properties['error'] -and !($result.result.PSObject.Properties['isError'] -and $result.result.isError)) 'Bundled Git/native parser exact-revision scan failed'
 $json = $result | ConvertTo-Json -Depth 60
 Assert ($json -match $revision -and $json -match 'Sample') 'Actual graph must contain fixture identity and native parser output'
 try { Invoke-WebRequest 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Body '{}' | Out-Null; throw 'Unauthorized request passed' } catch { Assert ($_.Exception.Response.StatusCode.value__ -eq 401) 'MCP must deny anonymous access' }

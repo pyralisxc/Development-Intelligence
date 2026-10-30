@@ -45,7 +45,7 @@ function Wait-Health($manifest) {
                 $config = Get-Content (Join-Path $data 'config\service.json') -Raw | ConvertFrom-Json
                 $body = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
                 $rpc = Invoke-RestMethod 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Headers @{Authorization="Bearer $($config.agentToken)"} -Body $body -TimeoutSec 5
-                if ($rpc.error -or !($rpc.result.tools | Where-Object name -eq 'scan_graph')) { throw 'Authenticated MCP contract unavailable' }
+                if ($rpc.PSObject.Properties['error'] -or !($rpc.result.tools | Where-Object name -eq 'scan_graph')) { throw 'Authenticated MCP contract unavailable' }
                 return $health
             }
         } catch { }
