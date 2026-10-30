@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateConfiguration,observeHost } from './compatibility.mjs';
+import { validateConfiguration,validateDescriptor,observeHost } from './compatibility.mjs';
 import { verifyPayload,regularAncestors,scratchInventory } from './payload.mjs';
 import { runPreflight } from './managed-preflight.mjs';
 export { validateConfiguration } from './compatibility.mjs';
@@ -15,8 +15,7 @@ async function main() {
   const configPath=path.join(dataRoot,'config','service.json');
   await regularAncestors(configPath);
   const config=validateConfiguration(JSON.parse(await fs.readFile(configPath,'utf8')));
-  const preflight=await runPreflight(root,manifest.descriptor,config,{installed:true});
-  if(!preflight.canActivate) throw new Error('Managed compatibility preflight refused activation');
+  validateDescriptor(manifest.descriptor);
   const limits=manifest.descriptor.limits;
   const scratch=path.join(dataRoot,'scratch');
   const osEnvironment=Object.fromEntries(['SystemRoot','WINDIR','COMSPEC','ProgramData','SystemDrive'].flatMap(key=>process.env[key]?[[key,process.env[key]]]:[]));
@@ -33,6 +32,10 @@ async function main() {
     GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:path.join(scratch,'empty-gitconfig'),GIT_TERMINAL_PROMPT:'0',
     ...(config.remoteStorage?{DEVINT_CANONICAL_BLOB_STORE_ID:config.remoteStorage.storeId,DEVINT_CANONICAL_BLOB_TOKEN:config.remoteStorage.token}:{}),
   });
+  // Engine metadata imports initialize normal runtime modules. Keep them behind
+  // the same explicit environment boundary as the server itself.
+  const preflight=await runPreflight(root,manifest.descriptor,config,{installed:true});
+  if(!preflight.canActivate) throw new Error('Managed compatibility preflight refused activation');
   await scratchInventory(scratch);
   for(const name of await fs.readdir(scratch)) await fs.rm(path.join(scratch,name),{recursive:true,force:true});
   const {createDevelopmentIntelligenceServer}=await import('./app/dist/src/http.js');
