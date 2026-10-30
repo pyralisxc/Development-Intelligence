@@ -55,8 +55,17 @@ $owner = Invoke-CimMethod -InputObject $nodeProcess -MethodName GetOwner
 Assert ($owner.User -eq 'LOCAL SERVICE') 'Actual Node must run as LocalService'
 $result = Rpc 'scan_graph' @{project='fixture';ref="commit:$revision"}
 Assert (!$result.PSObject.Properties['error'] -and !($result.result.PSObject.Properties['isError'] -and $result.result.isError)) 'Bundled Git/native parser exact-revision scan failed'
-$json = $result | ConvertTo-Json -Depth 60
-Assert ($json -match $revision -and $json -match 'Sample') 'Actual graph must contain fixture identity and native parser output'
+$scan = $result.result.structuredContent
+Assert ($scan.revision -eq $revision -and $scan.nodeCount -gt 3) 'Actual scan must report the exact fixture revision'
+# scan_graph deliberately returns compact counts, not graph nodes. Inspect the
+# declared structural query surface to prove each bundled native parser ran.
+$symbols = Rpc 'search_graph' @{project='fixture';ref="commit:$revision";kinds=@('class','method','function','property');layers=@('structural');limit=100}
+Assert (!$symbols.PSObject.Properties['error'] -and !($symbols.result.PSObject.Properties['isError'] -and $symbols.result.isError)) 'Native symbol query failed'
+$nodes = @($symbols.result.structuredContent.nodes)
+Assert (@($nodes | Where-Object kind -eq 'class').Count -eq 2) 'C#/Java class parsing failed'
+Assert (@($nodes | Where-Object kind -eq 'property').Count -ge 1) 'C# property parsing failed'
+Assert (@($nodes | Where-Object kind -eq 'method').Count -ge 1) 'Java method parsing failed'
+Assert (@($nodes | Where-Object kind -eq 'function').Count -ge 1) 'Python function parsing failed'
 try { Invoke-WebRequest 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Body '{}' | Out-Null; throw 'Unauthorized request passed' } catch { Assert ($_.Exception.Response.StatusCode.value__ -eq 401) 'MCP must deny anonymous access' }
 $measure = Get-Process -Id $health.pid
 @{ pid=$health.pid; workingSetBytes=$measure.WorkingSet64; privateBytes=$measure.PrivateMemorySize64; cpuSeconds=$measure.CPU; engineSha=$health.engineSha } | ConvertTo-Json | Set-Content (Join-Path $PackageRoot 'resource-measurement.json')

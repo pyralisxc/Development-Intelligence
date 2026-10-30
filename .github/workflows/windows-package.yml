@@ -53,4 +53,5 @@ jobs:
             .package-build/**/Package.wxs
             .package-build/*.json
           retention-days: 7
+          include-hidden-files: true
           if-no-files-found: warn
