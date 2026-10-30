@@ -48,6 +48,7 @@ $wrapper = @'
   <description>Explicitly configured, loopback-only DI compute trial</description>
   <executable>%BASE%\node\node.exe</executable>
   <arguments>--max-old-space-size=768 "%BASE%\managed-runtime.mjs"</arguments>
+  <env name="NODE_OPTIONS" value="" />
   <workingdirectory>%BASE%</workingdirectory>
   <stoptimeout>20sec</stoptimeout>
   <stopparentprocessfirst>false</stopparentprocessfirst>
@@ -101,6 +102,8 @@ $xml = @"
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
  <Package Name="Development Intelligence Trial (unsigned laboratory)" Manufacturer="Development Intelligence" Version="$MsiVersion" UpgradeCode="B09658F5-C884-4ACD-85D2-46AC3D82DA13" Scope="perMachine" InstallerVersion="500">
   <MajorUpgrade DowngradeErrorMessage="Use explicit preserve-state rollback to the known-good MSI." Schedule="afterInstallInitialize" />
+  <Property Id="DI_ENGINE_SHA" Value="$sha" />
+  <Property Id="DI_PACKAGING_SHA" Value="$sha" />
   <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
   <StandardDirectory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="Development Intelligence Trial"><Directory Id="RuntimeFolder" Name="$MsiVersion-$($sha.Substring(0,12))" /></Directory></StandardDirectory>
   <StandardDirectory Id="CommonAppDataFolder"><Directory Id="TrialData" Name="DevelopmentIntelligenceTrial"><Component Id="TrialDataComponent" Guid="*" Permanent="yes"><CreateFolder><PermissionEx Sddl="$readAcl" /></CreateFolder></Component>$dataComponents</Directory></StandardDirectory>

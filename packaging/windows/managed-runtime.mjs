@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 
 export const SERVICE_NAME = 'DevelopmentIntelligenceTrial';
 export function validateConfiguration(config) {
-  if (config?.formatVersion !== 1 || config.authMode !== 'bearer' || typeof config.agentToken !== 'string' || config.agentToken.length < 32) {
+  if (config?.formatVersion !== 1 || config.authMode !== 'bearer' || typeof config.agentToken !== 'string' || config.agentToken.trim().length < 32 || config.agentToken !== config.agentToken.trim()) {
     throw new Error('Explicit formatVersion=1 bearer configuration with a token of at least 32 characters is required');
   }
   if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects)) throw new Error('An explicit project access registry is required');
@@ -34,16 +34,27 @@ export async function scratchInventory(root) {
 }
 
 export async function verifyPayload(root) {
+  for (let current = path.resolve(root); ; current = path.dirname(current)) {
+    if ((await fs.lstat(current)).isSymbolicLink()) throw new Error('Reparse package ancestor refused');
+    if (path.dirname(current) === current) break;
+  }
   const manifest = JSON.parse(await fs.readFile(path.join(root, 'manifest.json'), 'utf8'));
-  if (manifest.formatVersion !== 1 || !/^[a-f0-9]{40}$/.test(manifest.engineSha) || manifest.packagingSha !== manifest.engineSha) throw new Error('Invalid package identity');
+  if (manifest.formatVersion !== 1 || !/^[a-f0-9]{40}$/.test(manifest.engineSha) || manifest.packagingSha !== manifest.engineSha || !Array.isArray(manifest.files) || !manifest.files.length) throw new Error('Invalid package identity');
+  const actual = new Set((await scratchInventory(root)).map(item => path.relative(root, item.path).replaceAll('\\', '/').toLowerCase()));
+  actual.delete('manifest.json');
+  const declared = new Set();
   for (const item of manifest.files) {
-    if (path.isAbsolute(item.path) || item.path.split(/[\\/]/).includes('..')) throw new Error('Invalid manifest path');
+    if (typeof item.path !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256) || path.isAbsolute(item.path) || /[\\:]/.test(item.path) || item.path.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Invalid manifest path');
+    const key = item.path.toLowerCase();
+    if (declared.has(key) || !actual.has(key)) throw new Error('Package inventory mismatch');
+    declared.add(key);
     const target = path.join(root, item.path);
     const stat = await fs.lstat(target);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Package contains a non-regular file');
     const hash = createHash('sha256').update(await fs.readFile(target)).digest('hex');
     if (hash !== item.sha256) throw new Error(`Package integrity failure: ${item.path}`);
   }
+  if (actual.size !== declared.size) throw new Error('Package contains undeclared files');
   return manifest;
 }
 

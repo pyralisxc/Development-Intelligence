@@ -10,6 +10,7 @@ test('managed activation requires explicit credentials and rejects arbitrary env
   const valid = { formatVersion: 1, authMode: 'bearer', agentToken: 'x'.repeat(32), projects: {} };
   assert.equal(validateConfiguration(valid), valid);
   assert.throws(() => validateConfiguration({ ...valid, agentToken: '' }));
+  assert.throws(() => validateConfiguration({ ...valid, agentToken: ' '.repeat(32) }));
   assert.throws(() => validateConfiguration({ ...valid, DEVINT_CANONICAL_GRAPH_DIR: '/authority' }));
   assert.throws(() => validateConfiguration({ ...valid, remoteStorage: {} }));
 });
@@ -21,6 +22,9 @@ test('package verification rejects changed bytes and escaping manifest paths', a
     await fs.writeFile(path.join(root, 'runtime'), 'original');
     await fs.writeFile(path.join(root, 'manifest.json'), JSON.stringify(manifest));
     await verifyPayload(root);
+    await fs.writeFile(path.join(root, 'undeclared'), 'injected');
+    await assert.rejects(verifyPayload(root), /undeclared/);
+    await fs.unlink(path.join(root, 'undeclared'));
     await fs.writeFile(path.join(root, 'runtime'), 'corrupt');
     await assert.rejects(verifyPayload(root), /integrity/);
     manifest.files[0].path = '../outside';

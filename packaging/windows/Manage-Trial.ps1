@@ -18,8 +18,13 @@ function Assert-Administrator {
 function Assert-Package([string]$Root) {
     $manifest = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.formatVersion -ne 1 -or $manifest.engineSha -notmatch '^[a-f0-9]{40}$' -or $manifest.engineSha -ne $manifest.packagingSha) { throw 'Invalid installed identity' }
+    $inventory = @(Get-ChildItem -LiteralPath $Root -Recurse -Force)
+    if ((Get-Item -LiteralPath $Root).Attributes -band [IO.FileAttributes]::ReparsePoint -or ($inventory | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })) { throw 'Reparse package tree refused' }
+    $actual = @($inventory | Where-Object { !$_.PSIsContainer -and $_.FullName -ne (Join-Path $Root 'manifest.json') })
+    if ($actual.Count -ne $manifest.files.Count) { throw 'Installed inventory mismatch' }
+    $declared = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $manifest.files) {
-        if ([IO.Path]::IsPathRooted($file.path) -or $file.path -match '(^|[\\/])\.\.([\\/]|$)') { throw 'Invalid manifest path' }
+        if ([IO.Path]::IsPathRooted($file.path) -or $file.path -match '[\\:]|(^|/)\.\.?(/|$)|//' -or !$declared.Add($file.path)) { throw 'Invalid manifest path' }
         $target = Join-Path $Root $file.path
         $item = Get-Item -LiteralPath $target
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse payload refused' }
@@ -31,7 +36,18 @@ function Wait-Health($manifest) {
     for ($attempt = 0; $attempt -lt 45; $attempt++) {
         try {
             $health = Invoke-RestMethod $uri -TimeoutSec 2
-            if ($health.ready -and $health.engineSha -eq $manifest.engineSha -and $health.packagingSha -eq $manifest.packagingSha -and $health.msiVersion -eq $manifest.msiVersion) { return $health }
+            if ($health.ready -and $health.engineSha -eq $manifest.engineSha -and $health.packagingSha -eq $manifest.packagingSha -and $health.msiVersion -eq $manifest.msiVersion) {
+                $canonical = Invoke-RestMethod 'http://127.0.0.1:8788/health' -TimeoutSec 2
+                if ($canonical.deployment.revision -ne $manifest.engineSha) { throw 'Canonical runtime identity mismatch' }
+                $svc = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+                $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($health.pid)"
+                if (!$process -or $process.ParentProcessId -ne $svc.ProcessId) { throw 'Health process does not belong to owned service' }
+                $config = Get-Content (Join-Path $data 'config\service.json') -Raw | ConvertFrom-Json
+                $body = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+                $rpc = Invoke-RestMethod 'http://127.0.0.1:8788/mcp' -Method Post -ContentType 'application/json' -Headers @{Authorization="Bearer $($config.agentToken)"} -Body $body -TimeoutSec 5
+                if ($rpc.error -or !($rpc.result.tools | Where-Object name -eq 'scan_graph')) { throw 'Authenticated MCP contract unavailable' }
+                return $health
+            }
         } catch { }
         Start-Sleep -Milliseconds 500
     }
@@ -65,6 +81,21 @@ function Invoke-Msi([string]$verb, [string]$target) {
     $process = Start-Process msiexec.exe -ArgumentList @($verb, ('"' + $target + '"'), '/qn', '/norestart') -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Windows Installer returned $($process.ExitCode)" }
 }
+function Msi-Identity([string]$target) {
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $database = $installer.OpenDatabase($target, 0)
+    $result = @{}
+    foreach ($property in 'ProductCode','UpgradeCode','ProductVersion','DI_ENGINE_SHA','DI_PACKAGING_SHA') {
+        $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$property'")
+        $view.Execute()
+        $record = $view.Fetch()
+        if (!$record) { throw 'MSI identity property missing' }
+        $result[$property] = $record.StringData(1)
+        $view.Close()
+    }
+    if ($result.UpgradeCode -ne '{B09658F5-C884-4ACD-85D2-46AC3D82DA13}' -or $result.DI_ENGINE_SHA -notmatch '^[a-f0-9]{40}$' -or $result.DI_ENGINE_SHA -ne $result.DI_PACKAGING_SHA) { throw 'MSI is not a managed DI trial package' }
+    $result
+}
 function Installed-Root {
     $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
     if (!$service -or $service.PathName -notmatch '^"?(.+DevelopmentIntelligenceTrial\.exe)"?$') { throw 'Owned MSI service path unavailable' }
@@ -93,6 +124,10 @@ switch ($Action) {
         Assert-Msi $Msi $ExpectedSha256
         Assert-Msi $PreviousMsi $PreviousSha256
         $old = Assert-Package (Installed-Root)
+        $priorIdentity = Msi-Identity $PreviousMsi
+        $candidateIdentity = Msi-Identity $Msi
+        if ($priorIdentity.ProductVersion -ne $old.msiVersion -or $priorIdentity.DI_ENGINE_SHA -ne $old.engineSha) { throw 'Known-good MSI does not match the currently installed package' }
+        if ([version]$candidateIdentity.ProductVersion -le [version]$old.msiVersion) { throw 'Update requires a newer MSI version' }
         if ((Get-Service $serviceName).Status -ne 'Running') { throw 'Validated update requires the configured known-good service running' }
         Wait-Health $old | Out-Null
         Stop-OwnedService
@@ -107,7 +142,9 @@ switch ($Action) {
             Stop-OwnedService
             # Explicit uninstall/reinstall permits a numerically older known-good MSI.
             # MSI owns all registration; no second package database or atomicity claim.
-            if ((Installed-Root) -ne $PSScriptRoot) { Invoke-Msi '/x' $Msi }
+            $installed = Assert-Package (Installed-Root)
+            if ($installed.msiVersion -eq $candidateIdentity.ProductVersion -and $installed.engineSha -eq $candidateIdentity.DI_ENGINE_SHA) { Invoke-Msi '/x' $Msi }
+            elseif ($installed.msiVersion -ne $old.msiVersion -or $installed.engineSha -ne $old.engineSha) { throw 'Update outcome is uncertain; automatic rollback refused for an unexpected installed identity' }
             Invoke-Msi '/i' $PreviousMsi
             Start-Service $serviceName
             Wait-Health $old | Out-Null
@@ -120,6 +157,7 @@ switch ($Action) {
         # This compute package owns no local canonical state. Only nonsecret lab
         # fixtures are portable; configuration/tokens/logs are deliberately excluded.
         $source = Join-Path $data 'test-data'
+        if ((Get-Item -LiteralPath $source).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse backup root refused' }
         if (Get-ChildItem -LiteralPath $source -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'Reparse backup refused' }
         Copy-Item -LiteralPath $source -Destination $BackupDirectory -Recurse
     }

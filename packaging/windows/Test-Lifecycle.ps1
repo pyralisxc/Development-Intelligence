@@ -41,6 +41,8 @@ $samples.GetEnumerator() | ForEach-Object { [IO.File]::WriteAllText((Join-Path $
 & git -C $fixture add .
 & git -C $fixture -c user.name=Fixture -c user.email=fixture@example.invalid commit -m fixture
 $revision = (& git -C $fixture rev-parse HEAD).Trim()
+& icacls.exe $fixture /setowner 'NT AUTHORITY\LocalService' /T /Q | Out-Null
+Assert ($LASTEXITCODE -eq 0) 'Fixture ownership setup failed'
 $token = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $config = @{ formatVersion=1; authMode='bearer'; agentToken=$token; projects=@{ fixture=@{ repository=([Uri]($fixture.Replace('\','/')+'/')).AbsoluteUri; defaultRef='main'; allowedRefs=@('main'); revisionPolicy='repository-history'; credential=@{type='none'} } } }
 [IO.File]::WriteAllText((Join-Path $data 'config\service.json'), ($config | ConvertTo-Json -Depth 10))
