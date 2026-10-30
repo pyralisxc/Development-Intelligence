@@ -1,7 +1,8 @@
 export type ProjectCredential =
   | { type: 'none' }
   | { type: 'token-env'; tokenEnv: string; username?: string }
-  | { type: 'github-app-env'; appIdEnv: string; privateKeyEnv: string; username?: string };
+  | { type: 'github-app-env'; appIdEnv: string; privateKeyEnv: string; username?: string }
+  | { type: 'github-app-bound'; binding: string };
 
 export interface RuntimeHeaderConfig {
   name: string;

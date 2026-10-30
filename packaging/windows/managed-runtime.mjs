@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { validateConfiguration,validateDescriptor,observeHost } from './compatibility.mjs';
 import { verifyPayload,regularAncestors,scratchInventory } from './payload.mjs';
 import { runPreflight } from './managed-preflight.mjs';
+import { loadManagedGithubApp,MANAGED_APP_BINDING } from './managed-credentials.mjs';
 export { validateConfiguration } from './compatibility.mjs';
 export { verifyPayload,scratchInventory } from './payload.mjs';
 
@@ -14,6 +15,8 @@ async function main() {
   const manifest=await verifyPayload(root);
   const configPath=path.join(dataRoot,'config','service.json');
   await regularAncestors(configPath);
+  const configStat=await fs.lstat(configPath);
+  if(!configStat.isFile()||configStat.isSymbolicLink()||configStat.nlink!==1||configStat.size>1024*1024) throw new Error('Invalid protected configuration file');
   const config=validateConfiguration(JSON.parse(await fs.readFile(configPath,'utf8')));
   validateDescriptor(manifest.descriptor);
   const limits=manifest.descriptor.limits;
@@ -34,8 +37,13 @@ async function main() {
   });
   // Engine metadata imports initialize normal runtime modules. Keep them behind
   // the same explicit environment boundary as the server itself.
-  const preflight=await runPreflight(root,manifest.descriptor,config,{installed:true});
+  const preflight=await runPreflight(root,manifest.descriptor,config,{installed:true,configDirectory:path.dirname(configPath)});
   if(!preflight.canActivate) throw new Error('Managed compatibility preflight refused activation');
+  const material=await loadManagedGithubApp(config,path.dirname(configPath));
+  if(material.privateKey) {
+    const {bindGithubAppCredential}=await import('./app/dist/src/source/repositoryCredential.js');
+    bindGithubAppCredential(MANAGED_APP_BINDING,material.appId,material.privateKey,material.repositories);
+  }
   await scratchInventory(scratch);
   for(const name of await fs.readdir(scratch)) await fs.rm(path.join(scratch,name),{recursive:true,force:true});
   const {createDevelopmentIntelligenceServer}=await import('./app/dist/src/http.js');

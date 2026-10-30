@@ -3,6 +3,7 @@ declare const Buffer: any;
 declare namespace NodeJS { interface ProcessEnv { [key: string]: string | undefined } interface ErrnoException extends Error { code?: string } }
 declare const process: { env: NodeJS.ProcessEnv; [key: string]: any };
 declare module 'node:crypto' {
+  export interface KeyObject { type: 'private' | 'public' | 'secret'; asymmetricKeyType?: string; asymmetricKeyDetails?: { modulusLength?: number }; }
   export const createHash: any;
   export const createHmac: any;
   export const createPrivateKey: any;

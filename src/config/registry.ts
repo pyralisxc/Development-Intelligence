@@ -50,6 +50,9 @@ function validateProject(name: string, config: ProjectConfig): ProjectConfig {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) throw new Error(`${name}: github-app-env ${label} must name an environment variable`);
     }
   }
+  if (config.credential?.type === 'github-app-bound' && !/^[A-Za-z0-9._-]{1,64}$/u.test(config.credential.binding)) {
+    throw new Error(`${name}: invalid in-memory GitHub App binding reference`);
+  }
   if (!config.defaultRef?.trim()) throw new Error(`${name}: defaultRef is required`);
   const revisionPolicy = config.revisionPolicy ?? 'allowlisted';
   if (!['allowlisted', 'repository-history'].includes(revisionPolicy)) throw new Error(`${name}: unsupported revisionPolicy: ${String(config.revisionPolicy)}`);
