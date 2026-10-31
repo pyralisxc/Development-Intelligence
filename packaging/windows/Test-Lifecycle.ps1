@@ -151,11 +151,11 @@ Assert (($preflight | ConvertTo-Json -Depth 20) -notmatch [regex]::Escape(($fake
 Phase 'credential-refusal-checks'
 $credentialManagement = Join-Path (Runtime) 'Manage-Trial.ps1'
 $protectedPid = $health.pid
-function Assert-CredentialRefusal {
+function Assert-CredentialRefusal([string]$ExpectedRefusal='preflight refused') {
     $report = Manage 'Preflight'
     Assert (!$report.canActivate) 'Unsafe credential material passed preflight'
     $rejected = $false
-    try { & $credentialManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash | Out-Null } catch { $rejected = $_.Exception.Message -match 'preflight refused' }
+    try { & $credentialManagement -Action Update -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash -PreviousMsi $first.FullName -PreviousSha256 (Get-FileHash $first.FullName).Hash | Out-Null } catch { $rejected = $_.Exception.Message -match [regex]::Escape($ExpectedRefusal) }
     Assert $rejected 'Invalid credential did not refuse update before disruption'
     Assert ((Health).pid -eq $protectedPid) 'Credential refusal disrupted valid service'
 }
@@ -183,7 +183,7 @@ $configSddl = (Get-Acl -LiteralPath $configDirectory).Sddl
 $replaceableAcl = Get-Acl -LiteralPath $configDirectory
 $replaceableAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]'S-1-1-0','Write','Allow'))
 Set-Acl -LiteralPath $configDirectory -AclObject $replaceableAcl
-Assert-CredentialRefusal
+Assert-CredentialRefusal -ExpectedRefusal 'Operator directory permits untrusted writes'
 $restoredAcl = Get-Acl -LiteralPath $configDirectory
 $restoredAcl.SetSecurityDescriptorSddlForm($configSddl)
 Set-Acl -LiteralPath $configDirectory -AclObject $restoredAcl
@@ -333,9 +333,25 @@ Phase 'restart-updated'
 Manage 'Restart' | Out-Null
 Phase 'unhealthy-update-rollback'
 $rollbackObserved = $false
+$rollbackManagement=Join-Path (Runtime) 'Manage-Trial.ps1'
 try {
-    & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Update -Msi $unhealthy.FullName -ExpectedSha256 (Get-FileHash $unhealthy.FullName).Hash -PreviousMsi $second.FullName -PreviousSha256 (Get-FileHash $second.FullName).Hash
-} catch { $rollbackObserved = $_.Exception.Message -match 'known-good package restored' }
+    & $rollbackManagement -Action Update -Msi $unhealthy.FullName -ExpectedSha256 (Get-FileHash $unhealthy.FullName).Hash -PreviousMsi $second.FullName -PreviousSha256 (Get-FileHash $second.FullName).Hash
+} catch {
+    $caught=$_.Exception
+    $rollbackObserved = $caught.Message -match 'known-good package restored'
+    $safeMessages=@(
+        'DI_MSI_UNCERTAIN: unresolved MSI intent; use Reconcile, never kill or replay',
+        'DI_MSI_UNCERTAIN: waiter exited without terminal evidence; mutation refused',
+        'DI_MSI_UNCERTAIN: MSI deadline exceeded; waiter may still be running; use Reconcile'
+    )
+    $safeMessage=if($caught.Message -in $safeMessages -or $caught.Message -match '^DI_MSI_FAILED: terminal Windows Installer exit \d+$' -or $caught.Message -match '^DI_MSI_DEFERRED: suspended/busy/reboot-required outcome \d+; no automatic rollback$'){$caught.Message}else{$null}
+    $exceptionChain=[Collections.Generic.List[object]]::new()
+    for($node=$caught;$node -and $exceptionChain.Count -lt 6;$node=$node.InnerException){$exceptionChain.Add(@{type=$node.GetType().FullName;hresult=$node.HResult})}
+    $originalLine=if($caught.Data.Contains('operatorFailureLine')){$caught.Data['operatorFailureLine']}else{$null}
+    $observation=$null
+    try {$observation=& (Join-Path $PackageRoot '2.9.238\operator\Manage-Trial.ps1') -Action Reconcile} catch { }
+    @{verifiedRollbackReported=$rollbackObserved;exceptionType=$caught.GetType().FullName;exceptionChain=$exceptionChain.ToArray();originalFailureLine=$originalLine;safeCaughtMessage=$safeMessage;otherMessageRedacted=(!$safeMessage -and !$rollbackObserved);msi=$observation;originalWaiterPathExists=(Test-Path -LiteralPath (Join-Path (Split-Path $rollbackManagement) 'Run-Msi.ps1'));snapshotExists=(Test-Path -LiteralPath (Join-Path $data 'config\operator-tools\operator.json'));productionAccess=$false} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $PackageRoot 'rollback-observation.json')
+}
 Assert $rollbackObserved 'Unhealthy update did not report verified rollback'
 Assert ((Health).msiVersion -eq '2.9.238') 'Rollback did not restore known-good service'
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Rollback changed protected key'
@@ -366,12 +382,20 @@ Assert $corruptBackupRejected 'Restore did not reject a corrupt backup'
 [IO.File]::WriteAllBytes($backupFixture, $backupBytes)
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Restore -BackupDirectory $backup
 Phase 'uninstall-retention'
+Phase 'inflight-msi-repair-reconciliation'
+& (Join-Path $PSScriptRoot 'Test-MsiReconciliation.ps1') -OperatorRoot (Join-Path $PackageRoot '2.9.238\operator') -MsiPath $second.FullName -Verb '/i' -PackageRoot $PackageRoot
 & (Join-Path (Runtime) 'Manage-Trial.ps1') -Action Uninstall -Msi $second.FullName -ExpectedSha256 (Get-FileHash $second.FullName).Hash
 Assert (!(Get-Service $name -ErrorAction SilentlyContinue)) 'Uninstall left service registration'
 Assert ((Get-FileHash (Join-Path $data 'config\service.json')).Hash -eq $configHash) 'Uninstall removed protected configuration'
 Assert ((Get-FileHash $keyPath).Hash -eq $keyHash) 'Uninstall removed protected key'
 Assert (Test-Path (Join-Path $data 'test-data\retained-authority-fixture.json')) 'Uninstall removed protected fixture'
 Phase 'reinstall-start-stop'
+Msi '/i' $first.FullName
+Manage 'Start' | Out-Null
+Manage 'Stop'
+$runtime = Runtime
+Phase 'inflight-uninstall-reconciliation'
+& (Join-Path $PSScriptRoot 'Test-MsiReconciliation.ps1') -OperatorRoot (Join-Path $PackageRoot '2.9.237\operator') -MsiPath $first.FullName -Verb '/x' -PackageRoot $PackageRoot -CorruptManifest
 Msi '/i' $first.FullName
 Manage 'Start' | Out-Null
 Manage 'Stop'

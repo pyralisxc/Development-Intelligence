@@ -57,7 +57,7 @@ Copy-Item (Join-Path $source 'dist') $app -Recurse
 Copy-Item (Join-Path $source 'package.json'),(Join-Path $source 'package-lock.json') $app
 & npm.cmd ci --omit=dev --no-audit --no-fund --prefix $app
 if ($LASTEXITCODE -ne 0) { throw 'Production dependency packaging failed' }
-foreach ($name in 'managed-runtime.mjs','managed-preflight.mjs','managed-credentials.mjs','compatibility.mjs','payload.mjs','Manage-Trial.ps1','WinSW-LICENSE.txt') { Copy-Item (Join-Path $packageSource $name) $payload }
+foreach ($name in 'managed-runtime.mjs','managed-preflight.mjs','managed-credentials.mjs','compatibility.mjs','payload.mjs','Manage-Trial.ps1','Operator-State.ps1','Run-Msi.ps1','WinSW-LICENSE.txt') { Copy-Item (Join-Path $packageSource $name) $payload }
 $descriptorPath = Join-Path $payload 'compatibility.json'
 & node (Join-Path $packageSource 'create-descriptor.mjs') $source $sha $descriptorPath
 if ($LASTEXITCODE -ne 0) { throw 'Exact-source compatibility descriptor generation failed' }
@@ -156,4 +156,10 @@ $msi = Join-Path $build "DevelopmentIntelligenceTrial-$MsiVersion-x64-UNSIGNED.m
 & wix build $wxs -arch x64 -ext WixToolset.Util.wixext/5.0.2 -out $msi
 if ($LASTEXITCODE -ne 0) { throw 'MSI build failed' }
 @{ msiVersion=$MsiVersion; engineSha=$sha; packagingSha=$sha; sha256=(Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant(); unsignedLaboratoryArtifact=$true } | ConvertTo-Json | Set-Content "$msi.json"
+# Retain these exact-source operator files alongside both verified MSIs, so an
+# uncertain uninstall can be observed even after installed scripts are removed.
+$operator=Join-Path $build 'operator'
+New-Item -ItemType Directory -Path $operator | Out-Null
+foreach ($name in 'Manage-Trial.ps1','Operator-State.ps1','Run-Msi.ps1') { Copy-Item (Join-Path $packageSource $name) $operator }
+@{formatVersion=1;engineSha=$sha;unsignedLaboratoryArtifact=$true;files=@(Get-ChildItem -LiteralPath $operator -File | ForEach-Object {@{name=$_.Name;sha256=(Get-FileHash $_.FullName).Hash.ToLowerInvariant()}})} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $operator 'operator.json')
 Write-Output $msi

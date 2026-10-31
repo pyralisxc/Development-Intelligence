@@ -26,6 +26,9 @@ jobs:
           dotnet-version: 8.0.x
       - name: Native ACL transport before parallel source verification
         run: node --test packaging/windows/native-acl-transport.test.mjs
+      - name: Operator uncertainty and native PowerShell waiter contracts
+        shell: pwsh
+        run: ./packaging/windows/Test-OperatorState.ps1
       - name: Build and verify exact source
         run: |
           npm ci --no-audit --no-fund
@@ -55,6 +58,7 @@ jobs:
             .package-build/**/*.msi.json
             .package-build/**/manifest.json
             .package-build/**/Package.wxs
+            .package-build/*/operator/**
             .package-build/*.json
           retention-days: 7
           include-hidden-files: true
