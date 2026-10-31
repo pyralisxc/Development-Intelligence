@@ -11,11 +11,14 @@ $acl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
 foreach($sid in 'S-1-5-18','S-1-5-32-544') {$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]$sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))}
 Set-Acl -LiteralPath $root -AclObject $acl
 Assert-OperatorDirectory $root
-Require ((Convert-InstallerState 'Running' $true) -eq 'busy') 'Running installer busy state lost'
-Require ((Convert-InstallerState 'Running' $false) -eq 'idle') 'Observed running/idle state lost'
-Require ((Convert-InstallerState 'Stopped' $false) -eq 'idle') 'Stopped installer not idle'
-foreach($status in 'StartPending','StopPending','ContinuePending','PausePending','Paused','Unexpected') {
-    Require ((Convert-InstallerState $status $false) -eq 'unavailable') 'Transitional installer state incorrectly became idle'
+Require ((Convert-InstallerState 4 4) -eq 'busy') 'Documented active installer value lost'
+Require ((Convert-InstallerState 4 5) -eq 'idle') 'Observed terminal cached/stoppable state misclassified'
+Require ((Convert-InstallerState 1 0) -eq 'idle') 'Stopped installer not idle'
+foreach($mask in 0,1,2,3,6,7,68,69,255) {
+    Require ((Convert-InstallerState 4 $mask) -eq 'unavailable') 'Unobserved running control mask incorrectly became idle'
+}
+foreach($status in 2,3,5,6,7,99) {
+    Require ((Convert-InstallerState $status 5) -eq 'unavailable') 'Transitional installer state incorrectly became idle'
 }
 $path=Join-Path $root 'receipt.json'
 $record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);toolsSha256=('c'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}

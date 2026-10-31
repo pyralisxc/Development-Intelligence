@@ -130,11 +130,15 @@ function Assert-NoPendingMsi([string]$Path) {
     $record=Read-MsiReceipt $Path
     if ($record -and $record.state -ne 'resolved') { throw 'DI_MSI_UNCERTAIN: unresolved MSI intent; use Reconcile, never kill or replay' }
 }
-function Convert-InstallerState([string]$Status,[bool]$CanShutdown) {
-    if($Status -eq 'Stopped'){return 'idle'}
-    if($Status -ne 'Running'){return 'unavailable'}
-    if($CanShutdown){return 'busy'}
-    'idle'
+function Convert-InstallerState([int]$CurrentState,[uint32]$ControlsAccepted) {
+    if($CurrentState -eq 1){return 'idle'} # SERVICE_STOPPED
+    if($CurrentState -ne 4){return 'unavailable'} # only SERVICE_RUNNING
+    # MSI documents the active VALUE as SERVICE_ACCEPT_SHUTDOWN (4), not any
+    # mask containing that bit. CI observes cached/stoppable mask 5 after exact
+    # terminal exit. This is an additional state observation, never completion.
+    if($ControlsAccepted -eq 4){return 'busy'}
+    if($ControlsAccepted -eq 5){return 'idle'} # STOP | SHUTDOWN, observed cached
+    'unavailable'
 }
 function Get-InstallerFacts {
     try {
@@ -173,10 +177,7 @@ namespace DiOperator {
 }
 function Convert-InstallerFacts($Facts) {
     if($Facts.error -ne 0){return 'unavailable'}
-    $status=switch([int]$Facts.currentState){1{'Stopped'};4{'Running'};default{'Unexpected'}}
-    # Keep the existing conservative policy until raw native evidence establishes
-    # which status/control combinations this installer actually reports.
-    Convert-InstallerState $status $Facts.canShutdown
+    Convert-InstallerState $Facts.currentState $Facts.controlsAccepted
 }
 function Get-InstallerState {
     Convert-InstallerFacts (Get-InstallerFacts)
