@@ -376,6 +376,16 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           queryArtifacts: queryArtifactPublication.state === 'stored' ? queryArtifactPublication.ref : null,
         });
         const saved = await saveCanonicalGraph(record);
+        // Derived semantic maintenance is a post-publication action, never a
+        // query/snapshot/replay write or a modification to accepted authority.
+        // A failed semantic update cannot reinterpret an already-stored graph.
+        if (saved.saveState === 'stored') {
+          const { maintainDerivedSemanticsForGraph } = await import('./semanticWorkflow.js');
+          await maintainDerivedSemanticsForGraph(project, observed.value.graph).catch(() => {
+            // Canonical graph publication remains independently valid.
+            // Conditional semantic writes can be retried on a later publish.
+          });
+        }
         let queryPointerPublication = null;
         if (saved.saveState === 'stored' && queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
           queryPointerPublication = await publishCurrentQueryArtifactPointer(
