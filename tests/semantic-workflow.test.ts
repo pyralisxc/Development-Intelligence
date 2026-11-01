@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, semanticAiProposalPacket, semanticAiProposalReview, semanticLineageTransaction, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
+import { autonomousSemanticAssessment, acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, semanticAiProposalPacket, semanticAiProposalReview, semanticLineageTransaction, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
 
 import type { SemanticCandidate } from '../src/intelligence/semanticBootstrap.js';
 import { applySemanticReviewAction, semanticMeaningReview, type SemanticMeaningReview } from '../src/intelligence/semanticReview.js';
@@ -390,4 +390,26 @@ test('semantic continuity can establish an enforced baseline without repository 
   );
   assert.equal(unsupported.status, 'unsupported');
   assert.equal(unsupported.reviewRequired, true);
+});
+
+test('Autonomous semantic projection qualifies evidence without claiming accepted authority', () => {
+  const item = candidate({ id: 'candidate:discovery', scope: 'src/feature', name: 'Feature', revision: 'a'.repeat(40) });
+  const result = autonomousSemanticAssessment(item, { factuality: { status: 'supported' } }, null, { state: 'new', meaningId: null, sourceRevision: null, sourceMeaningIds: [], reason: 'new' });
+  assert.equal(result.state, 'evidence-qualified');
+  assert.equal(result.automaticallyMaintained, true);
+  assert.equal(result.meaningId, null);
+  assert.equal(result.provenance.revision, 'a'.repeat(40));
+});
+
+test('Autonomous semantic projection cannot override explicit rejection or ambiguous lineage', () => {
+  const item = candidate({ id: 'candidate:reviewed', scope: 'src/feature', name: 'Feature', revision: 'b'.repeat(40) });
+  const rejected = applySemanticReviewAction(semanticMeaningReview(item), { kind: 'reject', actor: { kind: 'human', id: 'owner' }, at: '2026-11-01T00:00:00Z' });
+  const continuity = { state: 'new' as const, meaningId: null, sourceRevision: null, sourceMeaningIds: [] as [], reason: 'new' };
+  const rejectedResult = autonomousSemanticAssessment(item, { factuality: { status: 'supported' } }, rejected, continuity);
+  assert.equal(rejectedResult.state, 'explicitly-rejected');
+  assert.equal(rejectedResult.automaticallyMaintained, false);
+  const ambiguous = autonomousSemanticAssessment(item, { factuality: { status: 'supported' } }, null, { state: 'ambiguous', meaningId: null, sourceRevision: null, sourceMeaningIds: ['older'], reason: 'split' });
+  assert.equal(ambiguous.state, 'ambiguous-lineage');
+  assert.equal(ambiguous.evidenceQualified, false);
+  assert.equal(ambiguous.automaticallyMaintained, false);
 });
