@@ -219,3 +219,38 @@ test('Reachability predicate contracts reject unbounded or empty selectors', () 
   assert.throws(() => normalizeParityContract({ version: 1, predicates: [{ ...forbiddenOwnerWrite, maxDepth: 21 }] }), /maxDepth/i);
   assert.throws(() => normalizeParityContract({ version: 1, predicates: [{ ...forbiddenOwnerWrite, from: {} }] }), /selector constraint/i);
 });
+
+test('Forbidden absence stays unproven when the bounded search truncates before a late counterexample', () => {
+  const fixture = reachabilityGraph();
+  fixture.edges = fixture.edges.filter(edge => edge.id !== 'owner-bridge' && edge.id !== 'bridge-write');
+  for (let index = 0; index < 10_001; index += 1) {
+    const id = `function:fanout-${index}`;
+    fixture.nodes.push({ id, sourceId: 'bridge.ts', kind: 'function', locator: id, name: id, value: {}, raw: '{}', layer: 'structural' });
+    fixture.edges.push({ id: `fanout-${index}`, from: 'mcp:owner-a', to: id, kind: 'calls', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: ['owner.ts:1'], layer: 'structural' });
+    if (index === 10_000) fixture.edges.push({ id: 'late-write', from: id, to: 'operation:studio-write', kind: 'invokes', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: ['bridge.ts:1'], layer: 'structural' });
+  }
+  const result = evaluateParityContractGraph(fixture, { version: 1, predicates: [forbiddenOwnerWrite] }) as any;
+  assert.equal(result.results[0].status, 'unproven');
+  assert.equal(result.results[0].replacementAssessment.eligible, false);
+  assert.equal(result.results[0].observed.traversal.truncated, true);
+});
+
+test('Reachable unresolved unknown destination prevents negative proof under complete source coverage', () => {
+  const fixture = reachabilityGraph();
+  fixture.edges = fixture.edges.filter(edge => edge.id !== 'owner-bridge' && edge.id !== 'bridge-write');
+  fixture.edges.push({ id: 'unknown-write', from: 'mcp:owner-a', to: null, kind: 'calls', strategy: 'syntax', confidence: 0, status: 'unresolved', evidence: ['owner.ts:2'], layer: 'structural' });
+  const result = evaluateParityContractGraph(fixture, { version: 1, predicates: [forbiddenOwnerWrite] }) as any;
+  assert.equal(result.results[0].status, 'unproven');
+  assert.equal(result.results[0].replacementAssessment.eligible, false);
+  assert.equal(result.results[0].observed.traversal.unknownEndpoints, true);
+});
+
+test('Duplicate predicate IDs are rejected before transition result identity can collapse', () => {
+  assert.throws(() => normalizeParityContract({
+    version: 1,
+    predicates: [
+      { ...forbiddenOwnerWrite, id: 'same-identity', from: { ids: ['mcp:owner-a'] } },
+      { ...forbiddenOwnerWrite, id: 'same-identity', from: { ids: ['mcp:owner-b'] } },
+    ],
+  }), /duplicate predicate IDs/i);
+});
