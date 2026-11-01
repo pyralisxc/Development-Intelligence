@@ -35,7 +35,14 @@ function Get-OperatorAclChecked([string]$Path) {
             if($attempt -lt 4){Start-Sleep -Milliseconds 50}
         }
     }
-    throw "Operator ACL verification unavailable after bounded retry: $Path"
+    # Preserve the native exception and HResult for the existing MSI waiter's
+    # retry/refusal classification. Record bounded non-secret diagnostics only.
+    $failure=$lastError.Exception
+    $kind=$failure.GetType().FullName
+    $code=$failure.HResult
+    $exists=Test-Path -LiteralPath $Path -PathType Leaf
+    Write-Warning ("DI_OPERATOR_ACL_EXHAUSTED kind={0} hresult={1} exists={2} attempts=5" -f $kind,$code,$exists)
+    throw $failure
 }
 function Assert-OperatorFile([string]$Path) {
     if (Test-Path -LiteralPath $Path) {
