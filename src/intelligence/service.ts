@@ -868,6 +868,16 @@ export async function scanGraph(project: string, options: { ref?: string | undef
   }
   const repository = await buildCachedRepositoryGraph(project, options.ref);
   const urls = options.urls ?? [];
+  // Only an explicit canonical source scan maintains durable derived meaning.
+  // A graph-ID query, ordinary read, or historical/runtime replay cannot.
+  // This also refreshes same-revision derived state on a cached canonical scan.
+  if (canonicalEligible && !urls.length && !computeOnly()) {
+    const { maintainDerivedSemanticsForGraph } = await import('./semanticWorkflow.js');
+    const result = await maintainDerivedSemanticsForGraph(project, repository.graph);
+    if (result.state === 'conflict') {
+      throw new Error('Concurrent semantic correction prevented this derived refresh; retry against current authority');
+    }
+  }
   if (!urls.length) return repository.graph;
 
   const createdAt = new Date().toISOString();

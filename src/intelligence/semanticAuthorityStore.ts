@@ -40,6 +40,7 @@ export interface SemanticAuthorityLedger {
   generation: number;
   updatedAt: string;
   records: StoredSemanticAuthorityRecord[];
+  derivedMeanings?: Array<{ candidateId: string; revision: string; meaningId: string; evidenceIds: string[]; sourceIds: string[]; disposition: 'evidence-qualified' }>;
   changeVerifications?: SemanticChangeVerificationRecord[];
   enrollment?: SemanticPromotionEnrollmentRecord;
 }
@@ -166,6 +167,14 @@ function validateLedger(value: unknown, expectedProject: string): SemanticAuthor
     }
     validateReview(item.review);
   }
+  const derivedMeanings = ledger.derivedMeanings ?? [];
+  if (!Array.isArray(derivedMeanings) || derivedMeanings.length > MAX_AUTHORITY_RECORDS) throw new Error('Derived semantic set exceeds bounded capacity');
+  for (const entry of derivedMeanings) {
+    if (!entry.candidateId || !entry.meaningId || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(entry.revision)
+        || entry.disposition !== 'evidence-qualified' || !Array.isArray(entry.evidenceIds) || !Array.isArray(entry.sourceIds)) {
+      throw new Error('Derived semantic provenance is malformed');
+    }
+  }
   const changeVerifications = Array.isArray((ledger as any).changeVerifications)
     ? (ledger as any).changeVerifications as SemanticChangeVerificationRecord[]
     : [];
@@ -180,6 +189,7 @@ function validateLedger(value: unknown, expectedProject: string): SemanticAuthor
   if (enrollment !== undefined) validateEnrollment(enrollment);
   return {
     ...ledger,
+    derivedMeanings,
     changeVerifications,
     ...(enrollment ? { enrollment: copyEnrollment(enrollment) } : {}),
   };
@@ -202,6 +212,46 @@ export async function loadSemanticAuthority(project: string): Promise<SemanticAu
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Maintain revision-bound source-derived semantics in the existing canonical
+ * ledger. This is not acceptance and never modifies the human review records.
+ */
+export async function persistDerivedSemanticMeanings(
+  project: string,
+  revision: string,
+  entries: NonNullable<SemanticAuthorityLedger['derivedMeanings']>,
+  expectedEtag: string | null,
+): Promise<SemanticAuthorityWrite> {
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(revision)) throw new Error('Derived semantic revision must be exact');
+  if (entries.length > 1000 || entries.some(entry => entry.revision !== revision || entry.disposition !== 'evidence-qualified')) throw new Error('Invalid derived semantic revision set');
+  const current = await loadSemanticAuthority(project);
+  if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
+  if (current.state === 'invalid') throw new Error(current.error ?? 'Semantic ledger is invalid');
+  if (current.etag !== expectedEtag) return { state: 'conflict', etag: current.etag, ledger: current.ledger };
+  const unique = new Map(entries.map(item => [item.candidateId, item]));
+  if (unique.size !== entries.length) throw new Error('Duplicate derived candidate identity');
+  const retained = current.ledger?.derivedMeanings ?? [];
+  const submitted = new Set(entries.map(entry => entry.candidateId));
+  // Previous source qualification remains historical evidence even when an
+  // explicit correction makes it ineffective at this revision. The query
+  // projection, not destructive ledger pruning, determines effective status.
+  const formerAtRevision = retained.filter(entry => entry.revision === revision && !submitted.has(entry.candidateId));
+  const ledger: SemanticAuthorityLedger = {
+    formatVersion: 1, project,
+    generation: (current.ledger?.generation ?? 0) + 1,
+    updatedAt: new Date().toISOString(),
+    records: [...(current.ledger?.records ?? [])],
+    derivedMeanings: [...retained.filter(item => item.revision !== revision), ...formerAtRevision, ...entries],
+    changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
+    ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
+  };
+  if (ledger.derivedMeanings!.length > MAX_AUTHORITY_RECORDS) throw new Error('Derived semantic ledger exceeds bounded record limit');
+  const body = JSON.stringify(ledger);
+  if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Derived semantic ledger exceeds storage limit');
+  const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
+  return { state: written.state, etag: written.etag, ledger: written.state === 'stored' ? ledger : current.ledger };
 }
 
 export async function persistSemanticReviews(
@@ -249,6 +299,7 @@ export async function persistSemanticReviews(
     generation: (current.ledger?.generation ?? 0) + 1,
     updatedAt: now,
     records,
+    derivedMeanings: [...(current.ledger?.derivedMeanings ?? [])],
     changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
     ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
   };
@@ -284,6 +335,7 @@ export async function persistSemanticChangeVerification(
     generation: (current.ledger?.generation ?? 0) + 1,
     updatedAt: now,
     records: [...(current.ledger?.records ?? [])],
+    derivedMeanings: [...(current.ledger?.derivedMeanings ?? [])],
     changeVerifications,
     ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
   };
@@ -345,6 +397,7 @@ export async function persistSemanticPromotionEnrollment(
     generation: (current.ledger?.generation ?? 0) + 1,
     updatedAt: input.at,
     records: [...(current.ledger?.records ?? [])],
+    derivedMeanings: [...(current.ledger?.derivedMeanings ?? [])],
     changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
     enrollment,
   };
@@ -372,22 +425,18 @@ export function semanticReviewsAtRevision(
 }
 
 function currentAcceptedAuthorityRecords(ledger: SemanticAuthorityLedger | null): StoredSemanticAuthorityRecord[] {
-  const latestAccepted = new Map<string, StoredSemanticAuthorityRecord>();
+  // Select the latest disposition before interpreting accepted/terminal state.
+  // Corrections, rejections, and lineage markers remain live controls even
+  // when the implementation history is compacted.
+  const latest = new Map<string, StoredSemanticAuthorityRecord>();
   for (const record of ledger?.records ?? []) {
-    const review = record.review;
-    if (!review.accepted || ['superseded', 'split', 'merged'].includes(review.state)) continue;
-    const current = latestAccepted.get(record.meaningId);
-    if (!current || current.storedAt.localeCompare(record.storedAt) < 0) latestAccepted.set(record.meaningId, record);
+    const prior = latest.get(record.meaningId);
+    if (!prior || prior.storedAt.localeCompare(record.storedAt) < 0) latest.set(record.meaningId, record);
   }
-  return [...latestAccepted.values()]
-    .map(record => ({
-      ...record,
-      review: {
-        ...persistedReview(record.review),
-        history: [],
-        lineage: { predecessorMeaningIds: [], successorMeaningIds: [] },
-      },
-    }))
+  return [...latest.values()]
+    .filter(record => record.review.accepted || record.review.reviewed
+      || ['rejected', 'superseded', 'split', 'merged'].includes(record.review.state))
+    .map(record => ({ ...record, review: persistedReview(record.review) }))
     .sort((a, b) => a.meaningId.localeCompare(b.meaningId));
 }
 
@@ -420,6 +469,7 @@ export async function compactSemanticAuthorityToCurrentAccepted(
     generation: current.ledger.generation + 1,
     updatedAt: now,
     records,
+    derivedMeanings: [...(current.ledger.derivedMeanings ?? [])],
     changeVerifications: [],
     ...(enrollment ? { enrollment } : {}),
   };
