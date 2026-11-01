@@ -137,7 +137,7 @@ test('semantic change verification is revision-bound, CAS-protected, and pruned 
   }
 });
 
-test('semantic authority compaction keeps only current accepted meanings and drops transition history', async () => {
+test('semantic compaction retains latest accepted and rejected dispositions with provenance', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-authority-compact-'));
   process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
   try {
@@ -173,10 +173,11 @@ test('semantic authority compaction keeps only current accepted meanings and dro
 
     const compacted = await compactSemanticAuthorityToCurrentAccepted(project);
     assert.equal(compacted.state, 'stored');
-    assert.equal(compacted.ledger?.records.length, 1);
+    assert.equal(compacted.ledger?.records.length, 2);
+    assert.equal(compacted.ledger?.records.find(item => item.review.state === 'rejected')?.candidateId, rejected.candidateId);
     assert.equal(compacted.ledger?.records[0]?.revision, previewRevision);
     assert.equal(compacted.ledger?.records[0]?.review.accepted, true);
-    assert.deepEqual(compacted.ledger?.records[0]?.review.history, []);
+    assert.ok(compacted.ledger?.records[0]?.review.history.some(item => item.kind === 'accept'));
     assert.deepEqual(compacted.ledger?.records[0]?.review.lineage, { predecessorMeaningIds: [], successorMeaningIds: [] });
     assert.deepEqual(compacted.ledger?.changeVerifications ?? [], []);
   } finally {
@@ -277,7 +278,7 @@ test('canonical semantic promotion requires a revision-bound ready gate and stor
     assert.equal(loaded.record?.currentness.acceptedSemanticCurrent, true);
     const compactedAuthority = await loadSemanticAuthority(project);
     assert.equal(compactedAuthority.ledger?.records.length, 1);
-    assert.deepEqual(compactedAuthority.ledger?.records[0]?.review.history, []);
+    assert.ok(compactedAuthority.ledger?.records[0]?.review.history.some(item => item.kind === 'accept'));
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     await fs.rm(root, { recursive: true, force: true });
@@ -414,7 +415,7 @@ test('semantic accepted-graph promotion rejects non-enforced release gates', asy
   }
 });
 
-test('semantic compaction preserves newest correction and derived source history', async () => {
+test('semantic compaction preserves newest terminal disposition without reviving acceptance', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-compaction-'));
   const previous = process.env.DEVINT_CANONICAL_GRAPH_DIR;
   process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
