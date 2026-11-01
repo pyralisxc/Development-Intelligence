@@ -442,6 +442,23 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         const handler = unwrap(node.arguments[2]);
         if (handler && ts.isIdentifier(handler)) {
           pendingHandlers.push({ ui: tool, handler: handler.text, line: lineOf(node), ownerId: null });
+        } else if (handler && (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler))) {
+          // Inline callbacks have a real callable implementation at the registration
+          // site. It is a distinct graph node; do not pretend its body is an
+          // already-resolved imported or named function.
+          const callback = observation({
+            id: `symbol:${context.locatorBase}#function:mcp-handler-${lineOf(node)}-${node.getStart(sourceFile)}`,
+            sourceId: context.source.id,
+            kind: 'function',
+            locator: locator(handler),
+            name: `${name} handler`,
+            field: 'identifier',
+            value: { registration: name, inline: true },
+            layer: 'structural',
+            checkpoint: false,
+          });
+          observations.push(callback);
+          resolutions.push(resolution({ from: tool.id, to: callback.id, kind: 'handled_by', strategy: 'mcp-inline-callback', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'structural', checkpoint: false }));
         } else {
           resolutions.push(resolution({ from: tool.id, to: null, kind: 'handled_by', strategy: 'mcp-registration-unresolved', confidence: null, status: 'unresolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'structural', checkpoint: false }));
         }
