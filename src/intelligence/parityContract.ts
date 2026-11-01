@@ -130,6 +130,8 @@ export function normalizeParityContract(value: unknown): ParityContract {
   if (entities.length > MAX_EXPECTATIONS || relationships.length > MAX_EXPECTATIONS || predicates.length > MAX_EXPECTATIONS || entities.length + relationships.length + predicates.length > MAX_EXPECTATIONS) {
     throw new Error(`contract exceeds ${MAX_EXPECTATIONS} expectations`);
   }
+  const predicateIds = predicates.map((item, index) => normalizePredicate(item, index).id);
+  if (new Set(predicateIds).size !== predicateIds.length) throw new Error('contract.predicates contains duplicate predicate IDs');
   const name = cleanText(record.name, 'contract.name');
   const description = cleanText(record.description, 'contract.description');
   return {
@@ -235,13 +237,14 @@ function selectNodes(graph: IntelligenceGraph, selector: ParityNodeSelector) {
 
 interface ReachPath { nodeIds: string[]; edgeIds: string[]; relationshipKinds: string[]; statuses: string[] }
 
-function pathsFrom(graph: IntelligenceGraph, startId: string, targetIds: Set<string>, predicate: ParityReachabilityPredicate, statuses: Set<string>): ReachPath[] {
+function pathsFrom(graph: IntelligenceGraph, startId: string, targetIds: Set<string>, predicate: ParityReachabilityPredicate, statuses: Set<string>): { paths: ReachPath[]; truncated: boolean; unknownEndpoints: boolean } {
   const allowedKinds = predicate.relationshipKinds?.length ? new Set(predicate.relationshipKinds) : null;
   const direction = predicate.direction ?? 'outbound';
   const adjacency = new Map<string, GraphEdge[]>();
   for (const edge of graph.edges) {
-    if (!edge.from || !edge.to || !statuses.has(edge.status) || (allowedKinds && !allowedKinds.has(edge.kind))) continue;
+    if (!statuses.has(edge.status) || (allowedKinds && !allowedKinds.has(edge.kind))) continue;
     const key = direction === 'outbound' ? edge.from : edge.to;
+    if (!key) continue;
     const items = adjacency.get(key) ?? [];
     items.push(edge);
     adjacency.set(key, items);
@@ -250,13 +253,24 @@ function pathsFrom(graph: IntelligenceGraph, startId: string, targetIds: Set<str
   const queue: ReachPath[] = [{ nodeIds: [startId], edgeIds: [], relationshipKinds: [], statuses: [] }];
   const seenDepth = new Map<string, number>([[`${startId}:false`, 0]]);
   let expansions = 0;
-  while (queue.length && found.length < 50 && expansions < 10_000) {
-    const path = queue.shift()!;
+  let cursor = 0;
+  let unknownEndpoints = false;
+  let truncated = false;
+  while (cursor < queue.length && !truncated) {
+    const path = queue[cursor++]!;
     const current = path.nodeIds[path.nodeIds.length - 1]!;
     if (path.edgeIds.length >= (predicate.maxDepth ?? 8)) continue;
     for (const edge of adjacency.get(current) ?? []) {
+      if (expansions >= 10_000) {
+        truncated = true;
+        break;
+      }
       expansions += 1;
-      const next = direction === 'outbound' ? edge.to! : edge.from!;
+      const next = direction === 'outbound' ? edge.to : edge.from;
+      if (!next) {
+        unknownEndpoints = true;
+        continue;
+      }
       if (path.nodeIds.includes(next)) continue;
       const candidate = {
         nodeIds: [...path.nodeIds, next],
@@ -264,8 +278,10 @@ function pathsFrom(graph: IntelligenceGraph, startId: string, targetIds: Set<str
         relationshipKinds: [...path.relationshipKinds, edge.kind],
         statuses: [...path.statuses, edge.status],
       };
-      if (targetIds.has(next)) found.push(candidate);
-      else {
+      if (targetIds.has(next)) {
+        if (found.length < 50) found.push(candidate);
+        else truncated = true;
+      } else {
         const tentative = candidate.statuses.some(status => status !== 'resolved');
         const key = `${next}:${tentative}`;
         const depth = candidate.edgeIds.length;
@@ -275,7 +291,7 @@ function pathsFrom(graph: IntelligenceGraph, startId: string, targetIds: Set<str
       }
     }
   }
-  return found;
+  return { paths: found, truncated, unknownEndpoints };
 }
 
 function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabilityPredicate, complete: boolean) {
@@ -286,9 +302,12 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
   const missingSubjectIds = (predicate.from.ids ?? []).filter(id => !matchedSubjectIds.has(id));
   const missingTargetIds = (predicate.to.ids ?? []).filter(id => !matchedTargetIds.has(id));
   const targetIds = new Set(targets.map(node => node.id));
-  const allBySubject = new Map(subjects.map(node => [node.id, pathsFrom(graph, node.id, targetIds, predicate, new Set(['resolved', 'candidate', 'unresolved']))]));
-  const resolvedBySubject = new Map([...allBySubject].map(([id, paths]) => [id, paths.filter(path => path.statuses.every(status => status === 'resolved'))]));
-  const tentativeBySubject = new Map([...allBySubject].map(([id, paths]) => [id, paths.filter(path => path.statuses.some(status => status !== 'resolved'))]));
+  const traversalBySubject = new Map(subjects.map(node => [node.id, pathsFrom(graph, node.id, targetIds, predicate, new Set(['resolved', 'candidate', 'unresolved']))]));
+  const resolvedBySubject = new Map([...traversalBySubject].map(([id, traversal]) => [id, traversal.paths.filter(path => path.statuses.every(status => status === 'resolved'))]));
+  const tentativeBySubject = new Map([...traversalBySubject].map(([id, traversal]) => [id, traversal.paths.filter(path => path.statuses.some(status => status !== 'resolved'))]));
+  const traversalIncomplete = [...traversalBySubject.values()].some(item => item.truncated || item.unknownEndpoints);
+  const truncated = [...traversalBySubject.values()].some(item => item.truncated);
+  const unknownEndpoints = [...traversalBySubject.values()].some(item => item.unknownEndpoints);
   const reached = subjects.filter(node => (resolvedBySubject.get(node.id)?.length ?? 0) > 0);
   const tentative = subjects.filter(node => (tentativeBySubject.get(node.id)?.length ?? 0) > 0);
   const quantifier = predicate.quantifier ?? 'any';
@@ -303,7 +322,7 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
   let status: ParityExpectationResultStatus;
   if (!subjects.length || !targets.length) status = 'not-applicable';
   else if (resolvedMatch && (requirementValue === 'forbidden' || quantifier === 'any' || subjectUniverseClosed || complete)) status = requirementValue === 'required' ? 'satisfied' : 'forbidden-present';
-  else if (tentativeMatch || !complete) status = 'unproven';
+  else if (tentativeMatch || !complete || traversalIncomplete) status = 'unproven';
   else status = requirementValue === 'required' ? 'missing' : 'satisfied';
   const counterexamples = [...resolvedBySubject.entries()]
     .flatMap(([subjectId, paths]) => paths.slice(0, 5).map(path => ({ subjectId, ...path })))
@@ -317,6 +336,8 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
     ...(missingSubjectIds.length ? [`The from selector did not match requested IDs: ${missingSubjectIds.join(', ')}.`] : []),
     ...(missingTargetIds.length ? [`The to selector did not match requested IDs: ${missingTargetIds.join(', ')}.`] : []),
     ...(tentativePaths.length ? ['Candidate or unresolved paths cannot satisfy graph proof.'] : []),
+    ...(truncated ? ['Graph traversal was truncated before exhaustiveness could be established.'] : []),
+    ...(unknownEndpoints ? ['Reachable relationships with unknown endpoints prevent negative graph proof.'] : []),
     ...(!complete && !resolvedMatch ? ['Claim-scope coverage is not exhaustive.'] : []),
   ];
   const replacementEligible = status === 'satisfied'
@@ -326,7 +347,7 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
     predicate,
     status,
     matched: { subjects: subjects.map(node => node.id), targets: targets.map(node => node.id) },
-    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths },
+    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints } },
     replacementAssessment: {
       modality: 'static-graph',
       eligible: replacementEligible,
