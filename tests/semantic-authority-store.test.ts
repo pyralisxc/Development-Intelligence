@@ -413,3 +413,31 @@ test('semantic accepted-graph promotion rejects non-enforced release gates', asy
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('semantic compaction preserves newest correction and derived source history', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-semantic-compaction-'));
+  const previous = process.env.DEVINT_CANONICAL_GRAPH_DIR;
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const a = 'a'.repeat(40);
+    const b = 'b'.repeat(40);
+    const original = semanticMeaningReview(candidate('candidate:compacted', a));
+    const accepted = applySemanticReviewAction(original, {
+      kind: 'accept', actor: { kind: 'human', id: 'owner' }, at: '2026-11-01T00:00:00Z',
+    });
+    const first = await persistSemanticReview('CompactionFixture', accepted, null);
+    assert.equal(first.state, 'stored');
+    const terminal = { ...accepted, proposalRevision: b, state: 'superseded' as const, accepted: false };
+    const second = await persistSemanticReview('CompactionFixture', terminal, first.etag);
+    assert.equal(second.state, 'stored');
+    const compacted = await compactSemanticAuthorityToCurrentAccepted('CompactionFixture');
+    assert.equal(compacted.state, 'stored');
+    assert.equal(latestAcceptedMeanings(compacted.ledger).length, 0);
+    assert.equal(compacted.ledger?.records.length, 1);
+    assert.equal(compacted.ledger?.records[0]?.review.state, 'superseded');
+  } finally {
+    if (previous === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    else process.env.DEVINT_CANONICAL_GRAPH_DIR = previous;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
