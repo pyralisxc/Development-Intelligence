@@ -40,6 +40,7 @@ export interface SemanticAuthorityLedger {
   generation: number;
   updatedAt: string;
   records: StoredSemanticAuthorityRecord[];
+  derivedMeanings?: Array<{ candidateId: string; revision: string; meaningId: string; evidenceIds: string[]; sourceIds: string[]; disposition: 'evidence-qualified' }>;
   changeVerifications?: SemanticChangeVerificationRecord[];
   enrollment?: SemanticPromotionEnrollmentRecord;
 }
@@ -166,6 +167,14 @@ function validateLedger(value: unknown, expectedProject: string): SemanticAuthor
     }
     validateReview(item.review);
   }
+  const derivedMeanings = ledger.derivedMeanings ?? [];
+  if (!Array.isArray(derivedMeanings) || derivedMeanings.length > MAX_AUTHORITY_RECORDS) throw new Error('Derived semantic set exceeds bounded capacity');
+  for (const entry of derivedMeanings) {
+    if (!entry.candidateId || !entry.meaningId || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(entry.revision)
+        || entry.disposition !== 'evidence-qualified' || !Array.isArray(entry.evidenceIds) || !Array.isArray(entry.sourceIds)) {
+      throw new Error('Derived semantic provenance is malformed');
+    }
+  }
   const changeVerifications = Array.isArray((ledger as any).changeVerifications)
     ? (ledger as any).changeVerifications as SemanticChangeVerificationRecord[]
     : [];
@@ -180,6 +189,7 @@ function validateLedger(value: unknown, expectedProject: string): SemanticAuthor
   if (enrollment !== undefined) validateEnrollment(enrollment);
   return {
     ...ledger,
+    derivedMeanings,
     changeVerifications,
     ...(enrollment ? { enrollment: copyEnrollment(enrollment) } : {}),
   };
@@ -202,6 +212,39 @@ export async function loadSemanticAuthority(project: string): Promise<SemanticAu
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Maintain revision-bound source-derived semantics in the existing canonical
+ * ledger. This is not acceptance and never modifies the human review records.
+ */
+export async function persistDerivedSemanticMeanings(
+  project: string,
+  revision: string,
+  entries: NonNullable<SemanticAuthorityLedger['derivedMeanings']>,
+  expectedEtag: string | null,
+): Promise<SemanticAuthorityWrite> {
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(revision)) throw new Error('Derived semantic revision must be exact');
+  if (entries.length > 1000 || entries.some(entry => entry.revision !== revision || entry.disposition !== 'evidence-qualified')) throw new Error('Invalid derived semantic revision set');
+  const current = await loadSemanticAuthority(project);
+  if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
+  if (current.state === 'invalid') throw new Error(current.error ?? 'Semantic ledger is invalid');
+  if (current.etag !== expectedEtag) return { state: 'conflict', etag: current.etag, ledger: current.ledger };
+  const unique = new Map(entries.map(item => [item.candidateId, item]));
+  if (unique.size !== entries.length) throw new Error('Duplicate derived candidate identity');
+  const ledger: SemanticAuthorityLedger = {
+    formatVersion: 1, project,
+    generation: (current.ledger?.generation ?? 0) + 1,
+    updatedAt: new Date().toISOString(),
+    records: [...(current.ledger?.records ?? [])],
+    derivedMeanings: [...(current.ledger?.derivedMeanings ?? []).filter(item => item.revision !== revision), ...entries],
+    changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
+    ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
+  };
+  const body = JSON.stringify(ledger);
+  if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Derived semantic ledger exceeds storage limit');
+  const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
+  return { state: written.state, etag: written.etag, ledger: written.state === 'stored' ? ledger : current.ledger };
 }
 
 export async function persistSemanticReviews(
@@ -249,6 +292,7 @@ export async function persistSemanticReviews(
     generation: (current.ledger?.generation ?? 0) + 1,
     updatedAt: now,
     records,
+    derivedMeanings: [...(current.ledger?.derivedMeanings ?? [])],
     changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
     ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
   };
@@ -345,6 +389,7 @@ export async function persistSemanticPromotionEnrollment(
     generation: (current.ledger?.generation ?? 0) + 1,
     updatedAt: input.at,
     records: [...(current.ledger?.records ?? [])],
+    derivedMeanings: [...(current.ledger?.derivedMeanings ?? [])],
     changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
     enrollment,
   };
