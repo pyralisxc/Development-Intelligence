@@ -49,6 +49,7 @@ const { auditSemanticCandidates } = await import('../dist/src/intelligence/seman
 const { semanticMeaningReview, applySemanticReviewAction } = await import('../dist/src/intelligence/semanticReview.js');
 const { evaluateSemanticEvolution } = await import('../dist/src/intelligence/semanticEvolution.js');
 const { assessGraph } = await import('../dist/src/intelligence/assessment.js');
+const { evaluateParityContractGraph } = await import('../dist/src/intelligence/parityContract.js');
 const { synthesizeRepositoryAudit } = await import('../dist/src/intelligence/repositoryAudit.js');
 const { synthesizePortfolio } = await import('../dist/src/intelligence/portfolio.js');
 const { clearGraphCache, graphStatus } = await import('../dist/src/intelligence/service.js');
@@ -109,6 +110,43 @@ const parity = await callTool('query_parity', { project, ref, limit: 1000 });
 const schema = await callTool('get_graph_schema', { project, ref });
 const coverage = await callTool('check_graph_coverage', { project, ref });
 const graph = await buildLocalGraph(cardForgeRoot, project);
+// Exact-revision reachability evidence, not a declaration that the packaged
+// Owner plugin or its ZIP bytes are equivalent to static source topology.
+const realOwnerSubjects = ['mcp:get_owner_site_snapshot', 'mcp:publish_owner_site_copy'];
+const studioWriteSymbol = 'symbol:src/features/studio-documents/server/templateWorkingDocuments.ts#function:createTemplateWorkingDocument';
+const scopedOwnerPredicates = [
+  {
+    id: 'owner-to-studio-mcp-probe', type: 'reachability',
+    from: { ids: realOwnerSubjects }, to: { ids: ['mcp:create_editable_template'] },
+    requirement: 'forbidden', direction: 'outbound', quantifier: 'any',
+    relationshipKinds: ['registered-as', 'handled_by', 'calls', 'invokes', 'implemented-by'],
+    maxDepth: 8,
+  },
+  {
+    id: 'owner-to-real-studio-write-probe', type: 'reachability',
+    from: { ids: realOwnerSubjects }, to: { ids: [studioWriteSymbol] },
+    requirement: 'forbidden', direction: 'outbound', quantifier: 'any',
+    relationshipKinds: ['registered-as', 'handled_by', 'calls', 'invokes'],
+    maxDepth: 8,
+  },
+];
+const realReachability = evaluateParityContractGraph(graph, { version: 1, predicates: scopedOwnerPredicates });
+const reachabilityEvidence = realReachability.results.map(item => ({
+  id: item.predicate.id,
+  status: item.status,
+  replacementEligible: item.replacementAssessment.eligible,
+  traversal: item.observed.traversal,
+  connectivity: item.observed.subjectConnectivity,
+  counterexamples: item.observed.counterexamples,
+  tentativePaths: item.observed.tentativePaths,
+  blockers: item.replacementAssessment.blockers,
+}));
+// A complete search is not automatically a complete proof of the source
+// registration/handler boundary, and does not establish package-byte identity.
+if (reachabilityEvidence.some(item => !['satisfied', 'missing', 'forbidden-present', 'unproven', 'not-applicable'].includes(item.status))) {
+  throw new Error('CardForge native reachability returned an unknown verdict');
+}
+
 const semanticBootstrap50Started = process.hrtime.bigint();
 const semanticBootstrap50 = bootstrapSemanticCandidates(graph, { limit: 50 });
 const semanticBootstrap50ElapsedMs = Number(process.hrtime.bigint() - semanticBootstrap50Started) / 1_000_000;
@@ -827,6 +865,7 @@ const report = {
     scopedAudit: { answerStatus: scopedAudit.answerStatus, findingCount: scopedAudit.findings.length, summary: scopedAudit.findingSummary },
   },
   probes: probeResults,
+  realReachability: { graphRevision: graph.repositoryRevision, predicates: reachabilityEvidence, originalPackageAssertionEquivalent: false },
   groupedSearch: {
     queryCount: groupedSearch.results.length,
     canonicalGraphReconstructed: true,
