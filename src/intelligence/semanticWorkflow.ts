@@ -519,6 +519,36 @@ export function semanticLineageTransaction(
   };
 }
 
+/**
+ * Evidence-qualified semantic understanding is maintained from the current graph,
+ * independent of explicit human acceptance. This never writes accepted A or
+ * overrides a prior correction/rejection; uncertain lineage remains visible.
+ */
+export function autonomousSemanticAssessment(
+  candidate: SemanticCandidate,
+  auditItem: { factuality?: { status?: string } } | null,
+  review: SemanticMeaningReview | null,
+  continuity: SemanticReviewContinuity,
+) {
+  const supported = auditItem?.factuality?.status === 'supported';
+  const explicitlyRejected = review?.state === 'rejected';
+  const explicitlyControlled = Boolean(review && (review.reviewed || review.accepted));
+  const eligible = supported && !explicitlyRejected && continuity.state !== 'ambiguous';
+  return {
+    state: explicitlyRejected ? 'explicitly-rejected'
+      : continuity.state === 'ambiguous' ? 'ambiguous-lineage'
+        : explicitlyControlled ? 'explicitly-governed'
+          : eligible ? 'evidence-qualified' : 'unproven',
+    evidenceQualified: eligible,
+    automaticallyMaintained: eligible && !explicitlyControlled,
+    meaningId: review?.meaningId ?? (continuity.state === 'inherited' ? continuity.meaningId : null),
+    candidateId: candidate.id,
+    revision: candidate.provenance.revision,
+    provenance: candidate.provenance,
+    note: 'Derived semantic understanding is not explicit product intent, accepted A, runtime verification, or release authorization.',
+  };
+}
+
 function semanticReviewAssessment(candidate: SemanticCandidate, auditItem: any) {
   const factuality = auditItem?.factuality?.status ?? 'unknown';
   const classification = auditItem?.coreness?.classification ?? 'supporting-candidate';
@@ -616,6 +646,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       review: reviewsByCandidate.get(candidate.id) ?? null,
       continuity: semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings),
       reviewAssessment: semanticReviewAssessment(candidate, auditByCandidate.get(candidate.id)),
+      autonomousAssessment: autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id), reviewsByCandidate.get(candidate.id) ?? null, semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings)),
       aiProposalPacket: semanticAiProposalPacket(candidate),
     })),
     capacity: bootstrap.capacity,
