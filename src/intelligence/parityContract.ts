@@ -317,9 +317,34 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
   const scopeComplete = scopeFiles.length > 0 && scopeFiles.every(path => coverageByPath.get(path)?.status === 'complete');
   const selectedInsideScope = subjects.every(node => sourceScope.has(node.sourceId.replace(/^repo:/u, '')))
     && targets.every(node => sourceScope.has(node.sourceId.replace(/^repo:/u, '')));
-  const outboundScopeLeaks = graph.edges.filter(edge => edge.from && graph.nodes.some(node => node.id === edge.from && subjects.some(subject => subject.id === node.id))
-    && edge.to && graph.nodes.some(node => node.id === edge.to && !sourceScope.has(node.sourceId.replace(/^repo:/u, ''))));
-  const boundedScopeQualified = scopeComplete && selectedInsideScope && outboundScopeLeaks.length === 0;
+  const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
+  const relevantKinds = predicate.relationshipKinds?.length ? new Set(predicate.relationshipKinds) : null;
+  const directionForScope = predicate.direction ?? 'outbound';
+  const visited = new Set(subjects.map(node => node.id));
+  const pending = subjects.map(node => ({ id: node.id, depth: 0 }));
+  let sourceScopeEscaped = false;
+  let sourceScopeUnknown = false;
+  let sourceScopeTruncated = false;
+  let exploredEdges = 0;
+  for (let cursor = 0; cursor < pending.length; cursor += 1) {
+    const current = pending[cursor]!;
+    if (current.depth >= (predicate.maxDepth ?? 8)) continue;
+    for (const edge of graph.edges) {
+      if ((directionForScope === 'outbound' ? edge.from : edge.to) !== current.id
+          || (relevantKinds && !relevantKinds.has(edge.kind))) continue;
+      if (++exploredEdges > 10_000) { sourceScopeTruncated = true; break; }
+      const nextId = directionForScope === 'outbound' ? edge.to : edge.from;
+      const next = nextId ? nodeById.get(nextId) : null;
+      if (!next || edge.status !== 'resolved') { sourceScopeUnknown = true; continue; }
+      if (!sourceScope.has(next.sourceId.replace(/^repo:/u, ''))) sourceScopeEscaped = true;
+      if (!visited.has(next.id)) {
+        visited.add(next.id);
+        pending.push({ id: next.id, depth: current.depth + 1 });
+      }
+    }
+    if (sourceScopeTruncated) break;
+  }
+  const boundedScopeQualified = scopeComplete && selectedInsideScope && !sourceScopeEscaped && !sourceScopeUnknown && !sourceScopeTruncated;
   const traversalIncomplete = [...traversalBySubject.values()].some(item => item.truncated || item.unknownEndpoints);
   const truncated = [...traversalBySubject.values()].some(item => item.truncated);
   const unknownEndpoints = [...traversalBySubject.values()].some(item => item.unknownEndpoints);
@@ -379,7 +404,7 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
     predicate,
     status,
     matched: { subjects: subjects.map(node => node.id), targets: targets.map(node => node.id) },
-    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints }, sourceScope: { sourceIds: scopeFiles, qualified: boundedScopeQualified, scopeOnly: true, replacementEligible: false }, subjectConnectivity: outboundEvidence, connectivityWarning: disconnectedSubjects.length ? 'Some selected subjects have no graph edges of the requested kinds. Inspect registration-to-handler bridging before asserting original-test equivalence.' : null },
+    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints }, sourceScope: { sourceIds: scopeFiles, qualified: boundedScopeQualified, escaped: sourceScopeEscaped, unknown: sourceScopeUnknown, truncated: sourceScopeTruncated, scopeOnly: true, replacementEligible: false }, subjectConnectivity: outboundEvidence, connectivityWarning: disconnectedSubjects.length ? 'Some selected subjects have no graph edges of the requested kinds. Inspect registration-to-handler bridging before asserting original-test equivalence.' : null },
     replacementAssessment: {
       modality: 'static-graph',
       eligible: replacementEligible,
