@@ -330,12 +330,29 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
   const tentativePaths = [...tentativeBySubject.entries()]
     .flatMap(([subjectId, paths]) => paths.slice(0, 5).map(path => ({ subjectId, ...path })))
     .slice(0, 20);
+  const relationKinds = predicate.relationshipKinds?.length ? new Set(predicate.relationshipKinds) : null;
+  const direction = predicate.direction ?? 'outbound';
+  const outboundEvidence = subjects.map(subject => {
+    const edges = graph.edges.filter(edge =>
+      (direction === 'outbound' ? edge.from === subject.id : edge.to === subject.id)
+      && (!relationKinds || relationKinds.has(edge.kind)));
+    return {
+      subjectId: subject.id,
+      sourceId: subject.sourceId,
+      layer: subject.layer ?? 'structural',
+      eligibleEdgeCount: edges.length,
+      resolvedEdgeCount: edges.filter(edge => edge.status === 'resolved').length,
+      observedKinds: [...new Set(edges.map(edge => edge.kind))].sort(),
+    };
+  });
+  const disconnectedSubjects = outboundEvidence.filter(subject => subject.eligibleEdgeCount === 0);
   const blockers = [
     ...(!subjects.length ? ['The from selector matched no graph nodes.'] : []),
     ...(!targets.length ? ['The to selector matched no graph nodes.'] : []),
     ...(missingSubjectIds.length ? [`The from selector did not match requested IDs: ${missingSubjectIds.join(', ')}.`] : []),
     ...(missingTargetIds.length ? [`The to selector did not match requested IDs: ${missingTargetIds.join(', ')}.`] : []),
     ...(tentativePaths.length ? ['Candidate or unresolved paths cannot satisfy graph proof.'] : []),
+    ...(disconnectedSubjects.length ? ['Selected subjects have no outgoing graph relationships of the requested kinds; source registration/handler bridging may be missing, and absence is not established by this diagnostic.'] : []),
     ...(truncated ? ['Graph traversal was truncated before exhaustiveness could be established.'] : []),
     ...(unknownEndpoints ? ['Reachable relationships with unknown endpoints prevent negative graph proof.'] : []),
     ...(!complete && !resolvedMatch ? ['Claim-scope coverage is not exhaustive.'] : []),
@@ -347,7 +364,7 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
     predicate,
     status,
     matched: { subjects: subjects.map(node => node.id), targets: targets.map(node => node.id) },
-    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints } },
+    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints }, subjectConnectivity: outboundEvidence },
     replacementAssessment: {
       modality: 'static-graph',
       eligible: replacementEligible,
