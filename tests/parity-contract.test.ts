@@ -254,3 +254,15 @@ test('Duplicate predicate IDs are rejected before transition result identity can
     ],
   }), /duplicate predicate IDs/i);
 });
+
+test('Reachability exposes missing subject registration bridges without treating connectivity as proof', () => {
+  const fixture = reachabilityGraph();
+  fixture.edges = fixture.edges.filter(edge => edge.from !== 'mcp:owner-a' && edge.from !== 'mcp:owner-b');
+  const result = evaluateParityContractGraph(fixture, {
+    version: 1,
+    predicates: [forbiddenOwnerWrite],
+  }) as any;
+  assert.equal(result.results[0].status, 'satisfied');
+  assert.deepEqual(result.results[0].observed.subjectConnectivity.map((item: any) => item.eligibleEdgeCount), [0, 0]);
+  assert.ok(result.results[0].replacementAssessment.blockers.some((item: string) => /registration\/handler bridging/i.test(item)));
+});
