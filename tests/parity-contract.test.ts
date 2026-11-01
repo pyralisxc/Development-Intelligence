@@ -266,3 +266,17 @@ test('Reachability exposes missing subject registration bridges without treating
   assert.deepEqual(result.results[0].observed.subjectConnectivity.map((item: any) => item.eligibleEdgeCount), [0, 0]);
   assert.match(result.results[0].observed.connectivityWarning, /registration-to-handler bridging/i);
 });
+
+test('Claim-scoped source coverage is visible but never silently becomes repository-wide replacement proof', () => {
+  const fixture = reachabilityGraph(false);
+  fixture.edges = fixture.edges.filter(edge => edge.id !== 'bridge-write');
+  const result = evaluateParityContractGraph(fixture, {
+    version: 1, predicates: [{
+      ...forbiddenOwnerWrite,
+      scopeSourceIds: ['owner.ts', 'studio.ts'],
+    }],
+  }) as any;
+  assert.equal(result.results[0].status, 'unproven');
+  assert.equal(result.results[0].replacementAssessment.eligible, false);
+  assert.equal(result.results[0].observed.sourceScope.replacementEligible, false);
+});
