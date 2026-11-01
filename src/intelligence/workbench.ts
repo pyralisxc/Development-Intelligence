@@ -1551,7 +1551,7 @@ export async function scopeOrientation(input: {
   // same graph revision/rank criterion. Reuse metrics per node within this
   // single orientation, never across revisions or distinct graph contexts.
   if (reusable && reusable.rankBy !== rankBy) {
-    reusable.metrics = undefined;
+    delete reusable.metrics;
     reusable.rankBy = rankBy;
   }
   const metricCache = reusable?.metrics ?? new Map<string, ReturnType<typeof orientationMetric>>();
