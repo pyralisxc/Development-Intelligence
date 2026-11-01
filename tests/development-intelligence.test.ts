@@ -416,6 +416,45 @@ test('portfolio semantic bootstrap selection accepts supported core and supporti
   assert.deepEqual(empty.unsupportedCandidateIds, []);
 });
 
+test('canonical graph publication maintains derived meaning while explicit rejection revokes effective qualification', async () => {
+  const fixture = await makeFixture();
+  const priorDir = process.env.DEVINT_CANONICAL_GRAPH_DIR;
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(fixture.root, 'derived-semantic-canonical');
+  try {
+    await fs.rm(path.join(fixture.source, '.development-intelligence'), { recursive: true, force: true });
+    const revision = await commit(fixture.source, 'derived semantic publication fixture');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project);
+    assert.equal(graph.repositoryRevision, revision);
+    const persisted = await loadSemanticAuthority(fixture.project);
+    assert.equal(persisted.state, 'hit');
+    const saved = persisted.ledger?.derivedMeanings ?? [];
+    assert.ok(saved.length > 0, 'successful canonical graph publication should maintain supported derived meanings');
+    assert.ok(saved.every(item => item.revision === revision && item.disposition === 'evidence-qualified'));
+    const candidateId = saved[0]!.candidateId;
+    const effectiveBefore = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    assert.ok(effectiveBefore.derivedMeanings.some((item: any) => item.candidateId === candidateId));
+
+    const rejected = await reviewSemanticMeaning({
+      project: fixture.project, candidateId, command: { kind: 'reject', rationale: 'Owner correction' },
+      actor: { kind: 'human', id: 'human:fixture-owner' }, at: '2026-11-01T20:00:00Z',
+    });
+    assert.equal(rejected.state, 'stored');
+    const effectiveAfter = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    assert.equal(effectiveAfter.derivedMeanings.some((item: any) => item.candidateId === candidateId), false);
+    const history = await loadSemanticAuthority(fixture.project);
+    assert.ok(history.ledger?.derivedMeanings?.some(item => item.candidateId === candidateId && item.revision === revision),
+      'explicit rejection must not silently erase original derived provenance');
+    assert.equal(history.ledger?.records.some(item => item.candidateId === candidateId && item.review.state === 'rejected'), true);
+  } finally {
+    if (priorDir === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    else process.env.DEVINT_CANONICAL_GRAPH_DIR = priorDir;
+    await fs.rm(fixture.root, { recursive: true, force: true });
+    clearGraphCache(fixture.project);
+  }
+});
+
 test('owner semantic bootstrap accepts explicit current meaning, enforces the gate, and finalizes exact Main A', async () => {
   const fixture = await makeFixture();
   const previousCanonicalDir = process.env.DEVINT_CANONICAL_GRAPH_DIR;
