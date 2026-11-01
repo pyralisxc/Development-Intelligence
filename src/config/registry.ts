@@ -1,10 +1,12 @@
 import { promises as fs } from 'node:fs';
+import { assertProjectAccessCurrent, hasProjectAccess, projectAccessConfig } from './projectAccess.js';
 import { projectsFile, safeSegment } from './paths.js';
 import type { ProjectConfig, ProjectRegistry, RuntimeHeaderConfig } from '../types.js';
 
 const GITHUB_PROJECT_PATTERN = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]+)$/;
 
 export function listAuthorizedGithubOwners(): string[] {
+  if (hasProjectAccess()) return [];
   const raw = process.env.DEVINT_GITHUB_ALLOWED_OWNERS?.trim();
   if (!raw) return [];
   const owners = raw.split(',').map(value => value.trim()).filter(Boolean);
@@ -140,6 +142,9 @@ async function registrySource(): Promise<{ parsed: ProjectRegistry; source: stri
 }
 
 export async function loadRegistry(): Promise<ProjectRegistry> {
+  await assertProjectAccessCurrent();
+  const access = projectAccessConfig();
+  if (access) return { [access.project]: validateProject(access.project, access.config) };
   const { parsed } = await registrySource();
   const validated: ProjectRegistry = {};
   const storageKeys = new Map<string, string>();
@@ -154,6 +159,7 @@ export async function loadRegistry(): Promise<ProjectRegistry> {
 }
 
 export async function getProjectConfig(project: string): Promise<ProjectConfig> {
+  await assertProjectAccessCurrent(project);
   const registry = await loadRegistry();
   const config = registry[project];
   if (config) return config;

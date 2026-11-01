@@ -1,6 +1,7 @@
 /** Execution placement never grants durable-authority mutation rights. */
+import { hasProjectAccess } from './projectAccess.js';
 export function computeOnly(): boolean {
-  return process.env.DEVINT_COMPUTE_ONLY === '1';
+  return hasProjectAccess() || process.env.DEVINT_COMPUTE_ONLY === '1';
 }
 
 export function assertAuthorityWritesAllowed(): void {

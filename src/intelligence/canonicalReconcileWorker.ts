@@ -2,6 +2,7 @@ import { isMainThread, parentPort, workerData, Worker } from 'node:worker_thread
 import { reconcileCanonicalPortfolio, reconcileCanonicalProject, type CanonicalPortfolioReconcileItem, type CanonicalPortfolioReconcileOptions } from './canonicalPortfolio.js';
 import type { GithubInstallationRepository } from '../source/repositoryCredential.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../vercelRequestContext.js';
+import { assertAuthorityWritesAllowed } from '../config/runtimeRole.js';
 
 interface WorkerInput {
   project: string;
@@ -41,6 +42,7 @@ export async function runCanonicalReconcileWorker(
   input: Pick<WorkerInput, 'project' | 'defaultBranch'>,
   overrides: Partial<ReturnType<typeof canonicalReconcileWorkerLimits>> = {},
 ): Promise<CanonicalPortfolioReconcileItem> {
+  assertAuthorityWritesAllowed();
   const startedAt = Date.now();
   const defaults = canonicalReconcileWorkerLimits();
   const timeoutMs = overrides.timeoutMs ?? defaults.timeoutMs;

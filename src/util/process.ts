@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { projectAccessChildEnvironment } from '../config/projectAccess.js';
 
 export interface RunResult {
   stdout: string;
@@ -14,7 +15,7 @@ export async function run(
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: { ...projectAccessChildEnvironment(), ...options.env },
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
     });

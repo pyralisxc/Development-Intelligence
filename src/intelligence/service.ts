@@ -1,4 +1,5 @@
 import { getProjectConfig } from '../config/registry.js';
+import { assertProjectAccessCurrent, hasProjectAccess, projectAccessScopeKey, projectAccessSecret } from '../config/projectAccess.js';
 import { computeOnly } from '../config/runtimeRole.js';
 import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
@@ -108,8 +109,9 @@ const repositoryBuildGate = new AsyncGate(() => positiveIntegerSetting(process.e
 
 type RepositoryCacheScope = 'canonical' | 'replay';
 function cacheKey(project: string, sha: string, scope: RepositoryCacheScope = 'canonical'): string {
-  return `${project}:${scope}:${sha}`;
+  return `${projectAccessScopeKey()}:${project}:${scope}:${sha}`;
 }
+function snapshotKey(graphId: string): string { return `${projectAccessScopeKey()}:${graphId}`; }
 function repositoryRetentionId(key: string): string { return `repository:${key}`; }
 function snapshotRetentionId(key: string): string { return `snapshot:${key}`; }
 
@@ -787,7 +789,7 @@ export async function loadQueryArtifactShadow(
 function runtimeHeaders(projectHeaders: Array<{ name: string; valueEnv: string }> | undefined): HeadersInit {
   const headers: Record<string, string> = {};
   for (const item of projectHeaders ?? []) {
-    const value = process.env[item.valueEnv];
+    const value = projectAccessSecret(item.valueEnv);
     if (!value) throw new Error(`Missing configured runtime credential environment variable: ${item.valueEnv}`);
     headers[item.name] = value;
   }
@@ -895,8 +897,8 @@ export async function scanGraph(project: string, options: { ref?: string | undef
     unavailableSourceIds: sources.filter(source => !source.available).map(source => source.id),
   };
   assertGraphIntegrity(graph);
-  snapshotCache.set(graph.graphId, { graph, revision: repository.revision, touchedAt: Date.now() });
-  pruneGraphCaches(snapshotRetentionId(graph.graphId));
+  snapshotCache.set(snapshotKey(graph.graphId), { graph, revision: repository.revision, touchedAt: Date.now() });
+  pruneGraphCaches(snapshotRetentionId(snapshotKey(graph.graphId)));
   return graph;
 }
 
@@ -906,9 +908,10 @@ export async function repositoryGraphs(project: string, ref?: string): Promise<{
 }
 
 export async function graphContext(project: string, options: { ref?: string; graphId?: string } = {}): Promise<{ graph: IntelligenceGraph; revision: ProjectRevision }> {
+  await assertProjectAccessCurrent(project);
   if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
   if (options.graphId) {
-    const snapshot = snapshotCache.get(options.graphId);
+    const snapshot = snapshotCache.get(snapshotKey(options.graphId));
     if (snapshot?.graph.project === project) {
       snapshot.touchedAt = Date.now();
       return { graph: snapshot.graph, revision: snapshot.revision };
@@ -937,6 +940,20 @@ export async function graphContext(project: string, options: { ref?: string; gra
       }
 
       let repository: CachedRepositoryGraph;
+      if (hasProjectAccess()) {
+        // Reconstruct against the adopted authority before considering source
+        // replay. Never use another binding's snapshot or ambient operator W.
+        try {
+          const current = await loadCachedRepositoryGraphForRead(project);
+          if (current.revision.sha === sha && current.graph.graphId === options.graphId) return { graph: current.graph, revision: current.revision };
+        } catch (error) {
+          await assertProjectAccessCurrent(project);
+          if ((error as any)?.status === 403) throw error;
+        }
+        repository = await buildCachedRepositoryGraph(project, `commit:${sha}`);
+        if (repository.graph.graphId !== options.graphId) throw new Error(`Graph identifier does not match the selected binding replay: ${options.graphId}`);
+        return { graph: repository.graph, revision: repository.revision };
+      }
       try {
         const current = await buildCachedRepositoryGraph(project);
         if (current.revision.sha === sha && current.graph.graphId === options.graphId) {
@@ -961,34 +978,41 @@ export async function currentGraph(project: string, ref?: string, graphId?: stri
 }
 
 export function clearGraphCache(project?: string): void {
+  if (hasProjectAccess()) {
+    const prefix = `${projectAccessScopeKey()}:`;
+    for (const key of repositoryCache.keys()) if (key.startsWith(prefix) && (!project || key.startsWith(`${prefix}${project}:`))) repositoryCache.delete(key);
+    for (const [key, value] of snapshotCache.entries()) if (key.startsWith(prefix) && (!project || value.graph.project === project)) snapshotCache.delete(key);
+    return;
+  }
   if (!project) {
     repositoryCache.clear();
     snapshotCache.clear();
     return;
   }
-  for (const key of [...repositoryCache.keys()]) if (key.startsWith(`${project}:`)) repositoryCache.delete(key);
+  for (const key of [...repositoryCache.keys()]) if (key.startsWith(`operator:${project}:`)) repositoryCache.delete(key);
   for (const [key, snapshot] of [...snapshotCache.entries()]) if (snapshot.graph.project === project) snapshotCache.delete(key);
 }
 
 export function graphCacheDiagnostics(): Record<string, unknown> {
-  const repository = repositoryRetentionItems();
-  const snapshots = snapshotRetentionItems();
+  const prefix = `${projectAccessScopeKey()}:`;
+  const repository = repositoryRetentionItems().filter(item => !hasProjectAccess() || item.id.startsWith(`repository:${prefix}`));
+  const snapshots = snapshotRetentionItems().filter(item => !hasProjectAccess() || item.id.startsWith(`snapshot:${prefix}`));
   return {
-    scope: 'process',
+    scope: hasProjectAccess() ? 'project-binding' : 'process',
     maxRetainedRecords: positiveIntegerSetting(process.env.DEVINT_GRAPH_CACHE_MAX_RECORDS, 150_000, 'DEVINT_GRAPH_CACHE_MAX_RECORDS'),
     retainedRecords: [...repository, ...snapshots].reduce((total, item) => total + item.records, 0),
     repository: {
-      entries: repositoryCache.size,
-      building: [...repositoryCache.values()].filter(entry => !entry.value).length,
+      entries: hasProjectAccess() ? repository.length : repositoryCache.size,
+      building: [...repositoryCache.entries()].filter(([key, entry]) => !entry.value && (!hasProjectAccess() || key.startsWith(prefix))).length,
       retainedRecords: repository.reduce((total, item) => total + item.records, 0),
       maxEntries: cacheEntryLimitSetting(process.env.DEVINT_GRAPH_CACHE_SIZE, 6, 'DEVINT_GRAPH_CACHE_SIZE'),
     },
     snapshots: {
-      entries: snapshotCache.size,
+      entries: hasProjectAccess() ? snapshots.length : snapshotCache.size,
       retainedRecords: snapshots.reduce((total, item) => total + item.records, 0),
       maxEntries: cacheEntryLimitSetting(process.env.DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE, 12, 'DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE'),
     },
-    coldBuilds: repositoryBuildGate.status(),
+    coldBuilds: hasProjectAccess() ? null : repositoryBuildGate.status(),
   };
 }
 

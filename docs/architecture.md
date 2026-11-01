@@ -281,5 +281,17 @@ Search runs against the full selected graph; selection loads a bounded neighborh
 
 ## Authentication boundary
 
+### Account/network foundation (not yet exposed as a hosted sign-in product)
+
+Account configuration is a separate owner from canonical graph/semantic authority. `AccountNetworkService` requires an explicit identity-verification callback; it does not interpret a deployment owner password, MCP read token, email address or client-supplied account ID as a durable account. Stable issuer/subject identity selects one versioned network document. The separate Blob metadata adapter uses conditional writes in `accounts/network-v1`, never the canonical graph namespace. Saving configuration cannot overwrite a concurrent save. Live identity/storage configuration and provider acceptance remain separate deployment gates.
+
+Saved bindings begin requested. A trusted server catalog must verify the complete account/source/project/authority association before activation, and resolve it again for each operation. A locator/read token is not proof of authority ownership. Adoption references the original internal project and canonical backend; it does not rename/copy graphs, transfer publisher rights or claim an entire storage backend. Metadata stores references, not source/storage secrets. Hardware registration records a fresh node ID and public-key thumbprint, not possession proof or an issued execution grant; replacement cannot reuse a registered identity. Revocation does not revoke independent provider credentials.
+
+Account-backed engine work runs in one frozen operation-local `ProjectAccessBinding`. The same scope controls registry resolution, secret lookup, runtime headers, exact canonical backend, graph/snapshot/credential caches, diagnostics and disposable checkout/askpass space. There is no fallback to ambient operator configuration inside a binding, including graphId reconstruction. Graph IDs remain evidence identities, not authorization tokens. Current session, binding version and catalog target are checked before access and before a result returns; adapters must await that result rather than stream protected data before the final check. No account-backed operation can publish canonical/accepted authority or spawn an unscoped canonical reconciliation worker.
+
+The initial scoped source support is explicit HTTPS (plus server-resolved file fixtures/adoption); implicit host SSH/scp credentials and process-global GitHub App bindings are refused. Server-held environment-backed App/token grants remain scoped and App exchanges use the existing bounded read-only repository-token policy. No private keys or broad storage credentials are restored to replacement hardware by the network document.
+
+The existing operator deployment remains supported outside this new scope. Account HTTP/OIDC login, Windows enrollment/credential custody, node execution grants, local control, management after app close/sign-out, public downloads and trusted updates are not delivered by these library contracts. Availability continues to follow actual dependencies; no offline snapshot/sync subsystem is introduced.
+
 DI supports bearer, trusted-proxy, private owner-session, native single-owner OAuth, and explicit local unauthenticated modes. Authentication remains an HTTP/deployment boundary over the graph engine; ChatGPT-specific behavior must not become graph semantics.
 

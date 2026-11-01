@@ -1,4 +1,5 @@
 import { getProjectConfig } from '../config/registry.js';
+import { projectAccessSecret } from '../config/projectAccess.js';
 import { stableHash } from '../util/hash.js';
 import { graphContext } from './service.js';
 import type {
@@ -17,7 +18,7 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 function envHeaders(source: TechnicalSourceConfig): Record<string, string> {
   const headers: Record<string, string> = { accept: 'application/json, text/plain;q=0.8' };
   for (const item of source.headers ?? []) {
-    const value = process.env[item.valueEnv];
+    const value = projectAccessSecret(item.valueEnv);
     if (!value) throw new Error(`Missing technical source credential environment variable: ${item.valueEnv}`);
     headers[item.name] = value;
   }

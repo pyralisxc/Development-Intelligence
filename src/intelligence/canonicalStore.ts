@@ -6,6 +6,7 @@ import { assertGraphIntegrity } from './integrity.js';
 import { ANALYZER_VERSION } from './repository.js';
 import { currentVercelOidcToken } from '../vercelRequestContext.js';
 import { assertAuthorityWritesAllowed } from '../config/runtimeRole.js';
+import { assertProjectAccessCurrent, projectAccessCanonical, projectAccessConfig } from '../config/projectAccess.js';
 
 export interface CanonicalGraphCurrentness {
   acceptedSemanticCurrent: boolean;
@@ -78,6 +79,8 @@ const MAX_DERIVED_OBJECT_BYTES = 64 * 1024 * 1024;
 const BLOB_API_VERSION = '12';
 
 function configuredRoot(): string | null {
+  const access = projectAccessCanonical();
+  if (access !== undefined) return access?.kind === 'file' ? path.resolve(access.root) : null;
   const value = process.env.DEVINT_CANONICAL_GRAPH_DIR?.trim();
   return value ? path.resolve(value) : null;
 }
@@ -92,6 +95,8 @@ function readWriteTokenStoreId(token: string): string | null {
 }
 
 function configuredBlobBackend(): BlobBackend | null {
+  const access = projectAccessCanonical();
+  if (access !== undefined) return access?.kind === 'vercel-private-blob' ? access : null;
   const explicitStoreId = process.env.DEVINT_CANONICAL_BLOB_STORE_ID?.trim();
   const oidcStoreId = process.env.BLOB_STORE_ID?.trim();
   const explicitToken = process.env.DEVINT_CANONICAL_BLOB_TOKEN?.trim();
@@ -119,6 +124,7 @@ function backend(): CanonicalBackend {
 }
 
 export function canonicalProjectStorageKey(project: string): string {
+  projectAccessConfig(project);
   const readable = project.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 72) || 'project';
   return `${readable}-${stableHash([project]).slice(0, 12)}`;
 }
@@ -300,6 +306,7 @@ export async function readCanonicalDerivedObjectVersioned(
   relativePath: string,
   maxBytes = MAX_DERIVED_OBJECT_BYTES,
 ): Promise<CanonicalDerivedObjectVersion | null> {
+  await assertProjectAccessCurrent(project);
   assertDerivedRelativePath(relativePath);
   const selected = backend();
   if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return null;
@@ -334,6 +341,7 @@ export async function readCanonicalDerivedObject(
   relativePath: string,
   maxBytes = MAX_DERIVED_OBJECT_BYTES,
 ): Promise<Uint8Array | null> {
+  await assertProjectAccessCurrent(project);
   assertDerivedRelativePath(relativePath);
   const selected = backend();
   if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return null;
@@ -535,6 +543,7 @@ async function loadFromBlob(
 }
 
 export async function loadCanonicalGraph(expected: { project: string; repository: string; revision: string }): Promise<CanonicalLoadResult> {
+  await assertProjectAccessCurrent(expected.project);
   assertExactRevision(expected.revision);
   const selected = backend();
   const diagnostics = baseDiagnostics(selected);

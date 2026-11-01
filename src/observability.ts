@@ -1,3 +1,5 @@
+import { hasProjectAccess, projectAccessScopeKey } from './config/projectAccess.js';
+
 export interface ToolExecutionTiming {
   project: string;
   tool: string;
@@ -9,15 +11,17 @@ export interface ToolExecutionTiming {
 const lastToolByProject = new Map<string, ToolExecutionTiming>();
 
 export function recordToolExecution(timing: ToolExecutionTiming): void {
-  lastToolByProject.set(timing.project, { ...timing });
+  lastToolByProject.set(`${projectAccessScopeKey()}:${timing.project}`, { ...timing });
 }
 
 export function toolExecutionDiagnostics(project: string): ToolExecutionTiming | null {
-  const timing = lastToolByProject.get(project);
+  const timing = lastToolByProject.get(`${projectAccessScopeKey()}:${project}`);
   return timing ? { ...timing } : null;
 }
 
 export function clearToolExecutionDiagnostics(project?: string): void {
-  if (project) lastToolByProject.delete(project);
-  else lastToolByProject.clear();
+  if (project) lastToolByProject.delete(`${projectAccessScopeKey()}:${project}`);
+  else if (hasProjectAccess()) {
+    for (const key of lastToolByProject.keys()) if (key.startsWith(`${projectAccessScopeKey()}:`)) lastToolByProject.delete(key);
+  } else lastToolByProject.clear();
 }

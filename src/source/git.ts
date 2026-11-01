@@ -6,6 +6,7 @@ import type { ProjectConfig } from '../types.js';
 import { runChecked } from '../util/process.js';
 import { gitAuth } from './gitAuth.js';
 import { resolveRepositoryCredential } from './repositoryCredential.js';
+import { projectAccessScratchPrefix } from '../config/projectAccess.js';
 
 export interface ProjectRevision {
   project: string;
@@ -260,9 +261,10 @@ export async function changedFilesBetweenRevisions(
 
   const scratchRoot = path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir());
   await fs.mkdir(scratchRoot, { recursive: true });
-  const root = await fs.mkdtemp(path.join(scratchRoot, `devint-diff-${project.replace(/[^a-zA-Z0-9._-]+/g, '-')}-`));
-  const auth = await gitAuth(config);
+  const root = await fs.mkdtemp(projectAccessScratchPrefix(scratchRoot, 'diff'));
+  let auth: Awaited<ReturnType<typeof gitAuth>> | undefined;
   try {
+    auth = await gitAuth(config);
     await runChecked('git', ['init', '--initial-branch=devint', root], { timeoutMs: 60_000 });
     await runChecked('git', ['-C', root, 'remote', 'add', 'origin', config.repository]);
     for (const sha of new Set([base.sha, head.sha])) {
@@ -282,7 +284,7 @@ export async function changedFilesBetweenRevisions(
       : [];
     return { base, head, files };
   } finally {
-    await auth.cleanup();
+    await auth?.cleanup();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
@@ -310,8 +312,8 @@ export async function withResolvedProjectCheckoutObserved<T>(
   assertAllowedRef(revision.project, config, parseRevisionSelector(revision.ref, config.defaultRef));
   const scratchRoot = path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir());
   await fs.mkdir(scratchRoot, { recursive: true });
-  const root = await fs.mkdtemp(path.join(scratchRoot, `devint-${revision.project.replace(/[^a-zA-Z0-9._-]+/g, '-')}-`));
-  const auth = await gitAuth(config);
+  const root = await fs.mkdtemp(projectAccessScratchPrefix(scratchRoot, 'checkout'));
+  let auth: Awaited<ReturnType<typeof gitAuth>> | undefined;
   let setupMs = 0;
   let fetchMs = 0;
   let checkoutMs = 0;
@@ -319,6 +321,7 @@ export async function withResolvedProjectCheckoutObserved<T>(
   let cleanupMs = 0;
   let value!: T;
   try {
+    auth = await gitAuth(config);
     await runChecked('git', ['init', '--initial-branch=devint', root], { timeoutMs: 60_000 });
     await runChecked('git', ['-C', root, 'remote', 'add', 'origin', config.repository]);
     setupMs = elapsedMs(setupStarted);
@@ -338,7 +341,7 @@ export async function withResolvedProjectCheckoutObserved<T>(
     bodyMs = elapsedMs(bodyStarted);
   } finally {
     const cleanupStarted = Date.now();
-    await auth.cleanup();
+    await auth?.cleanup();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     cleanupMs = elapsedMs(cleanupStarted);
   }
