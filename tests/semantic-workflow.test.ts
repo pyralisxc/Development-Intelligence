@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, semanticAiProposalPacket, semanticAiProposalReview, semanticLineageTransaction, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
+import { autonomousSemanticAssessment, priorExplicitDispositionEvidence, priorExplicitDisposition, acceptedMeaningsForContinuity, initialSemanticReview, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, semanticAiProposalPacket, semanticAiProposalReview, semanticLineageTransaction, semanticReviewAction, semanticReviewContinuity } from '../src/intelligence/semanticWorkflow.js';
 
 import type { SemanticCandidate } from '../src/intelligence/semanticBootstrap.js';
 import { applySemanticReviewAction, semanticMeaningReview, type SemanticMeaningReview } from '../src/intelligence/semanticReview.js';
@@ -390,4 +390,92 @@ test('semantic continuity can establish an enforced baseline without repository 
   );
   assert.equal(unsupported.status, 'unsupported');
   assert.equal(unsupported.reviewRequired, true);
+});
+
+test('Autonomous semantic projection qualifies evidence without claiming accepted authority', () => {
+  const item = candidate({ id: 'candidate:discovery', scope: 'src/feature', name: 'Feature', revision: 'a'.repeat(40) });
+  const result = autonomousSemanticAssessment(item, { factuality: { status: 'supported' } }, null, { state: 'new', meaningId: null, sourceRevision: null, sourceMeaningIds: [], reason: 'new' });
+  assert.equal(result.state, 'evidence-qualified');
+  assert.equal(result.automaticallyMaintained, true);
+  assert.equal(result.meaningId, null);
+  assert.equal(result.provenance.revision, 'a'.repeat(40));
+});
+
+test('Autonomous semantic projection cannot override explicit rejection or ambiguous lineage', () => {
+  const item = candidate({ id: 'candidate:reviewed', scope: 'src/feature', name: 'Feature', revision: 'b'.repeat(40) });
+  const rejected = applySemanticReviewAction(semanticMeaningReview(item), { kind: 'reject', actor: { kind: 'human', id: 'owner' }, at: '2026-11-01T00:00:00Z' });
+  const continuity = { state: 'new' as const, meaningId: null, sourceRevision: null, sourceMeaningIds: [] as [], reason: 'new' };
+  const rejectedResult = autonomousSemanticAssessment(item, { factuality: { status: 'supported' } }, rejected, continuity);
+  assert.equal(rejectedResult.state, 'explicitly-rejected');
+  assert.equal(rejectedResult.automaticallyMaintained, false);
+  const ambiguous = autonomousSemanticAssessment(item, { factuality: { status: 'supported' } }, null, { state: 'ambiguous', meaningId: null, sourceRevision: null, sourceMeaningIds: ['older'], reason: 'split' });
+  assert.equal(ambiguous.state, 'ambiguous-lineage');
+  assert.equal(ambiguous.evidenceQualified, false);
+  assert.equal(ambiguous.automaticallyMaintained, false);
+});
+
+test('Prior explicit rejection stays controlling across a revision without a repeated review', () => {
+  const before = candidate({ id: 'candidate:durable', scope: 'src/feature', name: 'Feature', revision: 'a'.repeat(40) });
+  const after = candidate({ id: 'candidate:durable', scope: 'src/feature', name: 'Feature', revision: 'b'.repeat(40) });
+  const rejected = applySemanticReviewAction(semanticMeaningReview(before), {
+    kind: 'reject', actor: { kind: 'human', id: 'owner' }, at: '2026-11-01T00:00:00Z',
+  });
+  const ledger = { records: [{
+    recordId: 'one', meaningId: rejected.meaningId, candidateId: before.id,
+    revision: before.provenance.revision, storedAt: '2026-11-01T00:00:00Z', review: rejected,
+  }] } as any;
+  const disposition = priorExplicitDisposition(after, [after], ledger, after.provenance.revision);
+  assert.equal(disposition?.state, 'rejected');
+  const outcome = autonomousSemanticAssessment(after, { factuality: { status: 'supported' } }, disposition, {
+    state: 'new', meaningId: null, sourceRevision: null, sourceMeaningIds: [], reason: 'not accepted',
+  });
+  assert.equal(outcome.state, 'explicitly-rejected');
+  assert.equal(outcome.automaticallyMaintained, false);
+});
+
+test('Prior explicit amendment remains governed rather than automatically overwritten', () => {
+  const before = candidate({ id: 'candidate:amended', scope: 'src/feature', name: 'Feature', revision: 'a'.repeat(40) });
+  const after = candidate({ id: 'candidate:amended', scope: 'src/feature', name: 'Feature', revision: 'b'.repeat(40) });
+  const amended = applySemanticReviewAction(semanticMeaningReview(before), {
+    kind: 'amend', actor: { kind: 'human', id: 'owner' }, at: '2026-11-01T00:00:00Z',
+    proposal: { description: 'Owner corrected meaning' },
+  });
+  const ledger = { records: [{
+    recordId: 'two', meaningId: amended.meaningId, candidateId: before.id,
+    revision: before.provenance.revision, storedAt: '2026-11-01T00:00:00Z', review: amended,
+  }] } as any;
+  const disposition = priorExplicitDisposition(after, [after], ledger, after.provenance.revision);
+  const outcome = autonomousSemanticAssessment(after, { factuality: { status: 'supported' } }, disposition, {
+    state: 'new', meaningId: null, sourceRevision: null, sourceMeaningIds: [], reason: 'not accepted',
+  });
+  assert.equal(disposition?.proposal.description, 'Owner corrected meaning');
+  assert.equal(outcome.state, 'explicitly-governed');
+  assert.equal(outcome.automaticallyMaintained, false);
+});
+
+test('Ambiguous prior explicit rejection cannot be autonomously requalified', () => {
+  const before = candidate({ id: 'candidate:old', scope: 'src/feature', name: 'Feature', revision: 'a'.repeat(40) });
+  const first = candidate({ id: 'candidate:new-one', scope: 'src/feature', name: 'Feature', revision: 'b'.repeat(40) });
+  const second = candidate({ id: 'candidate:new-two', scope: 'src/feature', name: 'Feature', revision: 'b'.repeat(40) });
+  const rejected = applySemanticReviewAction(semanticMeaningReview(before), { kind: 'reject', actor: { kind: 'human', id: 'owner' }, at: '2026-11-01T00:00:00Z' });
+  const ledger = { records: [{ recordId: 'old', meaningId: rejected.meaningId, candidateId: before.id, revision: before.provenance.revision, storedAt: '2026-11-01T00:00:00Z', review: rejected }] } as any;
+  const prior = priorExplicitDispositionEvidence(first, [first, second], ledger, first.provenance.revision);
+  assert.equal(prior.ambiguous, true);
+  const result = autonomousSemanticAssessment(first, { factuality: { status: 'supported' } }, prior.review, { state: 'new', meaningId: null, sourceRevision: null, sourceMeaningIds: [], reason: 'new' }, prior.ambiguous);
+  assert.equal(result.state, 'ambiguous-lineage');
+  assert.equal(result.automaticallyMaintained, false);
+});
+
+test('Terminal latest lineage does not resurrect an earlier rejection', () => {
+  const before = candidate({ id: 'candidate:terminal', scope: 'src/feature', name: 'Feature', revision: 'a'.repeat(40) });
+  const after = candidate({ id: 'candidate:terminal', scope: 'src/feature', name: 'Feature', revision: 'b'.repeat(40) });
+  const rejected = applySemanticReviewAction(semanticMeaningReview(before), { kind: 'reject', actor: { kind: 'human', id: 'owner' }, at: '2026-11-01T00:00:00Z' });
+  const terminal = { ...rejected, state: 'superseded' as const };
+  const ledger = { records: [
+    { recordId: 'old', meaningId: rejected.meaningId, candidateId: before.id, revision: before.provenance.revision, storedAt: '2026-11-01T00:00:00Z', review: rejected },
+    { recordId: 'new', meaningId: rejected.meaningId, candidateId: before.id, revision: 'c'.repeat(40), storedAt: '2026-11-02T00:00:00Z', review: terminal },
+  ] } as any;
+  const prior = priorExplicitDispositionEvidence(after, [after], ledger, after.provenance.revision);
+  assert.equal(prior.review, null);
+  assert.equal(prior.ambiguous, false);
 });
