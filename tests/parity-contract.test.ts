@@ -280,3 +280,31 @@ test('Claim-scoped source coverage is visible but never silently becomes reposit
   assert.equal(result.results[0].replacementAssessment.eligible, false);
   assert.equal(result.results[0].observed.sourceScope.replacementEligible, false);
 });
+
+test('Claim-source closure detects a transitive outbound escape', () => {
+  const fixture = reachabilityGraph();
+  const result = evaluateParityContractGraph(fixture, {
+    version: 1, predicates: [{
+      ...forbiddenOwnerWrite,
+      scopeSourceIds: ['owner.ts', 'bridge.ts'],
+    }],
+  }) as any;
+  assert.equal(result.results[0].observed.sourceScope.qualified, false);
+  assert.equal(result.results[0].observed.sourceScope.escaped, true);
+  assert.equal(result.results[0].observed.sourceScope.replacementEligible, false);
+});
+
+test('Claim-source closure follows inbound direction and does not claim unsupported evidence', () => {
+  const fixture = reachabilityGraph();
+  const result = evaluateParityContractGraph(fixture, {
+    version: 1, predicates: [{
+      ...forbiddenOwnerWrite,
+      direction: 'inbound',
+      from: { ids: ['operation:studio-write'] },
+      to: { ids: ['mcp:owner-a'] },
+      scopeSourceIds: ['studio.ts', 'bridge.ts'],
+    }],
+  }) as any;
+  assert.equal(result.results[0].observed.sourceScope.qualified, false);
+  assert.equal(result.results[0].observed.sourceScope.escaped, true);
+});
