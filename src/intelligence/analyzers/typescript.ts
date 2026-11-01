@@ -131,13 +131,18 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       : ts.isIdentifier(element.name) && element.name.text === key && !element.initializer);
     if (!bound || !ts.isIdentifier(bound.name)) return false;
     let called = false;
+    let rebound = false;
+    const callbackName = bound.name.text;
     const inspect = (node: ts.Node): void => {
       if (ts.isFunctionLike(node) && node !== wrapper) return;
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === bound.name.getText(sourceFile)) called = true;
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === callbackName) rebound = true;
+      if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) && node.left.text === callbackName
+        && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) rebound = true;
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === callbackName) called = true;
       ts.forEachChild(node, inspect);
     };
     inspect(wrapper.body!);
-    return called;
+    return called && !rebound;
   };
 
 
@@ -338,6 +343,19 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       const key = propertyName(node.parent.name);
       const wrapperName = call.expression.getText(sourceFile);
       const wrappers = localWrappers.get(wrapperName) ?? [];
+      const hasCompetingBinding = (() => {
+        let competing = false;
+        const inspect = (item: ts.Node): void => {
+          if (item !== wrappers[0] && ((ts.isFunctionDeclaration(item) && item.name?.text === wrapperName)
+            || (ts.isVariableDeclaration(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
+            || (ts.isParameter(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
+            || (ts.isClassDeclaration(item) && item.name?.text === wrapperName)
+            || (ts.isImportSpecifier(item) && item.name.text === wrapperName))) competing = true;
+          ts.forEachChild(item, inspect);
+        };
+        inspect(sourceFile);
+        return competing;
+      })();
       const lexicalShadow = (() => {
         // A same-named declaration anywhere outside the selected top-level
         // wrapper may shadow the apparent callee. Refuse uncertain bindings.
@@ -352,7 +370,7 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         }
         return false;
       })();
-      if (key && wrappers.length === 1 && !lexicalShadow && invokedProperty(wrappers[0]!, key)) {
+      if (key && wrappers.length === 1 && !lexicalShadow && !hasCompetingBinding && invokedProperty(wrappers[0]!, key)) {
         const localCallback = observation({
           id: `symbol:${context.locatorBase}#function:callback-${node.getStart(sourceFile)}`,
           sourceId: context.source.id, kind: 'function', locator: locator(node),
