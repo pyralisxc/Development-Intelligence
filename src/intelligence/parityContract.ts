@@ -352,7 +352,6 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
     ...(missingSubjectIds.length ? [`The from selector did not match requested IDs: ${missingSubjectIds.join(', ')}.`] : []),
     ...(missingTargetIds.length ? [`The to selector did not match requested IDs: ${missingTargetIds.join(', ')}.`] : []),
     ...(tentativePaths.length ? ['Candidate or unresolved paths cannot satisfy graph proof.'] : []),
-    ...(disconnectedSubjects.length ? ['Selected subjects have no outgoing graph relationships of the requested kinds; source registration/handler bridging may be missing, and absence is not established by this diagnostic.'] : []),
     ...(truncated ? ['Graph traversal was truncated before exhaustiveness could be established.'] : []),
     ...(unknownEndpoints ? ['Reachable relationships with unknown endpoints prevent negative graph proof.'] : []),
     ...(!complete && !resolvedMatch ? ['Claim-scope coverage is not exhaustive.'] : []),
@@ -364,7 +363,7 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
     predicate,
     status,
     matched: { subjects: subjects.map(node => node.id), targets: targets.map(node => node.id) },
-    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints }, subjectConnectivity: outboundEvidence },
+    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints }, subjectConnectivity: outboundEvidence, connectivityWarning: disconnectedSubjects.length ? 'Some selected subjects have no graph edges of the requested kinds. Inspect registration-to-handler bridging before asserting original-test equivalence.' : null },
     replacementAssessment: {
       modality: 'static-graph',
       eligible: replacementEligible,
