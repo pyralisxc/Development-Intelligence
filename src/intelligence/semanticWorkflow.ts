@@ -724,7 +724,16 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       candidateUniverseEligible: fullBootstrap.capacity.eligibleCandidateCount,
       candidateUniverseExhausted: fullBootstrap.capacity.exhausted,
     },
-    derivedMeanings: (authority.ledger?.derivedMeanings ?? []).filter(item => item.revision === graph.repositoryRevision),
+    derivedMeanings: (authority.ledger?.derivedMeanings ?? []).filter(item => {
+      if (item.revision !== graph.repositoryRevision) return false;
+      const candidate = fullBootstrap.candidates.find(value => value.id === item.candidateId);
+      if (!candidate) return false;
+      const prior = priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision);
+      const continuity = semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings);
+      const assessment = autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id) ?? null,
+        reviewsByCandidate.get(candidate.id) ?? prior.review, continuity, prior.ambiguous);
+      return assessment.automaticallyMaintained;
+    }),
     authority: authoritySummary(authority),
     policy: {
       stage: 'T2-review-surface',
