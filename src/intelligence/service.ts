@@ -381,10 +381,17 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         // A failed semantic update cannot reinterpret an already-stored graph.
         if (saved.saveState === 'stored') {
           const { maintainDerivedSemanticsForGraph } = await import('./semanticWorkflow.js');
-          await maintainDerivedSemanticsForGraph(project, observed.value.graph).catch(() => {
-            // Canonical graph publication remains independently valid.
-            // Conditional semantic writes can be retried on a later publish.
+          const derivedResult = await maintainDerivedSemanticsForGraph(project, observed.value.graph).catch(() => {
+            // Preserve the canonical W publication without concealing that
+            // derived meaning maintenance failed at this exact revision.
+            console.warn('Derived semantic maintenance failed after canonical graph publication');
+            return null;
           });
+          if (derivedResult?.state === 'conflict') {
+            // A competing explicit correction wins the ETag race. Never
+            // publish a stale derived result over that newer authority.
+            console.warn('Derived semantic maintenance deferred due to concurrent semantic update');
+          }
         }
         let queryPointerPublication = null;
         if (saved.saveState === 'stored' && queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
