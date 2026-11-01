@@ -114,20 +114,28 @@ const graph = await buildLocalGraph(cardForgeRoot, project);
 // Owner plugin or its ZIP bytes are equivalent to static source topology.
 const realOwnerSubjects = ['mcp:get_owner_site_snapshot', 'mcp:publish_owner_site_copy'];
 const studioWriteSymbol = 'symbol:src/features/studio-documents/server/templateWorkingDocuments.ts#function:createTemplateWorkingDocument';
+// This is an explicit *candidate* boundary consisting of observed registration
+// and write-entry source files. Traversal must report all transitive escapes;
+// neither a complete file list nor this scope proves package-byte equivalence.
+const ownerStudioCandidateScope = [
+  'src/features/owner/server/mcpOwnerTools.ts',
+  'src/features/studio-documents/server/mcpEditableTemplateTools.ts',
+  'src/features/studio-documents/server/templateWorkingDocuments.ts',
+];
 const scopedOwnerPredicates = [
   {
     id: 'owner-to-studio-mcp-probe', type: 'reachability',
     from: { ids: realOwnerSubjects }, to: { ids: ['mcp:create_editable_template'] },
     requirement: 'forbidden', direction: 'outbound', quantifier: 'any',
     relationshipKinds: ['registered-as', 'handled_by', 'calls', 'invokes', 'implemented-by'],
-    maxDepth: 8,
+    maxDepth: 8, scopeSourceIds: ownerStudioCandidateScope,
   },
   {
     id: 'owner-to-real-studio-write-probe', type: 'reachability',
     from: { ids: realOwnerSubjects }, to: { ids: [studioWriteSymbol] },
     requirement: 'forbidden', direction: 'outbound', quantifier: 'any',
     relationshipKinds: ['registered-as', 'handled_by', 'calls', 'invokes'],
-    maxDepth: 8,
+    maxDepth: 8, scopeSourceIds: ownerStudioCandidateScope,
   },
 ];
 const realReachability = evaluateParityContractGraph(graph, { version: 1, predicates: scopedOwnerPredicates });
@@ -136,6 +144,7 @@ const reachabilityEvidence = realReachability.results.map(item => ({
   status: item.status,
   replacementEligible: item.replacementAssessment.eligible,
   traversal: item.observed.traversal,
+  sourceScope: item.observed.sourceScope,
   connectivity: item.observed.subjectConnectivity,
   counterexamples: item.observed.counterexamples,
   tentativePaths: item.observed.tentativePaths,
