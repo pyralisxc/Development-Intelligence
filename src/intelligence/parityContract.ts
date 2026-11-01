@@ -320,6 +320,15 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
   const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
   const relevantKinds = predicate.relationshipKinds?.length ? new Set(predicate.relationshipKinds) : null;
   const directionForScope = predicate.direction ?? 'outbound';
+  const scopeAdjacency = new Map<string, GraphEdge[]>();
+  for (const edge of graph.edges) {
+    if (relevantKinds && !relevantKinds.has(edge.kind)) continue;
+    const key = directionForScope === 'outbound' ? edge.from : edge.to;
+    if (!key) continue;
+    const bucket = scopeAdjacency.get(key) ?? [];
+    bucket.push(edge);
+    scopeAdjacency.set(key, bucket);
+  }
   const visited = new Set(subjects.map(node => node.id));
   const pending = subjects.map(node => ({ id: node.id, depth: 0 }));
   let sourceScopeEscaped = false;
@@ -329,9 +338,7 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
   for (let cursor = 0; cursor < pending.length; cursor += 1) {
     const current = pending[cursor]!;
     if (current.depth >= (predicate.maxDepth ?? 8)) continue;
-    for (const edge of graph.edges) {
-      if ((directionForScope === 'outbound' ? edge.from : edge.to) !== current.id
-          || (relevantKinds && !relevantKinds.has(edge.kind))) continue;
+    for (const edge of scopeAdjacency.get(current.id) ?? []) {
       if (++exploredEdges > 10_000) { sourceScopeTruncated = true; break; }
       const nextId = directionForScope === 'outbound' ? edge.to : edge.from;
       const next = nextId ? nodeById.get(nextId) : null;
