@@ -23,6 +23,12 @@ foreach($status in 2,3,5,6,7,99) {
 $path=Join-Path $root 'receipt.json'
 $record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);toolsSha256=('c'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
 Write-MsiReceipt $path $record
+# Unavailable ACL evidence must be rejected even after the bounded retry.
+$missingAclRejected=$false
+try { Get-OperatorAclChecked (Join-Path $root 'missing-receipt.json') | Out-Null } catch {
+    $missingAclRejected=$_.Exception.Message -match 'Operator ACL verification unavailable'
+}
+Require $missingAclRejected 'Missing operator receipt ACL was treated as trusted'
 $oldReader=Open-OperatorReadStream $path
 try {
     $replacement=$record.PSObject.Copy()
