@@ -36,12 +36,12 @@ function Get-Acl {
     param([string]$LiteralPath,[string]$ErrorAction)
     $script:aclFixtureAttempts++
     if($script:aclFixtureAttempts -eq 1){throw [IO.IOException]::new('Synthetic transient ACL read',-2147024864)}
-    Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
+    Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
 }
 try {
     $recovered=Get-OperatorAclChecked $path
     Require ($script:aclFixtureAttempts -eq 2 -and $null -ne $recovered) 'Transient ACL failure did not recover using actual ACL'
-} finally { Remove-Item Function:\\Get-Acl -ErrorAction SilentlyContinue }
+} finally { Remove-Item Function:\Get-Acl -ErrorAction SilentlyContinue }
 # Persistent native failures must keep the original exception and HRESULT.
 $script:aclFixtureAttempts=0
 function Get-Acl {
@@ -55,7 +55,7 @@ try {
         $persistentRefused=$_.Exception.Message -eq 'Synthetic persistent ACL read' -and $_.Exception.HResult -eq -2147024864
     }
     Require ($persistentRefused -and $script:aclFixtureAttempts -eq 5) 'Persistent ACL refusal lost native exception, HResult, or retry bound'
-} finally { Remove-Item Function:\\Get-Acl -ErrorAction SilentlyContinue }
+} finally { Remove-Item Function:\Get-Acl -ErrorAction SilentlyContinue }
 $oldReader=Open-OperatorReadStream $path
 try {
     $replacement=$record.PSObject.Copy()
