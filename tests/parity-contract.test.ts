@@ -264,5 +264,5 @@ test('Reachability exposes missing subject registration bridges without treating
   }) as any;
   assert.equal(result.results[0].status, 'satisfied');
   assert.deepEqual(result.results[0].observed.subjectConnectivity.map((item: any) => item.eligibleEdgeCount), [0, 0]);
-  assert.ok(result.results[0].replacementAssessment.blockers.some((item: string) => /registration\/handler bridging/i.test(item)));
+  assert.match(result.results[0].observed.connectivityWarning, /registration-to-handler bridging/i);
 });
