@@ -135,7 +135,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     const callbackName = bound.name.text;
     const inspect = (node: ts.Node): void => {
       if (ts.isFunctionLike(node) && node !== wrapper) return;
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === callbackName) rebound = true;
+      if (ts.isVariableDeclaration(node) && (ts.isIdentifier(node.name) ? node.name.text === callbackName : node.name.getText(sourceFile).includes(callbackName))) rebound = true;
+      if (ts.isBindingElement(node) && ts.isIdentifier(node.name) && node.name.text === callbackName && node !== bound) rebound = true;
       if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) && node.left.text === callbackName
         && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) rebound = true;
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === callbackName) called = true;
@@ -348,7 +349,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         const inspect = (item: ts.Node): void => {
           if (item !== wrappers[0] && ((ts.isFunctionDeclaration(item) && item.name?.text === wrapperName)
             || (ts.isVariableDeclaration(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
-            || (ts.isParameter(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
+            || (ts.isParameter(item) && (ts.isIdentifier(item.name) ? item.name.text === wrapperName : item.name.getText(sourceFile).includes(wrapperName)))
+            || (ts.isBindingElement(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
             || (ts.isClassDeclaration(item) && item.name?.text === wrapperName)
             || (ts.isImportSpecifier(item) && item.name.text === wrapperName))) competing = true;
           ts.forEachChild(item, inspect);
@@ -396,7 +398,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     // Function expressions always create their own execution boundary, even
     // if no higher-order invocation has been proven. Without this, a merely
     // passed callback's calls would be falsely attributed to its creator.
-    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && !pushedFunction) {
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && !pushedFunction
+      && !(ts.isVariableDeclaration(node.parent) && variableFunctionExpression(node.parent.initializer) === node)) {
       const isolated = observation({
         id: `symbol:${context.locatorBase}#function:isolated-callback-${node.getStart(sourceFile)}`,
         sourceId: context.source.id, kind: 'function', locator: locator(node),
