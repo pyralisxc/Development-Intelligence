@@ -775,7 +775,7 @@ export async function maintainDerivedSemanticsForGraph(project: string, graph: A
   if (!all.capacity.exhausted) throw new Error('Semantic maintenance requires an exhausted candidate census');
   const audit = auditSemanticCandidates(graph, all, { limit: all.candidates.length });
   const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
-  const authority = await loadSemanticAuthority(input.project);
+  const authority = await loadSemanticAuthority(project);
   if (authority.state === 'invalid') throw new Error(authority.error ?? 'Semantic ledger invalid');
   const existing = new Map(semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision).map(item => [item.candidateId, item]));
   const priorAccepted = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
