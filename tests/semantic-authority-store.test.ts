@@ -14,6 +14,7 @@ import {
   persistSemanticPromotionEnrollment,
   persistSemanticReview,
   persistSemanticReviews,
+  persistDerivedSemanticMeanings,
   promoteCanonicalAcceptedGraph,
   semanticPromotionEnrollmentState,
   semanticReviewsAtRevision,
@@ -431,11 +432,18 @@ test('semantic compaction preserves newest terminal disposition without reviving
     const terminal = { ...accepted, proposalRevision: b, state: 'superseded' as const, accepted: false };
     const second = await persistSemanticReview('CompactionFixture', terminal, first.etag);
     assert.equal(second.state, 'stored');
+    const derived = await persistDerivedSemanticMeanings('CompactionFixture', a, [{
+      candidateId: 'candidate:compacted', revision: a, meaningId: accepted.meaningId,
+      evidenceIds: ['evidence:source'], sourceIds: ['repo:src/features/example.ts'],
+      disposition: 'evidence-qualified',
+    }], second.etag);
+    assert.equal(derived.state, 'stored');
     const compacted = await compactSemanticAuthorityToCurrentAccepted('CompactionFixture');
     assert.equal(compacted.state, 'stored');
     assert.equal(latestAcceptedMeanings(compacted.ledger).length, 0);
     assert.equal(compacted.ledger?.records.length, 1);
     assert.equal(compacted.ledger?.records[0]?.review.state, 'superseded');
+    assert.deepEqual(compacted.ledger?.derivedMeanings?.[0]?.evidenceIds, ['evidence:source']);
   } finally {
     if (previous === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     else process.env.DEVINT_CANONICAL_GRAPH_DIR = previous;
