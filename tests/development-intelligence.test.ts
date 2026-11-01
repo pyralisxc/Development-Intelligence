@@ -846,6 +846,31 @@ test('project statistics exposes bounded graph and capacity facts without invent
   }
 });
 
+test('sequential semantic orientation batch matches standalone pinned-depth outputs exactly', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project);
+    const questions = [
+      'What does this project do?',
+      'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
+      'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+    ];
+    const batch = await queryWorkbenchRequest({ project: fixture.project, questions, graphId: graph.graphId }) as any;
+    assert.equal(batch.graphId, graph.graphId);
+    assert.deepEqual(batch.items.map((item: any) => item.status), ['ok', 'ok', 'ok']);
+    assert.deepEqual(batch.items.map((item: any) => item.routing.semanticDepth), ['nucleus', 'expanded', 'exhaustive']);
+    for (let index = 0; index < questions.length; index += 1) {
+      const standalone = await queryWorkbench({ project: fixture.project, graphId: graph.graphId, text: questions[index]! }) as any;
+      assert.deepEqual(batch.items[index].result, standalone.result, 'batch structural reuse must preserve the full per-depth semantic result');
+      assert.equal(batch.items[index].intent, standalone.intent);
+    }
+  } finally {
+    clearGraphCache(fixture.project);
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('multi-question investigation keeps one graph context and isolates questions', async () => {
   const fixture = await makeFixture();
   try {
