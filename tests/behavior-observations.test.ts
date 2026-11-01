@@ -238,3 +238,22 @@ function owner() { run({ execute: () => write() }); }`);
 function owner() { run({ execute: () => write() }); }`);
   assert.equal(imported.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
 });
+
+test('local const wrapper invokes its same-block callback but passing without invocation does not', () => {
+  const analyze = (text: string) => analyzeTypeScript({ source: source('ConstWrapper.ts'), locatorBase: 'ConstWrapper.ts', text });
+  const positive = analyze(`function owner() {
+  const run = ({ execute }: { execute: () => void }) => { execute(); };
+  run({ execute: () => write() });
+}`);
+  assert.ok(positive.resolutions.some(edge => edge.strategy === 'local-callback-invocation' && edge.status === 'resolved'));
+  const unused = analyze(`function owner() {
+  const run = ({ execute }: { execute: () => void }) => true;
+  run({ execute: () => write() });
+}`);
+  assert.equal(unused.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const otherBlock = analyze(`function owner() {
+  { const run = ({ execute }: { execute: () => void }) => execute(); }
+  run({ execute: () => write() });
+}`);
+  assert.equal(otherBlock.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+});
