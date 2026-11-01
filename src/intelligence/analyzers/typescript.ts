@@ -436,13 +436,11 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         const name = node.arguments[0].text;
         const tool = observation({ sourceId: context.source.id, kind: 'mcp-tool', locator: locator(node, ':mcp'), name, field: 'tool', value: name, layer: 'representation', checkpoint: false });
         observations.push(tool);
-        // The third registerTool argument is the implementation callback. Only
-        // an unambiguous local identifier can be resolved at this stage; inline
-        // or imported callbacks retain an explicit unresolved boundary.
+        // Only the inline callback at this registration site is lexically certain.
+        // Identifier callbacks may be parameters, imports, or shadowed locals;
+        // a same-named declaration elsewhere in the file is not binding proof.
         const handler = unwrap(node.arguments[2]);
-        if (handler && ts.isIdentifier(handler)) {
-          pendingHandlers.push({ ui: tool, handler: handler.text, line: lineOf(node), ownerId: null });
-        } else if (handler && (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler))) {
+        if (handler && (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler))) {
           // Inline callbacks have a real callable implementation at the registration
           // site. It is a distinct graph node; do not pretend its body is an
           // already-resolved imported or named function.
