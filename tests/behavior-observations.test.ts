@@ -198,3 +198,23 @@ server.registerTool("inline", {}, async () => 42);`,
   assert.equal(result.resolutions.some(item => item.from === owner.id && item.kind === 'handled_by' && item.status === 'resolved'), false);
   assert.ok(result.resolutions.some(item => item.from === inline.id && item.kind === 'handled_by' && item.status === 'resolved'));
 });
+
+test('Only directly invoked lexically bound object callbacks gain operation reachability', () => {
+  const analyze = (body: string) => analyzeTypeScript({
+    source: source('HigherOrder.ts'), locatorBase: 'HigherOrder.ts', text: body,
+  });
+  const invoked = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
+function write() { return true; }
+function owner() { run({ execute: () => write() }); }`);
+  assert.ok(invoked.resolutions.some(edge => edge.kind === 'invokes' && edge.strategy === 'local-callback-invocation' && edge.status === 'resolved'));
+  const passedOnly = analyze(`function run({ execute }: { execute: () => void }) { return true; }
+function write() { return true; }
+function owner() { run({ execute: () => write() }); }`);
+  assert.equal(passedOnly.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const shadowed = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
+function owner(run: unknown) { run({ execute: () => write() }); }`);
+  assert.equal(shadowed.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const imported = analyze(`import { run } from './other';
+function owner() { run({ execute: () => write() }); }`);
+  assert.equal(imported.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+});
