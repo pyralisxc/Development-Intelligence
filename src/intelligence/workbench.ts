@@ -2801,7 +2801,6 @@ export async function queryWorkbenchRequest(input: {
       scope: input.scope,
       rankBy: input.rankBy,
       semanticDepth: input.semanticDepth,
-      orientationReuse,
     });
     return {
       ...result,
