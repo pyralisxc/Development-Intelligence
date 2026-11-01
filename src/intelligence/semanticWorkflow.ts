@@ -639,6 +639,10 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
   const candidateAudit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
   const auditByCandidate = new Map(candidateAudit.items.map(item => [item.candidateId, item]));
   const authority = await loadSemanticAuthority(input.project);
+  const effectiveDerivedAudit = (authority.ledger?.derivedMeanings?.length ?? 0) > 0 && limit !== 1000
+    ? auditSemanticCandidates(graph, fullBootstrap, { limit: fullBootstrap.candidates.length })
+    : candidateAudit;
+  const effectiveDerivedAuditByCandidate = new Map(effectiveDerivedAudit.items.map(item => [item.candidateId, item]));
   const reviews = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision);
   const reviewsByCandidate = new Map(reviews.map(review => [review.candidateId, review]));
   const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
@@ -730,7 +734,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       if (!candidate) return false;
       const prior = priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision);
       const continuity = semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings);
-      const assessment = autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id) ?? null,
+      const assessment = autonomousSemanticAssessment(candidate, effectiveDerivedAuditByCandidate.get(candidate.id) ?? null,
         reviewsByCandidate.get(candidate.id) ?? prior.review, continuity, prior.ambiguous);
       return assessment.automaticallyMaintained;
     }),
