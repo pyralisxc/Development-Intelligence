@@ -217,6 +217,15 @@ function owner() { run({ execute: () => write() }); }`);
   const shadowed = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
 function owner(run: unknown) { run({ execute: () => write() }); }`);
   assert.equal(shadowed.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const localShadow = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
+function owner() { const run = () => true; run({ execute: () => write() }); }`);
+  assert.equal(localShadow.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const reassigned = analyze(`function run({ execute }: { execute: () => void }) {
+  execute = () => {};
+  execute();
+}
+function owner() { run({ execute: () => write() }); }`);
+  assert.equal(reassigned.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
   const imported = analyze(`import { run } from './other';
 function owner() { run({ execute: () => write() }); }`);
   assert.equal(imported.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
