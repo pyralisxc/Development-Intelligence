@@ -176,10 +176,11 @@ test('semantic compaction retains latest accepted and rejected dispositions with
     assert.equal(compacted.state, 'stored');
     assert.equal(compacted.ledger?.records.length, 2);
     assert.equal(compacted.ledger?.records.find(item => item.review.state === 'rejected')?.candidateId, rejected.candidateId);
-    assert.equal(compacted.ledger?.records[0]?.revision, previewRevision);
-    assert.equal(compacted.ledger?.records[0]?.review.accepted, true);
-    assert.ok(compacted.ledger?.records[0]?.review.history.some(item => item.kind === 'accept'));
-    assert.deepEqual(compacted.ledger?.records[0]?.review.lineage, { predecessorMeaningIds: [], successorMeaningIds: [] });
+    const retainedAcceptance = compacted.ledger?.records.find(item => item.review.accepted);
+    assert.equal(retainedAcceptance?.revision, previewRevision);
+    assert.equal(retainedAcceptance?.review.accepted, true);
+    assert.ok(retainedAcceptance?.review.history.some(item => item.kind === 'accept'));
+    assert.deepEqual(retainedAcceptance?.review.lineage, { predecessorMeaningIds: [], successorMeaningIds: [] });
     assert.deepEqual(compacted.ledger?.changeVerifications ?? [], []);
   } finally {
     delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
