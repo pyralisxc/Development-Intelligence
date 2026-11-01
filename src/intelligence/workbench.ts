@@ -1528,9 +1528,21 @@ export async function scopeOrientation(input: {
     }
   }
 
+  // The ranked list and role summaries inspect the same scoped nodes at the
+  // same graph revision/rank criterion. Reuse metrics per node within this
+  // single orientation, never across revisions or distinct graph contexts.
+  const metricCache = new Map<string, ReturnType<typeof orientationMetric>>();
+  const scopedMetrics = (node: GraphNode): ReturnType<typeof orientationMetric> => {
+    const existing = metricCache.get(node.id);
+    if (existing) return existing;
+    const calculated = orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy);
+    metricCache.set(node.id, calculated);
+    return calculated;
+  };
+
   const preferredKinds = new Set(['feature','capability','route','api','mcp','provider','file','function','method','class','interface','constructor']);
   const ranked = nodes
-    .map(node => ({ node, metrics: orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy) }))
+    .map(node => ({ node, metrics: scopedMetrics(node) }))
     .sort((a, b) =>
       b.metrics.rankValue - a.metrics.rankValue
       || Number(preferredKinds.has(b.node.kind)) - Number(preferredKinds.has(a.node.kind))
@@ -1569,7 +1581,7 @@ export async function scopeOrientation(input: {
     const members = nodes.filter(node => orientationRole(node) === role);
     if (!members.length) return [];
     const sorted = members
-      .map(node => ({ node, metrics: orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy) }))
+      .map(node => ({ node, metrics: scopedMetrics(node) }))
       .sort((a, b) =>
         b.metrics.rankValue - a.metrics.rankValue
         || b.metrics.relationshipDiversity - a.metrics.relationshipDiversity
