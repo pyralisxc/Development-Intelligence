@@ -211,6 +211,9 @@ function owner() { run({ execute: () => write() }); }`);
 function write() { return true; }
 function owner() { run({ execute: () => write() }); }`);
   assert.equal(passedOnly.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const passedWrite = passedOnly.observations.find(item => item.kind === 'function' && item.name === 'write');
+  const outerOwner = passedOnly.observations.find(item => item.kind === 'function' && item.name === 'owner');
+  assert.equal(passedOnly.resolutions.some(edge => edge.from === outerOwner?.id && edge.to === passedWrite?.id && edge.status === 'resolved'), false, 'passing an uncalled callback never gives the outer owner a write path');
   const shadowed = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
 function owner(run: unknown) { run({ execute: () => write() }); }`);
   assert.equal(shadowed.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
