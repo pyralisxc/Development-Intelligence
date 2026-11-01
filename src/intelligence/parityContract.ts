@@ -101,6 +101,7 @@ function normalizePredicate(value: unknown, index: number): ParityReachabilityPr
   const rationale = cleanText(record.rationale, `${field}.rationale`);
   const originalClaim = cleanText(record.originalClaim, `${field}.originalClaim`);
   const relationshipKinds = stringList(record.relationshipKinds, `${field}.relationshipKinds`);
+  const scopeSourceIds = stringList(record.scopeSourceIds, `${field}.scopeSourceIds`);
   return {
     id: cleanText(record.id, `${field}.id`, true)!,
     type: 'reachability',
@@ -111,6 +112,7 @@ function normalizePredicate(value: unknown, index: number): ParityReachabilityPr
     direction: record.direction === 'inbound' ? 'inbound' : 'outbound',
     maxDepth: record.maxDepth === undefined ? 8 : Number(record.maxDepth),
     ...(relationshipKinds?.length ? { relationshipKinds } : {}),
+    ...(scopeSourceIds?.length ? { scopeSourceIds } : {}),
     ...(rationale ? { rationale } : {}),
     ...(originalClaim ? { originalClaim } : {}),
   };
@@ -305,6 +307,19 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
   const traversalBySubject = new Map(subjects.map(node => [node.id, pathsFrom(graph, node.id, targetIds, predicate, new Set(['resolved', 'candidate', 'unresolved']))]));
   const resolvedBySubject = new Map([...traversalBySubject].map(([id, traversal]) => [id, traversal.paths.filter(path => path.statuses.every(status => status === 'resolved'))]));
   const tentativeBySubject = new Map([...traversalBySubject].map(([id, traversal]) => [id, traversal.paths.filter(path => path.statuses.some(status => status !== 'resolved'))]));
+  // Bounded scope is a separate, explicitly qualified claim. It never
+  // upgrades repository-wide absence and is not automatically test-replacement
+  // eligible. Every selected source must have complete tracked coverage.
+  const scopeFiles = (predicate.scopeSourceIds ?? []).map(id => id.replace(/^repo:/u, ''));
+  const sourceScope = new Set(scopeFiles);
+  const coverageFiles = graph.coverage?.files ?? [];
+  const coverageByPath = new Map(coverageFiles.map(item => [item.path, item]));
+  const scopeComplete = scopeFiles.length > 0 && scopeFiles.every(path => coverageByPath.get(path)?.status === 'complete');
+  const selectedInsideScope = subjects.every(node => sourceScope.has(node.sourceId.replace(/^repo:/u, '')))
+    && targets.every(node => sourceScope.has(node.sourceId.replace(/^repo:/u, '')));
+  const outboundScopeLeaks = graph.edges.filter(edge => edge.from && graph.nodes.some(node => node.id === edge.from && subjects.some(subject => subject.id === node.id))
+    && edge.to && graph.nodes.some(node => node.id === edge.to && !sourceScope.has(node.sourceId.replace(/^repo:/u, ''))));
+  const boundedScopeQualified = scopeComplete && selectedInsideScope && outboundScopeLeaks.length === 0;
   const traversalIncomplete = [...traversalBySubject.values()].some(item => item.truncated || item.unknownEndpoints);
   const truncated = [...traversalBySubject.values()].some(item => item.truncated);
   const unknownEndpoints = [...traversalBySubject.values()].some(item => item.unknownEndpoints);
@@ -354,6 +369,7 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
     ...(tentativePaths.length ? ['Candidate or unresolved paths cannot satisfy graph proof.'] : []),
     ...(truncated ? ['Graph traversal was truncated before exhaustiveness could be established.'] : []),
     ...(unknownEndpoints ? ['Reachable relationships with unknown endpoints prevent negative graph proof.'] : []),
+    ...(scopeFiles.length && !boundedScopeQualified ? ['Declared claim source scope is not closed or completely analyzed.'] : []),
     ...(!complete && !resolvedMatch ? ['Claim-scope coverage is not exhaustive.'] : []),
   ];
   const replacementEligible = status === 'satisfied'
@@ -363,7 +379,7 @@ function evaluatePredicate(graph: IntelligenceGraph, predicate: ParityReachabili
     predicate,
     status,
     matched: { subjects: subjects.map(node => node.id), targets: targets.map(node => node.id) },
-    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints }, subjectConnectivity: outboundEvidence, connectivityWarning: disconnectedSubjects.length ? 'Some selected subjects have no graph edges of the requested kinds. Inspect registration-to-handler bridging before asserting original-test equivalence.' : null },
+    observed: { resolvedSubjectIds: reached.map(node => node.id), tentativeSubjectIds: tentative.map(node => node.id), counterexamples, tentativePaths, traversal: { truncated, unknownEndpoints }, sourceScope: { sourceIds: scopeFiles, qualified: boundedScopeQualified, scopeOnly: true, replacementEligible: false }, subjectConnectivity: outboundEvidence, connectivityWarning: disconnectedSubjects.length ? 'Some selected subjects have no graph edges of the requested kinds. Inspect registration-to-handler bridging before asserting original-test equivalence.' : null },
     replacementAssessment: {
       modality: 'static-graph',
       eligible: replacementEligible,
