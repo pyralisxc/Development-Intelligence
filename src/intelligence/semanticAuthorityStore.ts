@@ -241,6 +241,7 @@ export async function persistDerivedSemanticMeanings(
     changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
     ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
   };
+  if (ledger.derivedMeanings!.length > MAX_AUTHORITY_RECORDS) throw new Error('Derived semantic ledger exceeds bounded record limit');
   const body = JSON.stringify(ledger);
   if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Derived semantic ledger exceeds storage limit');
   const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
@@ -328,6 +329,7 @@ export async function persistSemanticChangeVerification(
     generation: (current.ledger?.generation ?? 0) + 1,
     updatedAt: now,
     records: [...(current.ledger?.records ?? [])],
+    derivedMeanings: [...(current.ledger?.derivedMeanings ?? [])],
     changeVerifications,
     ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
   };
