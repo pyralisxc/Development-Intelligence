@@ -436,6 +436,15 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         const name = node.arguments[0].text;
         const tool = observation({ sourceId: context.source.id, kind: 'mcp-tool', locator: locator(node, ':mcp'), name, field: 'tool', value: name, layer: 'representation', checkpoint: false });
         observations.push(tool);
+        // The third registerTool argument is the implementation callback. Only
+        // an unambiguous local identifier can be resolved at this stage; inline
+        // or imported callbacks retain an explicit unresolved boundary.
+        const handler = unwrap(node.arguments[2]);
+        if (handler && ts.isIdentifier(handler)) {
+          pendingHandlers.push({ ui: tool, handler: handler.text, line: lineOf(node), ownerId: null });
+        } else {
+          resolutions.push(resolution({ from: tool.id, to: null, kind: 'handled_by', strategy: 'mcp-registration-unresolved', confidence: null, status: 'unresolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'structural', checkpoint: false }));
+        }
         const config = node.arguments[1];
         if (config && ts.isObjectLiteralExpression(unwrap(config) ?? config)) flattenObject(tool, unwrap(config)! as ts.ObjectLiteralExpression);
       }
