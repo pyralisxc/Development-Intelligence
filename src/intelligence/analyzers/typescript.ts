@@ -123,7 +123,7 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       localWrappers.set(statement.name.text, matches);
     }
   }
-  const invokedProperty = (wrapper: ts.FunctionDeclaration, key: string): boolean => {
+  const invokedProperty = (wrapper: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression, key: string): boolean => {
     const first = wrapper.parameters[0];
     if (!first || !ts.isObjectBindingPattern(first.name)) return false;
     const bound = first.name.elements.find(element => element.propertyName
@@ -343,11 +343,29 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       const call = node.parent.parent.parent;
       const key = propertyName(node.parent.name);
       const wrapperName = call.expression.getText(sourceFile);
-      const wrappers = localWrappers.get(wrapperName) ?? [];
+      // Resolve a const function expression only when it is declared earlier
+      // in the same lexical statement block as the call. Do not cross an
+      // import, parameter, sibling block or ambiguous binding.
+      const block = (() => {
+        let ancestor: ts.Node | undefined = call.parent;
+        while (ancestor && !ts.isBlock(ancestor) && ancestor !== sourceFile) ancestor = ancestor.parent;
+        return ancestor;
+      })();
+      const constWrappers = block && (ts.isBlock(block) || ts.isSourceFile(block))
+        ? block.statements.flatMap(statement => ts.isVariableStatement(statement)
+          && (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+          ? statement.declarationList.declarations.flatMap(declaration => {
+              if (!ts.isIdentifier(declaration.name) || declaration.name.text !== wrapperName
+                  || declaration.getStart(sourceFile) >= call.getStart(sourceFile)) return [];
+              const expression = variableFunctionExpression(declaration.initializer);
+              return expression ? [expression] : [];
+            }) : [])
+        : [];
+      const wrappers = constWrappers.length ? constWrappers : (localWrappers.get(wrapperName) ?? []);
       const hasCompetingBinding = (() => {
         let competing = false;
         const inspect = (item: ts.Node): void => {
-          if (item !== wrappers[0] && ((ts.isFunctionDeclaration(item) && item.name?.text === wrapperName)
+          if (item !== wrappers[0] && !(ts.isVariableDeclaration(item) && variableFunctionExpression(item.initializer) === wrappers[0]) && ((ts.isFunctionDeclaration(item) && item.name?.text === wrapperName)
             || (ts.isVariableDeclaration(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
             || (ts.isParameter(item) && (ts.isIdentifier(item.name) ? item.name.text === wrapperName : item.name.getText(sourceFile).includes(wrapperName)))
             || (ts.isBindingElement(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
