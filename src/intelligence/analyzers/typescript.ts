@@ -112,6 +112,34 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const componentPropsByOwner = new Map<string, Set<string>>();
   const stateSetters = new Map<string, { state: string; binding: Observation }>();
   const routerBindings = new Set<string>();
+  // Only a uniquely declared top-level local wrapper whose body directly
+  // invokes the destructured callback proves invocation. Argument passage alone
+  // and any shadowed, imported or higher-order binding remain unresolved.
+  const localWrappers = new Map<string, ts.FunctionDeclaration[]>();
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+      const matches = localWrappers.get(statement.name.text) ?? [];
+      matches.push(statement);
+      localWrappers.set(statement.name.text, matches);
+    }
+  }
+  const invokedProperty = (wrapper: ts.FunctionDeclaration, key: string): boolean => {
+    const first = wrapper.parameters[0];
+    if (!first || !ts.isObjectBindingPattern(first.name)) return false;
+    const bound = first.name.elements.find(element => element.propertyName
+      ? element.propertyName.getText(sourceFile) === key && ts.isIdentifier(element.name) && !element.initializer
+      : ts.isIdentifier(element.name) && element.name.text === key && !element.initializer);
+    if (!bound || !ts.isIdentifier(bound.name)) return false;
+    let called = false;
+    const inspect = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node) && node !== wrapper) return;
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === bound.name.getText(sourceFile)) called = true;
+      ts.forEachChild(node, inspect);
+    };
+    inspect(wrapper.body!);
+    return called;
+  };
+
 
   const lineOf = (node: ts.Node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
   const locator = (node: ts.Node, suffix = '') => `${context.locatorBase}:${lineOf(node)}${suffix}`;
@@ -294,6 +322,47 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       if (callback) {
         functionStack.push(callback);
         scopeStack.push(`mcp-handler:${lineOf(node.parent)}`);
+        pushedFunction = true;
+        pushedScope = true;
+      }
+    }
+
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+      && ts.isPropertyAssignment(node.parent)
+      && node.parent.initializer === node
+      && ts.isObjectLiteralExpression(node.parent.parent)
+      && ts.isCallExpression(node.parent.parent.parent)
+      && node.parent.parent.parent.arguments.includes(node.parent.parent)
+      && ts.isIdentifier(node.parent.parent.parent.expression)) {
+      const call = node.parent.parent.parent;
+      const key = propertyName(node.parent.name);
+      const wrappers = localWrappers.get(call.expression.text) ?? [];
+      const lexicalShadow = (() => {
+        let cursor: ts.Node | undefined = call.parent;
+        while (cursor && cursor !== sourceFile) {
+          if (ts.isFunctionLike(cursor) && cursor.parameters.some(param => ts.isIdentifier(param.name) && param.name.text === call.expression.text)) return true;
+          cursor = cursor.parent;
+        }
+        return false;
+      })();
+      if (key && wrappers.length === 1 && !lexicalShadow && invokedProperty(wrappers[0]!, key)) {
+        const localCallback = observation({
+          id: `symbol:${context.locatorBase}#function:callback-${node.getStart(sourceFile)}`,
+          sourceId: context.source.id, kind: 'function', locator: locator(node),
+          name: `${key} callback`, field: 'identifier',
+          value: { property: key, invokedBy: call.expression.text },
+          layer: 'structural', checkpoint: false,
+        });
+        observations.push(localCallback);
+        const caller = functionOwner();
+        if (caller) resolutions.push(resolution({
+          from: caller.id, to: localCallback.id, kind: 'invokes',
+          strategy: 'local-callback-invocation', confidence: 1,
+          status: 'resolved', evidence: [locator(call), locator(wrappers[0]!)],
+          layer: 'structural', checkpoint: false,
+        }));
+        functionStack.push(localCallback);
+        scopeStack.push(`callback:${node.getStart(sourceFile)}`);
         pushedFunction = true;
         pushedScope = true;
       }
