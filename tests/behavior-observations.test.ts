@@ -164,6 +164,26 @@ export function CallbackPanel() {
   );
 });
 
+test('Inline MCP handler owns its local operation call evidence', () => {
+  const result = analyzeTypeScript({
+    source: source('registered.ts'),
+    locatorBase: 'registered.ts',
+    text: `function writeDocument() { return true; }
+function register() {
+  server.registerTool("write_document", {}, async () => {
+    return writeDocument();
+  });
+}`,
+  });
+  const tool = result.observations.find(item => item.kind === 'mcp-tool' && item.name === 'write_document')!;
+  const implementation = result.resolutions.find(edge => edge.from === tool.id && edge.kind === 'handled_by' && edge.status === 'resolved');
+  assert.ok(implementation?.to, 'inline registration must identify its concrete callback');
+  const call = result.resolutions.find(edge => edge.from === implementation!.to && edge.kind === 'calls' && edge.status === 'resolved');
+  assert.ok(call, 'callback body call must be attributed to the registered implementation');
+  const target = result.observations.find(item => item.id === call.to);
+  assert.equal(target?.name, 'writeDocument');
+});
+
 test('MCP callbacks do not bind to inaccessible same-name functions', () => {
   const result = analyzeTypeScript({
     source: source('handlers.ts'),
