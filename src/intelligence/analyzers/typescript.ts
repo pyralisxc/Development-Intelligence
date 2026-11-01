@@ -336,11 +336,12 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       && ts.isIdentifier(node.parent.parent.parent.expression)) {
       const call = node.parent.parent.parent;
       const key = propertyName(node.parent.name);
-      const wrappers = localWrappers.get(call.expression.text) ?? [];
+      const wrapperName = call.expression.getText(sourceFile);
+      const wrappers = localWrappers.get(wrapperName) ?? [];
       const lexicalShadow = (() => {
         let cursor: ts.Node | undefined = call.parent;
         while (cursor && cursor !== sourceFile) {
-          if (ts.isFunctionLike(cursor) && cursor.parameters.some(param => ts.isIdentifier(param.name) && param.name.text === call.expression.text)) return true;
+          if (ts.isFunctionLike(cursor) && cursor.parameters.some(param => ts.isIdentifier(param.name) && param.name.text === wrapperName)) return true;
           cursor = cursor.parent;
         }
         return false;
@@ -350,7 +351,7 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
           id: `symbol:${context.locatorBase}#function:callback-${node.getStart(sourceFile)}`,
           sourceId: context.source.id, kind: 'function', locator: locator(node),
           name: `${key} callback`, field: 'identifier',
-          value: { property: key, invokedBy: call.expression.text },
+          value: { property: key, invokedBy: wrapperName },
           layer: 'structural', checkpoint: false,
         });
         observations.push(localCallback);
