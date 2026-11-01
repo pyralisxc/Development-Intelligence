@@ -1491,10 +1491,15 @@ export async function scopeOrientation(input: {
   limit?: number | undefined;
   orientationReuse?: OrientationQueryReuse | undefined;
 }): Promise<Record<string, unknown>> {
-  const reusable = input.orientationReuse;
-  const graph = reusable && reusable.graph.project === input.project
-    && (!input.graphId || reusable.graph.graphId === input.graphId)
-    ? reusable.graph : await currentGraph(input.project, input.ref, input.graphId);
+  // Reuse is valid only for an exact graph identity selected by the caller.
+  // A ref selector needs fresh resolution: never infer ref equivalence from
+  // project identity or carry indexes from an unrelated graph snapshot.
+  const candidateReuse = input.orientationReuse;
+  const reusable = candidateReuse && candidateReuse.graph.project === input.project
+    && !input.ref
+    && input.graphId === candidateReuse.graph.graphId
+    ? candidateReuse : undefined;
+  const graph = reusable?.graph ?? await currentGraph(input.project, input.ref, input.graphId);
   const rankBy = input.rankBy ?? 'cross-file';
   const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
   const selected = scopeNodeIds(graph, input.scope);
