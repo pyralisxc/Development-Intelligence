@@ -10,6 +10,8 @@ Permanent evidence protects durable Development Intelligence contracts, not hist
 
 ## Durable contracts
 
+Account/network tests use disposable identities and a simulated remote Blob provider to exercise exact account separation, fresh-service configuration recovery, conditional-save conflicts, requested versus active associations, secret exclusion, binding replacement/revocation and fresh replacement-node metadata. This does not prove live provider durability, hosted identity, key possession or issued node grants. The engine integration fixture covers two same-named bindings at the same Git revision with distinct adopted authorities, warm/cold graph identity reads, foreign runtime snapshots, scoped scratch/diagnostics and authority-write/worker refusal. Those tests must execute with the normal dependencies before claiming engine isolation acceptance; metadata-only tests cannot substitute.
+
 ### Managed Windows package lifecycle
 
 `windows-package` builds exact-source, unsigned x64 MSI candidates with app-private runtimes, then installs them on disposable Windows runners. It checks stopped/manual defaults, LocalService and service SID, protected directories, explicit activation, actual Git/native-parser graph construction, anonymous MCP denial, process/listener cleanup, distinct-version upgrade, unhealthy-candidate rollback, corruption refusal, retained configuration/fixture state, fixture-only backup/restore and uninstall/reinstall. It uploads MSI hashes, payload identity and bounded nonsecret lifecycle/resource receipts. No production secrets/storage or Oakley installation are involved.

@@ -1,5 +1,6 @@
 import { createPrivateKey, sign, type KeyObject } from 'node:crypto';
 import type { ProjectConfig } from '../types.js';
+import { accessDenied, assertProjectAccessConfiguration, hasProjectAccess, projectAccessScopeKey, projectAccessSecret } from '../config/projectAccess.js';
 
 export interface ResolvedRepositoryCredential {
   token: string;
@@ -112,15 +113,17 @@ async function githubJson<T>(url: string, init: RequestInit, bounded = false): P
 async function githubAppCredential(config: ProjectConfig): Promise<ResolvedRepositoryCredential> {
   const credential = config.credential;
   if (!credential || (credential.type !== 'github-app-env' && credential.type !== 'github-app-bound')) throw new Error('Expected GitHub App credential');
+  if (hasProjectAccess() && credential.type === 'github-app-bound') throw accessDenied();
+  const restricted = hasProjectAccess() || credential.type === 'github-app-bound';
   const bound = credential.type === 'github-app-bound' ? boundApps.get(credential.binding) : undefined;
-  const appId = credential.type === 'github-app-env' ? process.env[credential.appIdEnv]?.trim() : bound?.appId;
-  const privateKey = credential.type === 'github-app-env' ? process.env[credential.privateKeyEnv]?.trim() : bound?.privateKey;
+  const appId = credential.type === 'github-app-env' ? projectAccessSecret(credential.appIdEnv)?.trim() : bound?.appId;
+  const privateKey = credential.type === 'github-app-env' ? projectAccessSecret(credential.privateKeyEnv)?.trim() : bound?.privateKey;
   if (!appId || !privateKey) throw new Error('Configured GitHub App material is unavailable');
 
   const repository = githubRepository(config.repository);
   const repositoryKey = `${repository.owner}/${repository.name}`.toLowerCase();
   if (credential.type === 'github-app-bound' && !bound?.repositories.has(repositoryKey)) throw new Error('Repository is outside the in-memory GitHub App binding');
-  const cacheKey = `${credential.type === 'github-app-bound' ? `bound:${credential.binding}:` : ''}${appId}:${repositoryKey}`;
+  const cacheKey = `${projectAccessScopeKey()}:${credential.type === 'github-app-bound' ? `bound:${credential.binding}:` : ''}${appId}:${repositoryKey}`;
   const username = credential.type === 'github-app-bound' ? 'x-access-token' : credential.username ?? 'x-access-token';
   const cached = appTokenCache.get(cacheKey);
   if (cached && cached.expiresAtMs - Date.now() > 5 * 60_000) {
@@ -136,14 +139,14 @@ async function githubAppCredential(config: ProjectConfig): Promise<ResolvedRepos
   const installation = await githubJson<{ id: number; account?: { login?: string } }>(
     `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/installation`,
     { headers: { authorization: `Bearer ${jwt}` } },
-    credential.type === 'github-app-bound',
+    restricted,
   );
   if (!Number.isSafeInteger(installation.id) || installation.id < 1) {
     throw new Error(`GitHub returned an invalid installation for ${repository.owner}/${repository.name}`);
   }
   const account = installation.account?.login;
   if (account && account.toLowerCase() !== repository.owner.toLowerCase()) {
-    if (credential.type === 'github-app-bound') throw new Error('GitHub App installation account does not match repository owner');
+    if (restricted) throw new Error('GitHub App installation account does not match repository owner');
     throw new Error(`GitHub App installation account ${account} does not match repository owner ${repository.owner}`);
   }
 
@@ -167,22 +170,22 @@ async function githubAppCredential(config: ProjectConfig): Promise<ResolvedRepos
         },
       }),
     },
-    credential.type === 'github-app-bound',
+    restricted,
   );
   if (!tokenResponse.token || !tokenResponse.expires_at) {
     throw new Error('GitHub returned an invalid installation access token');
   }
   for (const [permission, level] of Object.entries(tokenResponse.permissions ?? {})) {
     if (level !== 'read') {
-      if (credential.type === 'github-app-bound') throw new Error('GitHub App token received non-read permission');
+      if (restricted) throw new Error('GitHub App token received non-read permission');
       throw new Error(`Development Intelligence GitHub App token unexpectedly received non-read permission: ${permission}=${level}`);
     }
-    if (credential.type === 'github-app-bound' && !['contents','metadata','pull_requests'].includes(permission)) throw new Error('GitHub App token received unexpected read permission');
+    if (restricted && !['contents','metadata','pull_requests'].includes(permission)) throw new Error('GitHub App token received unexpected read permission');
   }
 
   const expiresAtMs = Date.parse(tokenResponse.expires_at);
   if (!Number.isFinite(expiresAtMs)) throw new Error('GitHub returned an invalid installation token expiry');
-  if (credential.type === 'github-app-bound' && (typeof tokenResponse.token !== 'string' || typeof tokenResponse.expires_at !== 'string' || expiresAtMs <= Date.now() || expiresAtMs > Date.now()+65*60_000 || tokenResponse.permissions?.contents !== 'read' || tokenResponse.permissions?.pull_requests !== 'read')) throw new Error('Invalid bounded GitHub App installation token');
+  if (restricted && (typeof tokenResponse.token !== 'string' || typeof tokenResponse.expires_at !== 'string' || expiresAtMs <= Date.now() || expiresAtMs > Date.now()+65*60_000 || tokenResponse.permissions?.contents !== 'read' || tokenResponse.permissions?.pull_requests !== 'read')) throw new Error('Invalid bounded GitHub App installation token');
   if (credential.type === 'github-app-bound' && boundApps.get(credential.binding) !== bound) throw new Error('GitHub App binding changed during credential request');
   appTokenCache.set(cacheKey, {
     token: tokenResponse.token,
@@ -220,6 +223,7 @@ async function ownerInstallation(owner: string, jwt: string): Promise<{ id: numb
 }
 
 async function githubOwnerCredential(owner: string): Promise<ResolvedRepositoryCredential> {
+  if (hasProjectAccess()) throw accessDenied();
   const appId = process.env.DEVINT_GITHUB_APP_ID?.trim();
   const privateKey = process.env.DEVINT_GITHUB_APP_PRIVATE_KEY?.trim();
   if (!appId || !privateKey) throw new Error('Portfolio repository discovery requires DEVINT_GITHUB_APP_ID and DEVINT_GITHUB_APP_PRIVATE_KEY');
@@ -385,11 +389,12 @@ export async function inspectGithubRepositoryPathAtDefaultBranch(
 }
 
 export async function resolveRepositoryCredential(config: ProjectConfig): Promise<ResolvedRepositoryCredential | null> {
+  assertProjectAccessConfiguration(config);
   const credential = config.credential ?? { type: 'none' as const };
   if (credential.type === 'none') return null;
   if (credential.type === 'github-app-env' || credential.type === 'github-app-bound') return await githubAppCredential(config);
 
-  const token = process.env[credential.tokenEnv];
+  const token = projectAccessSecret(credential.tokenEnv);
   if (!token) throw new Error(`Missing configured repository credential environment variable: ${credential.tokenEnv}`);
   return {
     token,
