@@ -1452,6 +1452,16 @@ function repositoryAuditAnswer(result: Record<string, any>): string {
   return `Repository audit found ${findings.length} deterministic finding(s) and ${blockers.length} coverage blocker(s) on the pinned revision.${detail}`;
 }
 
+// Per-investigation, revision-pinned orientation work. Never shared globally:
+ // batches can resolve distinct graph snapshots even for the same project.
+type OrientationQueryReuse = {
+  graph: IntelligenceGraph;
+  byId?: Map<string, GraphNode>;
+  incidentByNode?: Map<string, GraphEdge[]>;
+  metrics?: Map<string, ReturnType<typeof orientationMetric>>;
+  rankBy?: ScopeRankBy;
+};
+
 export async function scopeOrientation(input: {
   project: string;
   scope?: string | undefined;
@@ -1460,8 +1470,12 @@ export async function scopeOrientation(input: {
   rankBy?: ScopeRankBy | undefined;
   semanticDepth?: SemanticQueryDepth | undefined;
   limit?: number | undefined;
+  orientationReuse?: OrientationQueryReuse | undefined;
 }): Promise<Record<string, unknown>> {
-  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  const reusable = input.orientationReuse;
+  const graph = reusable && reusable.graph.project === input.project
+    && (!input.graphId || reusable.graph.graphId === input.graphId)
+    ? reusable.graph : await currentGraph(input.project, input.ref, input.graphId);
   const rankBy = input.rankBy ?? 'cross-file';
   const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
   const selected = scopeNodeIds(graph, input.scope);
@@ -1491,7 +1505,8 @@ export async function scopeOrientation(input: {
     };
   }
 
-  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const byId = reusable?.byId ?? new Map(graph.nodes.map(node => [node.id, node]));
+  if (reusable) reusable.byId = byId;
   let scopedIds = selected.ids;
   if (selected.kind === 'entity' && selected.entity) {
     scopedIds = new Set([selected.entity.id]);
@@ -1514,24 +1529,33 @@ export async function scopeOrientation(input: {
 
   const nodes = [...scopedIds].map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
   const scopedSet = new Set(nodes.map(node => node.id));
-  const incidentByNode = new Map<string, GraphEdge[]>();
-  for (const edge of graph.edges) {
-    if (edge.from && scopedSet.has(edge.from)) {
-      const current = incidentByNode.get(edge.from) ?? [];
-      current.push(edge);
-      incidentByNode.set(edge.from, current);
+  let incidentByNode = reusable?.incidentByNode;
+  if (!incidentByNode) {
+    incidentByNode = new Map<string, GraphEdge[]>();
+    for (const edge of graph.edges) {
+      if (edge.from) {
+        const current = incidentByNode.get(edge.from) ?? [];
+        current.push(edge);
+        incidentByNode.set(edge.from, current);
+      }
+      if (edge.to && edge.to !== edge.from) {
+        const current = incidentByNode.get(edge.to) ?? [];
+        current.push(edge);
+        incidentByNode.set(edge.to, current);
+      }
     }
-    if (edge.to && scopedSet.has(edge.to) && edge.to !== edge.from) {
-      const current = incidentByNode.get(edge.to) ?? [];
-      current.push(edge);
-      incidentByNode.set(edge.to, current);
-    }
+    if (reusable) reusable.incidentByNode = incidentByNode;
   }
 
   // The ranked list and role summaries inspect the same scoped nodes at the
   // same graph revision/rank criterion. Reuse metrics per node within this
   // single orientation, never across revisions or distinct graph contexts.
-  const metricCache = new Map<string, ReturnType<typeof orientationMetric>>();
+  if (reusable && reusable.rankBy !== rankBy) {
+    reusable.metrics = undefined;
+    reusable.rankBy = rankBy;
+  }
+  const metricCache = reusable?.metrics ?? new Map<string, ReturnType<typeof orientationMetric>>();
+  if (reusable) reusable.metrics = metricCache;
   const scopedMetrics = (node: GraphNode): ReturnType<typeof orientationMetric> => {
     const existing = metricCache.get(node.id);
     if (existing) return existing;
@@ -2393,6 +2417,7 @@ export async function queryWorkbench(input: {
   scope?: string | undefined;
   rankBy?: ScopeRankBy | undefined;
   semanticDepth?: SemanticQueryDepth | undefined;
+  orientationReuse?: OrientationQueryReuse | undefined;
 }): Promise<Record<string, unknown>> {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
@@ -2579,6 +2604,7 @@ export async function queryWorkbench(input: {
       graphId: input.graphId,
       rankBy: input.rankBy,
       semanticDepth,
+      orientationReuse: input.orientationReuse,
     });
     return {
       intent: 'orientation',
@@ -2744,6 +2770,7 @@ export async function queryWorkbenchRequest(input: {
 
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const mode = explicit.length ? 'explicit' : questions.length > 1 ? 'decomposed' : 'single';
+  const orientationReuse: OrientationQueryReuse = { graph };
 
   if (questions.length === 1) {
     const result = await queryWorkbench({
@@ -2755,6 +2782,7 @@ export async function queryWorkbenchRequest(input: {
       scope: input.scope,
       rankBy: input.rankBy,
       semanticDepth: input.semanticDepth,
+      orientationReuse,
     });
     return {
       ...result,
@@ -2783,6 +2811,7 @@ export async function queryWorkbenchRequest(input: {
         scope: input.scope,
         rankBy: input.rankBy,
         semanticDepth: input.semanticDepth,
+        orientationReuse,
       }) as any;
       const subjectId = result?.subject && result.subject.ambiguous !== true && typeof result.subject.id === 'string'
         ? result.subject.id
