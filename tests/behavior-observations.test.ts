@@ -226,6 +226,14 @@ function owner() { const run = () => true; run({ execute: () => write() }); }`);
 }
 function owner() { run({ execute: () => write() }); }`);
   assert.equal(reassigned.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const destructuredCaller = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
+function owner({ run }: { run: any }) { run({ execute: () => write() }); }`);
+  assert.equal(destructuredCaller.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const destructuredCallback = analyze(`function run({ execute }: { execute: () => void }) {
+  { const { execute } = other; execute(); }
+}
+function owner() { run({ execute: () => write() }); }`);
+  assert.equal(destructuredCallback.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
   const imported = analyze(`import { run } from './other';
 function owner() { run({ execute: () => write() }); }`);
   assert.equal(imported.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
