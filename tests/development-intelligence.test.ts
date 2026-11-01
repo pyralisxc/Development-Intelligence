@@ -332,7 +332,7 @@ test('runtime observation snapshots are explicit and never contaminate canonical
       },
     }) as any;
     assert.equal(parity.passed, false);
-    assert.deepEqual(parity.counts, { satisfied: 2, missing: 0, forbiddenPresent: 2, unproven: 2 }, 'the intentionally skipped symlink source keeps negative expectations unproven');
+    assert.deepEqual(parity.counts, { satisfied: 2, missing: 0, forbiddenPresent: 2, unproven: 2, notApplicable: 0 }, 'the intentionally skipped symlink source keeps negative expectations unproven');
     assert.match(parity.note, /ephemerally/i);
 
     const code = await searchCode({ project: fixture.project, graphId: snapshot.graphId, pattern: 'fetch', limit: 10 }) as any;

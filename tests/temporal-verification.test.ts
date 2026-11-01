@@ -65,6 +65,16 @@ test('temporal verification composes exact A/B delta, expectations, invariants, 
             { id: added.id, requirement: 'required' },
             { id: legacy.id, requirement: 'forbidden' },
           ],
+          predicates: [{
+            id: 'added-calls-keep',
+            type: 'reachability',
+            from: { ids: [added.id] },
+            to: { ids: [keepHead.id] },
+            requirement: 'required',
+            relationshipKinds: ['calls'],
+            maxDepth: 2,
+            originalClaim: 'The added function delegates to keep.',
+          }],
         },
         preserve: {
           version: 1,
@@ -77,7 +87,7 @@ test('temporal verification composes exact A/B delta, expectations, invariants, 
     assert.equal(result.base.identity.sha, item.base);
     assert.equal(result.head.identity.sha, item.head);
     assert.equal(result.comparisonMode, 'current-analyzer-replay');
-    assert.equal(result.expectations.counts.expectedAndObserved, 1);
+    assert.equal(result.expectations.counts.expectedAndObserved, 2);
     assert.equal(result.expectations.counts.satisfiedAbsence, 1);
     assert.equal(result.expectations.counts.preservedInvariants, 1);
     assert.equal(result.expectations.contractSatisfied, true);

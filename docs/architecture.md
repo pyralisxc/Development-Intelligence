@@ -207,7 +207,9 @@ Confirmed representation lists use resolved relationships only. Candidate and un
 
 Parity reports what is observed. It does not decide which representations ought to exist.
 
-Callers may supply an explicit bounded **Parity Contract** as expectation overlay E. E contains required or forbidden entity/relationship obligations and is evaluated against canonical W or an explicit snapshot. The result distinguishes `satisfied`, `missing`, `forbidden-present`, and `unproven`; absence is not treated as proven when source coverage is incomplete.
+Callers may supply an explicit bounded **Parity Contract** as expectation overlay E. E contains required or forbidden entity/relationship obligations and bounded selector-based reachability predicates evaluated against canonical W or an explicit snapshot. Reachability predicates select graph node sets by exact IDs, kinds, layers, or source IDs, then evaluate `any` or `all` traversal over caller-bounded relationship kinds, direction, and depth. The result distinguishes `satisfied`, `missing`, `forbidden-present`, `unproven`, and `not-applicable`; it returns resolved counterexample paths for violations, keeps candidate/unresolved paths tentative, refuses vacuous selector success, and does not treat absence as proven when source coverage is incomplete.
+
+Predicate results also state their replacement boundary. A bounded resolved positive path, or a coverage-qualified exhaustive negative, may replace an equivalent source-only assertion after project-owner review. It does not replace runtime execution, browser interaction, concurrency, package-byte, provider, or rendered-artifact evidence. This classification belongs to the existing parity projection and exact-revision transition verifier rather than a second test or verification registry.
 
 E is caller intent, not a fourth persisted graph role. It is never written into A/W/B, stored as service authority, or automatically promoted into accepted topology. Product-resolution methods own why an expectation exists; DI owns deterministic evaluation against observed evidence.
 
