@@ -6,6 +6,7 @@ import {
   persistSemanticChangeVerification,
   persistSemanticPromotionEnrollment,
   persistSemanticReview,
+  persistDerivedSemanticMeanings,
   persistSemanticReviews,
   semanticChangeVerificationsAtRevision,
   semanticPromotionEnrollmentState,
@@ -723,6 +724,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       candidateUniverseEligible: fullBootstrap.capacity.eligibleCandidateCount,
       candidateUniverseExhausted: fullBootstrap.capacity.exhausted,
     },
+    derivedMeanings: (authority.ledger?.derivedMeanings ?? []).filter(item => item.revision === graph.repositoryRevision),
     authority: authoritySummary(authority),
     policy: {
       stage: 'T2-review-surface',
@@ -751,6 +753,44 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       acceptedGraphAffected: false,
     },
   };
+}
+
+/**
+ * Persist only factually supported, unambiguously mapped source meaning for
+ * an exact revision. Human dispositions take precedence; this does not accept
+ * meaning, enroll a gate, or perform provider operations.
+ */
+export async function maintainDerivedSemantics(input: SemanticReviewSurfaceInput) {
+  const { graph } = await graphContext(input.project, {
+    ...(input.ref ? { ref: input.ref } : {}),
+    ...(input.graphId ? { graphId: input.graphId } : {}),
+  });
+  if (!graph.repositoryRevision || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(graph.repositoryRevision)) throw new Error('Semantic maintenance requires an exact revision');
+  const all = bootstrapSemanticCandidates(graph, { limit: 1000 });
+  if (!all.capacity.exhausted) throw new Error('Semantic maintenance requires an exhausted candidate census');
+  const audit = auditSemanticCandidates(graph, all, { limit: all.candidates.length });
+  const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
+  const authority = await loadSemanticAuthority(input.project);
+  if (authority.state === 'invalid') throw new Error(authority.error ?? 'Semantic ledger invalid');
+  const existing = new Map(semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision).map(item => [item.candidateId, item]));
+  const priorAccepted = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
+  const entries: NonNullable<SemanticAuthorityLedger['derivedMeanings']> = [];
+  for (const candidate of all.candidates) {
+    const previous = priorExplicitDispositionEvidence(candidate, all.candidates, authority.ledger, graph.repositoryRevision);
+    const continuity = semanticReviewContinuity(candidate, all.candidates, priorAccepted);
+    const assessment = autonomousSemanticAssessment(candidate, auditById.get(candidate.id) ?? null, existing.get(candidate.id) ?? previous.review, continuity, previous.ambiguous);
+    if (!assessment.automaticallyMaintained) continue;
+    entries.push({
+      candidateId: candidate.id,
+      revision: graph.repositoryRevision,
+      meaningId: continuity.state === 'inherited' ? continuity.meaningId : `derived:${candidate.id}`,
+      evidenceIds: [...candidate.provenance.evidenceIds],
+      sourceIds: [...new Set(candidate.evidencePacket.representativeNodes.map(node => node.locator.split(':')[0] ?? node.locator))],
+      disposition: 'evidence-qualified',
+    });
+  }
+  const written = await persistDerivedSemanticMeanings(input.project, graph.repositoryRevision, entries, authority.etag);
+  return { state: written.state, revision: graph.repositoryRevision, candidateCount: entries.length, etag: written.etag };
 }
 
 export async function semanticPromotionGateSurface(input: SemanticReviewSurfaceInput) {
