@@ -232,12 +232,18 @@ export async function persistDerivedSemanticMeanings(
   if (current.etag !== expectedEtag) return { state: 'conflict', etag: current.etag, ledger: current.ledger };
   const unique = new Map(entries.map(item => [item.candidateId, item]));
   if (unique.size !== entries.length) throw new Error('Duplicate derived candidate identity');
+  const retained = current.ledger?.derivedMeanings ?? [];
+  const submitted = new Set(entries.map(entry => entry.candidateId));
+  // Previous source qualification remains historical evidence even when an
+  // explicit correction makes it ineffective at this revision. The query
+  // projection, not destructive ledger pruning, determines effective status.
+  const formerAtRevision = retained.filter(entry => entry.revision === revision && !submitted.has(entry.candidateId));
   const ledger: SemanticAuthorityLedger = {
     formatVersion: 1, project,
     generation: (current.ledger?.generation ?? 0) + 1,
     updatedAt: new Date().toISOString(),
     records: [...(current.ledger?.records ?? [])],
-    derivedMeanings: [...(current.ledger?.derivedMeanings ?? []).filter(item => item.revision !== revision), ...entries],
+    derivedMeanings: [...retained.filter(item => item.revision !== revision), ...formerAtRevision, ...entries],
     changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
     ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
   };
