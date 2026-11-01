@@ -30,6 +30,19 @@ async function commit(repo: string, message: string): Promise<string> {
 
 async function makeFixture(): Promise<{ root: string; source: string; remote: string; config: string; scratch: string; project: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-git-native-'));
+  try {
+    return await populateFixture(root);
+  } catch (error) {
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+    } catch {
+      console.error('Fixture setup could not remove its owned root:', root);
+    }
+    throw error;
+  }
+}
+
+async function populateFixture(root: string) {
   const source = path.join(root, 'source');
   const remote = path.join(root, 'remote.git');
   const config = path.join(root, 'projects.json');
@@ -117,10 +130,6 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
   await runChecked('git', ['-C', source, 'remote', 'add', 'origin', pathToFileURL(remote).href]);
   await runChecked('git', ['-C', source, 'push', '-u', 'origin', 'main']);
 
-  process.env.DEVINT_PROJECTS_FILE = config;
-  process.env.DEVINT_SCRATCH_DIR = scratch;
-  process.env.DEVINT_GRAPH_CACHE_SIZE = '3';
-  delete process.env.DEVINT_DATA_DIR;
   await fs.writeFile(config, JSON.stringify({
     [project]: {
       repository: pathToFileURL(remote).href,
@@ -132,6 +141,10 @@ server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: 
     },
   }, null, 2));
   clearGraphCache();
+  process.env.DEVINT_PROJECTS_FILE = config;
+  process.env.DEVINT_SCRATCH_DIR = scratch;
+  process.env.DEVINT_GRAPH_CACHE_SIZE = '3';
+  delete process.env.DEVINT_DATA_DIR;
   return { root, source, remote, config, scratch, project };
 }
 
