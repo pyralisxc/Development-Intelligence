@@ -425,22 +425,18 @@ export function semanticReviewsAtRevision(
 }
 
 function currentAcceptedAuthorityRecords(ledger: SemanticAuthorityLedger | null): StoredSemanticAuthorityRecord[] {
-  const latestAccepted = new Map<string, StoredSemanticAuthorityRecord>();
+  // Select the latest disposition before interpreting accepted/terminal state.
+  // Corrections, rejections, and lineage markers remain live controls even
+  // when the implementation history is compacted.
+  const latest = new Map<string, StoredSemanticAuthorityRecord>();
   for (const record of ledger?.records ?? []) {
-    const review = record.review;
-    if (!review.accepted || ['superseded', 'split', 'merged'].includes(review.state)) continue;
-    const current = latestAccepted.get(record.meaningId);
-    if (!current || current.storedAt.localeCompare(record.storedAt) < 0) latestAccepted.set(record.meaningId, record);
+    const prior = latest.get(record.meaningId);
+    if (!prior || prior.storedAt.localeCompare(record.storedAt) < 0) latest.set(record.meaningId, record);
   }
-  return [...latestAccepted.values()]
-    .map(record => ({
-      ...record,
-      review: {
-        ...persistedReview(record.review),
-        history: [],
-        lineage: { predecessorMeaningIds: [], successorMeaningIds: [] },
-      },
-    }))
+  return [...latest.values()]
+    .filter(record => record.review.accepted || record.review.reviewed
+      || ['rejected', 'superseded', 'split', 'merged'].includes(record.review.state))
+    .map(record => ({ ...record, review: persistedReview(record.review) }))
     .sort((a, b) => a.meaningId.localeCompare(b.meaningId));
 }
 
@@ -473,6 +469,7 @@ export async function compactSemanticAuthorityToCurrentAccepted(
     generation: current.ledger.generation + 1,
     updatedAt: now,
     records,
+    derivedMeanings: [...(current.ledger.derivedMeanings ?? [])],
     changeVerifications: [],
     ...(enrollment ? { enrollment } : {}),
   };
