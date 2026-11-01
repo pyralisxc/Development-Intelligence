@@ -163,3 +163,18 @@ export function CallbackPanel() {
     'behavior inside useCallback must be owned by the callback function rather than the outer component',
   );
 });
+
+test('MCP callbacks do not bind to inaccessible same-name functions', () => {
+  const result = analyzeTypeScript({
+    source: source('handlers.ts'),
+    locatorBase: 'handlers.ts',
+    text: `function elsewhere() { function handler() { studioWrite(); } }
+function register(handler: unknown) { server.registerTool("owner", {}, handler); }
+server.registerTool("inline", {}, async () => 42);`,
+  });
+  const owner = result.observations.find(item => item.kind === 'mcp-tool' && item.name === 'owner')!;
+  const inline = result.observations.find(item => item.kind === 'mcp-tool' && item.name === 'inline')!;
+  assert.ok(result.resolutions.some(item => item.from === owner.id && item.kind === 'handled_by' && item.status === 'unresolved' && item.to === null));
+  assert.equal(result.resolutions.some(item => item.from === owner.id && item.kind === 'handled_by' && item.status === 'resolved'), false);
+  assert.ok(result.resolutions.some(item => item.from === inline.id && item.kind === 'handled_by' && item.status === 'resolved'));
+});
