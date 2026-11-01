@@ -21,11 +21,27 @@ function Assert-OperatorDirectory([string]$Directory) {
         if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $trusted -and ($rights -band $writeMask)) { throw 'Operator directory permits untrusted writes' }
     }
 }
+function Get-OperatorAclChecked([string]$Path) {
+    # Concurrent MSI repair may replace the atomic receipt between existence
+    # and ACL inspection. A short bounded retry still REQUIRES a verified ACL;
+    # it never treats an unavailable/missing file as trusted.
+    $lastError=$null
+    for($attempt=0;$attempt -lt 5;$attempt++){
+        try {
+            if(!(Test-Path -LiteralPath $Path -PathType Leaf)){throw 'Operator ACL target unavailable'}
+            return Get-Acl -LiteralPath $Path -ErrorAction Stop
+        } catch {
+            $lastError=$_
+            if($attempt -lt 4){Start-Sleep -Milliseconds 50}
+        }
+    }
+    throw "Operator ACL verification unavailable after bounded retry: $Path"
+}
 function Assert-OperatorFile([string]$Path) {
     if (Test-Path -LiteralPath $Path) {
         $item=Get-Item -LiteralPath $Path -Force
         if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.LinkType -eq 'HardLink' -or $item.Length -gt 32768) { throw 'Invalid operator state file' }
-        $acl=Get-Acl -LiteralPath $Path
+        $acl=Get-OperatorAclChecked $Path
         if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @('S-1-5-18','S-1-5-32-544')) { throw 'Untrusted operator state owner' }
         foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
             if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544') -and (([long]$rule.FileSystemRights -band 0xffffffffL) -band 0x500d0156L)) { throw 'Operator state permits untrusted writes' }
