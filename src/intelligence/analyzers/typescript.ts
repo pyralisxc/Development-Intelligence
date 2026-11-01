@@ -332,13 +332,19 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       && node.parent.initializer === node
       && ts.isObjectLiteralExpression(node.parent.parent)
       && ts.isCallExpression(node.parent.parent.parent)
-      && node.parent.parent.parent.arguments.includes(node.parent.parent)
+      && node.parent.parent.parent.arguments[0] === node.parent.parent
       && ts.isIdentifier(node.parent.parent.parent.expression)) {
       const call = node.parent.parent.parent;
       const key = propertyName(node.parent.name);
       const wrapperName = call.expression.getText(sourceFile);
       const wrappers = localWrappers.get(wrapperName) ?? [];
       const lexicalShadow = (() => {
+        // A same-named declaration anywhere outside the selected top-level
+        // wrapper may shadow the apparent callee. Refuse uncertain bindings.
+        const declarations = (sourceFile.statements.filter(statement => ts.isVariableStatement(statement))
+          .flatMap(statement => statement.declarationList.declarations)
+          .filter(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === wrapperName));
+        if (declarations.length) return true;
         let cursor: ts.Node | undefined = call.parent;
         while (cursor && cursor !== sourceFile) {
           if (ts.isFunctionLike(cursor) && cursor.parameters.some(param => ts.isIdentifier(param.name) && param.name.text === wrapperName)) return true;
@@ -367,6 +373,23 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         pushedFunction = true;
         pushedScope = true;
       }
+    }
+
+    // Function expressions always create their own execution boundary, even
+    // if no higher-order invocation has been proven. Without this, a merely
+    // passed callback's calls would be falsely attributed to its creator.
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && !pushedFunction) {
+      const isolated = observation({
+        id: `symbol:${context.locatorBase}#function:isolated-callback-${node.getStart(sourceFile)}`,
+        sourceId: context.source.id, kind: 'function', locator: locator(node),
+        name: 'unresolved callback', field: 'identifier',
+        value: { invoked: false }, layer: 'structural', checkpoint: false,
+      });
+      observations.push(isolated);
+      functionStack.push(isolated);
+      scopeStack.push(`isolated:${node.getStart(sourceFile)}`);
+      pushedFunction = true;
+      pushedScope = true;
     }
 
     if (ts.isObjectLiteralExpression(node)) parseSemanticDeclaration(node);
