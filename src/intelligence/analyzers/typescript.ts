@@ -399,7 +399,9 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     // if no higher-order invocation has been proven. Without this, a merely
     // passed callback's calls would be falsely attributed to its creator.
     if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && !pushedFunction
-      && !(ts.isVariableDeclaration(node.parent) && variableFunctionExpression(node.parent.initializer) === node)) {
+      && !(ts.isVariableDeclaration(node.parent) && variableFunctionExpression(node.parent.initializer) === node)
+      && !(ts.isCallExpression(node.parent) && ts.isVariableDeclaration(node.parent.parent)
+        && variableFunctionExpression(node.parent.parent.initializer) === node)) {
       const isolated = observation({
         id: `symbol:${context.locatorBase}#function:isolated-callback-${node.getStart(sourceFile)}`,
         sourceId: context.source.id, kind: 'function', locator: locator(node),
