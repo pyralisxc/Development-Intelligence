@@ -299,6 +299,8 @@ export interface ParityReachabilityPredicate {
   direction?: 'outbound' | 'inbound';
   relationshipKinds?: string[];
   maxDepth?: number;
+  /** Caller-defined bounded source claim; not repository-wide negative proof. */
+  scopeSourceIds?: string[];
   rationale?: string;
   originalClaim?: string;
 }
