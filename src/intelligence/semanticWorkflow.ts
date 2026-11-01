@@ -528,27 +528,40 @@ export function semanticLineageTransaction(
  * Project an earlier explicit disposition without modifying semantic authority.
  * Never carry an inferred override through an ambiguous candidate mapping.
  */
+export function priorExplicitDispositionEvidence(
+  candidate: SemanticCandidate,
+  candidates: SemanticCandidate[],
+  ledger: SemanticAuthorityLedger | null,
+  revision: string | null,
+): { review: SemanticMeaningReview | null; ambiguous: boolean } {
+  const latestByMeaning = new Map<string, { storedAt: string; review: SemanticMeaningReview }>();
+  for (const record of ledger?.records ?? []) {
+    if (record.revision === revision) continue;
+    const prior = latestByMeaning.get(record.meaningId);
+    if (!prior || prior.storedAt < record.storedAt) latestByMeaning.set(record.meaningId, { storedAt: record.storedAt, review: record.review });
+  }
+  const relevant: SemanticMeaningReview[] = [];
+  let ambiguous = false;
+  for (const { review } of latestByMeaning.values()) {
+    if (!review.reviewed && !review.accepted) continue;
+    const evolution = evaluateSemanticEvolution(review, candidates, revision);
+    const affectsCandidate = evolution.matchedCandidate?.id === candidate.id
+      || evolution.alternatives.some(item => item.id === candidate.id);
+    if (!affectsCandidate) continue;
+    if (['superseded', 'split', 'merged'].includes(review.state)) continue;
+    if (evolution.status === 'ambiguous') ambiguous = true;
+    else relevant.push(review);
+  }
+  return { review: !ambiguous && relevant.length === 1 ? relevant[0]! : null, ambiguous: ambiguous || relevant.length > 1 };
+}
+
 export function priorExplicitDisposition(
   candidate: SemanticCandidate,
   candidates: SemanticCandidate[],
   ledger: SemanticAuthorityLedger | null,
   revision: string | null,
 ): SemanticMeaningReview | null {
-  const latestByMeaning = new Map<string, { storedAt: string; review: SemanticMeaningReview }>();
-  for (const record of ledger?.records ?? []) {
-    if (record.revision === revision) continue;
-    const review = record.review;
-    if (!review.reviewed && !review.accepted) continue;
-    if (['superseded', 'split', 'merged'].includes(review.state)) continue;
-    const prior = latestByMeaning.get(record.meaningId);
-    if (!prior || prior.storedAt < record.storedAt) latestByMeaning.set(record.meaningId, { storedAt: record.storedAt, review });
-  }
-  const matched = [...latestByMeaning.values()].map(item => item.review).filter(review => {
-    const evolution = evaluateSemanticEvolution(review, candidates, revision);
-    return evolution.status !== 'ambiguous' && evolution.status !== 'unsupported'
-      && evolution.matchedCandidate?.id === candidate.id;
-  });
-  return matched.length === 1 ? matched[0]! : null;
+  return priorExplicitDispositionEvidence(candidate, candidates, ledger, revision).review;
 }
 
 export function autonomousSemanticAssessment(
@@ -556,14 +569,15 @@ export function autonomousSemanticAssessment(
   auditItem: { factuality?: { status?: string } } | null,
   review: SemanticMeaningReview | null,
   continuity: SemanticReviewContinuity,
+  ambiguousPriorDisposition = false,
 ) {
   const supported = auditItem?.factuality?.status === 'supported';
   const explicitlyRejected = review?.state === 'rejected';
   const explicitlyControlled = Boolean(review && (review.reviewed || review.accepted));
-  const eligible = supported && !explicitlyRejected && continuity.state !== 'ambiguous';
+  const eligible = supported && !explicitlyRejected && continuity.state !== 'ambiguous' && !ambiguousPriorDisposition;
   return {
     state: explicitlyRejected ? 'explicitly-rejected'
-      : continuity.state === 'ambiguous' ? 'ambiguous-lineage'
+      : ambiguousPriorDisposition || continuity.state === 'ambiguous' ? 'ambiguous-lineage'
         : explicitlyControlled ? 'explicitly-governed'
           : eligible ? 'evidence-qualified' : 'unproven',
     evidenceQualified: eligible,
@@ -673,7 +687,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       review: reviewsByCandidate.get(candidate.id) ?? null,
       continuity: semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings),
       reviewAssessment: semanticReviewAssessment(candidate, auditByCandidate.get(candidate.id)),
-      autonomousAssessment: autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id) ?? null, reviewsByCandidate.get(candidate.id) ?? priorExplicitDisposition(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision), semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings)),
+      autonomousAssessment: autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id) ?? null, reviewsByCandidate.get(candidate.id) ?? priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision).review, semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings), priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision).ambiguous),
       aiProposalPacket: semanticAiProposalPacket(candidate),
     })),
     capacity: bootstrap.capacity,
