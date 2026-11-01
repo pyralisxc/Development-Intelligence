@@ -760,11 +760,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
  * an exact revision. Human dispositions take precedence; this does not accept
  * meaning, enroll a gate, or perform provider operations.
  */
-export async function maintainDerivedSemantics(input: SemanticReviewSurfaceInput) {
-  const { graph } = await graphContext(input.project, {
-    ...(input.ref ? { ref: input.ref } : {}),
-    ...(input.graphId ? { graphId: input.graphId } : {}),
-  });
+export async function maintainDerivedSemanticsForGraph(project: string, graph: Awaited<ReturnType<typeof graphContext>>['graph']) {
   if (!graph.repositoryRevision || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(graph.repositoryRevision)) throw new Error('Semantic maintenance requires an exact revision');
   const all = bootstrapSemanticCandidates(graph, { limit: 1000 });
   if (!all.capacity.exhausted) throw new Error('Semantic maintenance requires an exhausted candidate census');
@@ -789,8 +785,16 @@ export async function maintainDerivedSemantics(input: SemanticReviewSurfaceInput
       disposition: 'evidence-qualified',
     });
   }
-  const written = await persistDerivedSemanticMeanings(input.project, graph.repositoryRevision, entries, authority.etag);
+  const written = await persistDerivedSemanticMeanings(project, graph.repositoryRevision, entries, authority.etag);
   return { state: written.state, revision: graph.repositoryRevision, candidateCount: entries.length, etag: written.etag };
+}
+
+export async function maintainDerivedSemantics(input: SemanticReviewSurfaceInput) {
+  const { graph } = await graphContext(input.project, {
+    ...(input.ref ? { ref: input.ref } : {}),
+    ...(input.graphId ? { graphId: input.graphId } : {}),
+  });
+  return maintainDerivedSemanticsForGraph(input.project, graph);
 }
 
 export async function semanticPromotionGateSurface(input: SemanticReviewSurfaceInput) {
