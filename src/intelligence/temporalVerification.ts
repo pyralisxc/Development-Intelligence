@@ -6,6 +6,7 @@ import type {
   ParityContract,
   ParityEntityExpectation,
   ParityRelationshipExpectation,
+  ParityReachabilityPredicate,
   RelationshipStatus,
 } from '../types.js';
 import { resolveProjectRevision, revisionIdentity } from '../source/git.js';
@@ -22,9 +23,10 @@ export interface TransitionExpectationContract {
 }
 
 interface ContractResult {
-  type: 'entity' | 'relationship';
-  expectation: ParityEntityExpectation | ParityRelationshipExpectation;
-  status: 'satisfied' | 'missing' | 'forbidden-present' | 'unproven';
+  type: 'entity' | 'relationship' | 'predicate';
+  expectation?: ParityEntityExpectation | ParityRelationshipExpectation;
+  predicate?: ParityReachabilityPredicate;
+  status: 'satisfied' | 'missing' | 'forbidden-present' | 'unproven' | 'not-applicable';
   observed: unknown;
   explanation: string;
 }
@@ -55,6 +57,7 @@ export function normalizeTransitionContract(value: unknown): TransitionExpectati
 }
 
 function resultKey(result: ContractResult): string {
+  if (result.type === 'predicate') return `predicate:${result.predicate!.id}`;
   if (result.type === 'entity') return `entity:${(result.expectation as ParityEntityExpectation).id}`;
   const item = result.expectation as ParityRelationshipExpectation;
   return `relationship:${item.from}\u0000${item.kind}\u0000${item.to}`;
@@ -70,6 +73,9 @@ function expectationSurface(contract: TransitionExpectationContract | null) {
   for (const part of [contract?.head, contract?.preserve]) {
     for (const item of part?.entities ?? []) nodes.add(item.id);
     for (const item of part?.relationships ?? []) relationships.add(relationshipKey(item));
+    for (const item of part?.predicates ?? []) {
+      for (const id of [...(item.from.ids ?? []), ...(item.to.ids ?? [])]) nodes.add(id);
+    }
   }
   return { nodes, relationships };
 }
@@ -91,8 +97,8 @@ function classifyHead(value: Record<string, unknown> | null) {
     unproven: [] as ContractResult[],
   };
   for (const item of results(value)) {
-    const requirement = item.expectation.requirement ?? 'required';
-    if (item.status === 'unproven') classified.unproven.push(item);
+    const requirement = (item.type === 'predicate' ? item.predicate?.requirement : item.expectation?.requirement) ?? 'required';
+    if (item.status === 'unproven' || item.status === 'not-applicable') classified.unproven.push(item);
     else if (item.status === 'missing') classified.expectedButMissing.push(item);
     else if (item.status === 'forbidden-present') classified.forbiddenButObserved.push(item);
     else if (requirement === 'forbidden') classified.satisfiedAbsence.push(item);
@@ -111,7 +117,7 @@ function classifyInvariants(baseValue: Record<string, unknown> | null, headValue
   };
   for (const base of results(baseValue)) {
     const head = headByKey.get(resultKey(base)) ?? null;
-    if (base.status === 'unproven' || head?.status === 'unproven') classified.unproven.push({ base, head });
+    if (base.status === 'unproven' || base.status === 'not-applicable' || head?.status === 'unproven' || head?.status === 'not-applicable') classified.unproven.push({ base, head });
     else if (base.status !== 'satisfied') classified.notEstablishedAtBase.push({ base, head });
     else if (head?.status === 'satisfied') classified.preserved.push({ base, head });
     else classified.broken.push({ base, head });

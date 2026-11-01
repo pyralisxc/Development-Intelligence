@@ -40,7 +40,7 @@ The receipt unit holds a real reader open while publishing a replacement and ver
 
 Code inspection and Parity operate on the same nodes/relationships. Public tooling must not depend on a second external graph owner or separate parity database.
 
-Parity Contract tests protect the boundary between caller intent and observed truth: E is evaluated ephemerally, resolved evidence satisfies requirements, forbidden observations fail explicitly, candidate/unresolved evidence remains unproven, and unsupported as well as partial/skipped/failed coverage prevents absence from manufacturing a negative conclusion.
+Parity Contract tests protect the boundary between caller intent and observed truth: E is evaluated ephemerally, resolved evidence satisfies requirements, forbidden observations fail explicitly, candidate/unresolved evidence remains unproven, and unsupported as well as partial/skipped/failed coverage prevents absence from manufacturing a negative conclusion. Reachability cases additionally protect direct and transitive violations, mixed resolved/tentative paths, universal and partial exact subject sets, empty-selector non-applicability, bounded traversal validation, exact counterexample paths, and the rule that only bounded resolved positives or coverage-qualified exhaustive negatives are eligible to replace equivalent source-only assertions.
 
 ### Git-owned A/W/B lifecycle
 

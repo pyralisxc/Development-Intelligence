@@ -112,6 +112,40 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const componentPropsByOwner = new Map<string, Set<string>>();
   const stateSetters = new Map<string, { state: string; binding: Observation }>();
   const routerBindings = new Set<string>();
+  // Only a uniquely declared top-level local wrapper whose body directly
+  // invokes the destructured callback proves invocation. Argument passage alone
+  // and any shadowed, imported or higher-order binding remain unresolved.
+  const localWrappers = new Map<string, ts.FunctionDeclaration[]>();
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+      const matches = localWrappers.get(statement.name.text) ?? [];
+      matches.push(statement);
+      localWrappers.set(statement.name.text, matches);
+    }
+  }
+  const invokedProperty = (wrapper: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression, key: string): boolean => {
+    const first = wrapper.parameters[0];
+    if (!first || !ts.isObjectBindingPattern(first.name)) return false;
+    const bound = first.name.elements.find(element => element.propertyName
+      ? element.propertyName.getText(sourceFile) === key && ts.isIdentifier(element.name) && !element.initializer
+      : ts.isIdentifier(element.name) && element.name.text === key && !element.initializer);
+    if (!bound || !ts.isIdentifier(bound.name)) return false;
+    let called = false;
+    let rebound = false;
+    const callbackName = bound.name.text;
+    const inspect = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node) && node !== wrapper) return;
+      if (ts.isVariableDeclaration(node) && (ts.isIdentifier(node.name) ? node.name.text === callbackName : node.name.getText(sourceFile).includes(callbackName))) rebound = true;
+      if (ts.isBindingElement(node) && ts.isIdentifier(node.name) && node.name.text === callbackName && node !== bound) rebound = true;
+      if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) && node.left.text === callbackName
+        && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) rebound = true;
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === callbackName) called = true;
+      ts.forEachChild(node, inspect);
+    };
+    inspect(wrapper.body!);
+    return called && !rebound;
+  };
+
 
   const lineOf = (node: ts.Node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
   const locator = (node: ts.Node, suffix = '') => `${context.locatorBase}:${lineOf(node)}${suffix}`;
@@ -283,6 +317,122 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     } else if (ts.isInterfaceDeclaration(node)) addSymbol(node.name.text, 'interface', node);
     else if (ts.isTypeAliasDeclaration(node)) addSymbol(node.name.text, 'type', node);
 
+    // Attribute inline MCP handler body calls to the concrete registered
+    // callback instead of the surrounding registration factory.
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+        && ts.isCallExpression(node.parent)
+        && node.parent.arguments[2] === node
+        && node.parent.expression.getText(sourceFile).endsWith('.registerTool')) {
+      const callbackId = `symbol:${context.locatorBase}#function:mcp-handler-${lineOf(node.parent)}-${node.parent.getStart(sourceFile)}`;
+      const callback = observations.find(item => item.id === callbackId);
+      if (callback) {
+        functionStack.push(callback);
+        scopeStack.push(`mcp-handler:${lineOf(node.parent)}`);
+        pushedFunction = true;
+        pushedScope = true;
+      }
+    }
+
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+      && ts.isPropertyAssignment(node.parent)
+      && node.parent.initializer === node
+      && ts.isObjectLiteralExpression(node.parent.parent)
+      && ts.isCallExpression(node.parent.parent.parent)
+      && node.parent.parent.parent.arguments[0] === node.parent.parent
+      && ts.isIdentifier(node.parent.parent.parent.expression)) {
+      const call = node.parent.parent.parent;
+      const key = propertyName(node.parent.name);
+      const wrapperName = call.expression.getText(sourceFile);
+      // Resolve a const function expression only when it is declared earlier
+      // in the same lexical statement block as the call. Do not cross an
+      // import, parameter, sibling block or ambiguous binding.
+      const block = (() => {
+        let ancestor: ts.Node | undefined = call.parent;
+        while (ancestor && !ts.isBlock(ancestor) && ancestor !== sourceFile) ancestor = ancestor.parent;
+        return ancestor;
+      })();
+      const constWrappers = block && (ts.isBlock(block) || ts.isSourceFile(block))
+        ? block.statements.flatMap(statement => ts.isVariableStatement(statement)
+          && (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+          ? statement.declarationList.declarations.flatMap(declaration => {
+              if (!ts.isIdentifier(declaration.name) || declaration.name.text !== wrapperName
+                  || declaration.getStart(sourceFile) >= call.getStart(sourceFile)) return [];
+              const expression = variableFunctionExpression(declaration.initializer);
+              return expression ? [expression] : [];
+            }) : [])
+        : [];
+      const wrappers = constWrappers.length ? constWrappers : (localWrappers.get(wrapperName) ?? []);
+      const hasCompetingBinding = (() => {
+        let competing = false;
+        const inspect = (item: ts.Node): void => {
+          if (item !== wrappers[0] && !(ts.isVariableDeclaration(item) && variableFunctionExpression(item.initializer) === wrappers[0]) && ((ts.isFunctionDeclaration(item) && item.name?.text === wrapperName)
+            || (ts.isVariableDeclaration(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
+            || (ts.isParameter(item) && (ts.isIdentifier(item.name) ? item.name.text === wrapperName : item.name.getText(sourceFile).includes(wrapperName)))
+            || (ts.isBindingElement(item) && ts.isIdentifier(item.name) && item.name.text === wrapperName)
+            || (ts.isClassDeclaration(item) && item.name?.text === wrapperName)
+            || (ts.isImportSpecifier(item) && item.name.text === wrapperName))) competing = true;
+          ts.forEachChild(item, inspect);
+        };
+        inspect(sourceFile);
+        return competing;
+      })();
+      const lexicalShadow = (() => {
+        // A same-named declaration anywhere outside the selected top-level
+        // wrapper may shadow the apparent callee. Refuse uncertain bindings.
+        const declarations = (sourceFile.statements.filter(statement => ts.isVariableStatement(statement))
+          .flatMap(statement => statement.declarationList.declarations)
+          .filter(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === wrapperName));
+        if (declarations.length) return true;
+        let cursor: ts.Node | undefined = call.parent;
+        while (cursor && cursor !== sourceFile) {
+          if (ts.isFunctionLike(cursor) && cursor.parameters.some(param => ts.isIdentifier(param.name) && param.name.text === wrapperName)) return true;
+          cursor = cursor.parent;
+        }
+        return false;
+      })();
+      if (key && wrappers.length === 1 && !lexicalShadow && !hasCompetingBinding && invokedProperty(wrappers[0]!, key)) {
+        const localCallback = observation({
+          id: `symbol:${context.locatorBase}#function:callback-${node.getStart(sourceFile)}`,
+          sourceId: context.source.id, kind: 'function', locator: locator(node),
+          name: `${key} callback`, field: 'identifier',
+          value: { property: key, invokedBy: wrapperName },
+          layer: 'structural', checkpoint: false,
+        });
+        observations.push(localCallback);
+        const caller = functionOwner();
+        if (caller) resolutions.push(resolution({
+          from: caller.id, to: localCallback.id, kind: 'invokes',
+          strategy: 'local-callback-invocation', confidence: 1,
+          status: 'resolved', evidence: [locator(call), locator(wrappers[0]!)],
+          layer: 'structural', checkpoint: false,
+        }));
+        functionStack.push(localCallback);
+        scopeStack.push(`callback:${node.getStart(sourceFile)}`);
+        pushedFunction = true;
+        pushedScope = true;
+      }
+    }
+
+    // Function expressions always create their own execution boundary, even
+    // if no higher-order invocation has been proven. Without this, a merely
+    // passed callback's calls would be falsely attributed to its creator.
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && !pushedFunction
+      && !(ts.isVariableDeclaration(node.parent) && variableFunctionExpression(node.parent.initializer) === node)
+      && !(ts.isCallExpression(node.parent) && ts.isVariableDeclaration(node.parent.parent)
+        && variableFunctionExpression(node.parent.parent.initializer) === node)) {
+      const isolated = observation({
+        id: `symbol:${context.locatorBase}#function:isolated-callback-${node.getStart(sourceFile)}`,
+        sourceId: context.source.id, kind: 'function', locator: locator(node),
+        name: 'unresolved callback', field: 'identifier',
+        value: { invoked: false }, layer: 'structural', checkpoint: false,
+      });
+      observations.push(isolated);
+      functionStack.push(isolated);
+      scopeStack.push(`isolated:${node.getStart(sourceFile)}`);
+      pushedFunction = true;
+      pushedScope = true;
+    }
+
     if (ts.isObjectLiteralExpression(node)) parseSemanticDeclaration(node);
 
     if (ts.isVariableDeclaration(node) && node.initializer) {
@@ -436,6 +586,30 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         const name = node.arguments[0].text;
         const tool = observation({ sourceId: context.source.id, kind: 'mcp-tool', locator: locator(node, ':mcp'), name, field: 'tool', value: name, layer: 'representation', checkpoint: false });
         observations.push(tool);
+        // Only the inline callback at this registration site is lexically certain.
+        // Identifier callbacks may be parameters, imports, or shadowed locals;
+        // a same-named declaration elsewhere in the file is not binding proof.
+        const handler = unwrap(node.arguments[2]);
+        if (handler && (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler))) {
+          // Inline callbacks have a real callable implementation at the registration
+          // site. It is a distinct graph node; do not pretend its body is an
+          // already-resolved imported or named function.
+          const callback = observation({
+            id: `symbol:${context.locatorBase}#function:mcp-handler-${lineOf(node)}-${node.getStart(sourceFile)}`,
+            sourceId: context.source.id,
+            kind: 'function',
+            locator: locator(handler),
+            name: `${name} handler`,
+            field: 'identifier',
+            value: { registration: name, inline: true },
+            layer: 'structural',
+            checkpoint: false,
+          });
+          observations.push(callback);
+          resolutions.push(resolution({ from: tool.id, to: callback.id, kind: 'handled_by', strategy: 'mcp-inline-callback', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'structural', checkpoint: false }));
+        } else {
+          resolutions.push(resolution({ from: tool.id, to: null, kind: 'handled_by', strategy: 'mcp-registration-unresolved', confidence: null, status: 'unresolved', evidence: [`${context.locatorBase}:${lineOf(node)}`], layer: 'structural', checkpoint: false }));
+        }
         const config = node.arguments[1];
         if (config && ts.isObjectLiteralExpression(unwrap(config) ?? config)) flattenObject(tool, unwrap(config)! as ts.ObjectLiteralExpression);
       }

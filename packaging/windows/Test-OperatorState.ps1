@@ -23,6 +23,39 @@ foreach($status in 2,3,5,6,7,99) {
 $path=Join-Path $root 'receipt.json'
 $record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);toolsSha256=('c'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
 Write-MsiReceipt $path $record
+# Unavailable ACL evidence must be rejected even after the bounded retry.
+$missingAclRejected=$false
+try { Get-OperatorAclChecked (Join-Path $root 'missing-receipt.json') | Out-Null } catch {
+    $missingAclRejected=$_.Exception.Message -match 'Operator ACL target unavailable'
+}
+Require $missingAclRejected 'Missing operator receipt ACL was treated as trusted'
+# Simulate a single transient native ACL read failure, then verify that the
+# actual protected receipt ACL is still inspected on the successful attempt.
+$script:aclFixtureAttempts=0
+function Get-Acl {
+    param([string]$LiteralPath,[string]$ErrorAction)
+    $script:aclFixtureAttempts++
+    if($script:aclFixtureAttempts -eq 1){throw [IO.IOException]::new('Synthetic transient ACL read',-2147024864)}
+    Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
+}
+try {
+    $recovered=Get-OperatorAclChecked $path
+    Require ($script:aclFixtureAttempts -eq 2 -and $null -ne $recovered) 'Transient ACL failure did not recover using actual ACL'
+} finally { Remove-Item Function:\Get-Acl -ErrorAction SilentlyContinue }
+# Persistent native failures must keep the original exception and HRESULT.
+$script:aclFixtureAttempts=0
+function Get-Acl {
+    param([string]$LiteralPath,[string]$ErrorAction)
+    $script:aclFixtureAttempts++
+    throw [IO.IOException]::new('Synthetic persistent ACL read',-2147024864)
+}
+try {
+    $persistentRefused=$false
+    try { Get-OperatorAclChecked $path | Out-Null } catch {
+        $persistentRefused=$_.Exception.Message -eq 'Synthetic persistent ACL read' -and $_.Exception.HResult -eq -2147024864
+    }
+    Require ($persistentRefused -and $script:aclFixtureAttempts -eq 5) 'Persistent ACL refusal lost native exception, HResult, or retry bound'
+} finally { Remove-Item Function:\Get-Acl -ErrorAction SilentlyContinue }
 $oldReader=Open-OperatorReadStream $path
 try {
     $replacement=$record.PSObject.Copy()

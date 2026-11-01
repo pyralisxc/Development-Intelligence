@@ -163,3 +163,97 @@ export function CallbackPanel() {
     'behavior inside useCallback must be owned by the callback function rather than the outer component',
   );
 });
+
+test('Inline MCP handler owns its local operation call evidence', () => {
+  const result = analyzeTypeScript({
+    source: source('registered.ts'),
+    locatorBase: 'registered.ts',
+    text: `function writeDocument() { return true; }
+function register() {
+  server.registerTool("write_document", {}, async () => {
+    return writeDocument();
+  });
+}`,
+  });
+  const tool = result.observations.find(item => item.kind === 'mcp-tool' && item.name === 'write_document')!;
+  const implementation = result.resolutions.find(edge => edge.from === tool.id && edge.kind === 'handled_by' && edge.status === 'resolved');
+  assert.ok(implementation?.to, 'inline registration must identify its concrete callback');
+  const call = result.resolutions.find(edge => edge.from === implementation!.to && edge.kind === 'calls' && edge.status === 'resolved');
+  assert.ok(call, 'callback body call must be attributed to the registered implementation');
+  const target = result.observations.find(item => item.id === call.to);
+  assert.equal(target?.name, 'writeDocument');
+});
+
+test('MCP callbacks do not bind to inaccessible same-name functions', () => {
+  const result = analyzeTypeScript({
+    source: source('handlers.ts'),
+    locatorBase: 'handlers.ts',
+    text: `function elsewhere() { function handler() { studioWrite(); } }
+function register(handler: unknown) { server.registerTool("owner", {}, handler); }
+server.registerTool("inline", {}, async () => 42);`,
+  });
+  const owner = result.observations.find(item => item.kind === 'mcp-tool' && item.name === 'owner')!;
+  const inline = result.observations.find(item => item.kind === 'mcp-tool' && item.name === 'inline')!;
+  assert.ok(result.resolutions.some(item => item.from === owner.id && item.kind === 'handled_by' && item.status === 'unresolved' && item.to === null));
+  assert.equal(result.resolutions.some(item => item.from === owner.id && item.kind === 'handled_by' && item.status === 'resolved'), false);
+  assert.ok(result.resolutions.some(item => item.from === inline.id && item.kind === 'handled_by' && item.status === 'resolved'));
+});
+
+test('Only directly invoked lexically bound object callbacks gain operation reachability', () => {
+  const analyze = (body: string) => analyzeTypeScript({
+    source: source('HigherOrder.ts'), locatorBase: 'HigherOrder.ts', text: body,
+  });
+  const invoked = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
+function write() { return true; }
+function owner() { run({ execute: () => write() }); }`);
+  assert.ok(invoked.resolutions.some(edge => edge.kind === 'invokes' && edge.strategy === 'local-callback-invocation' && edge.status === 'resolved'));
+  const passedOnly = analyze(`function run({ execute }: { execute: () => void }) { return true; }
+function write() { return true; }
+function owner() { run({ execute: () => write() }); }`);
+  assert.equal(passedOnly.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const passedWrite = passedOnly.observations.find(item => item.kind === 'function' && item.name === 'write');
+  const outerOwner = passedOnly.observations.find(item => item.kind === 'function' && item.name === 'owner');
+  assert.equal(passedOnly.resolutions.some(edge => edge.from === outerOwner?.id && edge.to === passedWrite?.id && edge.status === 'resolved'), false, 'passing an uncalled callback never gives the outer owner a write path');
+  const shadowed = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
+function owner(run: unknown) { run({ execute: () => write() }); }`);
+  assert.equal(shadowed.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const localShadow = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
+function owner() { const run = () => true; run({ execute: () => write() }); }`);
+  assert.equal(localShadow.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const reassigned = analyze(`function run({ execute }: { execute: () => void }) {
+  execute = () => {};
+  execute();
+}
+function owner() { run({ execute: () => write() }); }`);
+  assert.equal(reassigned.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const destructuredCaller = analyze(`function run({ execute }: { execute: () => void }) { execute(); }
+function owner({ run }: { run: any }) { run({ execute: () => write() }); }`);
+  assert.equal(destructuredCaller.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const destructuredCallback = analyze(`function run({ execute }: { execute: () => void }) {
+  { const { execute } = other; execute(); }
+}
+function owner() { run({ execute: () => write() }); }`);
+  assert.equal(destructuredCallback.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const imported = analyze(`import { run } from './other';
+function owner() { run({ execute: () => write() }); }`);
+  assert.equal(imported.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+});
+
+test('local const wrapper invokes its same-block callback but passing without invocation does not', () => {
+  const analyze = (text: string) => analyzeTypeScript({ source: source('ConstWrapper.ts'), locatorBase: 'ConstWrapper.ts', text });
+  const positive = analyze(`function owner() {
+  const run = ({ execute }: { execute: () => void }) => { execute(); };
+  run({ execute: () => write() });
+}`);
+  assert.ok(positive.resolutions.some(edge => edge.strategy === 'local-callback-invocation' && edge.status === 'resolved'));
+  const unused = analyze(`function owner() {
+  const run = ({ execute }: { execute: () => void }) => true;
+  run({ execute: () => write() });
+}`);
+  assert.equal(unused.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+  const otherBlock = analyze(`function owner() {
+  { const run = ({ execute }: { execute: () => void }) => execute(); }
+  run({ execute: () => write() });
+}`);
+  assert.equal(otherBlock.resolutions.some(edge => edge.strategy === 'local-callback-invocation'), false);
+});

@@ -1108,6 +1108,7 @@ async function repositorySemanticUnderstanding(
   graph: IntelligenceGraph,
   limit: number,
   depth: SemanticQueryDepth,
+  orientationReuse?: OrientationQueryReuse,
 ): Promise<Record<string, unknown>> {
   const authority = await loadSemanticAuthority(project);
   const accepted = latestAcceptedMeanings(authority.ledger);
@@ -1144,7 +1145,24 @@ async function repositorySemanticUnderstanding(
     : depth === 'expanded'
       ? Math.min(Math.max(limit * 6, 64), 250)
       : Math.min(Math.max(limit * 2, 24), 100);
-  const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
+  // Build the exact-revision candidate universe once per sequential request;
+  // projecting bounded prefixes preserves bootstrap ordering and capacity.
+  const allCandidates = orientationReuse
+    ? (orientationReuse.semanticCensus ??= bootstrapSemanticCandidates(graph, { limit: 1000 }))
+    : null;
+  const bootstrap = allCandidates
+    ? {
+        ...allCandidates,
+        candidates: allCandidates.candidates.slice(0, candidateLimit),
+        capacity: {
+          ...allCandidates.capacity,
+          requestedLimit: candidateLimit,
+          returnedCandidateCount: Math.min(candidateLimit, allCandidates.candidates.length),
+          truncated: Math.min(candidateLimit, allCandidates.candidates.length) < allCandidates.capacity.eligibleCandidateCount,
+          exhausted: Math.min(candidateLimit, allCandidates.candidates.length) === allCandidates.capacity.eligibleCandidateCount,
+        },
+      }
+    : bootstrapSemanticCandidates(graph, { limit: candidateLimit });
   const audit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
   const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
   const derivedItems = bootstrap.candidates
@@ -1452,6 +1470,17 @@ function repositoryAuditAnswer(result: Record<string, any>): string {
   return `Repository audit found ${findings.length} deterministic finding(s) and ${blockers.length} coverage blocker(s) on the pinned revision.${detail}`;
 }
 
+// Per-investigation, revision-pinned orientation work. Never shared globally:
+ // batches can resolve distinct graph snapshots even for the same project.
+type OrientationQueryReuse = {
+  graph: IntelligenceGraph;
+  byId?: Map<string, GraphNode>;
+  incidentByNode?: Map<string, GraphEdge[]>;
+  metrics?: Map<string, ReturnType<typeof orientationMetric>>;
+  rankBy?: ScopeRankBy;
+  semanticCensus?: ReturnType<typeof bootstrapSemanticCandidates>;
+};
+
 export async function scopeOrientation(input: {
   project: string;
   scope?: string | undefined;
@@ -1460,8 +1489,17 @@ export async function scopeOrientation(input: {
   rankBy?: ScopeRankBy | undefined;
   semanticDepth?: SemanticQueryDepth | undefined;
   limit?: number | undefined;
+  orientationReuse?: OrientationQueryReuse | undefined;
 }): Promise<Record<string, unknown>> {
-  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  // Reuse is valid only for an exact graph identity selected by the caller.
+  // A ref selector needs fresh resolution: never infer ref equivalence from
+  // project identity or carry indexes from an unrelated graph snapshot.
+  const candidateReuse = input.orientationReuse;
+  const reusable = candidateReuse && candidateReuse.graph.project === input.project
+    && !input.ref
+    && input.graphId === candidateReuse.graph.graphId
+    ? candidateReuse : undefined;
+  const graph = reusable?.graph ?? await currentGraph(input.project, input.ref, input.graphId);
   const rankBy = input.rankBy ?? 'cross-file';
   const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
   const selected = scopeNodeIds(graph, input.scope);
@@ -1491,7 +1529,8 @@ export async function scopeOrientation(input: {
     };
   }
 
-  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const byId = reusable?.byId ?? new Map(graph.nodes.map(node => [node.id, node]));
+  if (reusable) reusable.byId = byId;
   let scopedIds = selected.ids;
   if (selected.kind === 'entity' && selected.entity) {
     scopedIds = new Set([selected.entity.id]);
@@ -1514,23 +1553,44 @@ export async function scopeOrientation(input: {
 
   const nodes = [...scopedIds].map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
   const scopedSet = new Set(nodes.map(node => node.id));
-  const incidentByNode = new Map<string, GraphEdge[]>();
-  for (const edge of graph.edges) {
-    if (edge.from && scopedSet.has(edge.from)) {
-      const current = incidentByNode.get(edge.from) ?? [];
-      current.push(edge);
-      incidentByNode.set(edge.from, current);
+  let incidentByNode = reusable?.incidentByNode;
+  if (!incidentByNode) {
+    incidentByNode = new Map<string, GraphEdge[]>();
+    for (const edge of graph.edges) {
+      if (edge.from) {
+        const current = incidentByNode.get(edge.from) ?? [];
+        current.push(edge);
+        incidentByNode.set(edge.from, current);
+      }
+      if (edge.to && edge.to !== edge.from) {
+        const current = incidentByNode.get(edge.to) ?? [];
+        current.push(edge);
+        incidentByNode.set(edge.to, current);
+      }
     }
-    if (edge.to && scopedSet.has(edge.to) && edge.to !== edge.from) {
-      const current = incidentByNode.get(edge.to) ?? [];
-      current.push(edge);
-      incidentByNode.set(edge.to, current);
-    }
+    if (reusable) reusable.incidentByNode = incidentByNode;
   }
+
+  // The ranked list and role summaries inspect the same scoped nodes at the
+  // same graph revision/rank criterion. Reuse metrics per node within this
+  // single orientation, never across revisions or distinct graph contexts.
+  if (reusable && reusable.rankBy !== rankBy) {
+    delete reusable.metrics;
+    reusable.rankBy = rankBy;
+  }
+  const metricCache = reusable?.metrics ?? new Map<string, ReturnType<typeof orientationMetric>>();
+  if (reusable) reusable.metrics = metricCache;
+  const scopedMetrics = (node: GraphNode): ReturnType<typeof orientationMetric> => {
+    const existing = metricCache.get(node.id);
+    if (existing) return existing;
+    const calculated = orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy);
+    metricCache.set(node.id, calculated);
+    return calculated;
+  };
 
   const preferredKinds = new Set(['feature','capability','route','api','mcp','provider','file','function','method','class','interface','constructor']);
   const ranked = nodes
-    .map(node => ({ node, metrics: orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy) }))
+    .map(node => ({ node, metrics: scopedMetrics(node) }))
     .sort((a, b) =>
       b.metrics.rankValue - a.metrics.rankValue
       || Number(preferredKinds.has(b.node.kind)) - Number(preferredKinds.has(a.node.kind))
@@ -1569,7 +1629,7 @@ export async function scopeOrientation(input: {
     const members = nodes.filter(node => orientationRole(node) === role);
     if (!members.length) return [];
     const sorted = members
-      .map(node => ({ node, metrics: orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy) }))
+      .map(node => ({ node, metrics: scopedMetrics(node) }))
       .sort((a, b) =>
         b.metrics.rankValue - a.metrics.rankValue
         || b.metrics.relationshipDiversity - a.metrics.relationshipDiversity
@@ -1633,7 +1693,7 @@ export async function scopeOrientation(input: {
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
   const semanticUnderstanding = selected.kind === 'repository'
-    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus')
+    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable)
     : null;
 
   return {
@@ -2381,6 +2441,7 @@ export async function queryWorkbench(input: {
   scope?: string | undefined;
   rankBy?: ScopeRankBy | undefined;
   semanticDepth?: SemanticQueryDepth | undefined;
+  orientationReuse?: OrientationQueryReuse | undefined;
 }): Promise<Record<string, unknown>> {
   const text = input.text.trim();
   if (!text) throw new Error('text must be non-empty');
@@ -2567,6 +2628,7 @@ export async function queryWorkbench(input: {
       graphId: input.graphId,
       rankBy: input.rankBy,
       semanticDepth,
+      orientationReuse: input.orientationReuse,
     });
     return {
       intent: 'orientation',
@@ -2732,6 +2794,7 @@ export async function queryWorkbenchRequest(input: {
 
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const mode = explicit.length ? 'explicit' : questions.length > 1 ? 'decomposed' : 'single';
+  const orientationReuse: OrientationQueryReuse = { graph };
 
   if (questions.length === 1) {
     const result = await queryWorkbench({
@@ -2771,6 +2834,7 @@ export async function queryWorkbenchRequest(input: {
         scope: input.scope,
         rankBy: input.rankBy,
         semanticDepth: input.semanticDepth,
+        orientationReuse,
       }) as any;
       const subjectId = result?.subject && result.subject.ambiguous !== true && typeof result.subject.id === 'string'
         ? result.subject.id

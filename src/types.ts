@@ -266,7 +266,7 @@ export type ResolutionStatus = RelationshipStatus;
 export type ParityScan = IntelligenceGraph;
 
 export type ParityExpectationRequirement = 'required' | 'forbidden';
-export type ParityExpectationResultStatus = 'satisfied' | 'missing' | 'forbidden-present' | 'unproven';
+export type ParityExpectationResultStatus = 'satisfied' | 'missing' | 'forbidden-present' | 'unproven' | 'not-applicable';
 
 export interface ParityEntityExpectation {
   id: string;
@@ -282,10 +282,34 @@ export interface ParityRelationshipExpectation {
   rationale?: string;
 }
 
+export interface ParityNodeSelector {
+  ids?: string[];
+  kinds?: string[];
+  layers?: GraphNodeLayer[];
+  sourceIds?: string[];
+}
+
+export interface ParityReachabilityPredicate {
+  id: string;
+  type: 'reachability';
+  from: ParityNodeSelector;
+  to: ParityNodeSelector;
+  requirement?: ParityExpectationRequirement;
+  quantifier?: 'any' | 'all';
+  direction?: 'outbound' | 'inbound';
+  relationshipKinds?: string[];
+  maxDepth?: number;
+  /** Caller-defined bounded source claim; not repository-wide negative proof. */
+  scopeSourceIds?: string[];
+  rationale?: string;
+  originalClaim?: string;
+}
+
 export interface ParityContract {
   version: 1;
   name?: string;
   description?: string;
   entities?: ParityEntityExpectation[];
   relationships?: ParityRelationshipExpectation[];
+  predicates?: ParityReachabilityPredicate[];
 }

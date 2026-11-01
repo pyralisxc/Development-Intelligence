@@ -44,6 +44,7 @@ const scopeRankSchema = { enum: ['fan-in', 'fan-out', 'cross-file', 'relationshi
 const semanticDepthSchema = { enum: ['nucleus', 'expanded', 'exhaustive'] };
 const filePatternModeSchema = { enum: ['regex', 'literal', 'prefix', 'glob'] };
 const parityRequirementSchema = { enum: ['required', 'forbidden'] };
+const parityNodeSelectorSchema = objectSchema({ ids: strings, kinds: strings, layers: layersSchema, sourceIds: strings });
 const parityContractSchema = objectSchema({
   version: { enum: [1] },
   name: string,
@@ -57,6 +58,24 @@ const parityContractSchema = objectSchema({
     type: 'array',
     maxItems: 200,
     items: objectSchema({ from: string, kind: string, to: string, requirement: parityRequirementSchema, rationale: string }, ['from', 'kind', 'to']),
+  },
+  predicates: {
+    type: 'array',
+    maxItems: 200,
+    items: objectSchema({
+      id: string,
+      type: { enum: ['reachability'] },
+      from: parityNodeSelectorSchema,
+      to: parityNodeSelectorSchema,
+      requirement: parityRequirementSchema,
+      quantifier: { enum: ['any', 'all'] },
+      direction: { enum: ['outbound', 'inbound'] },
+      relationshipKinds: strings,
+      scopeSourceIds: strings,
+      maxDepth: { type: 'integer', minimum: 1, maximum: 20 },
+      rationale: string,
+      originalClaim: string,
+    }, ['id', 'type', 'from', 'to']),
   },
 }, ['version']);
 const transitionContractSchema = objectSchema({
@@ -386,7 +405,7 @@ export const tools: ToolDefinition[] = [
   { name: 'analyze_impact', description: 'Compare two authorized Git revisions by actual changed files, map those paths into each revision graph, and trace bounded dependency impact. Inbound resolved relationships are used by default; direction, relationship kinds, relationship status, layers, depth, and result limit are caller-controlled.', inputSchema: objectSchema({ project: string, baseRef: string, ref: string, direction: { enum: ['inbound', 'outbound', 'both'] }, depth: integer, relationshipKinds: strings, status: relationshipStatusSchema, layers: layersSchema, limit: integer }, ['project', 'baseRef']), handler: async args => await analyzeImpact({ project: s(args, 'project'), baseRef: s(args, 'baseRef'), ref: optString(args, 'ref'), direction: args.direction as any, depth: typeof args.depth === 'number' ? args.depth : undefined, relationshipKinds: Array.isArray(args.relationshipKinds) ? args.relationshipKinds as string[] : undefined, statuses: relationshipStatuses(args), layers: layers(args), limit: typeof args.limit === 'number' ? args.limit : undefined }) },
   { name: 'verify_transition', description: 'Verify an exact repository transition from immutable A to immutable B under the current analyzer. Composes graph delta, changed-file impact, optional caller-owned head expectations and preserved invariants, unexpected-change review surface, and coverage-qualified uncertainty without approving or mutating the repository.', inputSchema: objectSchema({ project: string, baseRef: string, ref: string, contract: transitionContractSchema, direction: { enum: ['inbound', 'outbound', 'both'] }, depth: integer, relationshipKinds: strings, status: relationshipStatusSchema, layers: layersSchema, limit: integer }, ['project', 'baseRef', 'ref']), handler: async args => await verifyTransition({ project: s(args, 'project'), baseRef: s(args, 'baseRef'), ref: s(args, 'ref'), ...(args.contract === undefined ? {} : { contract: args.contract }), ...(typeof args.direction === 'string' ? { direction: args.direction as 'inbound' | 'outbound' | 'both' } : {}), ...(typeof args.depth === 'number' ? { depth: args.depth } : {}), ...(Array.isArray(args.relationshipKinds) ? { relationshipKinds: args.relationshipKinds as string[] } : {}), ...(relationshipStatuses(args)?.length ? { statuses: relationshipStatuses(args)! } : {}), ...(layers(args)?.length ? { layers: layers(args)! } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }) },
   { name: 'query_parity', description: 'Inspect semantic entities and their observed human/agent/API/provider representations over the selected canonical graph. Pass queries for up to 20 independent terms over one loaded graph. Only resolved relations populate confirmed representation lists; candidates and unresolved relations remain explicit.', inputSchema: objectSchema(queryProperties, ['project']), handler: async args => await parityLens({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), query: optString(args, 'query'), queries: Array.isArray(args.queries) ? args.queries as string[] : undefined, kinds: Array.isArray(args.kinds) ? args.kinds as string[] : undefined, sourceIds: Array.isArray(args.sourceIds) ? args.sourceIds as string[] : undefined, status: relationshipStatuses(args), limit: typeof args.limit === 'number' ? args.limit : undefined, offset: typeof args.offset === 'number' ? args.offset : undefined }) },
-  { name: 'evaluate_parity', description: 'Evaluate a caller-owned ephemeral expectation contract (E) against canonical W or an explicit graph snapshot. Reports satisfied, missing, forbidden-present, and unproven obligations without modifying accepted graph truth.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, contract: parityContractSchema }, ['project', 'contract']), handler: async args => await evaluateParityContract({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), contract: args.contract }) },
+  { name: 'evaluate_parity', description: 'Evaluate a caller-owned ephemeral expectation contract (E) against canonical W or an explicit graph snapshot. Supports exact entities/relationships plus bounded quantified reachability predicates, and reports satisfied, missing, forbidden-present, unproven, or not-applicable obligations with static-proof replacement limits without modifying accepted graph truth.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, contract: parityContractSchema }, ['project', 'contract']), handler: async args => await evaluateParityContract({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), contract: args.contract }) },
 ];
 
 function annotationsFor(name: string): Record<string, boolean> {

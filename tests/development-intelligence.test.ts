@@ -296,6 +296,8 @@ test('runtime observation snapshots are explicit and never contaminate canonical
 
     assert.ok(snapshot.nodes.some(node => node.kind === 'http-call' && JSON.stringify(node.value).includes('/api/manage')));
     assert.ok(snapshot.nodes.some(node => node.kind === 'mcp-tool' && node.name === 'manage_item'));
+    const registered = snapshot.nodes.find(node => node.kind === 'mcp-tool' && node.name === 'manage_item')!;
+    assert.ok(snapshot.edges.some(edge => edge.from === 'mcp:manage_item' && edge.to === registered.id && edge.kind === 'registered-as' && edge.status === 'resolved'), 'semantic MCP identity links to the exact observed source registration');
     assert.ok(snapshot.edges.some(edge => edge.kind === 'handled_by' && edge.status === 'resolved'));
 
     const search = await searchGraph({ project: fixture.project, query: 'helper' }) as any;
@@ -332,7 +334,7 @@ test('runtime observation snapshots are explicit and never contaminate canonical
       },
     }) as any;
     assert.equal(parity.passed, false);
-    assert.deepEqual(parity.counts, { satisfied: 2, missing: 0, forbiddenPresent: 2, unproven: 2 }, 'the intentionally skipped symlink source keeps negative expectations unproven');
+    assert.deepEqual(parity.counts, { satisfied: 2, missing: 0, forbiddenPresent: 2, unproven: 2, notApplicable: 0 }, 'the intentionally skipped symlink source keeps negative expectations unproven');
     assert.match(parity.note, /ephemerally/i);
 
     const code = await searchCode({ project: fixture.project, graphId: snapshot.graphId, pattern: 'fetch', limit: 10 }) as any;
@@ -879,6 +881,31 @@ test('project statistics exposes bounded graph and capacity facts without invent
     assert.equal(typeof routed.result.capacity.cache, 'object');
     assert.equal(typeof routed.result.persistence, 'object');
   } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('sequential semantic orientation batch matches standalone pinned-depth outputs exactly', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project);
+    const questions = [
+      'What does this project do?',
+      'What does this project do? Go deep across the major supporting semantic areas, substrates, relationships, and evidence.',
+      'What does this project do? Exhaustively enumerate every evidence-qualified semantic candidate in the repository.',
+    ];
+    const batch = await queryWorkbenchRequest({ project: fixture.project, questions, graphId: graph.graphId }) as any;
+    assert.equal(batch.graphId, graph.graphId);
+    assert.deepEqual(batch.items.map((item: any) => item.status), ['ok', 'ok', 'ok']);
+    assert.deepEqual(batch.items.map((item: any) => item.routing.semanticDepth), ['nucleus', 'expanded', 'exhaustive']);
+    for (let index = 0; index < questions.length; index += 1) {
+      const standalone = await queryWorkbench({ project: fixture.project, graphId: graph.graphId, text: questions[index]! }) as any;
+      assert.deepEqual(batch.items[index].result, standalone.result, 'batch structural reuse must preserve the full per-depth semantic result');
+      assert.equal(batch.items[index].intent, standalone.intent);
+    }
+  } finally {
+    clearGraphCache(fixture.project);
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });

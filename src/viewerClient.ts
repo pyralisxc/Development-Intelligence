@@ -859,12 +859,13 @@ async function renderSemantics(epoch: number): Promise<void> {
 
 function parityStatusClass(status: string): string {
   if (status === 'satisfied') return 'status-good';
-  if (status === 'unproven') return 'status-warn';
+  if (status === 'unproven' || status === 'not-applicable') return 'status-warn';
   return 'status-bad';
 }
 
 function parityExpectationLabel(result: any): string {
   if (result.type === 'entity') return result.expectation?.id ?? 'entity';
+  if (result.type === 'predicate') return result.predicate?.id ?? 'predicate';
   return `${result.expectation?.from ?? '?'} ${result.expectation?.kind ?? '?'} ${result.expectation?.to ?? '?'}`;
 }
 

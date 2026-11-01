@@ -1315,6 +1315,7 @@ function addFrameworkSemantics(input: {
     input.evidence.push(proof);
     const mcpId = `mcp:${toolName}`;
     input.nodes.push(semanticEntity({ id: mcpId, sourceId: proof.sourceId, kind: 'mcp', locator: node.locator, name: toolName, value: { tool: toolName }, evidenceIds: [proof.id], tags: ['protocol-observed'] }));
+    input.edges.push(semanticRelationship({ from: mcpId, to: node.id, kind: 'registered-as', evidence: [node.locator], evidenceIds: [proof.id], strategy: 'protocol-registration' }));
     const feature = featureByFile.get(relative);
     if (feature) input.edges.push(semanticRelationship({ from: mcpId, to: `feature:${feature}`, kind: 'implemented-by', evidence: [node.locator], evidenceIds: [proof.id], strategy: 'protocol-registration' }));
     const route = routeByFile.get(relative);
