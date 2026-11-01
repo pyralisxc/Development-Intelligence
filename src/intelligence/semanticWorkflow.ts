@@ -524,6 +524,33 @@ export function semanticLineageTransaction(
  * independent of explicit human acceptance. This never writes accepted A or
  * overrides a prior correction/rejection; uncertain lineage remains visible.
  */
+/**
+ * Project an earlier explicit disposition without modifying semantic authority.
+ * Never carry an inferred override through an ambiguous candidate mapping.
+ */
+export function priorExplicitDisposition(
+  candidate: SemanticCandidate,
+  candidates: SemanticCandidate[],
+  ledger: SemanticAuthorityLedger | null,
+  revision: string | null,
+): SemanticMeaningReview | null {
+  const latestByMeaning = new Map<string, { storedAt: string; review: SemanticMeaningReview }>();
+  for (const record of ledger?.records ?? []) {
+    if (record.revision === revision) continue;
+    const review = record.review;
+    if (!review.reviewed && !review.accepted) continue;
+    if (['superseded', 'split', 'merged'].includes(review.state)) continue;
+    const prior = latestByMeaning.get(record.meaningId);
+    if (!prior || prior.storedAt < record.storedAt) latestByMeaning.set(record.meaningId, { storedAt: record.storedAt, review });
+  }
+  const matched = [...latestByMeaning.values()].map(item => item.review).filter(review => {
+    const evolution = evaluateSemanticEvolution(review, candidates, revision);
+    return evolution.status !== 'ambiguous' && evolution.status !== 'unsupported'
+      && evolution.matchedCandidate?.id === candidate.id;
+  });
+  return matched.length === 1 ? matched[0]! : null;
+}
+
 export function autonomousSemanticAssessment(
   candidate: SemanticCandidate,
   auditItem: { factuality?: { status?: string } } | null,
@@ -646,7 +673,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       review: reviewsByCandidate.get(candidate.id) ?? null,
       continuity: semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings),
       reviewAssessment: semanticReviewAssessment(candidate, auditByCandidate.get(candidate.id)),
-      autonomousAssessment: autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id), reviewsByCandidate.get(candidate.id) ?? null, semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings)),
+      autonomousAssessment: autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id) ?? null, reviewsByCandidate.get(candidate.id) ?? priorExplicitDisposition(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision), semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings)),
       aiProposalPacket: semanticAiProposalPacket(candidate),
     })),
     capacity: bootstrap.capacity,
