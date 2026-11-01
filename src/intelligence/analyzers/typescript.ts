@@ -283,6 +283,22 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     } else if (ts.isInterfaceDeclaration(node)) addSymbol(node.name.text, 'interface', node);
     else if (ts.isTypeAliasDeclaration(node)) addSymbol(node.name.text, 'type', node);
 
+    // Attribute inline MCP handler body calls to the concrete registered
+    // callback instead of the surrounding registration factory.
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+        && ts.isCallExpression(node.parent)
+        && node.parent.arguments[2] === node
+        && node.parent.expression.getText(sourceFile).endsWith('.registerTool')) {
+      const callbackId = `symbol:${context.locatorBase}#function:mcp-handler-${lineOf(node.parent)}-${node.parent.getStart(sourceFile)}`;
+      const callback = observations.find(item => item.id === callbackId);
+      if (callback) {
+        functionStack.push(callback);
+        scopeStack.push(`mcp-handler:${lineOf(node.parent)}`);
+        pushedFunction = true;
+        pushedScope = true;
+      }
+    }
+
     if (ts.isObjectLiteralExpression(node)) parseSemanticDeclaration(node);
 
     if (ts.isVariableDeclaration(node) && node.initializer) {
