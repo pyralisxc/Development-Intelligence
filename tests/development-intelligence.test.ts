@@ -296,6 +296,8 @@ test('runtime observation snapshots are explicit and never contaminate canonical
 
     assert.ok(snapshot.nodes.some(node => node.kind === 'http-call' && JSON.stringify(node.value).includes('/api/manage')));
     assert.ok(snapshot.nodes.some(node => node.kind === 'mcp-tool' && node.name === 'manage_item'));
+    const registered = snapshot.nodes.find(node => node.kind === 'mcp-tool' && node.name === 'manage_item')!;
+    assert.ok(snapshot.edges.some(edge => edge.from === 'mcp:manage_item' && edge.to === registered.id && edge.kind === 'registered-as' && edge.status === 'resolved'), 'semantic MCP identity links to the exact observed source registration');
     assert.ok(snapshot.edges.some(edge => edge.kind === 'handled_by' && edge.status === 'resolved'));
 
     const search = await searchGraph({ project: fixture.project, query: 'helper' }) as any;
