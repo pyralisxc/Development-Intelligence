@@ -376,23 +376,6 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           queryArtifacts: queryArtifactPublication.state === 'stored' ? queryArtifactPublication.ref : null,
         });
         const saved = await saveCanonicalGraph(record);
-        // Derived semantic maintenance is a post-publication action, never a
-        // query/snapshot/replay write or a modification to accepted authority.
-        // A failed semantic update cannot reinterpret an already-stored graph.
-        if (saved.saveState === 'stored') {
-          const { maintainDerivedSemanticsForGraph } = await import('./semanticWorkflow.js');
-          const derivedResult = await maintainDerivedSemanticsForGraph(project, observed.value.graph).catch(() => {
-            // Preserve the canonical W publication without concealing that
-            // derived meaning maintenance failed at this exact revision.
-            console.warn('Derived semantic maintenance failed after canonical graph publication');
-            return null;
-          });
-          if (derivedResult?.state === 'conflict') {
-            // A competing explicit correction wins the ETag race. Never
-            // publish a stale derived result over that newer authority.
-            console.warn('Derived semantic maintenance deferred due to concurrent semantic update');
-          }
-        }
         let queryPointerPublication = null;
         if (saved.saveState === 'stored' && queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
           queryPointerPublication = await publishCurrentQueryArtifactPointer(
@@ -885,6 +868,16 @@ export async function scanGraph(project: string, options: { ref?: string | undef
   }
   const repository = await buildCachedRepositoryGraph(project, options.ref);
   const urls = options.urls ?? [];
+  // Only an explicit canonical source scan maintains durable derived meaning.
+  // A graph-ID query, ordinary read, or historical/runtime replay cannot.
+  // This also refreshes same-revision derived state on a cached canonical scan.
+  if (canonicalEligible && !urls.length && !computeOnly()) {
+    const { maintainDerivedSemanticsForGraph } = await import('./semanticWorkflow.js');
+    const result = await maintainDerivedSemanticsForGraph(project, repository.graph);
+    if (result.state === 'conflict') {
+      throw new Error('Concurrent semantic correction prevented this derived refresh; retry against current authority');
+    }
+  }
   if (!urls.length) return repository.graph;
 
   const createdAt = new Date().toISOString();
