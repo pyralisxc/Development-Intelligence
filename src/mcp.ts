@@ -71,6 +71,7 @@ const parityContractSchema = objectSchema({
       quantifier: { enum: ['any', 'all'] },
       direction: { enum: ['outbound', 'inbound'] },
       relationshipKinds: strings,
+      scopeSourceIds: strings,
       maxDepth: { type: 'integer', minimum: 1, maximum: 20 },
       rationale: string,
       originalClaim: string,
