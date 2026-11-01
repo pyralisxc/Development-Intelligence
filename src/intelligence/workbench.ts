@@ -1108,6 +1108,7 @@ async function repositorySemanticUnderstanding(
   graph: IntelligenceGraph,
   limit: number,
   depth: SemanticQueryDepth,
+  orientationReuse?: OrientationQueryReuse,
 ): Promise<Record<string, unknown>> {
   const authority = await loadSemanticAuthority(project);
   const accepted = latestAcceptedMeanings(authority.ledger);
@@ -1144,7 +1145,24 @@ async function repositorySemanticUnderstanding(
     : depth === 'expanded'
       ? Math.min(Math.max(limit * 6, 64), 250)
       : Math.min(Math.max(limit * 2, 24), 100);
-  const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
+  // Build the exact-revision candidate universe once per sequential request;
+  // projecting bounded prefixes preserves bootstrap ordering and capacity.
+  const allCandidates = orientationReuse
+    ? (orientationReuse.semanticCensus ??= bootstrapSemanticCandidates(graph, { limit: 1000 }))
+    : null;
+  const bootstrap = allCandidates
+    ? {
+        ...allCandidates,
+        candidates: allCandidates.candidates.slice(0, candidateLimit),
+        capacity: {
+          ...allCandidates.capacity,
+          requestedLimit: candidateLimit,
+          returnedCandidateCount: Math.min(candidateLimit, allCandidates.candidates.length),
+          truncated: Math.min(candidateLimit, allCandidates.candidates.length) < allCandidates.capacity.eligibleCandidateCount,
+          exhausted: Math.min(candidateLimit, allCandidates.candidates.length) === allCandidates.capacity.eligibleCandidateCount,
+        },
+      }
+    : bootstrapSemanticCandidates(graph, { limit: candidateLimit });
   const audit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
   const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
   const derivedItems = bootstrap.candidates
@@ -1460,6 +1478,7 @@ type OrientationQueryReuse = {
   incidentByNode?: Map<string, GraphEdge[]>;
   metrics?: Map<string, ReturnType<typeof orientationMetric>>;
   rankBy?: ScopeRankBy;
+  semanticCensus?: ReturnType<typeof bootstrapSemanticCandidates>;
 };
 
 export async function scopeOrientation(input: {
@@ -1669,7 +1688,7 @@ export async function scopeOrientation(input: {
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
   const semanticUnderstanding = selected.kind === 'repository'
-    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus')
+    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable)
     : null;
 
   return {
