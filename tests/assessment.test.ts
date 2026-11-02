@@ -226,6 +226,23 @@ test('derived motifs require independent structural signals and remain non-autho
 
   {
     const fixture = graph();
+    const pipeline = node('function:pipeline-helper', 'function', 'structural', 'buildPipelineHelper');
+    pipeline.locator = 'src/features/pipeline/pipelineHelper.ts:7';
+    const file = node('file:pipeline-helper', 'file', 'structural', 'pipelineHelper.ts');
+    file.locator = 'src/features/pipeline/pipelineHelper.ts';
+    const unrelatedA = node('file:logger', 'file', 'structural', 'logger.ts');
+    const unrelatedB = node('file:flags', 'file', 'structural', 'flags.ts');
+    fixture.nodes.push(pipeline, file, unrelatedA, unrelatedB);
+    fixture.edges.push(edge('file-pipeline-helper', file.id, pipeline.id, 'contains'));
+    fixture.edges.push(edge('pipeline-helper-import-a', file.id, unrelatedA.id, 'imports'));
+    fixture.edges.push(edge('pipeline-helper-import-b', file.id, unrelatedB.id, 'imports'));
+
+    const assessed = assessGraph(fixture, pipeline.id) as any;
+    assert.equal(assessed.orientation.certainty.derived.some((item: any) => item.kind === 'pipeline'), false);
+  }
+
+  {
+    const fixture = graph();
     const store = node('file:profile-store', 'file', 'structural', 'profileStore.ts');
     store.locator = 'src/server/profileStore.ts';
     const read = node('function:read-profile', 'function', 'structural', 'readProfileRows');

@@ -540,7 +540,8 @@ const pipelineMotifStarted = process.hrtime.bigint();
 const pipelineMotifAssessment = assessGraph(graph, pipelineSubject.id);
 const pipelineMotifElapsedMs = Number(process.hrtime.bigint() - pipelineMotifStarted) / 1_000_000;
 const pipelineMotif = pipelineMotifAssessment.orientation?.certainty?.derived?.find(item => item.kind === 'pipeline');
-if (!pipelineMotif || pipelineMotif.signals.length < 2 || pipelineMotif.proofEligible !== false) throw new Error('CardForge pipeline motif was not conservatively derived');
+const pipelineUnresolvedTransfers = graph.edges.filter(edge => edge.from === pipelineSubject.id && edge.kind === 'invokes' && edge.status === 'unresolved');
+if (pipelineMotif || pipelineUnresolvedTransfers.length < 2) throw new Error('CardForge callback-isolated pipeline must remain unproven with unresolved transfer evidence');
 
 const persistenceMotifStarted = process.hrtime.bigint();
 const persistenceMotifAssessment = assessGraph(graph, persistenceSubject.id);
@@ -864,7 +865,7 @@ const report = {
   assessment: {
     elapsedMs: assessmentElapsedMs,
     motifs: {
-      pipeline: { confidence: pipelineMotif.confidence, signalCount: pipelineMotif.signals.length, elapsedMs: Number(pipelineMotifElapsedMs.toFixed(3)) },
+      pipeline: { status: 'unproven', unresolvedTransferCount: pipelineUnresolvedTransfers.length, elapsedMs: Number(pipelineMotifElapsedMs.toFixed(3)) },
       persistenceOwner: { confidence: persistenceMotif.confidence, signalCount: persistenceMotif.signals.length, elapsedMs: Number(persistenceMotifElapsedMs.toFixed(3)) },
       maxQueryBudgetMs: 1000,
     },
@@ -1132,7 +1133,7 @@ const summary = [
   `- Warm exact-graph project overview: **${warmOverviewMaxMs.toFixed(3)} ms max across 3 reads / 1000 ms budget**`,
   `- Repository audit: **${repositoryAuditElapsedMs.toFixed(3)} ms — ${repositoryAudit.findingSummary.total} deterministic findings / ${repositoryAudit.investigationTargets.length} bounded investigation target(s) / ${repositoryAudit.architectureBoundaries.length} bidirectional boundary investigation(s)**`,
   `- Assessment calibration: **feature ${featureAssessment.answerStatus} / symbol ${existenceAssessment.answerStatus} / observed-symbol rule-out ${existingRuleOut.answerStatus} (${existingRuleOutElapsedMs.toFixed(3)} ms) / scoped audit ${scopedAudit.findings.length} findings / ${assessmentElapsedMs} ms**`,
-  `- Derived motif calibration: **pipeline ${pipelineMotif.confidence} (${pipelineMotif.signals.length} signals, ${pipelineMotifElapsedMs.toFixed(3)} ms) / persistence-owner ${persistenceMotif.confidence} (${persistenceMotif.signals.length} signals, ${persistenceMotifElapsedMs.toFixed(3)} ms) / 1000 ms budget**`,
+  `- Derived motif calibration: **pipeline unproven (${pipelineUnresolvedTransfers.length} unresolved callback transfers, ${pipelineMotifElapsedMs.toFixed(3)} ms) / persistence-owner ${persistenceMotif.confidence} (${persistenceMotif.signals.length} signals, ${persistenceMotifElapsedMs.toFixed(3)} ms) / 1000 ms budget**`,
   '',
   '## Published competitor reference snapshot',
   '',

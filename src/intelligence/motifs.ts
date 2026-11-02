@@ -193,13 +193,12 @@ export function deriveMotifs(graph: IntelligenceGraph, selected: GraphNode): Der
   const pipelineIdentity = /(pipeline|workflow|processing chain)/u.test(identity);
   const stageMembers = memberPool.filter(node => /(stage|step|process|review|approve|submit|publish|execute|run|next|validate|classif)/u.test(nodeText(node)));
   const callFanout = unique(executionEdges.filter(edge => edge.kind === 'calls' || edge.kind === 'invokes' || edge.kind === 'dispatches').map(edge => edge.to ?? '')).length;
-  if (pipelineIdentity && (callFanout >= 2 || stageMembers.length >= 2 || distinctDependencies >= 2)) {
+  if (pipelineIdentity && (callFanout >= 2 || stageMembers.length >= 2)) {
     const signals = [
       signal('identity', 'The selected identity/path explicitly names pipeline, workflow, or processing-chain intent.', [selected]),
     ];
     if (callFanout >= 2) signals.push(signal('relationship', `The selected entity has resolved execution fan-out to ${callFanout} distinct targets.`, [selected], executionEdges));
     if (stageMembers.length >= 2) signals.push(signal('member', 'The selected entity contains multiple stage/process/review-style members.', stageMembers));
-    if (distinctDependencies >= 2) signals.push(signal('dependency', `The containing file has ${distinctDependencies} resolved dependency targets consistent with pipeline coordination.`, file ? [file] : [], dependencyEdges));
     output.push(motif(
       selected,
       'pipeline',
