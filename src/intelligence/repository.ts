@@ -14,7 +14,7 @@ import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.14.0-usecallback-functions';
+export const ANALYZER_VERSION = '2.15.0-callback-invocation-ownership';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -965,10 +965,12 @@ async function crossFileTypeScriptGraph(
   root: string,
   sourceTexts: Map<string, string>,
   graphNodes: GraphNode[],
+  graphEdges: GraphEdge[],
   fileNodes: Map<string, GraphNode>,
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; moduleInfos: Map<string, ModuleInfo> }> {
   const options = loadCompilerOptions(root);
   const symbolsByFile = new Map<string, Map<string, GraphNode[]>>();
+  const graphNodeById = new Map(graphNodes.map(node => [node.id, node]));
   for (const node of graphNodes) {
     if (!SYMBOL_KINDS.has(node.kind) || !node.name || !node.sourceId.startsWith('repo:')) continue;
     const file = node.sourceId.slice('repo:'.length);
@@ -1114,6 +1116,287 @@ async function crossFileTypeScriptGraph(
     return null;
   };
 
+  const bindingNameContains = (name: ts.BindingName, value: string): boolean => ts.isIdentifier(name)
+    ? name.text === value
+    : name.elements.some(element => ts.isBindingElement(element) && bindingNameContains(element.name, value));
+  const scopeDeclares = (scope: ts.Node, value: string): boolean => {
+    if (ts.isFunctionLike(scope) && (scope.parameters.some(parameter => bindingNameContains(parameter.name, value))
+      || (ts.isFunctionExpression(scope) && scope.name?.text === value))) return true;
+    if (ts.isCatchClause(scope) && scope.variableDeclaration && bindingNameContains(scope.variableDeclaration.name, value)) return true;
+    if ((ts.isForStatement(scope) || ts.isForInStatement(scope) || ts.isForOfStatement(scope))) {
+      const initializer = scope.initializer;
+      if (initializer && ts.isVariableDeclarationList(initializer)
+        && initializer.declarations.some(declaration => bindingNameContains(declaration.name, value))) return true;
+    }
+    if (!ts.isBlock(scope) && !ts.isSourceFile(scope) && !ts.isCaseBlock(scope) && !ts.isModuleBlock(scope)) return false;
+    const statements: readonly ts.Statement[] = ts.isCaseBlock(scope)
+      ? scope.clauses.flatMap(clause => [...clause.statements])
+      : scope.statements;
+    return statements.some(statement => {
+      if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.some(declaration => bindingNameContains(declaration.name, value));
+      if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name?.text === value) return true;
+      return false;
+    });
+  };
+  const functionHasNestedVar = (scope: ts.SignatureDeclaration, value: string): boolean => {
+    let found = false;
+    const inspect = (node: ts.Node): void => {
+      if (found || (ts.isFunctionLike(node) && node !== scope)) return;
+      if (ts.isVariableDeclarationList(node) && (node.flags & ts.NodeFlags.BlockScoped) === 0
+        && node.declarations.some(declaration => bindingNameContains(declaration.name, value))) found = true;
+      ts.forEachChild(node, inspect);
+    };
+    if ('body' in scope && scope.body) inspect(scope.body);
+    return found;
+  };
+  const isShadowed = (reference: ts.Identifier, value: string, stopAt: ts.Node): boolean => {
+    let current: ts.Node | undefined = reference.parent;
+    while (current && current !== stopAt) {
+      if (scopeDeclares(current, value)) return true;
+      if (ts.isFunctionLike(current) && functionHasNestedVar(current, value)) return true;
+      current = current.parent;
+    }
+    return false;
+  };
+
+  const importedCallTarget = (info: ModuleInfo, expression: ts.LeftHandSideExpression): GraphNode | null => {
+    if (ts.isIdentifier(expression)) {
+      const binding = info.imports.get(expression.text);
+      return binding?.targetFile && binding.imported !== '*' && !isShadowed(expression, expression.text, info.sourceFile)
+        ? resolveExportedSymbol(binding.targetFile, binding.imported)
+        : null;
+    }
+    if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
+      const binding = info.imports.get(expression.expression.text);
+      return binding?.targetFile && binding.imported === '*' && !isShadowed(expression.expression, expression.expression.text, info.sourceFile)
+        ? resolveExportedSymbol(binding.targetFile, expression.name.text)
+        : null;
+    }
+    return null;
+  };
+
+  const staticPropertyName = (property: ts.ObjectLiteralElementLike): string | null => {
+    if (ts.isShorthandPropertyAssignment(property)) return property.name.text;
+    if (!ts.isPropertyAssignment(property) && !ts.isMethodDeclaration(property)) return null;
+    return ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name) || ts.isNumericLiteral(property.name)
+      ? property.name.text
+      : null;
+  };
+  const spreadMayDefine = (expression: ts.Expression, name: string): boolean => {
+    if (ts.isParenthesizedExpression(expression)) return spreadMayDefine(expression.expression, name);
+    if (ts.isConditionalExpression(expression)) return spreadMayDefine(expression.whenTrue, name) || spreadMayDefine(expression.whenFalse, name);
+    if (!ts.isObjectLiteralExpression(expression)) return true;
+    return expression.properties.some(property => ts.isSpreadAssignment(property)
+      ? spreadMayDefine(property.expression, name)
+      : staticPropertyName(property) === name || staticPropertyName(property) === null);
+  };
+  const effectiveObjectProperties = (object: ts.ObjectLiteralExpression): Array<{ property: ts.ObjectLiteralElementLike; name: string; uncertain: boolean }> => {
+    const result: Array<{ property: ts.ObjectLiteralElementLike; name: string; uncertain: boolean }> = [];
+    for (let index = 0; index < object.properties.length; index += 1) {
+      const property = object.properties[index]!;
+      const name = staticPropertyName(property);
+      if (!name) continue;
+      const later = object.properties.slice(index + 1);
+      if (later.some(candidate => staticPropertyName(candidate) === name)) continue;
+      result.push({
+        property,
+        name,
+        uncertain: later.some(candidate => ts.isSpreadAssignment(candidate)
+          ? spreadMayDefine(candidate.expression, name)
+          : staticPropertyName(candidate) === null),
+      });
+    }
+    return result;
+  };
+
+  const resolvedCallsByOwnerAndEvidence = new Map<string, GraphNode[]>();
+  for (const edge of graphEdges) {
+    if (edge.kind !== 'calls' || edge.status !== 'resolved' || !edge.from || !edge.to) continue;
+    const target = graphNodeById.get(edge.to);
+    if (!target) continue;
+    for (const evidence of edge.evidence ?? []) {
+      const key = `${edge.from}\0${evidence}`;
+      const targets = resolvedCallsByOwnerAndEvidence.get(key) ?? [];
+      targets.push(target);
+      resolvedCallsByOwnerAndEvidence.set(key, targets);
+    }
+  }
+
+  const resolvedLocalCallTarget = (owner: GraphNode, expression: ts.LeftHandSideExpression, relative: string, line: number): GraphNode | null => {
+    if (!ts.isIdentifier(expression)) return null;
+    const candidates = (resolvedCallsByOwnerAndEvidence.get(`${owner.id}\0${relative}:${line}`) ?? [])
+      .filter(node => node.name === expression.text);
+    return candidates.length === 1 ? candidates[0]! : null;
+  };
+
+  const functionLikeCache = new Map<string, ts.FunctionLikeDeclaration | null>();
+  const functionLikeFor = (target: GraphNode): ts.FunctionLikeDeclaration | null => {
+    if (functionLikeCache.has(target.id)) return functionLikeCache.get(target.id)!;
+    if (!target.sourceId.startsWith('repo:') || !target.name) return null;
+    const file = target.sourceId.slice('repo:'.length);
+    const info = moduleInfos.get(file);
+    if (!info) return null;
+    const targetLine = Number(/:(\d+)(?::|$)/u.exec(target.locator)?.[1] ?? -1);
+    let match: ts.FunctionLikeDeclaration | null = null;
+    const lineOf = (node: ts.Node) => info.sourceFile.getLineAndCharacterOfPosition(node.getStart(info.sourceFile)).line + 1;
+    const inspect = (node: ts.Node): void => {
+      if (match) return;
+      if (ts.isFunctionDeclaration(node) && node.name?.text === target.name && lineOf(node) === targetLine) match = node;
+      else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === target.name && lineOf(node) === targetLine) {
+        const initializer = node.initializer;
+        if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) match = initializer;
+      }
+      if (!match) ts.forEachChild(node, inspect);
+    };
+    inspect(info.sourceFile);
+    functionLikeCache.set(target.id, match);
+    return match;
+  };
+
+  type CallbackBehavior = 'invoked' | 'not-invoked' | 'unresolved';
+  const callbackBehaviorCache = new Map<string, CallbackBehavior>();
+  const callbackBehavior = (target: GraphNode, parameterIndex: number, property: string, seen = new Set<string>()): CallbackBehavior => {
+    const key = `${target.id}:${parameterIndex}:${property}`;
+    const cached = callbackBehaviorCache.get(key);
+    if (cached) return cached;
+    if (seen.has(key)) return 'unresolved';
+    seen.add(key);
+    const wrapper = functionLikeFor(target);
+    if (!wrapper?.body || !target.sourceId.startsWith('repo:')) return 'unresolved';
+    const parameter = wrapper.parameters[parameterIndex];
+    if (!parameter || !ts.isObjectBindingPattern(parameter.name)) return 'unresolved';
+    const computedMayAlias = parameter.name.elements.some(element => element.propertyName && ts.isComputedPropertyName(element.propertyName));
+    if (computedMayAlias) return 'unresolved';
+    const bindings = parameter.name.elements.filter(element => {
+      const external = element.propertyName && (ts.isIdentifier(element.propertyName) || ts.isStringLiteralLike(element.propertyName) || ts.isNumericLiteral(element.propertyName))
+        ? element.propertyName.text
+        : ts.isIdentifier(element.name) ? element.name.text : '';
+      return external === property;
+    });
+    if (bindings.length !== 1) return 'unresolved';
+    const bound = bindings[0]!;
+    if (!ts.isIdentifier(bound.name) || bound.initializer) return 'unresolved';
+    const local = bound.name.text;
+    const file = target.sourceId.slice('repo:'.length);
+    const info = moduleInfos.get(file)!;
+    let directlyInvoked = false;
+    let ambiguous = false;
+    const forwarded: CallbackBehavior[] = [];
+    const adapterBehavior = (adapter: ts.ArrowFunction | ts.FunctionExpression): CallbackBehavior => {
+      let invoked = false;
+      let uncertain = false;
+      const initializerCaptures = (initializer: ts.Expression): boolean => {
+        let captures = false;
+        const inspectInitializer = (node: ts.Node): void => {
+          if (captures) return;
+          if (ts.isIdentifier(node) && node.text === local && !isShadowed(node, local, wrapper)) captures = true;
+          ts.forEachChild(node, inspectInitializer);
+        };
+        inspectInitializer(initializer);
+        return captures;
+      };
+      if (adapter.parameters.some(parameter => parameter.initializer && initializerCaptures(parameter.initializer))) uncertain = true;
+      const inspectAdapter = (node: ts.Node): void => {
+        if (ts.isFunctionLike(node) && node !== adapter) {
+          let captures = false;
+          const inspectCapture = (nested: ts.Node): void => {
+            if (captures) return;
+            if (ts.isIdentifier(nested) && nested.text === local && !isShadowed(nested, local, wrapper)) captures = true;
+            ts.forEachChild(nested, inspectCapture);
+          };
+          const nestedBody = 'body' in node ? node.body as ts.ConciseBody | undefined : undefined;
+          if (nestedBody) inspectCapture(nestedBody);
+          if (captures) uncertain = true;
+          return;
+        }
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === local
+          && !isShadowed(node.expression, local, wrapper)) invoked = true;
+        if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) && node.left.text === local
+          && !isShadowed(node.left, local, wrapper)
+          && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) uncertain = true;
+        if (ts.isIdentifier(node) && node.text === local
+          && !isShadowed(node, local, wrapper)
+          && !(ts.isCallExpression(node.parent) && node.parent.expression === node)
+          && !(ts.isBinaryExpression(node.parent) && node.parent.left === node)) uncertain = true;
+        ts.forEachChild(node, inspectAdapter);
+      };
+      inspectAdapter(adapter.body);
+      return uncertain ? 'unresolved' : invoked ? 'invoked' : 'not-invoked';
+    };
+    const inspect = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node) && node !== wrapper) {
+        const property = node.parent;
+        const object = ts.isPropertyAssignment(property) && property.initializer === node && ts.isObjectLiteralExpression(property.parent)
+          ? property.parent
+          : null;
+        const forwardingCall = object && ts.isCallExpression(object.parent) ? object.parent : null;
+        const forwardingTarget = forwardingCall
+          ? importedCallTarget(info, forwardingCall.expression)
+            ?? resolvedLocalCallTarget(target, forwardingCall.expression, file, info.sourceFile.getLineAndCharacterOfPosition(forwardingCall.getStart(info.sourceFile)).line + 1)
+          : null;
+        if (forwardingTarget) return;
+        let captures = false;
+        const inspectCapture = (nested: ts.Node): void => {
+          if (captures) return;
+          if (ts.isIdentifier(nested) && nested.text === local && !isShadowed(nested, local, wrapper)) captures = true;
+          ts.forEachChild(nested, inspectCapture);
+        };
+        const nestedBody = 'body' in node ? node.body as ts.ConciseBody | undefined : undefined;
+        if (nestedBody) inspectCapture(nestedBody);
+        if (captures) ambiguous = true;
+        return;
+      }
+      const isPropertyName = (ts.isPropertyAssignment(node.parent) || ts.isMethodDeclaration(node.parent)) && node.parent.name === node;
+      if (ts.isIdentifier(node) && node.text === local && node !== bound.name && !isPropertyName && !isShadowed(node, local, wrapper)) {
+        const directCallee = ts.isCallExpression(node.parent) && node.parent.expression === node;
+        const forwardedProperty = ((ts.isPropertyAssignment(node.parent) && node.parent.initializer === node)
+          || (ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node))
+          && ts.isObjectLiteralExpression(node.parent.parent) && ts.isCallExpression(node.parent.parent.parent)
+          && Boolean(importedCallTarget(info, node.parent.parent.parent.expression));
+        if (!directCallee && !forwardedProperty) ambiguous = true;
+      }
+      if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) && node.left.text === local
+        && !isShadowed(node.left, local, wrapper)
+        && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ambiguous = true;
+      if (ts.isReturnStatement(node) && node.expression && ts.isIdentifier(node.expression) && node.expression.text === local
+        && !isShadowed(node.expression, local, wrapper)) ambiguous = true;
+      if (ts.isCallExpression(node)) {
+        if (ts.isIdentifier(node.expression) && node.expression.text === local && !isShadowed(node.expression, local, wrapper)) directlyInvoked = true;
+        const forwardedTarget = importedCallTarget(info, node.expression)
+          ?? resolvedLocalCallTarget(target, node.expression, file, info.sourceFile.getLineAndCharacterOfPosition(node.getStart(info.sourceFile)).line + 1);
+        for (const [argumentIndex, argument] of node.arguments.entries()) {
+          if (!ts.isObjectLiteralExpression(argument)) {
+            if (ts.isIdentifier(argument) && argument.text === local && !isShadowed(argument, local, wrapper)) ambiguous = true;
+            continue;
+          }
+          for (const { property: item, name: forwardedProperty, uncertain } of effectiveObjectProperties(argument)) {
+            if (ts.isPropertyAssignment(item) && (ts.isArrowFunction(item.initializer) || ts.isFunctionExpression(item.initializer))) {
+              const downstream = forwardedTarget
+                ? callbackBehavior(forwardedTarget, argumentIndex, forwardedProperty, new Set(seen))
+                : 'unresolved';
+              const adapter = adapterBehavior(item.initializer);
+              forwarded.push(uncertain ? 'unresolved' : downstream === 'invoked' ? adapter : downstream === 'unresolved' ? 'unresolved' : 'not-invoked');
+              continue;
+            }
+            const forwardsLocal = ts.isPropertyAssignment(item) && ts.isIdentifier(item.initializer) && item.initializer.text === local
+              && !isShadowed(item.initializer, local, wrapper)
+              || ts.isShorthandPropertyAssignment(item) && item.name.text === local && !isShadowed(item.name, local, wrapper);
+            if (!forwardsLocal) continue;
+            if (uncertain || !forwardedTarget) ambiguous = true;
+            else forwarded.push(callbackBehavior(forwardedTarget, argumentIndex, forwardedProperty, new Set(seen)));
+          }
+        }
+      }
+      ts.forEachChild(node, inspect);
+    };
+    inspect(wrapper.body);
+    const result = ambiguous || forwarded.includes('unresolved')
+      ? 'unresolved'
+      : directlyInvoked || forwarded.includes('invoked') ? 'invoked' : 'not-invoked';
+    callbackBehaviorCache.set(key, result);
+    return result;
+  };
+
   for (const [relative, info] of moduleInfos) {
     const fromFile = fileNodes.get(relative);
     for (const binding of info.imports.values()) {
@@ -1139,26 +1422,46 @@ async function crossFileTypeScriptGraph(
       const candidates = symbolsByFile.get(relative)?.get(name) ?? [];
       return candidates.find(node => node.locator.startsWith(`${relative}:${line}`)) ?? (candidates.length === 1 ? candidates[0]! : null);
     };
+    const callbackOwnerFor = (node: ts.ArrowFunction | ts.FunctionExpression): GraphNode | null => {
+      const isolated = graphNodeById.get(`symbol:${relative}#function:isolated-callback-${node.getStart(sourceFile)}`);
+      if (isolated) return isolated;
+      const invoked = graphNodeById.get(`symbol:${relative}#function:callback-${node.getStart(sourceFile)}`);
+      if (invoked) return invoked;
+      if (ts.isCallExpression(node.parent) && node.parent.arguments[2] === node && node.parent.expression.getText(sourceFile).endsWith('.registerTool')) {
+        return graphNodeById.get(`symbol:${relative}#function:mcp-handler-${lineOf(node.parent)}-${node.parent.getStart(sourceFile)}`) ?? null;
+      }
+      return null;
+    };
+    const callbackValuesInArgument = (argument: ts.Expression): Array<ts.ArrowFunction | ts.FunctionExpression> => {
+      const callbacks: Array<ts.ArrowFunction | ts.FunctionExpression> = [];
+      const inspect = (node: ts.Node): void => {
+        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+          callbacks.push(node);
+          return;
+        }
+        if (ts.isCallExpression(node)) return;
+        ts.forEachChild(node, inspect);
+      };
+      inspect(argument);
+      return callbacks;
+    };
     const visit = (node: ts.Node): void => {
       let pushed = false;
       let owner: GraphNode | null = null;
       if (ts.isFunctionDeclaration(node) && node.name) owner = ownerFor(node.name.text, lineOf(node));
       else if (ts.isMethodDeclaration(node) && node.name && ts.isIdentifier(node.name)) owner = ownerFor(node.name.text, lineOf(node));
       else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) owner = ownerFor(node.name.text, lineOf(node));
+      else if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+        && !(ts.isVariableDeclaration(node.parent) && node.parent.initializer === node)) owner = callbackOwnerFor(node);
       if (owner) { owners.push(owner); pushed = true; }
 
       if (ts.isCallExpression(node)) {
-        let target: GraphNode | null = null;
-        if (ts.isIdentifier(node.expression)) {
-          const binding = info.imports.get(node.expression.text);
-          if (binding?.targetFile && binding.imported !== '*') target = resolveExportedSymbol(binding.targetFile, binding.imported);
-        } else if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)) {
-          const binding = info.imports.get(node.expression.expression.text);
-          if (binding?.targetFile && binding.imported === '*') target = resolveExportedSymbol(binding.targetFile, node.expression.name.text);
-        }
+        const caller = owners.at(-1) ?? fromFile ?? null;
+        const classifiedCallbacks = new Set<string>();
+        const importedTarget = importedCallTarget(info, node.expression);
+        const target = importedTarget ?? (caller ? resolvedLocalCallTarget(caller, node.expression, relative, lineOf(node)) : null);
         if (target) {
-          const caller = owners.at(-1) ?? fromFile ?? null;
-          if (caller && caller.id !== target.id) addedEdges.push(resolution({
+          if (importedTarget && caller && caller.id !== target.id) addedEdges.push(resolution({
             from: caller.id,
             to: target.id,
             kind: 'calls',
@@ -1169,6 +1472,94 @@ async function crossFileTypeScriptGraph(
             layer: 'structural',
             checkpoint: false,
           }));
+
+          const wrapper = functionLikeFor(target);
+          if (caller) {
+            for (const [argumentIndex, object] of node.arguments.entries()) {
+              const parameter = wrapper?.parameters[argumentIndex];
+              if (!ts.isObjectLiteralExpression(object)) continue;
+              for (const item of object.properties) {
+                if (!ts.isPropertyAssignment(item) || !(ts.isArrowFunction(item.initializer) || ts.isFunctionExpression(item.initializer))) continue;
+                if (!staticPropertyName(item)) continue;
+                const callback = callbackOwnerFor(item.initializer);
+                if (callback) classifiedCallbacks.add(callback.id);
+              }
+              for (const { property: item, name: property, uncertain } of effectiveObjectProperties(object)) {
+              if (!ts.isPropertyAssignment(item) || !(ts.isArrowFunction(item.initializer) || ts.isFunctionExpression(item.initializer))) continue;
+              const callback = callbackOwnerFor(item.initializer);
+              if (!callback) continue;
+              const behavior = uncertain || !parameter || !ts.isObjectBindingPattern(parameter.name)
+                ? 'unresolved'
+                : callbackBehavior(target, argumentIndex, property);
+              if (behavior === 'not-invoked') continue;
+              addedEdges.push(resolution({
+                from: caller.id,
+                to: callback.id,
+                kind: 'invokes',
+                strategy: behavior === 'invoked' ? 'callback-parameter-invocation' : 'callback-transfer-unresolved',
+                confidence: behavior === 'invoked' ? 1 : null,
+                status: behavior === 'invoked' ? 'resolved' : 'unresolved',
+                evidence: [`${relative}:${lineOf(node)}`, target.locator],
+                layer: 'structural',
+                checkpoint: false,
+              }));
+            }
+            }
+          }
+        } else {
+          const importedBinding = ts.isIdentifier(node.expression)
+            ? info.imports.get(node.expression.text)
+            : ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)
+              ? info.imports.get(node.expression.expression.text)
+              : null;
+          if (caller) {
+            for (const object of node.arguments) {
+              if (!ts.isObjectLiteralExpression(object)) continue;
+              for (const item of object.properties) {
+                if (!ts.isPropertyAssignment(item) || !(ts.isArrowFunction(item.initializer) || ts.isFunctionExpression(item.initializer))) continue;
+                if (!staticPropertyName(item)) continue;
+                const callback = callbackOwnerFor(item.initializer);
+                if (callback) classifiedCallbacks.add(callback.id);
+              }
+              for (const { property: item } of effectiveObjectProperties(object)) {
+              if (!ts.isPropertyAssignment(item) || !(ts.isArrowFunction(item.initializer) || ts.isFunctionExpression(item.initializer))) continue;
+              const callback = callbackOwnerFor(item.initializer);
+              if (!callback) continue;
+              classifiedCallbacks.add(callback.id);
+              addedEdges.push(resolution({
+                from: caller.id,
+                to: callback.id,
+                kind: 'invokes',
+                strategy: 'callback-transfer-unresolved',
+                confidence: null,
+                status: 'unresolved',
+                evidence: [`${relative}:${lineOf(node)}`, importedBinding?.module ?? node.expression.getText(sourceFile)],
+                layer: 'structural',
+                checkpoint: false,
+              }));
+            }
+            }
+          }
+        }
+        if (caller) {
+          for (const argument of node.arguments) {
+            for (const callbackNode of callbackValuesInArgument(argument)) {
+              const callback = callbackOwnerFor(callbackNode);
+              if (!callback || classifiedCallbacks.has(callback.id)) continue;
+              classifiedCallbacks.add(callback.id);
+              addedEdges.push(resolution({
+                from: caller.id,
+                to: callback.id,
+                kind: 'invokes',
+                strategy: 'callback-transfer-unresolved',
+                confidence: null,
+                status: 'unresolved',
+                evidence: [`${relative}:${lineOf(node)}`, node.expression.getText(sourceFile)],
+                layer: 'structural',
+                checkpoint: false,
+              }));
+            }
+          }
         }
       }
 
@@ -1608,7 +1999,7 @@ export async function advanceRepositoryGraph(input: {
   }
 
   if (sourceTexts.size) {
-    const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
+    const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, edges, fileNodes);
     nodes.push(...crossFile.nodes);
     edges.push(...crossFile.edges);
     addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
@@ -1799,7 +2190,7 @@ export async function buildRepositoryGraph(input: {
   resolveCSharpReferences({ nodes, edges });
   resolveUnityReverseUsage({ nodes, edges, fileNodes });
 
-  const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, fileNodes);
+  const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, edges, fileNodes);
   nodes.push(...crossFile.nodes);
   edges.push(...crossFile.edges);
   addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
