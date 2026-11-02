@@ -282,9 +282,10 @@ steps:
     with:
       project: owner/repository
       mode: analyze
+      parity-contract: .development-intelligence/required-parity.json # optional caller-owned gate
 ```
 
-`mode: analyze` builds and verifies the exact checkout without creating repository-owned semantic authority. `check` / `seal` remain compatibility/self-test modes for the legacy checkpoint format; semantic acceptance and promotion for hosted projects belong to DI canonical persistence and its review lifecycle.
+`mode: analyze` builds and verifies the exact checkout without creating repository-owned semantic authority. When `parity-contract` is supplied, the path is resolved inside that same checkout and the existing parity evaluator runs against the graph already built for analysis. The action fails closed unless every claim is satisfied with qualified, replacement-eligible evidence; malformed, unreadable, escaping, missing, unproven, not-applicable, or forbidden-present claims fail with a JSON receipt. Omitting the input preserves ordinary analysis behavior. `check` / `seal` remain compatibility/self-test modes for the legacy checkpoint format; semantic acceptance and promotion for hosted projects belong to DI canonical persistence and its review lifecycle.
 
 ## Project access configuration
 
