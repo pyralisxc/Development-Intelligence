@@ -1,0 +1,131 @@
+import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import { run, runChecked } from '../src/util/process.js';
+
+const cli = path.resolve('dist/src/graphCli.js');
+const ownerSource = `export function registerOwnerTools(server: any) {
+  server.registerTool('get_owner_site_snapshot', {}, async () => ({ ok: true }));
+}
+`;
+const renamedOwnerSource = `export function registerOwnerTools(server: any) {
+  // Decoy only: 'get_owner_site_snapshot' is no longer a registration.
+  server.registerTool('get_owner_site_snapshot_renamed', {}, async () => ({ ok: true }));
+}
+`;
+const contract = {
+  version: 1,
+  name: 'Owner snapshot registration',
+  predicates: [{
+    id: 'owner-get-snapshot-is-registered',
+    type: 'reachability',
+    from: { ids: ['mcp:get_owner_site_snapshot'] },
+    to: { kinds: ['mcp-tool'], sourceIds: ['repo:src/owner.ts'] },
+    requirement: 'required',
+    quantifier: 'any',
+    direction: 'outbound',
+    relationshipKinds: ['registered-as'],
+    maxDepth: 1,
+    scopeSourceIds: ['src/owner.ts'],
+  }],
+};
+
+async function fixture(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-cli-parity-'));
+  await runChecked('git', ['init', '--initial-branch=main', root]);
+  await fs.mkdir(path.join(root, 'src'), { recursive: true });
+  await fs.writeFile(path.join(root, 'src', 'owner.ts'), ownerSource);
+  await fs.writeFile(path.join(root, 'parity.json'), `${JSON.stringify(contract, null, 2)}\n`);
+  await runChecked('git', ['-C', root, 'add', '.']);
+  await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
+  return root;
+}
+
+async function analyze(root: string, contractPath?: string) {
+  return await run(process.execPath, [
+    cli,
+    'analyze',
+    '--repo-path', root,
+    '--project', 'fixture/project',
+    ...(contractPath ? ['--parity-contract', contractPath] : []),
+  ]);
+}
+
+test('analyze preserves no-contract behavior and gates a supplied registration contract against the same graph', async () => {
+  const root = await fixture();
+  try {
+    const ordinary = await analyze(root);
+    assert.equal(ordinary.code, 0, ordinary.stderr);
+    const ordinaryReceipt = JSON.parse(ordinary.stdout);
+    assert.equal(ordinaryReceipt.valid, true);
+    assert.equal('parityContract' in ordinaryReceipt, false, 'omitting the contract must preserve the ordinary receipt');
+
+    const passing = await analyze(root, 'parity.json');
+    assert.equal(passing.code, 0, passing.stderr);
+    const passingReceipt = JSON.parse(passing.stdout);
+    assert.equal(passingReceipt.valid, true);
+    assert.equal(passingReceipt.parityContract.path, 'parity.json');
+    assert.equal(passingReceipt.parityContract.valid, true);
+    assert.equal(passingReceipt.parityContract.claims[0].status, 'satisfied');
+    assert.equal(passingReceipt.parityContract.claims[0].qualified, true);
+    assert.equal(passingReceipt.parityContract.claims[0].replacementEligible, true);
+
+    await fs.writeFile(path.join(root, 'src', 'owner.ts'), renamedOwnerSource);
+    const failing = await analyze(root, 'parity.json');
+    assert.equal(failing.code, 1, failing.stderr);
+    const failingReceipt = JSON.parse(failing.stdout);
+    assert.equal(failingReceipt.valid, false);
+    assert.equal(failingReceipt.parityContract.valid, false);
+    assert.equal(failingReceipt.parityContract.claims[0].status, 'not-applicable');
+    assert.match(failingReceipt.parityContract.claims[0].blockers.join('\n'), /mcp:get_owner_site_snapshot/u);
+    assert.match(await fs.readFile(path.join(root, 'src', 'owner.ts'), 'utf8'), /Decoy only: 'get_owner_site_snapshot'/u);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('analyze fails closed for unreadable, malformed, and escaping parity contract paths', async () => {
+  const root = await fixture();
+  const outside = `${root}-outside`;
+  try {
+    const unreadable = await analyze(root, 'missing.json');
+    assert.equal(unreadable.code, 1);
+    assert.equal(JSON.parse(unreadable.stderr).error.code, 'parity-contract-error');
+    assert.match(JSON.parse(unreadable.stderr).error.message, /could not be read/u);
+
+    await fs.writeFile(path.join(root, 'malformed.json'), '{ nope');
+    const malformed = await analyze(root, 'malformed.json');
+    assert.equal(malformed.code, 1);
+    assert.match(JSON.parse(malformed.stderr).error.message, /not valid JSON/u);
+
+    await fs.writeFile(path.join(root, 'invalid-contract.json'), '{"version":1}\n');
+    const evaluationError = await analyze(root, 'invalid-contract.json');
+    assert.equal(evaluationError.code, 1);
+    assert.match(JSON.parse(evaluationError.stderr).error.message, /at least one entity, relationship, or predicate/u);
+
+    await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, 'parity.json'), `${JSON.stringify(contract)}\n`);
+    const lexicalEscape = await analyze(root, path.join('..', path.basename(outside), 'parity.json'));
+    assert.equal(lexicalEscape.code, 1);
+    assert.match(JSON.parse(lexicalEscape.stderr).error.message, /escapes repository root/u);
+
+    const linkPath = path.join(root, 'linked-contracts');
+    await fs.symlink(outside, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    const symlinkEscape = await analyze(root, path.join('linked-contracts', 'parity.json'));
+    assert.equal(symlinkEscape.code, 1);
+    assert.match(JSON.parse(symlinkEscape.stderr).error.message, /resolves outside repository root/u);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('composite action exposes the optional caller-owned parity contract input', async () => {
+  const action = await fs.readFile(path.resolve('action.yml'), 'utf8');
+  assert.match(action, /^  parity-contract:/mu);
+  assert.match(action, /args\+=\(--parity-contract "\$DEVINT_PARITY_CONTRACT"\)/u);
+  assert.match(action, /DEVINT_PARITY_CONTRACT: \$\{\{ inputs\['parity-contract'\] \}\}/u);
+});

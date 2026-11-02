@@ -54,7 +54,7 @@ Remote analysis uses disposable exact-revision checkouts. Scratch files/caches a
 
 The legacy/self-test `/.development-intelligence/manifest.json` plus deterministic semantic NDJSON shard format remains covered for tamper evidence, deterministic serialization, and migration compatibility. Tests and the optional `self-seal` CI job generate it only in disposable workspaces/artifacts; no generated checkpoint is tracked as Development Intelligence semantic authority.
 
-The `action-smoke` GitHub Actions job invokes the repository's root composite action in checkpointless `analyze` mode. This proves the published packaging path can install, build, and analyze an exact checkout without repository-owned authority. The optional `self-seal` job separately proves legacy `seal`/`check` compatibility without committing or pushing generated files.
+The `action-smoke` GitHub Actions job invokes the repository's root composite action in checkpointless `analyze` mode. This proves the published packaging path can install, build, and analyze an exact checkout without repository-owned authority. Callers may optionally supply a repository-local parity contract to the same analysis operation; maintained verification requires every claim to be satisfied with qualified, replacement-eligible evidence and never writes the contract or result into graph authority. The optional `self-seal` job separately proves legacy `seal`/`check` compatibility without committing or pushing generated files.
 
 ### Source provenance and safety
 
