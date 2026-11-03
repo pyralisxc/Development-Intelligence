@@ -55,7 +55,7 @@ async function fixture(): Promise<string> {
   return root;
 }
 
-async function analyze(root: string, contractPath?: string, catalogPath?: string) {
+async function analyze(root: string, contractPath?: string, catalogPath?: string, report = false) {
   return await run(process.execPath, [
     cli,
     'analyze',
@@ -63,6 +63,7 @@ async function analyze(root: string, contractPath?: string, catalogPath?: string
     '--project', 'fixture/project',
     ...(contractPath ? ['--parity-contract', contractPath] : []),
     ...(catalogPath ? ['--test-claim-catalog', catalogPath] : []),
+    ...(report ? ['--test-claim-report-path', '.development-intelligence/test-claims', '--producer-commit', 'c'.repeat(40)] : []),
   ]);
 }
 
@@ -102,7 +103,7 @@ test('analyze preserves no-contract behavior and gates a supplied registration c
 test('analyze emits a revision-bound whole-suite decision record over the same evaluated graph', async () => {
   const root = await fixture();
   try {
-    const result = await analyze(root, 'parity.json', 'claims.json');
+    const result = await analyze(root, 'parity.json', 'claims.json', true);
     assert.equal(result.code, 0, result.stderr);
     const receipt = JSON.parse(result.stdout);
     assert.equal(receipt.testClaimDecisionRecord.revision, receipt.revision);
@@ -115,6 +116,14 @@ test('analyze emits a revision-bound whole-suite decision record over the same e
     assert.equal(receipt.testClaimDecisionRecord.nativeObligations[0].directionalReplacementProven, false);
     assert.equal(receipt.testClaimDecisionRecord.nativeObligations[0].graphInterpretation.status, 'satisfied');
     assert.equal(receipt.testClaimDecisionRecord.policy.recommendsDeletion, false);
+    assert.equal(receipt.testClaimReport.sourceRevision, receipt.revision);
+    assert.equal(receipt.testClaimReport.producerCommit, 'c'.repeat(40));
+    const page = await run(process.execPath, [cli, 'test-claims', '--repo-path', root, '--project', 'fixture/project', '--test-claim-report-path', receipt.testClaimReport.path, '--report-digest', receipt.testClaimReport.manifestSha256, '--revision', receipt.revision, '--page-size', '1']);
+    assert.equal(page.code, 0, page.stderr);
+    const projection = JSON.parse(page.stdout);
+    assert.equal(projection.available, true);
+    assert.equal(projection.identity.manifestSha256, receipt.testClaimReport.manifestSha256);
+    assert.equal(projection.page.size, 1);
 
     const nativeOnly = await analyze(root, undefined, 'claims.json');
     assert.equal(nativeOnly.code, 0, nativeOnly.stderr);
@@ -170,4 +179,8 @@ test('composite action exposes the optional caller-owned parity contract input',
   assert.match(action, /^  test-claim-catalog:/mu);
   assert.match(action, /args\+=\(--test-claim-catalog "\$DEVINT_TEST_CLAIM_CATALOG"\)/u);
   assert.match(action, /DEVINT_TEST_CLAIM_CATALOG: \$\{\{ inputs\['test-claim-catalog'\] \}\}/u);
+  assert.match(action, /^  test-claim-report-path:/mu);
+  assert.match(action, /--test-claim-report-path "\$DEVINT_TEST_CLAIM_REPORT_PATH" --producer-commit "\$producer_commit"/u);
+  assert.match(action, /actions\/upload-artifact@v4/u);
+  assert.match(action, /^  test-claim-report-digest:/mu);
 });

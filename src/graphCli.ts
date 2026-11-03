@@ -1,4 +1,5 @@
 import { analyzeLocalGraph, checkLocalGraph, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
+import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 
 const command = process.argv[2];
 const arg = (name: string): string | undefined => {
@@ -11,18 +12,30 @@ const parityContractFlag = process.argv.includes('--parity-contract');
 const parityContractPath = arg('--parity-contract');
 const testClaimCatalogFlag = process.argv.includes('--test-claim-catalog');
 const testClaimCatalogPath = arg('--test-claim-catalog');
+const testClaimReportPath = arg('--test-claim-report-path');
+const producerCommit = arg('--producer-commit');
 
 async function main(): Promise<void> {
   if (parityContractFlag && !parityContractPath) throw new Error('--parity-contract requires a path');
   if (parityContractFlag && command !== 'analyze') throw new Error('--parity-contract is supported only for analyze');
   if (testClaimCatalogFlag && !testClaimCatalogPath) throw new Error('--test-claim-catalog requires a path');
   if (testClaimCatalogFlag && command !== 'analyze') throw new Error('--test-claim-catalog is supported only for analyze');
+  if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (command === 'analyze') {
     const parityContract = parityContractPath ? await readLocalParityContract(root, parityContractPath) : undefined;
     const testClaimCatalog = testClaimCatalogPath ? await readLocalTestClaimCatalog(root, testClaimCatalogPath) : undefined;
-    const result = await analyzeLocalGraph(root, project, parityContract, testClaimCatalog);
+    if (testClaimReportPath && !producerCommit) throw new Error('--producer-commit is required with --test-claim-report-path');
+    const result = await analyzeLocalGraph(root, project, parityContract, testClaimCatalog, testClaimReportPath ? { path: testClaimReportPath, producerCommit: producerCommit! } : undefined);
     console.log(JSON.stringify(result, null, 2));
     if (result.valid !== true) process.exitCode = 1;
+  } else if (command === 'test-claims') {
+    const digest = arg('--report-digest');
+    const revision = arg('--revision');
+    if (!digest || !revision || !project) throw new Error('test-claims requires --project, --report-digest and --revision');
+    const page = Number(arg('--page') ?? '0');
+    const pageSize = Number(arg('--page-size') ?? '100');
+    if (!Number.isInteger(page) || page < 0 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 500) throw new Error('test-claims page must be non-negative and page-size must be 1..500');
+    console.log(JSON.stringify(await readTestClaimReportPage({ root, ...(testClaimReportPath ? { reportPath: testClaimReportPath } : {}), expectedDigest: digest, expectedRevision: revision, expectedProject: project, page, pageSize }), null, 2));
   } else if (command === 'seal') {
     const result = await sealLocalGraph(root, project);
     console.log(JSON.stringify({ path: result.path, graphId: result.graph.graphId, sourceFingerprint: result.graph.sourceFingerprint, nodes: result.graph.nodes.length, edges: result.graph.edges.length }, null, 2));
@@ -31,7 +44,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     if (result.current !== true) process.exitCode = 1;
   } else {
-    console.error('Usage: graphCli.js <analyze|seal|check> [--repo-path PATH] [--project NAME] [--parity-contract PATH] [--test-claim-catalog PATH]');
+    console.error('Usage: graphCli.js <analyze|seal|check|test-claims> [--repo-path PATH] [--project NAME] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH]');
     process.exitCode = 2;
   }
 }

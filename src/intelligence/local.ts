@@ -9,6 +9,7 @@ import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { evaluateParityContractGraph } from './parityContract.js';
 import { buildTestClaimDecisionRecord, normalizeTestClaimCatalog, type TestClaimCatalog } from './testClaimInventory.js';
+import { writeTestClaimReportBundle } from './testClaimReport.js';
 
 async function gitValue(root: string, args: string[]): Promise<string> {
   return (await runChecked('git', ['-C', root, ...args])).stdout.trim();
@@ -178,7 +179,7 @@ function maintainedParityReceipt(graph: IntelligenceGraph, input: LocalParityCon
   };
 }
 
-export async function analyzeLocalGraph(root: string, project?: string, parityContract?: LocalParityContractInput, testClaimCatalog?: LocalTestClaimCatalogInput): Promise<Record<string, unknown>> {
+export async function analyzeLocalGraph(root: string, project?: string, parityContract?: LocalParityContractInput, testClaimCatalog?: LocalTestClaimCatalogInput, report?: { path?: string; producerCommit: string }): Promise<Record<string, unknown>> {
   const graph = await buildLocalGraph(root, project, 'W');
   const coverage = graph.coverage ?? null;
   const eligibleComplete = Boolean(
@@ -203,6 +204,17 @@ export async function analyzeLocalGraph(root: string, project?: string, parityCo
   const parityReceipt = parityContract ? maintainedParityReceipt(graph, parityContract) : null;
   const testClaims = testClaimCatalog
     ? await buildTestClaimDecisionRecord(path.resolve(root), graph, testClaimCatalog.catalog, (parityReceipt as any)?.claims ?? [])
+    : null;
+  if (report && !testClaims) throw new Error('test claim report output requires a test claim catalog');
+  const reportBundle = report && testClaims && testClaimCatalog
+    ? await writeTestClaimReportBundle({
+        root,
+        ...(report.path ? { outputPath: report.path } : {}),
+        producerCommit: report.producerCommit,
+        catalog: testClaimCatalog.catalog,
+        decisionRecord: testClaims,
+        parityContract: (parityReceipt as any)?.contract ?? null,
+      })
     : null;
   const valid = eligibleComplete && authoritySafe && factualityClean && (!parityReceipt || parityReceipt.valid === true);
 
@@ -239,6 +251,7 @@ export async function analyzeLocalGraph(root: string, project?: string, parityCo
     },
     ...(parityReceipt ? { parityContract: parityReceipt } : {}),
     ...(testClaims ? { testClaimDecisionRecord: { path: testClaimCatalog!.path, ...testClaims } } : {}),
+    ...(reportBundle ? { testClaimReport: { path: reportBundle.path, ...reportBundle.manifest } } : {}),
     policy: {
       checkpointRead: false,
       checkpointWritten: false,

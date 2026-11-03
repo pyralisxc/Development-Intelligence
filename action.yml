@@ -15,6 +15,24 @@ inputs:
   test-claim-catalog:
     description: Optional repository-relative claim catalog. Produces an assertion-level decision record joined to the supplied parity contract without changing graph authority.
     required: false
+  test-claim-report-path:
+    description: Repository-relative directory for the deterministic test-claim report bundle.
+    required: false
+    default: .development-intelligence/test-claims
+
+outputs:
+  test-claim-report-path:
+    description: Repository-relative canonical report directory, when a catalog is supplied.
+    value: ${{ steps.test-claim-report.outputs.path }}
+  test-claim-report-digest:
+    description: SHA-256 identity of the canonical report payload.
+    value: ${{ steps.test-claim-report.outputs.digest }}
+  test-claim-report-status:
+    description: complete or diagnostic; diagnostic receipts are retained without implying redundancy.
+    value: ${{ steps.test-claim-report.outputs.status }}
+  test-claim-report-artifact:
+    description: Immutable GitHub artifact name containing manifest, normalized catalog, and report.
+    value: ${{ steps.test-claim-report.outputs.artifact }}
 
 runs:
   using: composite
@@ -30,6 +48,7 @@ runs:
       run: npm run build:server:runtime --prefix "$GITHUB_ACTION_PATH"
       shell: bash
     - name: Run Development Intelligence operation
+      id: operation
       run: |
         set -euo pipefail
         case "$DEVINT_CHECKPOINT_MODE" in
@@ -46,6 +65,9 @@ runs:
         fi
         if [[ -n "$DEVINT_TEST_CLAIM_CATALOG" ]]; then
           args+=(--test-claim-catalog "$DEVINT_TEST_CLAIM_CATALOG")
+          producer_commit="$DEVINT_PRODUCER_COMMIT"
+          [[ "$producer_commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || { echo "test-claim reporting requires the action to be pinned to an exact commit" >&2; exit 2; }
+          args+=(--test-claim-report-path "$DEVINT_TEST_CLAIM_REPORT_PATH" --producer-commit "$producer_commit")
         fi
         node "$GITHUB_ACTION_PATH/dist/src/graphCli.js" "${args[@]}"
       shell: bash
@@ -54,3 +76,29 @@ runs:
         DEVINT_PROJECT: ${{ inputs.project }}
         DEVINT_PARITY_CONTRACT: ${{ inputs['parity-contract'] }}
         DEVINT_TEST_CLAIM_CATALOG: ${{ inputs['test-claim-catalog'] }}
+        DEVINT_TEST_CLAIM_REPORT_PATH: ${{ inputs['test-claim-report-path'] }}
+        DEVINT_PRODUCER_COMMIT: ${{ github.action_ref }}
+    - name: Publish test-claim report outputs
+      id: test-claim-report
+      if: ${{ inputs['test-claim-catalog'] != '' }}
+      run: |
+        set -euo pipefail
+        manifest="$GITHUB_WORKSPACE/$DEVINT_TEST_CLAIM_REPORT_PATH/manifest-v1.json"
+        node -e '
+          const fs=require("fs");
+          const manifest=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+          const output=process.env.GITHUB_OUTPUT;
+          const artifact=`development-intelligence-test-claims-${manifest.sourceRevision}-${manifest.manifestSha256}`;
+          fs.appendFileSync(output,`path=${process.env.DEVINT_TEST_CLAIM_REPORT_PATH}\ndigest=${manifest.manifestSha256}\nstatus=${manifest.status}\nartifact=${artifact}\n`);
+        ' "$manifest"
+      shell: bash
+      env:
+        DEVINT_TEST_CLAIM_REPORT_PATH: ${{ inputs['test-claim-report-path'] }}
+    - name: Retain immutable test-claim report
+      if: ${{ inputs['test-claim-catalog'] != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.test-claim-report.outputs.artifact }}
+        path: ${{ github.workspace }}/${{ inputs.test-claim-report-path }}
+        if-no-files-found: error
+        retention-days: 30
