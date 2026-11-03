@@ -37,20 +37,28 @@ async function fixture(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-cli-parity-'));
   await runChecked('git', ['init', '--initial-branch=main', root]);
   await fs.mkdir(path.join(root, 'src'), { recursive: true });
+  await fs.mkdir(path.join(root, 'tests'), { recursive: true });
   await fs.writeFile(path.join(root, 'src', 'owner.ts'), ownerSource);
+  await fs.writeFile(path.join(root, 'tests', 'owner.test.ts'), "test('registration', () => { expect(sourceText).toContain('get_owner_site_snapshot'); });\n");
   await fs.writeFile(path.join(root, 'parity.json'), `${JSON.stringify(contract, null, 2)}\n`);
   await runChecked('git', ['-C', root, 'add', '.']);
   await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
+  const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+  await fs.writeFile(path.join(root, 'claims.json'), `${JSON.stringify({ version: 1, revision, inventory: {
+    declarations: [{ id: 'test:owner-registration', sourceId: 'tests/owner.test.ts', line: 1, title: 'registration', dynamic: false }],
+    assertions: [{ id: 'assert:owner-registration', sourceId: 'tests/owner.test.ts', line: 1, expression: 'expect(sourceText).toContain(name)', contextSignals: ['registration'], dynamic: false }],
+  }, claims: [{ id: 'owner-registration-source-assertion', originalClaim: 'Owner snapshot tool is registered', equivalenceRationale: 'The required registered-as predicate covers source membership in the same direction.', assertionIds: ['assert:owner-registration'], parityClaimIds: ['owner-get-snapshot-is-registered'] }] }, null, 2)}\n`);
   return root;
 }
 
-async function analyze(root: string, contractPath?: string) {
+async function analyze(root: string, contractPath?: string, catalogPath?: string) {
   return await run(process.execPath, [
     cli,
     'analyze',
     '--repo-path', root,
     '--project', 'fixture/project',
     ...(contractPath ? ['--parity-contract', contractPath] : []),
+    ...(catalogPath ? ['--test-claim-catalog', catalogPath] : []),
   ]);
 }
 
@@ -82,6 +90,27 @@ test('analyze preserves no-contract behavior and gates a supplied registration c
     assert.equal(failingReceipt.parityContract.claims[0].status, 'not-applicable');
     assert.match(failingReceipt.parityContract.claims[0].blockers.join('\n'), /mcp:get_owner_site_snapshot/u);
     assert.match(await fs.readFile(path.join(root, 'src', 'owner.ts'), 'utf8'), /Decoy only: 'get_owner_site_snapshot'/u);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('analyze emits a revision-bound whole-suite decision record over the same evaluated graph', async () => {
+  const root = await fixture();
+  try {
+    const result = await analyze(root, 'parity.json', 'claims.json');
+    assert.equal(result.code, 0, result.stderr);
+    const receipt = JSON.parse(result.stdout);
+    assert.equal(receipt.testClaimDecisionRecord.revision, receipt.revision);
+    assert.equal(receipt.testClaimDecisionRecord.graphId, receipt.graphId);
+    assert.equal(receipt.testClaimDecisionRecord.counts.assertions, 1);
+    assert.equal(receipt.testClaimDecisionRecord.claims[0].outcome, 'equivalent');
+    assert.equal(receipt.testClaimDecisionRecord.claims[0].staticReplacementEquivalent, true);
+    assert.equal(receipt.testClaimDecisionRecord.policy.recommendsDeletion, false);
+
+    const missingParity = await analyze(root, undefined, 'claims.json');
+    assert.equal(missingParity.code, 1);
+    assert.match(JSON.parse(missingParity.stderr).error.message, /requires a parity contract/u);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -128,4 +157,7 @@ test('composite action exposes the optional caller-owned parity contract input',
   assert.match(action, /^  parity-contract:/mu);
   assert.match(action, /args\+=\(--parity-contract "\$DEVINT_PARITY_CONTRACT"\)/u);
   assert.match(action, /DEVINT_PARITY_CONTRACT: \$\{\{ inputs\['parity-contract'\] \}\}/u);
+  assert.match(action, /^  test-claim-catalog:/mu);
+  assert.match(action, /args\+=\(--test-claim-catalog "\$DEVINT_TEST_CLAIM_CATALOG"\)/u);
+  assert.match(action, /DEVINT_TEST_CLAIM_CATALOG: \$\{\{ inputs\['test-claim-catalog'\] \}\}/u);
 });
