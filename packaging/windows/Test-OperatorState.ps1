@@ -23,6 +23,69 @@ foreach($status in 2,3,5,6,7,99) {
 $path=Join-Path $root 'receipt.json'
 $record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);toolsSha256=('c'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
 Write-MsiReceipt $path $record
+# A consistently absent receipt retains the established no-intent behavior.
+Require ($null -eq (Read-MsiReceipt (Join-Path $root 'never-present.json'))) 'Consistently absent receipt did not remain absent'
+# A transient missing name during replacement is retried, but the successful
+# snapshot still passes the real ACL, size and schema checks.
+$originalPresence=${function:Test-ReceiptPathPresence}
+$script:presenceAttempts=0
+try {
+    function Test-ReceiptPathPresence { param([string]$Path) $script:presenceAttempts++; $script:presenceAttempts -gt 1 }
+    $recoveredReceipt=Read-MsiReceipt $path
+    Require ($script:presenceAttempts -eq 2 -and $recoveredReceipt.operationId -eq $record.operationId) 'Transient missing receipt did not recover through a validated snapshot'
+} finally {Set-Item -Path Function:\Test-ReceiptPathPresence -Value $originalPresence}
+$originalOpen=${function:Open-OperatorReadStream}
+try {
+    # Reproduce the observed check/open race: the first open loses the atomic
+    # name, while the second uses the genuine ACL/size/schema validation path.
+    $script:openAttempts=0
+    function Open-OperatorReadStream {
+        param([string]$Path)
+        $script:openAttempts++
+        if($script:openAttempts -eq 1){throw [IO.FileNotFoundException]::new('Synthetic first-open replacement gap')}
+        & $originalOpen $Path
+    }
+    $recoveredOpenReceipt=Read-MsiReceipt $path
+    Require ($script:openAttempts -eq 2 -and $recoveredOpenReceipt.operationId -eq $record.operationId) 'Transient open gap did not recover through genuine receipt validation'
+    # Once presence or a transient open was observed, later absence cannot be
+    # downgraded to the mutation-allowed no-receipt state.
+    $script:presenceAttempts=0
+    function Test-ReceiptPathPresence { param([string]$Path) $script:presenceAttempts++; $script:presenceAttempts -eq 1 }
+    function Open-OperatorReadStream { param([string]$Path) throw [IO.FileNotFoundException]::new('Synthetic replacement gap') }
+    $disappearedRefused=$false
+    try {Read-MsiReceipt $path | Out-Null} catch {$disappearedRefused=$_.Exception.GetBaseException().HResult -eq -2147024894}
+    Require $disappearedRefused 'Observed receipt disappearance became no receipt'
+    # Persistent sharing failures keep the original native error and bound.
+    function Test-ReceiptPathPresence { param([string]$Path) $true }
+    $script:openAttempts=0
+    function Open-OperatorReadStream { param([string]$Path) $script:openAttempts++; throw [IO.IOException]::new('Synthetic sharing exhaustion',-2147024864) }
+    $sharingRefused=$false
+    try {Read-MsiReceipt $path | Out-Null} catch {$sharingRefused=$_.Exception.Message -eq 'Synthetic sharing exhaustion' -and $_.Exception.HResult -eq -2147024864}
+    Require ($sharingRefused -and $script:openAttempts -eq 5) 'Sharing exhaustion lost native refusal or retry bound'
+    # Permission/ACL failures are never classified as replacement races.
+    $script:openAttempts=0
+    function Open-OperatorReadStream { param([string]$Path) $script:openAttempts++; throw [UnauthorizedAccessException]::new('Synthetic ACL refusal') }
+    $aclRefused=$false
+    try {Read-MsiReceipt $path | Out-Null} catch {$aclRefused=$_.Exception.Message -eq 'Synthetic ACL refusal'}
+    Require ($aclRefused -and $script:openAttempts -eq 1) 'ACL refusal was swallowed or retried as replacement'
+} finally {
+    Set-Item -Path Function:\Test-ReceiptPathPresence -Value $originalPresence
+    Set-Item -Path Function:\Open-OperatorReadStream -Value $originalOpen
+}
+$directoryReceipt=Join-Path $root 'directory-receipt.json'
+New-Item -ItemType Directory -Path $directoryReceipt | Out-Null
+$directoryRefused=$false
+try {Read-MsiReceipt $directoryReceipt | Out-Null} catch {$directoryRefused=$_.Exception.Message -match 'Invalid operator state file'}
+Require $directoryRefused 'Existing directory receipt path was downgraded to absent'
+$malformedPath=Join-Path $root 'malformed-receipt.json'
+Copy-Item -LiteralPath $path -Destination $malformedPath
+[IO.File]::WriteAllText($malformedPath,'{"formatVersion":1}')
+$malformedAcl=Get-Acl -LiteralPath $malformedPath
+$malformedAcl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+Set-Acl -LiteralPath $malformedPath -AclObject $malformedAcl
+$schemaRefused=$false
+try {Read-MsiReceipt $malformedPath | Out-Null} catch {$schemaRefused=$true}
+Require $schemaRefused 'Malformed receipt was swallowed as a transient read'
 # Unavailable ACL evidence must be rejected even after the bounded retry.
 $missingAclRejected=$false
 try { Get-OperatorAclChecked (Join-Path $root 'missing-receipt.json') | Out-Null } catch {
