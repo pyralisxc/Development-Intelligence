@@ -110,11 +110,15 @@ test('analyze emits a revision-bound whole-suite decision record over the same e
     assert.equal(receipt.testClaimDecisionRecord.counts.assertions, 1);
     assert.equal(receipt.testClaimDecisionRecord.claims[0].outcome, 'equivalent');
     assert.equal(receipt.testClaimDecisionRecord.claims[0].staticReplacementEquivalent, true);
+    assert.equal(receipt.testClaimDecisionRecord.nativeObligations[0].conditionalRedundancy, true);
+    assert.equal(receipt.testClaimDecisionRecord.nativeObligations[0].evaluation.status, 'satisfied');
     assert.equal(receipt.testClaimDecisionRecord.policy.recommendsDeletion, false);
 
-    const missingParity = await analyze(root, undefined, 'claims.json');
-    assert.equal(missingParity.code, 1);
-    assert.match(JSON.parse(missingParity.stderr).error.message, /requires a parity contract/u);
+    const nativeOnly = await analyze(root, undefined, 'claims.json');
+    assert.equal(nativeOnly.code, 0, nativeOnly.stderr);
+    const nativeReceipt = JSON.parse(nativeOnly.stdout).testClaimDecisionRecord;
+    assert.equal(nativeReceipt.nativeObligations[0].conditionalRedundancy, true);
+    assert.equal(nativeReceipt.claims[0].outcome, 'unproven-equivalence');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

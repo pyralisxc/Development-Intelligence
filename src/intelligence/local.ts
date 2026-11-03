@@ -201,9 +201,8 @@ export async function analyzeLocalGraph(root: string, project?: string, parityCo
   );
   const factualityClean = semanticAudit.counts.factualityNeedsReview === 0;
   const parityReceipt = parityContract ? maintainedParityReceipt(graph, parityContract) : null;
-  if (testClaimCatalog && !parityReceipt) throw new Error('test claim catalog requires a parity contract evaluated against the same graph');
   const testClaims = testClaimCatalog
-    ? await buildTestClaimDecisionRecord(path.resolve(root), graph, testClaimCatalog.catalog, (parityReceipt as any).claims)
+    ? await buildTestClaimDecisionRecord(path.resolve(root), graph, testClaimCatalog.catalog, (parityReceipt as any)?.claims ?? [])
     : null;
   const valid = eligibleComplete && authoritySafe && factualityClean && (!parityReceipt || parityReceipt.valid === true);
 
