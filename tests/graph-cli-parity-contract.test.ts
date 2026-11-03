@@ -184,3 +184,15 @@ test('composite action exposes the optional caller-owned parity contract input',
   assert.match(action, /actions\/upload-artifact@v4/u);
   assert.match(action, /^  test-claim-report-digest:/mu);
 });
+
+test('authenticated tool contract exposes exact-source test claim pages without accepting artifact URLs', async () => {
+  const { listTools } = await import('../src/mcp.js');
+  const tool = listTools().find(item => item.name === 'get_test_claim_report') as any;
+  assert.ok(tool);
+  assert.deepEqual(tool.inputSchema.required, ['project', 'catalogPath']);
+  assert.ok(tool.inputSchema.properties.ref);
+  assert.ok(tool.inputSchema.properties.graphId);
+  assert.ok(tool.inputSchema.properties.parityContractPath);
+  assert.equal('artifactUrl' in tool.inputSchema.properties, false);
+  assert.equal(tool.annotations.readOnlyHint, true);
+});

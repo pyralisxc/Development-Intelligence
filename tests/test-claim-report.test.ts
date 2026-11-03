@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { readTestClaimReportPage, writeTestClaimReportBundle } from '../src/intelligence/testClaimReport.js';
+import { projectTestClaimDecisionPage, readTestClaimReportPage, writeTestClaimReportBundle } from '../src/intelligence/testClaimReport.js';
 import type { TestClaimCatalog } from '../src/intelligence/testClaimInventory.js';
 
 const revision = 'a'.repeat(40);
@@ -54,4 +54,17 @@ test('canonical claim reports repeat, page stably, and refuse stale or tampered 
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('native exact-source projections share canonical ordering and evaluator identity', () => {
+  const first = projectTestClaimDecisionPage({ report: decision, catalog, page: 0, pageSize: 2 }) as any;
+  const second = projectTestClaimDecisionPage({ report: decision, catalog, page: 1, pageSize: 2 }) as any;
+  assert.equal(first.identity.mode, 'exact-source-recomputation');
+  assert.equal(first.identity.reportSha256, second.identity.reportSha256);
+  assert.equal(first.identity.catalogSha256, second.identity.catalogSha256);
+  assert.equal(first.identity.evaluatorVersion, decision.evaluatorVersion);
+  assert.equal(first.page.totalItems, 4);
+  assert.equal(first.page.hasNext, true);
+  assert.equal(second.page.hasNext, false);
+  assert.equal(first.policy.recommendsDeletion, false);
 });

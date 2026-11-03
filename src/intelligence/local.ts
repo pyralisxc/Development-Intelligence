@@ -127,7 +127,7 @@ export async function readLocalTestClaimCatalog(rootInput: string, catalogPathIn
   return { path: input.path, catalog: normalizeTestClaimCatalog(input.value) };
 }
 
-function maintainedParityReceipt(graph: IntelligenceGraph, input: LocalParityContractInput): Record<string, unknown> {
+export function maintainedParityReceipt(graph: IntelligenceGraph, input: LocalParityContractInput): Record<string, unknown> {
   const evaluation = evaluateParityContractGraph(graph, input.contract) as any;
   const claims = (evaluation.results as any[]).map(result => {
     const predicate = result.type === 'predicate';

@@ -103,6 +103,41 @@ function reportItems(report: Record<string, any>): Array<Record<string, unknown>
     .sort((a, b) => `${a.kind}:${a.id ?? a.assertionId ?? ''}`.localeCompare(`${b.kind}:${b.id ?? b.assertionId ?? ''}`));
 }
 
+export function projectTestClaimDecisionPage(input: {
+  report: Record<string, any>;
+  catalog: TestClaimCatalog;
+  page?: number;
+  pageSize?: number;
+}): Record<string, unknown> {
+  const pageSize = Math.min(Math.max(input.pageSize ?? 100, 1), 500);
+  const page = Math.max(input.page ?? 0, 0);
+  const items = reportItems(input.report);
+  const start = page * pageSize;
+  const catalogSha256 = sha256(canonical(input.catalog));
+  const reportSha256 = sha256(canonical(input.report));
+  return {
+    available: true,
+    identity: {
+      formatVersion: TEST_CLAIM_REPORT_FORMAT_VERSION,
+      project: input.report.project,
+      sourceRevision: input.report.revision,
+      graphId: input.report.graphId,
+      sourceFingerprint: input.report.sourceFingerprint,
+      analyzerVersion: input.report.analyzerVersion,
+      evaluatorVersion: input.report.evaluatorVersion,
+      inputFingerprint: input.report.inputFingerprint,
+      catalogSha256,
+      reportSha256,
+      mode: 'exact-source-recomputation',
+    },
+    population: input.report.population,
+    counts: input.report.counts,
+    page: { index: page, size: pageSize, totalItems: items.length, hasNext: start + pageSize < items.length },
+    items: items.slice(start, start + pageSize),
+    policy: { readOnly: true, recommendsDeletion: false, executionObserved: false },
+  };
+}
+
 export async function readTestClaimReportPage(input: {
   root: string;
   reportPath?: string;
