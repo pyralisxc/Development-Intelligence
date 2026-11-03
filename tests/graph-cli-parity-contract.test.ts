@@ -17,7 +17,7 @@ const renamedOwnerSource = `export function registerOwnerTools(server: any) {
   server.registerTool('get_owner_site_snapshot_renamed', {}, async () => ({ ok: true }));
 }
 `;
-const ownerTestSource = "test('registration', () => { const tools = readFileSync('src/owner.ts', 'utf8'); expect(tools).toContain(\"'get_owner_site_snapshot'\"); });\n";
+const ownerTestSource = "import { readFileSync } from 'node:fs';\ntest('registration', () => { const tools = readFileSync('src/owner.ts', 'utf8'); expect(tools).toContain(\"'get_owner_site_snapshot'\"); });\n";
 const contract = {
   version: 1,
   name: 'Owner snapshot registration',
@@ -48,8 +48,10 @@ async function fixture(): Promise<string> {
   const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
   const expression = `expect(tools).toContain("'get_owner_site_snapshot'")`;
   const start = ownerTestSource.indexOf(expression);
+  const declarationStart = ownerTestSource.indexOf("test('registration'");
+  const declarationExpression = ownerTestSource.slice(declarationStart).trim().replace(/;$/u, '');
   const sha = (value: string) => createHash('sha256').update(value).digest('hex');
-  await fs.writeFile(path.join(root, 'claims.json'), `${JSON.stringify({ version: 1, revision, analyzerVersion: '2.16.0-fresh-array-callback-provenance', scope: { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] }, files: [{ sourceId: 'tests/owner.test.ts', contentSha256: sha(ownerTestSource), declarationIds: ['test:owner-registration'], assertionIds: ['assert:owner-registration'], disposition: 'analyzed' }], declarations: [{ id: 'test:owner-registration', sourceId: 'tests/owner.test.ts', line: 1, title: 'registration', dynamic: false }], assertions: [{ id: 'assert:owner-registration', sourceId: 'tests/owner.test.ts', start, end: start + expression.length, spanSha256: sha(expression), dynamic: false }], claims: [{ id: 'owner-registration-source-assertion', originalClaim: 'Owner snapshot tool is registered', equivalenceRationale: 'The required registered-as predicate covers source membership in the same direction.', assertionIds: ['assert:owner-registration'], parityClaimIds: ['owner-get-snapshot-is-registered'], productionSourceIds: ['src/owner.ts'] }] }, null, 2)}\n`);
+  await fs.writeFile(path.join(root, 'claims.json'), `${JSON.stringify({ version: 1, revision, analyzerVersion: '2.16.0-fresh-array-callback-provenance', scope: { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] }, files: [{ sourceId: 'tests/owner.test.ts', contentSha256: sha(ownerTestSource), declarationIds: ['test:owner-registration'], assertionIds: ['assert:owner-registration'], disposition: 'analyzed' }], declarations: [{ id: 'test:owner-registration', sourceId: 'tests/owner.test.ts', start: declarationStart, end: declarationStart + declarationExpression.length, spanSha256: sha(declarationExpression), title: 'registration', dynamic: false }], assertions: [{ id: 'assert:owner-registration', sourceId: 'tests/owner.test.ts', start, end: start + expression.length, spanSha256: sha(expression), dynamic: false }], claims: [{ id: 'owner-registration-source-assertion', originalClaim: 'Owner snapshot tool is registered', equivalenceRationale: 'The required registered-as predicate covers source membership in the same direction.', assertionIds: ['assert:owner-registration'], parityClaimIds: ['owner-get-snapshot-is-registered'], productionSourceIds: ['src/owner.ts'] }] }, null, 2)}\n`);
   return root;
 }
 
