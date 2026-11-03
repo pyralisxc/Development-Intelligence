@@ -54,6 +54,44 @@ function supportedImports(file:ts.SourceFile,moduleNames:string[],exportName:str
 function importProvider(file:ts.SourceFile,localName:string,moduleNames:string[],exportName:string):string|null{for(const statement of file.statements){if(!ts.isImportDeclaration(statement)||!ts.isStringLiteral(statement.moduleSpecifier)||!moduleNames.includes(statement.moduleSpecifier.text)||!statement.importClause)continue;if(exportName==='default'&&statement.importClause.name?.text===localName)return statement.moduleSpecifier.text;const bindings=statement.importClause.namedBindings;if(bindings&&ts.isNamedImports(bindings)&&bindings.elements.some(element=>element.name.text===localName&&(element.propertyName?.text??element.name.text)===exportName))return statement.moduleSpecifier.text;}return null;}
 function expectInvocation(expression:ts.Expression,expectNames:Set<string>):ts.CallExpression|null{let current=expression;while(ts.isPropertyAccessExpression(current)&&['not','resolves','rejects'].includes(current.name.text))current=current.expression;if(!ts.isCallExpression(current)||!ts.isIdentifier(current.expression)||!expectNames.has(current.expression.text))return null;return current;}
 function discoverInventory(sourceId:string,source:string){const file=parseSourceFile(sourceId,source);const frameworkModules=['vitest','@jest/globals','@playwright/test'];const testNames=new Set([...supportedImports(file,frameworkModules,'test'),...supportedImports(file,frameworkModules,'it')]);const expectNames=supportedImports(file,frameworkModules,'expect');const assertNames=new Set([...supportedImports(file,['node:assert','node:assert/strict'],'default'),...supportedImports(file,['node:assert','node:assert/strict'],'strict')]);const declarations:Array<{start:number;end:number;dynamic:boolean}>=[];const assertions:Array<{start:number;end:number;modalityHint?:string}>=[];const unsupportedAssertions:Array<{start:number;end:number;reason:string}>=[];const declaration=(node:ts.CallExpression):{dynamic:boolean}|null=>{if(ts.isIdentifier(node.expression)&&testNames.has(node.expression.text))return{dynamic:false};if(ts.isPropertyAccessExpression(node.expression)&&ts.isIdentifier(node.expression.expression)&&testNames.has(node.expression.expression.text)&&['only','skip','todo','fails','concurrent','fixme'].includes(node.expression.name.text)){const body=node.arguments[1];if(node.expression.name.text==='skip'&&(!body||!(ts.isArrowFunction(body)||ts.isFunctionExpression(body))))return null;return{dynamic:true};}if(ts.isCallExpression(node.expression)&&ts.isPropertyAccessExpression(node.expression.expression)&&ts.isIdentifier(node.expression.expression.expression)&&testNames.has(node.expression.expression.expression.text)&&node.expression.expression.name.text==='each')return{dynamic:true};return null;};const assertion=(node:ts.CallExpression):boolean=>{if(ts.isIdentifier(node.expression)&&assertNames.has(node.expression.text))return true;if(!ts.isPropertyAccessExpression(node.expression))return false;return expectInvocation(node.expression.expression,expectNames)!==null;};const visit=(node:ts.Node):void=>{if(ts.isCallExpression(node)){if(ts.isIdentifier(node.expression)&&node.expression.text==='assert'&&!assertNames.has('assert')&&hasLexicalBindingBetween(node,'assert'))unsupportedAssertions.push({start:node.getStart(file),end:node.end,reason:'custom local assert guard has no supported provider semantics'});const declarationKind=declaration(node);if(declarationKind)declarations.push({start:node.getStart(file),end:node.end,dynamic:declarationKind.dynamic});if(assertion(node)){const body=node.getText(file);let modalityHint:string|undefined;if(/\b(page|locator|playwright|click|keyboard|mouse)\b/i.test(body))modalityHint='browser';else if(/\b(screenshot|pixel|toMatchSnapshot|pdf)\b/i.test(body))modalityHint='rendered-artifact';else if(/\b(zip|archive|Buffer|createHash|sha256)\b/i.test(body))modalityHint='package-bytes';else if(/\b(Promise\.all|Worker|thread|concurrent|race|lock)\b/i.test(body))modalityHint='concurrency';else if(/\b(spawn|exec|fetch|request|invoke|runCli)\b/i.test(body))modalityHint='execution';assertions.push({start:node.getStart(file),end:node.end,...(modalityHint?{modalityHint}:{})});}}ts.forEachChild(node,visit);};visit(file);return{file,declarations,assertions,unsupportedAssertions};}
+
+const DISCOVERABLE_TEST_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+function inventoryId(kind: 'declaration' | 'assertion', sourceId: string, start: number, end: number, spanSha256: string): string {
+  return `${kind}:${hash(`${kind}\0${sourceId}\0${start}\0${end}\0${spanSha256}`).slice(0, 24)}`;
+}
+
+export async function generateTestClaimCatalog(root: string, graph: IntelligenceGraph, scopeInput: ScopeInput): Promise<TestClaimCatalog> {
+  if (!graph.repositoryRevision) throw new Error('test claim catalog generation requires an exact graph revision');
+  const scope = { sourcePrefixes: strings(scopeInput.sourcePrefixes, 'sourcePrefixes', true), sourceSuffixes: strings(scopeInput.sourceSuffixes, 'sourceSuffixes', true) };
+  if (scope.sourcePrefixes.length > 50 || scope.sourceSuffixes.length > 50) throw new Error('test claim catalog scope supports at most 50 prefixes and 50 suffixes');
+  const coverageByPath = new Map((graph.coverage?.files ?? []).map(file => [file.path, file]));
+  const paths = [...coverageByPath.keys()].filter(sourceId => scoped(sourceId, scope)).sort();
+  const files: FileInput[] = []; const declarations: DeclarationInput[] = []; const assertions: AssertionInput[] = [];
+  for (const sourceId of paths) {
+    let source: string;
+    try { source = await fs.readFile(path.join(root, ...sourceId.split('/')), 'utf8'); }
+    catch (error) { throw new Error(`test claim catalog source unavailable: ${sourceId}: ${error instanceof Error ? error.message : String(error)}`); }
+    const contentSha256 = hash(Buffer.from(source));
+    const coverage = coverageByPath.get(sourceId);
+    const extension = path.extname(sourceId).toLowerCase();
+    if (coverage?.status !== 'complete' || !DISCOVERABLE_TEST_EXTENSIONS.has(extension)) {
+      files.push({ sourceId, contentSha256, declarationIds: [], assertionIds: [], disposition: 'unsupported', reason: coverage?.status !== 'complete' ? `graph coverage is ${coverage?.status ?? 'unavailable'}` : `test-claim discovery does not support ${extension || 'extensionless'} source` });
+      continue;
+    }
+    const found = discoverInventory(sourceId, source);
+    if (found.file.parseDiagnostics?.length) {
+      files.push({ sourceId, contentSha256, declarationIds: [], assertionIds: [], disposition: 'unsupported', reason: `${found.file.parseDiagnostics.length} parse diagnostics prevent trusted inventory` });
+      continue;
+    }
+    const fileDeclarations = found.declarations.map(item => { const spanSha256 = hash(source.slice(item.start, item.end)); return { id: inventoryId('declaration', sourceId, item.start, item.end, spanSha256), sourceId, start: item.start, end: item.end, spanSha256, dynamic: item.dynamic }; });
+    const fileAssertions = [...found.assertions.map(item => ({ ...item, dynamic: false })), ...found.unsupportedAssertions.map(item => ({ ...item, dynamic: true }))]
+      .sort((a,b) => a.start-b.start || a.end-b.end)
+      .map(item => { const spanSha256 = hash(source.slice(item.start, item.end)); return { id: inventoryId('assertion', sourceId, item.start, item.end, spanSha256), sourceId, start: item.start, end: item.end, spanSha256, dynamic: item.dynamic }; });
+    declarations.push(...fileDeclarations); assertions.push(...fileAssertions);
+    files.push({ sourceId, contentSha256, declarationIds: fileDeclarations.map(item => item.id).sort(), assertionIds: fileAssertions.map(item => item.id).sort(), disposition: fileDeclarations.length || fileAssertions.length ? 'analyzed' : 'no-assertions' });
+  }
+  return normalizeTestClaimCatalog({ version: 1, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion, scope, files, declarations, assertions, claims: [] });
+}
 function bindingNames(name: ts.BindingName): string[] { if (ts.isIdentifier(name)) return [name.text]; return name.elements.flatMap(element => ts.isOmittedExpression(element) ? [] : bindingNames(element.name)); }
 function hasLexicalBindingBetween(node: ts.Node, name: string): boolean {
   let current: ts.Node | undefined = node.parent;

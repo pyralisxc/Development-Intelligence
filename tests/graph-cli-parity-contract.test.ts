@@ -42,6 +42,8 @@ async function fixture(): Promise<string> {
   await fs.mkdir(path.join(root, 'tests'), { recursive: true });
   await fs.writeFile(path.join(root, 'src', 'owner.ts'), ownerSource);
   await fs.writeFile(path.join(root, 'tests', 'owner.test.ts'), ownerTestSource);
+  await fs.writeFile(path.join(root, 'tests', 'custom-guard.test.ts'), "const assert = (condition: boolean) => { if (!condition) throw new Error('guard'); };\nassert(process.env.LOCAL_READY === '1');\n");
+  await fs.writeFile(path.join(root, 'tests', 'schema.sql'), 'select 1;\n');
   await fs.writeFile(path.join(root, 'parity.json'), `${JSON.stringify(contract, null, 2)}\n`);
   await runChecked('git', ['-C', root, 'add', '.']);
   await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
@@ -133,6 +135,45 @@ test('analyze emits a revision-bound whole-suite decision record over the same e
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('catalog command deterministically emits supported and explicit unsupported source facts and refreshes revision', async () => {
+  const root = await fixture();
+  try {
+    const command = (output: string) => run(process.execPath, [cli, 'catalog', '--repo-path', root, '--project', 'fixture/project', '--source-prefix', 'tests/', '--source-suffix', '.test.ts', '--source-suffix', '.sql', '--output', output]);
+    const first = await command('.generated/catalog-a.json');
+    assert.equal(first.code, 0, first.stderr);
+    const firstReceipt = JSON.parse(first.stdout);
+    const firstBody = await fs.readFile(path.join(root, firstReceipt.path), 'utf8');
+    const catalog = JSON.parse(firstBody);
+    assert.equal(catalog.version, 1);
+    assert.equal(catalog.revision, firstReceipt.revision);
+    assert.equal(catalog.claims.length, 0);
+    assert.ok(catalog.declarations.length >= 1);
+    assert.ok(catalog.assertions.length >= 2);
+    assert.equal(catalog.files.find((file: any) => file.sourceId === 'tests/schema.sql').disposition, 'unsupported');
+    assert.match(catalog.files.find((file: any) => file.sourceId === 'tests/schema.sql').reason, /coverage|does not support/u);
+    const guard = catalog.files.find((file: any) => file.sourceId === 'tests/custom-guard.test.ts');
+    assert.equal(guard.disposition, 'analyzed');
+    assert.ok(guard.assertionIds.length >= 1, 'custom guard site must remain explicitly accounted for');
+    const evaluated = await analyze(root, undefined, firstReceipt.path);
+    assert.equal(evaluated.code, 0, evaluated.stderr);
+    const decision = JSON.parse(evaluated.stdout).testClaimDecisionRecord;
+    assert.deepEqual(decision.population.problems, []);
+    assert.deepEqual(decision.population.unsupportedFiles, ['tests/schema.sql']);
+    assert.ok(decision.nativeObligations.some((item: any) => item.sourceId === 'tests/owner.test.ts'));
+    assert.ok(decision.unclassified.some((item: any) => guard.assertionIds.includes(item.assertionId)), 'custom guard must remain explicitly unclassified');
+    const second = await command('.generated/catalog-b.json');
+    assert.equal(second.code, 0, second.stderr);
+    assert.equal(await fs.readFile(path.join(root, JSON.parse(second.stdout).path), 'utf8'), firstBody);
+    await fs.appendFile(path.join(root, 'src', 'owner.ts'), '\nexport const revisionRefresh = true;\n');
+    await runChecked('git', ['-C', root, 'add', 'src/owner.ts']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'refresh source revision']);
+    const refreshed = await command('.generated/catalog-c.json');
+    assert.equal(refreshed.code, 0, refreshed.stderr);
+    const refreshedCatalog = JSON.parse(await fs.readFile(path.join(root, JSON.parse(refreshed.stdout).path), 'utf8'));
+    assert.notEqual(refreshedCatalog.revision, catalog.revision);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 test('analyze fails closed for unreadable, malformed, and escaping parity contract paths', async () => {

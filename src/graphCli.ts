@@ -1,4 +1,4 @@
-import { analyzeLocalGraph, checkLocalGraph, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
+import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 
 const command = process.argv[2];
@@ -6,6 +6,7 @@ const arg = (name: string): string | undefined => {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
 };
+const args = (name: string): string[] => process.argv.flatMap((value: string, index: number) => value === name && process.argv[index + 1] ? [process.argv[index + 1]!] : []);
 const root = arg('--repo-path') ?? process.cwd();
 const project = arg('--project');
 const parityContractFlag = process.argv.includes('--parity-contract');
@@ -28,6 +29,13 @@ async function main(): Promise<void> {
     const result = await analyzeLocalGraph(root, project, parityContract, testClaimCatalog, testClaimReportPath ? { path: testClaimReportPath, producerCommit: producerCommit! } : undefined);
     console.log(JSON.stringify(result, null, 2));
     if (result.valid !== true) process.exitCode = 1;
+  } else if (command === 'catalog') {
+    const sourcePrefixes = args('--source-prefix');
+    const sourceSuffixes = args('--source-suffix');
+    const outputPath = arg('--output');
+    if (!project || !outputPath || !sourcePrefixes.length || !sourceSuffixes.length) throw new Error('catalog requires --project, --output, at least one --source-prefix, and at least one --source-suffix');
+    const result = await generateLocalTestClaimCatalog({ root, project, sourcePrefixes, sourceSuffixes, outputPath });
+    console.log(JSON.stringify({ path: result.path, revision: result.catalog.revision, analyzerVersion: result.catalog.analyzerVersion, counts: { files: result.catalog.files.length, declarations: result.catalog.declarations.length, assertions: result.catalog.assertions.length, unsupportedFiles: result.catalog.files.filter(file => file.disposition === 'unsupported').length }, claims: result.catalog.claims.length }, null, 2));
   } else if (command === 'test-claims') {
     const digest = arg('--report-digest');
     const revision = arg('--revision');
@@ -44,7 +52,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     if (result.current !== true) process.exitCode = 1;
   } else {
-    console.error('Usage: graphCli.js <analyze|seal|check|test-claims> [--repo-path PATH] [--project NAME] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH]');
+    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH]');
     process.exitCode = 2;
   }
 }

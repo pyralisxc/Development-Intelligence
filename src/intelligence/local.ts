@@ -8,7 +8,7 @@ import { assertGraphIntegrity } from './integrity.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { evaluateParityContractGraph } from './parityContract.js';
-import { buildTestClaimDecisionRecord, normalizeTestClaimCatalog, type TestClaimCatalog } from './testClaimInventory.js';
+import { buildTestClaimDecisionRecord, generateTestClaimCatalog, normalizeTestClaimCatalog, type TestClaimCatalog } from './testClaimInventory.js';
 import { writeTestClaimReportBundle } from './testClaimReport.js';
 
 async function gitValue(root: string, args: string[]): Promise<string> {
@@ -125,6 +125,33 @@ export async function readLocalParityContract(rootInput: string, contractPathInp
 export async function readLocalTestClaimCatalog(rootInput: string, catalogPathInput: string): Promise<LocalTestClaimCatalogInput> {
   const input = await readLocalJsonFile(rootInput, catalogPathInput, 'test claim catalog');
   return { path: input.path, catalog: normalizeTestClaimCatalog(input.value) };
+}
+
+export async function generateLocalTestClaimCatalog(input: { root: string; project?: string; sourcePrefixes: string[]; sourceSuffixes: string[]; outputPath: string }): Promise<{ path: string; catalog: TestClaimCatalog }> {
+  const root = await fs.realpath(path.resolve(input.root));
+  const graph = await buildLocalGraph(root, input.project, 'W');
+  const catalog = await generateTestClaimCatalog(root, graph, { sourcePrefixes: input.sourcePrefixes, sourceSuffixes: input.sourceSuffixes });
+  const target = path.resolve(root, input.outputPath);
+  const relative = pathInside(root, target);
+  if (!relative) throw new Error(`test claim catalog output path escapes repository root: ${input.outputPath}`);
+  let cursor = root;
+  for (const segment of path.dirname(relative).split('/').filter(Boolean)) {
+    cursor = path.join(cursor, segment);
+    try { const stat = await fs.lstat(cursor); if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('test claim catalog output path must not traverse a symbolic link or file'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; break; }
+  }
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const parent = await fs.realpath(path.dirname(target));
+  if (!pathInside(root, parent)) throw new Error('test claim catalog output directory resolves outside repository root');
+  let replace = false;
+  try { const stat = await fs.lstat(target); if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('test claim catalog output must be a regular file'); replace = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const body = `${JSON.stringify(catalog, null, 2)}\n`;
+  const temporary = path.join(parent, `.${path.basename(target)}.${process.pid}.tmp`);
+  await fs.writeFile(temporary, body, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  if (replace) await fs.rm(target);
+  try { await fs.rename(temporary, target); } catch (error) { await fs.rm(temporary, { force: true }); throw error; }
+  return { path: relative, catalog };
 }
 
 export function maintainedParityReceipt(graph: IntelligenceGraph, input: LocalParityContractInput): Record<string, unknown> {
