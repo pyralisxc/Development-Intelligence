@@ -63,15 +63,41 @@ function Open-OperatorReadStream([string]$Path) {
     if($stream.Length -gt 32768){$stream.Dispose();throw 'Operator read bound exceeded'}
     $stream
 }
+function Test-ReceiptPathPresence([string]$Path) {
+    Test-Path -LiteralPath $Path -PathType Leaf
+}
 function Read-MsiReceipt([string]$Path) {
-    if (!(Test-Path -LiteralPath $Path)) { return $null }
-    $stream=Open-OperatorReadStream $Path
-    $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true,1024,$false)
-    try {$json=$reader.ReadToEnd()} finally {$reader.Dispose();$stream.Dispose()}
-    $record=$json | ConvertFrom-Json
-    if ($record.formatVersion -ne 1 -or $record.operationId -notmatch '^[a-f0-9]{32}$' -or $record.state -notin @('intent','starting','running','terminal','resolved') -or $record.sha256 -notmatch '^[a-f0-9]{64}$' -or $record.toolsSha256 -notmatch '^[a-f0-9]{64}$' -or $record.verb -notin @('/i','/x') -or $record.productCode -notmatch '^\{[A-Fa-f0-9-]{36}\}$') { throw 'Invalid MSI uncertainty receipt; mutation refused' }
-    if ($record.state -in @('terminal','resolved') -and ($null -eq $record.exitCode -or [int]$record.exitCode -lt 0 -or [int]$record.exitCode -gt 65535 -or !$record.msiPid -or $record.msiStartTicks -notmatch '^\d+$')) { throw 'Invalid terminal MSI evidence' }
-    $record
+    $presenceObserved=$false
+    $transientFailure=$null
+    for($attempt=0;$attempt -lt 5;$attempt++) {
+        if (!(Test-ReceiptPathPresence $Path)) {
+            if($attempt -lt 4){Start-Sleep -Milliseconds 20}
+            continue
+        }
+        $presenceObserved=$true
+        $stream=$null
+        $reader=$null
+        try {
+            $stream=Open-OperatorReadStream $Path
+            $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true,1024,$false)
+            $json=$reader.ReadToEnd()
+            $record=$json | ConvertFrom-Json
+            if ($record.formatVersion -ne 1 -or $record.operationId -notmatch '^[a-f0-9]{32}$' -or $record.state -notin @('intent','starting','running','terminal','resolved') -or $record.sha256 -notmatch '^[a-f0-9]{64}$' -or $record.toolsSha256 -notmatch '^[a-f0-9]{64}$' -or $record.verb -notin @('/i','/x') -or $record.productCode -notmatch '^\{[A-Fa-f0-9-]{36}\}$') { throw 'Invalid MSI uncertainty receipt; mutation refused' }
+            if ($record.state -in @('terminal','resolved') -and ($null -eq $record.exitCode -or [int]$record.exitCode -lt 0 -or [int]$record.exitCode -gt 65535 -or !$record.msiPid -or $record.msiStartTicks -notmatch '^\d+$')) { throw 'Invalid terminal MSI evidence' }
+            return $record
+        } catch {
+            $base=$_.Exception.GetBaseException()
+            if($base.HResult -notin @(-2147024864,-2147024894)){throw}
+            $transientFailure=$base
+            if($attempt -lt 4){Start-Sleep -Milliseconds 20}
+        } finally {
+            if($reader){$reader.Dispose()}
+            elseif($stream){$stream.Dispose()}
+        }
+    }
+    if($transientFailure){throw $transientFailure}
+    if($presenceObserved){throw 'MSI uncertainty receipt disappeared during bounded read; mutation refused'}
+    $null
 }
 function Write-OperatorJson([string]$Path,$Record) {
     Assert-OperatorFile $Path

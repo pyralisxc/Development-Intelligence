@@ -23,6 +23,53 @@ foreach($status in 2,3,5,6,7,99) {
 $path=Join-Path $root 'receipt.json'
 $record=[pscustomobject]@{formatVersion=1;operationId=('a'*32);state='intent';sha256=('b'*64);toolsSha256=('c'*64);verb='/i';productCode='{00000000-0000-0000-0000-000000000001}';workerPid=$null;workerStartTicks=$null;msiPid=$null;msiStartTicks=$null;exitCode=$null}
 Write-MsiReceipt $path $record
+# A consistently absent receipt retains the established no-intent behavior.
+Require ($null -eq (Read-MsiReceipt (Join-Path $root 'never-present.json'))) 'Consistently absent receipt did not remain absent'
+# A transient missing name during replacement is retried, but the successful
+# snapshot still passes the real ACL, size and schema checks.
+$originalPresence=${function:Test-ReceiptPathPresence}
+$script:presenceAttempts=0
+try {
+    function Test-ReceiptPathPresence { param([string]$Path) $script:presenceAttempts++; $script:presenceAttempts -gt 1 }
+    $recoveredReceipt=Read-MsiReceipt $path
+    Require ($script:presenceAttempts -eq 2 -and $recoveredReceipt.operationId -eq $record.operationId) 'Transient missing receipt did not recover through a validated snapshot'
+} finally {Set-Item -Path Function:\Test-ReceiptPathPresence -Value $originalPresence}
+$originalOpen=${function:Open-OperatorReadStream}
+try {
+    # Once presence or a transient open was observed, later absence cannot be
+    # downgraded to the mutation-allowed no-receipt state.
+    $script:presenceAttempts=0
+    function Test-ReceiptPathPresence { param([string]$Path) $script:presenceAttempts++; $script:presenceAttempts -eq 1 }
+    function Open-OperatorReadStream { param([string]$Path) throw [IO.FileNotFoundException]::new('Synthetic replacement gap') }
+    $disappearedRefused=$false
+    try {Read-MsiReceipt $path | Out-Null} catch {$disappearedRefused=$_.Exception.GetBaseException().HResult -eq -2147024894}
+    Require $disappearedRefused 'Observed receipt disappearance became no receipt'
+    # Persistent sharing failures keep the original native error and bound.
+    function Test-ReceiptPathPresence { param([string]$Path) $true }
+    $script:openAttempts=0
+    function Open-OperatorReadStream { param([string]$Path) $script:openAttempts++; throw [IO.IOException]::new('Synthetic sharing exhaustion',-2147024864) }
+    $sharingRefused=$false
+    try {Read-MsiReceipt $path | Out-Null} catch {$sharingRefused=$_.Exception.Message -eq 'Synthetic sharing exhaustion' -and $_.Exception.HResult -eq -2147024864}
+    Require ($sharingRefused -and $script:openAttempts -eq 5) 'Sharing exhaustion lost native refusal or retry bound'
+    # Permission/ACL failures are never classified as replacement races.
+    $script:openAttempts=0
+    function Open-OperatorReadStream { param([string]$Path) $script:openAttempts++; throw [UnauthorizedAccessException]::new('Synthetic ACL refusal') }
+    $aclRefused=$false
+    try {Read-MsiReceipt $path | Out-Null} catch {$aclRefused=$_.Exception.Message -eq 'Synthetic ACL refusal'}
+    Require ($aclRefused -and $script:openAttempts -eq 1) 'ACL refusal was swallowed or retried as replacement'
+} finally {
+    Set-Item -Path Function:\Test-ReceiptPathPresence -Value $originalPresence
+    Set-Item -Path Function:\Open-OperatorReadStream -Value $originalOpen
+}
+$malformedPath=Join-Path $root 'malformed-receipt.json'
+Copy-Item -LiteralPath $path -Destination $malformedPath
+[IO.File]::WriteAllText($malformedPath,'{"formatVersion":1}')
+$malformedAcl=Get-Acl -LiteralPath $malformedPath
+$malformedAcl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+Set-Acl -LiteralPath $malformedPath -AclObject $malformedAcl
+$schemaRefused=$false
+try {Read-MsiReceipt $malformedPath | Out-Null} catch {$schemaRefused=$_.Exception.Message -match 'Invalid MSI uncertainty receipt'}
+Require $schemaRefused 'Malformed receipt was swallowed as a transient read'
 # Unavailable ACL evidence must be rejected even after the bounded retry.
 $missingAclRejected=$false
 try { Get-OperatorAclChecked (Join-Path $root 'missing-receipt.json') | Out-Null } catch {
