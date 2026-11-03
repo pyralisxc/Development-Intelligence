@@ -17,7 +17,7 @@ const renamedOwnerSource = `export function registerOwnerTools(server: any) {
   server.registerTool('get_owner_site_snapshot_renamed', {}, async () => ({ ok: true }));
 }
 `;
-const ownerTestSource = "import { readFileSync } from 'node:fs';\ntest('registration', () => { const tools = readFileSync('src/owner.ts', 'utf8'); expect(tools).toContain(\"'get_owner_site_snapshot'\"); });\n";
+const ownerTestSource = "import { readFileSync } from 'node:fs';\nimport { expect, test } from 'vitest';\ntest('registration', () => { const tools = readFileSync('src/owner.ts', 'utf8'); expect(tools).toContain(\"'get_owner_site_snapshot'\"); });\n";
 const contract = {
   version: 1,
   name: 'Owner snapshot registration',
