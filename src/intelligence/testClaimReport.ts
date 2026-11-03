@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { TestClaimCatalog } from './testClaimInventory.js';
+import { normalizeTestClaimCatalog, type TestClaimCatalog } from './testClaimInventory.js';
 
 export const TEST_CLAIM_REPORT_FORMAT_VERSION = 1;
 export const DEFAULT_TEST_CLAIM_REPORT_PATH = '.development-intelligence/test-claims';
@@ -25,6 +25,50 @@ function canonical(value: unknown): string {
 function inside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function secureDirectory(root: string, target: string, create: boolean): Promise<string> {
+  if (!inside(root, target)) throw new Error('test claim report path must remain inside the repository');
+  const relative = path.relative(root, target);
+  let cursor = root;
+  for (const segment of relative.split(path.sep)) {
+    cursor = path.join(cursor, segment);
+    try {
+      const stat = await fs.lstat(cursor);
+      if (stat.isSymbolicLink()) throw new Error('test claim report path must not traverse a symbolic link');
+      if (cursor !== target && !stat.isDirectory()) throw new Error('test claim report path traverses a non-directory');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      break;
+    }
+  }
+  if (create) await fs.mkdir(target, { recursive: true });
+  const real = await fs.realpath(target);
+  if (!inside(root, real)) throw new Error('test claim report path resolves outside the repository');
+  const stat = await fs.stat(real);
+  if (!stat.isDirectory()) throw new Error('test claim report path is not a directory');
+  return real;
+}
+
+async function secureRead(directory: string, name: string): Promise<string> {
+  const target = path.join(directory, name);
+  const stat = await fs.lstat(target);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`test claim report file is not a regular file: ${name}`);
+  return await fs.readFile(target, 'utf8');
+}
+
+async function atomicWrite(directory: string, name: string, body: string): Promise<void> {
+  const target = path.join(directory, name);
+  try {
+    const existing = await fs.lstat(target);
+    if (existing.isSymbolicLink() || !existing.isFile()) throw new Error(`test claim report file is not a regular file: ${name}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const temporary = path.join(directory, `.${name}.${process.pid}.${createHash('sha256').update(body).digest('hex').slice(0, 12)}.tmp`);
+  const handle = await fs.open(temporary, 'wx', 0o600);
+  try { await handle.writeFile(body, 'utf8'); await handle.sync(); } finally { await handle.close(); }
+  try { await fs.rename(temporary, target); } catch (error) { await fs.rm(temporary, { force: true }); throw error; }
 }
 
 export interface TestClaimReportManifest {
@@ -56,7 +100,7 @@ export async function writeTestClaimReportBundle(input: {
   if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(input.producerCommit)) throw new Error('test claim report producer commit must be exact');
   const root = await fs.realpath(path.resolve(input.root));
   const target = path.resolve(root, input.outputPath ?? DEFAULT_TEST_CLAIM_REPORT_PATH);
-  if (!inside(root, target)) throw new Error('test claim report path must remain inside the repository');
+  const directory = await secureDirectory(root, target, true);
   const decision = { ...input.decisionRecord };
   delete decision.path;
   const catalogBody = canonical(input.catalog);
@@ -83,11 +127,10 @@ export async function writeTestClaimReportBundle(input: {
     files: { catalog: 'catalog-v1.json' as const, report: 'report-v1.json' as const },
   };
   const manifest: TestClaimReportManifest = { ...unsigned, manifestSha256: sha256(canonical(unsigned)) };
-  await fs.mkdir(target, { recursive: true });
   await Promise.all([
-    fs.writeFile(path.join(target, manifest.files.catalog), `${catalogBody}\n`, 'utf8'),
-    fs.writeFile(path.join(target, manifest.files.report), `${reportBody}\n`, 'utf8'),
-    fs.writeFile(path.join(target, 'manifest-v1.json'), `${canonical(manifest)}\n`, 'utf8'),
+    atomicWrite(directory, manifest.files.catalog, `${catalogBody}\n`),
+    atomicWrite(directory, manifest.files.report, `${reportBody}\n`),
+    atomicWrite(directory, 'manifest-v1.json', `${canonical(manifest)}\n`),
   ]);
   return { path: path.relative(root, target).split(path.sep).join('/'), manifest };
 }
@@ -149,13 +192,18 @@ export async function readTestClaimReportPage(input: {
 }): Promise<Record<string, unknown>> {
   const root = await fs.realpath(path.resolve(input.root));
   const target = path.resolve(root, input.reportPath ?? DEFAULT_TEST_CLAIM_REPORT_PATH);
-  if (!inside(root, target)) throw new Error('test claim report path must remain inside the repository');
+  let directory: string;
+  try { directory = await secureDirectory(root, target, false); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { available: false, reason: 'missing-report', expectedDigest: input.expectedDigest, expectedRevision: input.expectedRevision, expectedProject: input.expectedProject };
+    throw error;
+  }
   let manifestText: string; let catalogBody: string; let reportBody: string;
   try {
     [manifestText, catalogBody, reportBody] = await Promise.all([
-      fs.readFile(path.join(target, 'manifest-v1.json'), 'utf8'),
-      fs.readFile(path.join(target, 'catalog-v1.json'), 'utf8'),
-      fs.readFile(path.join(target, 'report-v1.json'), 'utf8'),
+      secureRead(directory, 'manifest-v1.json'),
+      secureRead(directory, 'catalog-v1.json'),
+      secureRead(directory, 'report-v1.json'),
     ]);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { available: false, reason: 'missing-report', expectedDigest: input.expectedDigest, expectedRevision: input.expectedRevision, expectedProject: input.expectedProject };
@@ -169,10 +217,17 @@ export async function readTestClaimReportPage(input: {
     || manifest.reportSha256 !== sha256(reportBody.trimEnd())
     || manifest.catalogSha256 !== sha256(catalogBody.trimEnd())) throw new Error('test claim report bundle failed digest validation');
   if (manifest.manifestSha256 !== input.expectedDigest) throw new Error('test claim report digest does not match the requested immutable report');
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(manifest.producerCommit)) throw new Error('test claim report producer identity is invalid');
   if (manifest.sourceRevision !== input.expectedRevision) throw new Error('test claim report source revision is stale or mismatched');
   if (manifest.project !== input.expectedProject) throw new Error('test claim report project does not match the authorized project');
   const report = JSON.parse(reportBody) as Record<string, any>;
-  if (report.revision !== manifest.sourceRevision || report.graphId !== manifest.graphId || report.evaluatorVersion !== manifest.evaluatorVersion) {
+  const normalizedCatalog = normalizeTestClaimCatalog(JSON.parse(catalogBody));
+  if (canonical(normalizedCatalog) !== catalogBody.trimEnd()
+    || normalizedCatalog.revision !== manifest.sourceRevision
+    || normalizedCatalog.analyzerVersion !== manifest.analyzerVersion) throw new Error('test claim report catalog identity does not match its manifest');
+  if (report.project !== manifest.project || report.revision !== manifest.sourceRevision || report.graphId !== manifest.graphId
+    || report.sourceFingerprint !== manifest.sourceFingerprint || report.analyzerVersion !== manifest.analyzerVersion
+    || report.evaluatorVersion !== manifest.evaluatorVersion || canonical(report.counts) !== canonical(manifest.counts)) {
     throw new Error('test claim report identity does not match its manifest');
   }
   const pageSize = Math.min(Math.max(input.pageSize ?? 100, 1), 500);

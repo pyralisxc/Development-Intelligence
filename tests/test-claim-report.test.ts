@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,8 @@ const decision = {
   claims: [],
   unclassified: [{ assertionId: 'b', outcome: 'unclassified', blocker: 'unsupported' }],
 };
+function canonical(value: any): string { if(Array.isArray(value))return`[${value.map(canonical).join(',')}]`;if(value&&typeof value==='object')return`{${Object.entries(value).filter(([,item])=>item!==undefined).sort(([a],[b])=>a.localeCompare(b)).map(([key,item])=>`${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;return JSON.stringify(value); }
+function digest(value: string): string { return createHash('sha256').update(value).digest('hex'); }
 
 test('canonical claim reports repeat, page stably, and refuse stale or tampered reads', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-claim-report-'));
@@ -67,4 +70,23 @@ test('native exact-source projections share canonical ordering and evaluator ide
   assert.equal(first.page.hasNext, true);
   assert.equal(second.page.hasNext, false);
   assert.equal(first.policy.recommendsDeletion, false);
+});
+
+test('bundle reader rejects self-consistent catalog and report identity mismatches', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-claim-report-mismatch-'));
+  try {
+    const bundle = await writeTestClaimReportBundle({ root, producerCommit, catalog, decisionRecord: decision });
+    const directory = path.join(root, bundle.path);
+    const manifestPath = path.join(directory, 'manifest-v1.json');
+    const catalogPath = path.join(directory, 'catalog-v1.json');
+    const alteredCatalog = { ...catalog, analyzerVersion: 'forged-analyzer' };
+    const catalogBody = canonical(alteredCatalog);
+    await fs.writeFile(catalogPath, `${catalogBody}\n`);
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    manifest.catalogSha256 = digest(catalogBody);
+    delete manifest.manifestSha256;
+    manifest.manifestSha256 = digest(canonical(manifest));
+    await fs.writeFile(manifestPath, `${canonical(manifest)}\n`);
+    await assert.rejects(readTestClaimReportPage({ root, expectedDigest: manifest.manifestSha256, expectedRevision: revision, expectedProject: 'example/project' }), /catalog identity/u);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

@@ -182,6 +182,11 @@ test('composite action exposes the optional caller-owned parity contract input',
   assert.match(action, /^  test-claim-report-path:/mu);
   assert.match(action, /--test-claim-report-path "\$DEVINT_TEST_CLAIM_REPORT_PATH" --producer-commit "\$producer_commit"/u);
   assert.match(action, /actions\/upload-artifact@v4/u);
+  assert.match(action, /continue-on-error: true/u);
+  assert.match(action, /always\(\) && inputs\['test-claim-catalog'\] != ''/u);
+  assert.match(action, /include-hidden-files: true/u);
+  assert.match(action, /manifest-v1\.json[\s\S]*catalog-v1\.json[\s\S]*report-v1\.json/u);
+  assert.match(action, /steps\.operation\.outcome == 'failure'/u);
   assert.match(action, /^  test-claim-report-digest:/mu);
 });
 

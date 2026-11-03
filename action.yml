@@ -49,6 +49,7 @@ runs:
       shell: bash
     - name: Run Development Intelligence operation
       id: operation
+      continue-on-error: true
       run: |
         set -euo pipefail
         case "$DEVINT_CHECKPOINT_MODE" in
@@ -64,6 +65,16 @@ runs:
           args+=(--parity-contract "$DEVINT_PARITY_CONTRACT")
         fi
         if [[ -n "$DEVINT_TEST_CLAIM_CATALOG" ]]; then
+          node -e '
+            const fs=require("fs"),path=require("path");
+            const root=fs.realpathSync(process.env.GITHUB_WORKSPACE);
+            const target=path.resolve(root,process.env.DEVINT_TEST_CLAIM_REPORT_PATH);
+            const relative=path.relative(root,target);
+            if(!relative||relative===".."||relative.startsWith(`..${path.sep}`)||path.isAbsolute(relative)) throw new Error("test claim report path must remain inside the repository");
+            let cursor=root;
+            for(const segment of relative.split(path.sep)){ cursor=path.join(cursor,segment); if(!fs.existsSync(cursor)) break; const stat=fs.lstatSync(cursor); if(stat.isSymbolicLink()) throw new Error("test claim report path must not traverse a symbolic link"); }
+            fs.rmSync(target,{recursive:true,force:true});
+          '
           args+=(--test-claim-catalog "$DEVINT_TEST_CLAIM_CATALOG")
           producer_commit="$DEVINT_PRODUCER_COMMIT"
           [[ "$producer_commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || { echo "test-claim reporting requires the action to be pinned to an exact commit" >&2; exit 2; }
@@ -80,25 +91,37 @@ runs:
         DEVINT_PRODUCER_COMMIT: ${{ github.action_ref }}
     - name: Publish test-claim report outputs
       id: test-claim-report
-      if: ${{ inputs['test-claim-catalog'] != '' }}
+      if: ${{ always() && inputs['test-claim-catalog'] != '' }}
       run: |
         set -euo pipefail
         manifest="$GITHUB_WORKSPACE/$DEVINT_TEST_CLAIM_REPORT_PATH/manifest-v1.json"
+        if [[ ! -f "$manifest" ]]; then
+          echo "retained=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         node -e '
           const fs=require("fs");
           const manifest=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
           const output=process.env.GITHUB_OUTPUT;
           const artifact=`development-intelligence-test-claims-${manifest.sourceRevision}-${manifest.manifestSha256}`;
-          fs.appendFileSync(output,`path=${process.env.DEVINT_TEST_CLAIM_REPORT_PATH}\ndigest=${manifest.manifestSha256}\nstatus=${manifest.status}\nartifact=${artifact}\n`);
+          fs.appendFileSync(output,`retained=true\npath=${process.env.DEVINT_TEST_CLAIM_REPORT_PATH}\ndigest=${manifest.manifestSha256}\nstatus=${manifest.status}\nartifact=${artifact}\n`);
         ' "$manifest"
       shell: bash
       env:
         DEVINT_TEST_CLAIM_REPORT_PATH: ${{ inputs['test-claim-report-path'] }}
     - name: Retain immutable test-claim report
-      if: ${{ inputs['test-claim-catalog'] != '' }}
+      if: ${{ always() && steps.test-claim-report.outputs.retained == 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.test-claim-report.outputs.artifact }}
-        path: ${{ github.workspace }}/${{ inputs.test-claim-report-path }}
+        path: |
+          ${{ github.workspace }}/${{ inputs.test-claim-report-path }}/manifest-v1.json
+          ${{ github.workspace }}/${{ inputs.test-claim-report-path }}/catalog-v1.json
+          ${{ github.workspace }}/${{ inputs.test-claim-report-path }}/report-v1.json
+        include-hidden-files: true
         if-no-files-found: error
         retention-days: 30
+    - name: Preserve Development Intelligence operation result
+      if: ${{ always() && steps.operation.outcome == 'failure' }}
+      run: exit 1
+      shell: bash
