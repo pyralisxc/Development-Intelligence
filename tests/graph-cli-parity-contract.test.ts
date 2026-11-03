@@ -187,6 +187,7 @@ test('composite action exposes the optional caller-owned parity contract input',
   assert.match(action, /include-hidden-files: true/u);
   assert.match(action, /manifest-v1\.json[\s\S]*catalog-v1\.json[\s\S]*report-v1\.json/u);
   assert.match(action, /steps\.operation\.outcome == 'failure'/u);
+  assert.match(action, /github\.action_ref \|\| github\.sha/u);
   assert.match(action, /^  test-claim-report-digest:/mu);
 });
 

@@ -88,7 +88,7 @@ runs:
         DEVINT_PARITY_CONTRACT: ${{ inputs['parity-contract'] }}
         DEVINT_TEST_CLAIM_CATALOG: ${{ inputs['test-claim-catalog'] }}
         DEVINT_TEST_CLAIM_REPORT_PATH: ${{ inputs['test-claim-report-path'] }}
-        DEVINT_PRODUCER_COMMIT: ${{ github.action_ref }}
+        DEVINT_PRODUCER_COMMIT: ${{ github.action_ref || github.sha }}
     - name: Publish test-claim report outputs
       id: test-claim-report
       if: ${{ always() && inputs['test-claim-catalog'] != '' }}

@@ -20,11 +20,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: Prepare a bounded maintained-report smoke catalog
+        run: |
+          mkdir -p .test-claim-smoke
+          node -e 'const fs=require("fs"); fs.writeFileSync(".test-claim-smoke/catalog.json", JSON.stringify({version:1,revision:process.env.GITHUB_SHA,analyzerVersion:"action-smoke-provenance-check",scope:{sourcePrefixes:["tests/"],sourceSuffixes:[".never-test-claim-smoke"]},files:[],declarations:[],assertions:[],claims:[]})+"\n")'
       - name: Analyze this repository through the packaged action
         uses: ./
         with:
           project: Development-Intelligence
           mode: analyze
+          test-claim-catalog: .test-claim-smoke/catalog.json
 
   verify:
     runs-on: ubuntu-latest
