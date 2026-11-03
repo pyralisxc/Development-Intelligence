@@ -129,6 +129,8 @@ export async function readLocalTestClaimCatalog(rootInput: string, catalogPathIn
 
 export async function generateLocalTestClaimCatalog(input: { root: string; project?: string; sourcePrefixes: string[]; sourceSuffixes: string[]; outputPath: string }): Promise<{ path: string; catalog: TestClaimCatalog }> {
   const root = await fs.realpath(path.resolve(input.root));
+  const trackedChanges = await gitValue(root, ['status', '--porcelain', '--untracked-files=no']);
+  if (trackedChanges) throw new Error('test claim catalog generation requires tracked source bytes to match HEAD; commit or restore tracked changes first');
   const graph = await buildLocalGraph(root, input.project, 'W');
   const catalog = await generateTestClaimCatalog(root, graph, { sourcePrefixes: input.sourcePrefixes, sourceSuffixes: input.sourceSuffixes });
   const target = path.resolve(root, input.outputPath);
@@ -142,7 +144,7 @@ export async function generateLocalTestClaimCatalog(input: { root: string; proje
   }
   await fs.mkdir(path.dirname(target), { recursive: true });
   const parent = await fs.realpath(path.dirname(target));
-  if (!pathInside(root, parent)) throw new Error('test claim catalog output directory resolves outside repository root');
+  if (parent !== root && !pathInside(root, parent)) throw new Error('test claim catalog output directory resolves outside repository root');
   let replace = false;
   try { const stat = await fs.lstat(target); if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('test claim catalog output must be a regular file'); replace = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
