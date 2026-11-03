@@ -57,6 +57,7 @@ export async function queryTestClaimReport(input: {
     ) as Record<string, any>;
     const producerCommit = [process.env.DEVINT_BUILD_SHA, process.env.VERCEL_GIT_COMMIT_SHA]
       .map(value => value?.trim().toLowerCase()).find(value => value && /^[0-9a-f]{40}$/u.test(value)) ?? null;
+    if (!producerCommit) throw new Error('test claim agent reads require an exact deployed DI producer commit');
     const projection = projectTestClaimDecisionPage({
         report,
         catalog: catalog.catalog,
