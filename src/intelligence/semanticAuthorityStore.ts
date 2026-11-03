@@ -431,13 +431,33 @@ function currentAcceptedAuthorityRecords(ledger: SemanticAuthorityLedger | null)
   const latest = new Map<string, StoredSemanticAuthorityRecord>();
   for (const record of ledger?.records ?? []) {
     const prior = latest.get(record.meaningId);
-    if (!prior || prior.storedAt.localeCompare(record.storedAt) < 0) latest.set(record.meaningId, record);
+    if (!prior || compareAuthorityDisposition(prior, record) < 0) latest.set(record.meaningId, record);
   }
   return [...latest.values()]
     .filter(record => record.review.accepted || record.review.reviewed
       || ['rejected', 'superseded', 'split', 'merged'].includes(record.review.state))
     .map(record => ({ ...record, review: persistedReview(record.review) }))
     .sort((a, b) => a.meaningId.localeCompare(b.meaningId));
+}
+
+function latestReviewEventAt(record: StoredSemanticAuthorityRecord): string {
+  return record.review.history.reduce(
+    (latest, event) => latest.localeCompare(event.at) < 0 ? event.at : latest,
+    '',
+  );
+}
+
+function dispositionRank(record: StoredSemanticAuthorityRecord): number {
+  if (['rejected', 'superseded', 'split', 'merged'].includes(record.review.state)) return 2;
+  if (record.review.accepted || record.review.reviewed) return 1;
+  return 0;
+}
+
+function compareAuthorityDisposition(left: StoredSemanticAuthorityRecord, right: StoredSemanticAuthorityRecord): number {
+  return left.storedAt.localeCompare(right.storedAt)
+    || latestReviewEventAt(left).localeCompare(latestReviewEventAt(right))
+    || dispositionRank(left) - dispositionRank(right)
+    || left.recordId.localeCompare(right.recordId);
 }
 
 export async function compactSemanticAuthorityToCurrentAccepted(
@@ -487,7 +507,7 @@ export function latestAcceptedMeanings(ledger: SemanticAuthorityLedger | null): 
   const latest = new Map<string, StoredSemanticAuthorityRecord>();
   for (const record of ledger?.records ?? []) {
     const current = latest.get(record.meaningId);
-    if (!current || current.storedAt.localeCompare(record.storedAt) < 0) latest.set(record.meaningId, record);
+    if (!current || compareAuthorityDisposition(current, record) < 0) latest.set(record.meaningId, record);
   }
   return [...latest.values()]
     .map(record => record.review)
