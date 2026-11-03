@@ -149,6 +149,7 @@ function reportItems(report: Record<string, any>): Array<Record<string, unknown>
 export function projectTestClaimDecisionPage(input: {
   report: Record<string, any>;
   catalog: TestClaimCatalog;
+  producerCommit: string | null;
   page?: number;
   pageSize?: number;
 }): Record<string, unknown> {
@@ -158,21 +159,23 @@ export function projectTestClaimDecisionPage(input: {
   const start = page * pageSize;
   const catalogSha256 = sha256(canonical(input.catalog));
   const reportSha256 = sha256(canonical(input.report));
+  const identity = {
+    formatVersion: TEST_CLAIM_REPORT_FORMAT_VERSION,
+    project: input.report.project,
+    sourceRevision: input.report.revision,
+    graphId: input.report.graphId,
+    sourceFingerprint: input.report.sourceFingerprint,
+    analyzerVersion: input.report.analyzerVersion,
+    evaluatorVersion: input.report.evaluatorVersion,
+    producerCommit: input.producerCommit,
+    inputFingerprint: input.report.inputFingerprint,
+    catalogSha256,
+    reportSha256,
+    mode: 'exact-source-recomputation',
+  };
   return {
     available: true,
-    identity: {
-      formatVersion: TEST_CLAIM_REPORT_FORMAT_VERSION,
-      project: input.report.project,
-      sourceRevision: input.report.revision,
-      graphId: input.report.graphId,
-      sourceFingerprint: input.report.sourceFingerprint,
-      analyzerVersion: input.report.analyzerVersion,
-      evaluatorVersion: input.report.evaluatorVersion,
-      inputFingerprint: input.report.inputFingerprint,
-      catalogSha256,
-      reportSha256,
-      mode: 'exact-source-recomputation',
-    },
+    identity: { ...identity, projectionSha256: sha256(canonical(identity)) },
     population: input.report.population,
     counts: input.report.counts,
     page: { index: page, size: pageSize, totalItems: items.length, hasNext: start + pageSize < items.length },

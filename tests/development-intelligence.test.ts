@@ -16,7 +16,7 @@ import { runtimeIdentity } from '../src/runtimeIdentity.js';
 import { interfaceProjection, planInvestigationQuestion, projectOverview, projectStatistics, queryWorkbench, queryWorkbenchRequest, scopeOrientation } from '../src/intelligence/workbench.js';
 import { loadRegistry } from '../src/config/registry.js';
 import { evaluateParityContract } from '../src/intelligence/parityContract.js';
-import { isRepositoryAnalysisIgnoredPath, sourceFingerprint } from '../src/intelligence/repository.js';
+import { ANALYZER_VERSION, isRepositoryAnalysisIgnoredPath, sourceFingerprint } from '../src/intelligence/repository.js';
 import { loadSemanticAuthority, promoteCanonicalAcceptedGraph } from '../src/intelligence/semanticAuthorityStore.js';
 import { bootstrapSemanticPromotionBaseline, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from '../src/intelligence/semanticWorkflow.js';
 import { selectSupportedSemanticPortfolioCandidates } from '../src/intelligence/semanticPortfolioBootstrap.js';
@@ -1651,6 +1651,54 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     VERCEL_GIT_COMMIT_REF: 'bad ref with spaces',
     VERCEL_TARGET_ENV: 'secret-environment-name',
   }).deployment, { revision: null, gitRef: null, environment: null });
+});
+
+test('authenticated test-claim query binds separate exact source and catalog revisions with stable paging', async () => {
+  const fixture = await makeFixture();
+  const previousBuild = process.env.DEVINT_BUILD_SHA;
+  try {
+    const sourceRevision = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD'])).stdout.trim();
+    await fs.mkdir(path.join(fixture.source, '.test-claims'), { recursive: true });
+    await fs.writeFile(path.join(fixture.source, '.test-claims', 'catalog.json'), `${JSON.stringify({
+      version: 1,
+      revision: sourceRevision,
+      analyzerVersion: ANALYZER_VERSION,
+      scope: { sourcePrefixes: ['tests/'], sourceSuffixes: ['.native-query-never'] },
+      files: [], declarations: [], assertions: [], claims: [],
+    })}\n`);
+    const catalogRevision = await commit(fixture.source, 'retain source-bound test claim catalog');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    process.env.DEVINT_BUILD_SHA = 'd'.repeat(40);
+    const first = await callTool('get_test_claim_report', {
+      project: fixture.project,
+      ref: `commit:${sourceRevision}`,
+      catalogRef: `commit:${catalogRevision}`,
+      catalogPath: '.test-claims/catalog.json',
+      page: 0,
+      pageSize: 1,
+    }) as any;
+    assert.equal(first.available, true);
+    assert.equal(first.identity.sourceRevision, sourceRevision);
+    assert.equal(first.identity.producerCommit, 'd'.repeat(40));
+    assert.equal(first.source.catalogRevision, catalogRevision);
+    const second = await callTool('get_test_claim_report', {
+      project: fixture.project,
+      ref: `commit:${sourceRevision}`,
+      catalogRef: `commit:${catalogRevision}`,
+      catalogPath: '.test-claims/catalog.json',
+      expectedReportDigest: first.identity.projectionSha256,
+      page: 1,
+      pageSize: 1,
+    }) as any;
+    assert.equal(second.identity.projectionSha256, first.identity.projectionSha256);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: 'branch:main', catalogRef: `commit:${catalogRevision}`, catalogPath: '.test-claims/catalog.json' }), /immutable commit/u);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, catalogRef: `commit:${catalogRevision}`, catalogPath: '.test-claims/catalog.json', page: 1 }), /expectedReportDigest/u);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, catalogRef: `commit:${catalogRevision}`, catalogPath: '.test-claims/catalog.json', page: 1, expectedReportDigest: '0'.repeat(64) }), /digest does not match/u);
+  } finally {
+    if (previousBuild === undefined) delete process.env.DEVINT_BUILD_SHA; else process.env.DEVINT_BUILD_SHA = previousBuild;
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test('registry rejects project identities that collide in derived keys', async () => {

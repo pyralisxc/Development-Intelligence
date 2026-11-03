@@ -180,7 +180,7 @@ test('composite action exposes the optional caller-owned parity contract input',
   assert.match(action, /args\+=\(--test-claim-catalog "\$DEVINT_TEST_CLAIM_CATALOG"\)/u);
   assert.match(action, /DEVINT_TEST_CLAIM_CATALOG: \$\{\{ inputs\['test-claim-catalog'\] \}\}/u);
   assert.match(action, /^  test-claim-report-path:/mu);
-  assert.match(action, /--test-claim-report-path "\$DEVINT_TEST_CLAIM_REPORT_PATH" --producer-commit "\$producer_commit"/u);
+  assert.match(action, /--test-claim-report-path "\$report_path" --producer-commit "\$producer_commit"/u);
   assert.match(action, /actions\/upload-artifact@v4/u);
   assert.match(action, /continue-on-error: true/u);
   assert.match(action, /always\(\) && inputs\['test-claim-catalog'\] != ''/u);
@@ -188,6 +188,9 @@ test('composite action exposes the optional caller-owned parity contract input',
   assert.match(action, /manifest-v1\.json[\s\S]*catalog-v1\.json[\s\S]*report-v1\.json/u);
   assert.match(action, /steps\.operation\.outcome == 'failure'/u);
   assert.match(action, /github\.action_ref \|\| github\.sha/u);
+  assert.match(action, /run-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}-\$\{GITHUB_JOB\}/u);
+  assert.match(action, /steps\.operation\.outputs\.report-path/u);
+  assert.doesNotMatch(action, /rmSync\(target,\{recursive:true/u);
   assert.match(action, /^  test-claim-report-digest:/mu);
 });
 
@@ -195,10 +198,11 @@ test('authenticated tool contract exposes exact-source test claim pages without 
   const { listTools } = await import('../src/mcp.js');
   const tool = listTools().find(item => item.name === 'get_test_claim_report') as any;
   assert.ok(tool);
-  assert.deepEqual(tool.inputSchema.required, ['project', 'catalogPath']);
+  assert.deepEqual(tool.inputSchema.required, ['project', 'catalogRef', 'catalogPath']);
   assert.ok(tool.inputSchema.properties.ref);
   assert.ok(tool.inputSchema.properties.graphId);
   assert.ok(tool.inputSchema.properties.parityContractPath);
+  assert.ok(tool.inputSchema.properties.expectedReportDigest);
   assert.equal('artifactUrl' in tool.inputSchema.properties, false);
   assert.equal(tool.annotations.readOnlyHint, true);
 });

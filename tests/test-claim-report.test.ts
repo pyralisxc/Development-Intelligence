@@ -60,12 +60,14 @@ test('canonical claim reports repeat, page stably, and refuse stale or tampered 
 });
 
 test('native exact-source projections share canonical ordering and evaluator identity', () => {
-  const first = projectTestClaimDecisionPage({ report: decision, catalog, page: 0, pageSize: 2 }) as any;
-  const second = projectTestClaimDecisionPage({ report: decision, catalog, page: 1, pageSize: 2 }) as any;
+  const first = projectTestClaimDecisionPage({ report: decision, catalog, producerCommit, page: 0, pageSize: 2 }) as any;
+  const second = projectTestClaimDecisionPage({ report: decision, catalog, producerCommit, page: 1, pageSize: 2 }) as any;
   assert.equal(first.identity.mode, 'exact-source-recomputation');
   assert.equal(first.identity.reportSha256, second.identity.reportSha256);
+  assert.equal(first.identity.projectionSha256, second.identity.projectionSha256);
   assert.equal(first.identity.catalogSha256, second.identity.catalogSha256);
   assert.equal(first.identity.evaluatorVersion, decision.evaluatorVersion);
+  assert.equal(first.identity.producerCommit, producerCommit);
   assert.equal(first.page.totalItems, 4);
   assert.equal(first.page.hasNext, true);
   assert.equal(second.page.hasNext, false);
