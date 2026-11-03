@@ -14,7 +14,7 @@ import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.15.0-callback-invocation-ownership';
+export const ANALYZER_VERSION = '2.16.0-fresh-array-callback-provenance';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -1397,6 +1397,208 @@ async function crossFileTypeScriptGraph(
     return result;
   };
 
+  const unwrapValue = (expression: ts.Expression): ts.Expression => {
+    let current = expression;
+    while (ts.isParenthesizedExpression(current) || ts.isAwaitExpression(current) || ts.isAsExpression(current)
+      || ts.isNonNullExpression(current) || ts.isSatisfiesExpression(current)) current = current.expression;
+    return current;
+  };
+  const returnedExpression = (target: GraphNode): { info: ModuleInfo; expression: ts.Expression; wrapper: ts.FunctionLikeDeclaration } | null => {
+    const wrapper = functionLikeFor(target);
+    if (!wrapper?.body || !target.sourceId.startsWith('repo:')) return null;
+    const info = moduleInfos.get(target.sourceId.slice('repo:'.length));
+    if (!info) return null;
+    if (!ts.isBlock(wrapper.body)) return { info, expression: wrapper.body, wrapper };
+    const returns: ts.Expression[] = [];
+    const inspect = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node) && node !== wrapper) return;
+      if (ts.isReturnStatement(node) && node.expression) returns.push(node.expression);
+      ts.forEachChild(node, inspect);
+    };
+    inspect(wrapper.body);
+    return returns.length === 1 && returns[0]!.parent.parent === wrapper.body ? { info, expression: returns[0]!, wrapper } : null;
+  };
+  const enclosingFunctionLike = (node: ts.Node): ts.FunctionLikeDeclaration | null => {
+    let current: ts.Node | undefined = node;
+    while (current && !ts.isSourceFile(current)) {
+      if (ts.isFunctionLike(current) && 'body' in current) return current as ts.FunctionLikeDeclaration;
+      current = current.parent;
+    }
+    return null;
+  };
+  const declarationsInScope = (scope: ts.Node, name: string): ts.Declaration[] => {
+    const declarations: ts.Declaration[] = [];
+    const addBinding = (declaration: ts.VariableDeclaration | ts.ParameterDeclaration): void => {
+      if (bindingNameContains(declaration.name, name)) declarations.push(declaration);
+    };
+    if (ts.isFunctionLike(scope)) {
+      scope.parameters.forEach(addBinding);
+      if (ts.isFunctionExpression(scope) && scope.name?.text === name) declarations.push(scope);
+      const inspectVar = (node: ts.Node): void => {
+        if (node !== scope && ts.isFunctionLike(node)) return;
+        if (ts.isVariableDeclarationList(node) && (node.flags & ts.NodeFlags.BlockScoped) === 0) node.declarations.forEach(addBinding);
+        ts.forEachChild(node, inspectVar);
+      };
+      if ('body' in scope && scope.body) inspectVar(scope.body);
+    }
+    if (ts.isCatchClause(scope) && scope.variableDeclaration) addBinding(scope.variableDeclaration);
+    if (ts.isForStatement(scope) || ts.isForInStatement(scope) || ts.isForOfStatement(scope)) {
+      const initializer = scope.initializer;
+      if (initializer && ts.isVariableDeclarationList(initializer)) initializer.declarations.forEach(addBinding);
+    }
+    if (ts.isBlock(scope) || ts.isSourceFile(scope) || ts.isCaseBlock(scope) || ts.isModuleBlock(scope)) {
+      const statements: readonly ts.Statement[] = ts.isCaseBlock(scope) ? scope.clauses.flatMap(clause => [...clause.statements]) : scope.statements;
+      for (const statement of statements) {
+        if (ts.isVariableStatement(statement)) statement.declarationList.declarations.forEach(addBinding);
+        else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name?.text === name) declarations.push(statement);
+      }
+    }
+    return declarations;
+  };
+  const resolveLexicalDeclaration = (reference: ts.Identifier, stopAt: ts.Node): ts.Declaration | null => {
+    let current: ts.Node | undefined = reference.parent;
+    while (current) {
+      const matches = declarationsInScope(current, reference.text);
+      if (matches.length) return matches.length === 1 ? matches[0]! : null;
+      if (current === stopAt) break;
+      current = current.parent;
+    }
+    return null;
+  };
+  const bindingUseIsSafe = (
+    info: ModuleInfo,
+    declaration: ts.VariableDeclaration,
+    finalValue: ts.Expression,
+    path: string[],
+    allowReturn: boolean,
+    seen: Set<ts.VariableDeclaration>,
+    separatedSiblings = new Set<string>(),
+  ): boolean => {
+    if (!ts.isIdentifier(declaration.name) || !declaration.initializer || seen.has(declaration)) return false;
+    const declarationName = declaration.name.text;
+    if (declaration.getStart(info.sourceFile) >= finalValue.getStart(info.sourceFile)) return false;
+    seen.add(declaration);
+    const root = enclosingFunctionLike(declaration) ?? info.sourceFile;
+    let safe = true;
+    const assignmentKind = (node: ts.Node): boolean => ts.isBinaryExpression(node.parent) && node.parent.left === node
+      && node.parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+    const mutationThrough = (node: ts.Expression): boolean => {
+      let current: ts.Expression = node;
+      while (ts.isPropertyAccessExpression(current.parent) && current.parent.expression === current) current = current.parent;
+      return assignmentKind(current) || (ts.isPrefixUnaryExpression(current.parent) || ts.isPostfixUnaryExpression(current.parent)) && current.parent.operand === current;
+    };
+    const aliasDeclaration = (node: ts.Expression): ts.VariableDeclaration | null =>
+      ts.isVariableDeclaration(node.parent) && node.parent.initializer === node && ts.isIdentifier(node.parent.name) ? node.parent : null;
+    const useSafe = (node: ts.Expression, remainingPath: string[]): boolean => {
+      if (mutationThrough(node)) return false;
+      if (node === finalValue) return true;
+      const alias = aliasDeclaration(node);
+      if (alias) return bindingUseIsSafe(info, alias, finalValue, remainingPath, allowReturn, seen, separatedSiblings);
+      if (ts.isReturnStatement(node.parent) && node.parent.expression === node) return allowReturn && ts.isFunctionLike(root) && 'body' in root && node.parent.parent === root.body;
+      if (ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)) return false;
+      return false;
+    };
+    const inspect = (node: ts.Node): void => {
+      if (!safe) return;
+      if (ts.isIdentifier(node) && node.text === declarationName && node !== declaration.name
+        && resolveLexicalDeclaration(node, root) === declaration) {
+        if (enclosingFunctionLike(node) !== enclosingFunctionLike(declaration)) { safe = false; return; }
+        if (assignmentKind(node)) { safe = false; return; }
+        if (!path.length) { if (!useSafe(node, [])) safe = false; return; }
+        let value: ts.Expression = node;
+        let matched = true;
+        for (const segment of path) {
+          if (!ts.isPropertyAccessExpression(value.parent) || value.parent.expression !== value || value.parent.name.text !== segment) { matched = false; break; }
+          value = value.parent;
+        }
+        if (matched) { if (!useSafe(value, [])) safe = false; return; }
+        if (ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)) { safe = false; return; }
+        if (!ts.isPropertyAccessExpression(node.parent) || node.parent.expression !== node || mutationThrough(node)) { safe = false; return; }
+        const sibling = node.parent;
+        if (!separatedSiblings.has(sibling.name.text)
+          || !(ts.isVoidExpression(sibling.parent)
+            || ts.isPropertyAssignment(sibling.parent) && sibling.parent.initializer === sibling)) safe = false;
+      }
+      ts.forEachChild(node, inspect);
+    };
+    inspect(root);
+    return safe;
+  };
+  type Separation = 'separated' | 'concrete-interference' | 'unknown';
+  const exactObjectSeparation = (info: ModuleInfo, object: ts.ObjectLiteralExpression, targetName: string): Map<string, Separation> => {
+    const result = new Map<string, Separation>();
+    const properties = object.properties;
+    if (properties.some(property => ts.isSpreadAssignment(property) || ts.isComputedPropertyName(property.name)
+      || ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property) || ts.isMethodDeclaration(property))) return result;
+    const named = properties.map(property => ({ property, name: staticPropertyName(property) }));
+    if (named.some(item => !item.name || item.name === '__proto__') || new Set(named.map(item => item.name)).size !== named.length) return result;
+    const target = named.find(item => item.name === targetName)?.property;
+    if (!target || !ts.isPropertyAssignment(target)) return result;
+    const targetValue = unwrapValue(target.initializer);
+    const targetBinding = ts.isIdentifier(targetValue) ? resolveLexicalDeclaration(targetValue, enclosingFunctionLike(targetValue) ?? info.sourceFile) : null;
+    for (const item of named) {
+      if (item.name === targetName || !ts.isPropertyAssignment(item.property)) continue;
+      const value = unwrapValue(item.property.initializer);
+      const binding = ts.isIdentifier(value) ? resolveLexicalDeclaration(value, enclosingFunctionLike(value) ?? info.sourceFile) : null;
+      if (binding && targetBinding && binding === targetBinding) result.set(item.name!, 'concrete-interference');
+      else if (ts.isStringLiteralLike(value) || ts.isNumericLiteral(value)
+        || value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword || value.kind === ts.SyntaxKind.NullKeyword) result.set(item.name!, 'separated');
+      else result.set(item.name!, 'unknown');
+    }
+    return result;
+  };
+  const freshArrayValue = (info: ModuleInfo, input: ts.Expression, seen = new Set<string>(), scope?: ts.Node): boolean => {
+    const expression = unwrapValue(input);
+    const key = `${info.sourceFile.fileName}:${expression.pos}:${expression.end}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (ts.isArrayLiteralExpression(expression)) return true;
+    if (ts.isIdentifier(expression)) {
+      const root = scope ?? enclosingFunctionLike(expression) ?? info.sourceFile;
+      const declaration = resolveLexicalDeclaration(expression, root);
+      if (!declaration || !ts.isVariableDeclaration(declaration) || !bindingUseIsSafe(info, declaration, expression, [], ts.isReturnStatement(expression.parent), new Set())) return false;
+      return declaration.initializer ? freshArrayValue(info, declaration.initializer, seen, root) : false;
+    }
+    if (ts.isCallExpression(expression)) {
+      const target = importedCallTarget(info, expression.expression);
+      const returned = target ? returnedExpression(target) : null;
+      return returned ? freshArrayValue(returned.info, returned.expression, seen, returned.wrapper) : false;
+    }
+    if (ts.isPropertyAccessExpression(expression)) {
+      const object = unwrapValue(expression.expression);
+      let objectInfo = info;
+      let objectScope = scope;
+      let objectValue: ts.Expression | null = object;
+      let objectDeclaration: ts.VariableDeclaration | null = null;
+      if (ts.isIdentifier(object)) {
+        const root = scope ?? enclosingFunctionLike(object) ?? info.sourceFile;
+        const declaration = resolveLexicalDeclaration(object, root);
+        if (!declaration || !ts.isVariableDeclaration(declaration)) return false;
+        objectDeclaration = declaration;
+        objectValue = declaration.initializer ?? null;
+      }
+      if (objectValue) objectValue = unwrapValue(objectValue);
+      if (objectValue && ts.isCallExpression(objectValue)) {
+        const target = importedCallTarget(objectInfo, objectValue.expression);
+        const returned = target ? returnedExpression(target) : null;
+        if (!returned) return false;
+        objectInfo = returned.info;
+        objectScope = returned.wrapper;
+        objectValue = unwrapValue(returned.expression);
+      }
+      if (!objectValue || !ts.isObjectLiteralExpression(objectValue)) return false;
+      if (objectValue.properties.some(property => ts.isSpreadAssignment(property) || ts.isComputedPropertyName(property.name)
+        || ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property) || ts.isMethodDeclaration(property))) return false;
+      const properties = objectValue.properties.filter(property => staticPropertyName(property) === expression.name.text);
+      if (properties.length !== 1 || !ts.isPropertyAssignment(properties[0]!)) return false;
+      const separation = exactObjectSeparation(objectInfo, objectValue, expression.name.text);
+      const separatedSiblings = new Set([...separation].filter(([, status]) => status === 'separated').map(([name]) => name));
+      if (objectDeclaration && !bindingUseIsSafe(info, objectDeclaration, expression, [expression.name.text], false, new Set(), separatedSiblings)) return false;
+      return freshArrayValue(objectInfo, properties[0]!.initializer, seen, objectScope);
+    }
+    return false;
+  };
+
   for (const [relative, info] of moduleInfos) {
     const fromFile = fileNodes.get(relative);
     for (const binding of info.imports.values()) {
@@ -1445,6 +1647,14 @@ async function crossFileTypeScriptGraph(
       inspect(argument);
       return callbacks;
     };
+    const enclosingFunction = (node: ts.Node): ts.FunctionLikeDeclaration | undefined => {
+      let current: ts.Node | undefined = node.parent;
+      while (current && !ts.isSourceFile(current)) {
+        if (ts.isFunctionLike(current) && 'body' in current) return current as ts.FunctionLikeDeclaration;
+        current = current.parent;
+      }
+      return undefined;
+    };
     const visit = (node: ts.Node): void => {
       let pushed = false;
       let owner: GraphNode | null = null;
@@ -1460,6 +1670,27 @@ async function crossFileTypeScriptGraph(
         const classifiedCallbacks = new Set<string>();
         const importedTarget = importedCallTarget(info, node.expression);
         const target = importedTarget ?? (caller ? resolvedLocalCallTarget(caller, node.expression, relative, lineOf(node)) : null);
+        if (!target && caller && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'map'
+          && freshArrayValue(info, node.expression.expression, new Set(), enclosingFunction(node))) {
+          const candidate = node.arguments[0];
+          if (candidate && (ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate))) {
+            const callback = callbackOwnerFor(candidate);
+            if (callback) {
+              classifiedCallbacks.add(callback.id);
+              addedEdges.push(resolution({
+                from: caller.id,
+                to: callback.id,
+                kind: 'invokes',
+                strategy: 'fresh-array-callback-invocation',
+                confidence: 1,
+                status: 'resolved',
+                evidence: [`${relative}:${lineOf(node)}`, 'may invoke through ordinary unmodified Array built-in map'],
+                layer: 'structural',
+                checkpoint: false,
+              }));
+            }
+          }
+        }
         if (target) {
           if (importedTarget && caller && caller.id !== target.id) addedEdges.push(resolution({
             from: caller.id,

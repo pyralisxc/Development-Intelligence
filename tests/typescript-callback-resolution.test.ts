@@ -252,3 +252,94 @@ export async function ownerUnknownDuplicate() { return await missing({ execute: 
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('fresh-array callback provenance resolves only an unmodified factory chain', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-fresh-array-callback-'));
+  try {
+    await fs.writeFile(path.join(root, 'factory.ts'), `export const makeBox = () => ({ items: [1, 2, 3] });
+export const makeArray = () => [1, 2, 3];
+export const makeSpreadBox = (opaque: object) => ({ items: [1, 2, 3], ...opaque });
+export const makeMutatedArray = () => { const a = [1, 2, 3]; a.map = ((_callback: unknown) => []) as typeof a.map; return a; };
+export const makeAliasedMutatedArray = () => { const a = [1, 2, 3]; const b = a; b.map = ((_callback: unknown) => []) as typeof b.map; return a; };
+export const makeEscapedArray = (opaque: (value: number[]) => void) => { const a = [1, 2, 3]; opaque(a); return a; };
+export const makeCapturedArray = (opaque: (value: number[]) => void) => { const a = [1, 2, 3]; function mutate() { opaque(a); } mutate(); return a; };
+export const makePoisonBox = () => ({ items: [1, 2, 3], get poison() { this.items.map = ((_callback: unknown) => []) as typeof this.items.map; return 1; } });
+export const makeFunctionBox = () => ({ items: [1, 2, 3], poison: function () { this.items.map = ((_callback: unknown) => []) as typeof this.items.map; } });
+export const makeSeparatedBox = () => ({ items: [1, 2, 3], label: 'safe' });
+export const makePrototypeBox = () => ({ items: [1, 2, 3], __proto__: { get poison() { return 1; } } });
+export const makeAliasBox = () => { const items = [1, 2, 3]; return { items, sibling: items }; };
+`);
+    await fs.writeFile(path.join(root, 'writes.ts'), `export const writeFresh = () => 'fresh';
+export const writeInvoking = () => 'invoking'; export const writeStoring = () => 'storing'; export const writeIgnoring = () => 'ignoring';
+export const writeOpaque = () => 'opaque'; export const writeRebound = () => 'rebound'; export const writeOverride = () => 'override';
+export const writeReassigned = () => 'reassigned'; export const writeSpread = () => 'spread'; export const writeNested = () => 'nested';
+export const writeFactoryMutated = () => 'factory-mutated'; export const writeFactoryAliasMutated = () => 'factory-alias-mutated';
+export const writeFactoryEscaped = () => 'factory-escaped';
+export const writeBlockBorrow = () => 'block-borrow'; export const writeOpaqueBox = () => 'opaque-box'; export const writePropertyAlias = () => 'property-alias'; export const writeFactoryCaptured = () => 'factory-captured';
+export const writePriorMap = () => 'prior-map'; export const writePoison = () => 'poison';
+export const writeSiblingCall = () => 'sibling-call';
+export const writeSeparated = () => 'separated'; export const writePrototype = () => 'prototype'; export const writeSiblingAlias = () => 'sibling-alias';
+`);
+    await fs.writeFile(path.join(root, 'owners.ts'), `import { makeBox, makeArray, makeSpreadBox, makeMutatedArray, makeAliasedMutatedArray, makeEscapedArray, makeCapturedArray, makePoisonBox, makeFunctionBox, makeSeparatedBox, makePrototypeBox, makeAliasBox } from './factory';
+import { writeFresh, writeInvoking, writeStoring, writeIgnoring, writeOpaque, writeRebound, writeOverride, writeReassigned, writeSpread, writeNested, writeFactoryMutated, writeFactoryAliasMutated, writeFactoryEscaped, writeBlockBorrow, writeOpaqueBox, writePropertyAlias, writeFactoryCaptured, writePriorMap, writePoison, writeSiblingCall, writeSeparated, writePrototype, writeSiblingAlias } from './writes';
+export function freshFactory() { const box = makeBox(); return box.items.map(() => writeFresh()); }
+export function customInvoking() { const custom = { map: (callback: () => unknown) => callback() }; return custom.map(() => writeInvoking()); }
+export function customStoring() { let saved: unknown; const custom = { map: (callback: () => unknown) => { saved = callback; return []; } }; return custom.map(() => writeStoring()); }
+export function customIgnoring() { const custom = { map: (_callback: () => unknown) => [] }; return custom.map(() => writeIgnoring()); }
+export function opaqueReceiver(items: { map(callback: () => unknown): unknown }) { return items.map(() => writeOpaque()); }
+export function reboundMap() { const items = makeArray(); items.map = ((_callback: unknown) => []) as typeof items.map; return items.map(() => writeRebound()); }
+export function propertyOverride() { const box = makeBox(); box.items.map = ((_callback: unknown) => []) as typeof box.items.map; return box.items.map(() => writeOverride()); }
+export function reassignedBox() { let box = makeBox(); box = { items: { map: (_callback: unknown) => [] } } as unknown as ReturnType<typeof makeBox>; return box.items.map(() => writeReassigned()); }
+export function spreadOverride() { const box = makeSpreadBox({ items: { map: (_callback: unknown) => [] } }); return box.items.map(() => writeSpread()); }
+export function nestedBorrow(items: { map(callback: () => unknown): unknown }) { function unused() { const items = [1, 2, 3]; return items; } void unused; return items.map(() => writeNested()); }
+export function factoryMutated() { const items = makeMutatedArray(); return items.map(() => writeFactoryMutated()); }
+export function factoryAliasMutated() { const items = makeAliasedMutatedArray(); return items.map(() => writeFactoryAliasMutated()); }
+export function factoryEscaped(opaque: (value: number[]) => void) { const items = makeEscapedArray(opaque); return items.map(() => writeFactoryEscaped()); }
+export function blockBorrow(items: { map(callback: () => unknown): unknown }) { { const items = [1, 2, 3]; void items; } return items.map(() => writeBlockBorrow()); }
+export function opaqueBox(opaque: (value: unknown) => void) { const box = makeBox(); opaque(box); return box.items.map(() => writeOpaqueBox()); }
+export function propertyAlias() { const box = makeBox(); const items = box.items; items.map = ((_callback: unknown) => []) as typeof items.map; return box.items.map(() => writePropertyAlias()); }
+export function factoryCaptured(opaque: (value: number[]) => void) { const items = makeCapturedArray(opaque); return items.map(() => writeFactoryCaptured()); }
+export function priorMapMutation() { const items = makeArray(); items.map((_value, _index, array) => { array.map = ((_callback: unknown) => []) as typeof array.map; }); return items.map(() => writePriorMap()); }
+export function poisonGetter() { const box = makePoisonBox(); void box.poison; return box.items.map(() => writePoison()); }
+export function siblingCall() { const box = makeFunctionBox(); box.poison(); return box.items.map(() => writeSiblingCall()); }
+export function separatedSibling() { const box = makeSeparatedBox(); void box.label; return box.items.map(() => writeSeparated()); }
+export function prototypeCustomization() { const box = makePrototypeBox(); void box.poison; return box.items.map(() => writePrototype()); }
+export function siblingAliasMutation() { const box = makeAliasBox(); box.sibling.map = ((_callback: unknown) => []) as typeof box.sibling.map; return box.items.map(() => writeSiblingAlias()); }
+`);
+    await runChecked('git', ['init', '--initial-branch=main', root]);
+    await runChecked('git', ['-C', root, 'add', '.']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
+    const graph = await buildLocalGraph(root, 'fresh-array-fixture', 'W');
+    const cases: Array<[string, string, boolean]> = [
+      ['freshFactory', 'writeFresh', true], ['customInvoking', 'writeInvoking', false], ['customStoring', 'writeStoring', false],
+      ['customIgnoring', 'writeIgnoring', false], ['opaqueReceiver', 'writeOpaque', false], ['reboundMap', 'writeRebound', false], ['propertyOverride', 'writeOverride', false],
+      ['reassignedBox', 'writeReassigned', false], ['spreadOverride', 'writeSpread', false], ['nestedBorrow', 'writeNested', false],
+      ['factoryMutated', 'writeFactoryMutated', false], ['factoryAliasMutated', 'writeFactoryAliasMutated', false],
+      ['factoryEscaped', 'writeFactoryEscaped', false],
+      ['blockBorrow', 'writeBlockBorrow', false], ['opaqueBox', 'writeOpaqueBox', false], ['propertyAlias', 'writePropertyAlias', false], ['factoryCaptured', 'writeFactoryCaptured', false],
+      ['priorMapMutation', 'writePriorMap', false], ['poisonGetter', 'writePoison', false],
+      ['siblingCall', 'writeSiblingCall', false],
+      ['separatedSibling', 'writeSeparated', true], ['prototypeCustomization', 'writePrototype', false], ['siblingAliasMutation', 'writeSiblingAlias', false],
+    ];
+    for (const [ownerName, writeName, expected] of cases) {
+      const owner = nodeId(graph, ownerName, 'owners.ts');
+      const write = nodeId(graph, writeName, 'writes.ts');
+      const edges = graph.edges.filter(edge => edge.from === owner && edge.kind === 'invokes');
+      assert.equal(reachable(graph, owner, write), expected, `${ownerName} reachability`);
+      if (expected) assert.ok(edges.some(edge => edge.status === 'resolved' && edge.strategy === 'fresh-array-callback-invocation'));
+      else assert.ok(edges.some(edge => edge.status === 'unresolved'));
+    }
+    const parity = evaluateParityContractGraph(graph, {
+      version: 1,
+      predicates: cases.map(([ownerName, writeName]) => ({
+        id: `${ownerName}-forbidden`, type: 'reachability' as const,
+        from: { ids: [nodeId(graph, ownerName, 'owners.ts')] }, to: { ids: [nodeId(graph, writeName, 'writes.ts')] },
+        requirement: 'forbidden' as const, quantifier: 'any' as const, relationshipKinds: ['calls', 'invokes'], maxDepth: 4,
+      })),
+    }) as any;
+    for (const [index, result] of parity.results.entries()) assert.equal(result.status,
+      cases[index]?.[2] ? 'forbidden-present' : 'unproven', `${result.predicate.id} must preserve its proof boundary`);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
