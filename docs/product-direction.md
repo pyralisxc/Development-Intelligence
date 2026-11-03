@@ -57,6 +57,7 @@ Each inspected project remains autonomous:
 8. **Current truth is durable; history is reconstructable.** DI canonical persistence owns the current accepted semantic authority, Git owns immutable source/history, and service caches, transition reviews, and checkouts are disposable once they no longer serve current truth.
 9. **Observation is bounded.** Repository, runtime, and technical-source access is allowlisted, read-only, credential-safe, and explicit.
 10. **Complexity must earn permanence.** New persistence, providers, abstractions, team concepts, or workflow controls must improve trustworthy understanding enough to justify their carrying cost.
+11. **Exact questions have reproducible answers.** The same normalized query, scope, source revision, analyzer version, and relevant configuration must produce the same conclusion and evidence regardless of agent or date. A changed answer must be attributable to changed source/input or a versioned analyzer improvement. Determinism does not turn heuristics into facts: supported, inferred, candidate, and unknown conclusions remain explicitly distinct.
 
 ## What Development Intelligence is not
 

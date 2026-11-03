@@ -8,6 +8,7 @@ import { assertGraphIntegrity } from './integrity.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { evaluateParityContractGraph } from './parityContract.js';
+import { buildTestClaimDecisionRecord, normalizeTestClaimCatalog, type TestClaimCatalog } from './testClaimInventory.js';
 
 async function gitValue(root: string, args: string[]): Promise<string> {
   return (await runChecked('git', ['-C', root, ...args])).stdout.trim();
@@ -70,44 +71,59 @@ export interface LocalParityContractInput {
   contract: unknown;
 }
 
+export interface LocalTestClaimCatalogInput {
+  path: string;
+  catalog: TestClaimCatalog;
+}
+
 function pathInside(root: string, target: string): string | null {
   const relative = path.relative(root, target);
   if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
   return relative.split(path.sep).join('/');
 }
 
-export async function readLocalParityContract(rootInput: string, contractPathInput: string): Promise<LocalParityContractInput> {
-  const requestedPath = contractPathInput.trim();
-  if (!requestedPath) throw new Error('parity contract path must be non-empty');
+async function readLocalJsonFile(rootInput: string, pathInput: string, label: string): Promise<{ path: string; value: unknown }> {
+  const requestedPath = pathInput.trim();
+  if (!requestedPath) throw new Error(`${label} path must be non-empty`);
   const root = await fs.realpath(path.resolve(rootInput));
   const lexicalPath = path.resolve(root, requestedPath);
-  if (!pathInside(root, lexicalPath)) throw new Error(`parity contract path escapes repository root: ${requestedPath}`);
+  if (!pathInside(root, lexicalPath)) throw new Error(`${label} path escapes repository root: ${requestedPath}`);
 
   let lexicalStat;
   try {
     lexicalStat = await fs.lstat(lexicalPath);
   } catch (error) {
-    throw new Error(`parity contract could not be read: ${requestedPath}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`${label} could not be read: ${requestedPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (lexicalStat.isSymbolicLink()) throw new Error(`parity contract must not be a symbolic link: ${requestedPath}`);
+  if (lexicalStat.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link: ${requestedPath}`);
 
   const realPath = await fs.realpath(lexicalPath);
   const relative = pathInside(root, realPath);
-  if (!relative) throw new Error(`parity contract resolves outside repository root: ${requestedPath}`);
+  if (!relative) throw new Error(`${label} resolves outside repository root: ${requestedPath}`);
   const stat = await fs.stat(realPath);
-  if (!stat.isFile()) throw new Error(`parity contract is not a regular file: ${requestedPath}`);
+  if (!stat.isFile()) throw new Error(`${label} is not a regular file: ${requestedPath}`);
 
   let text: string;
   try {
     text = await fs.readFile(realPath, 'utf8');
   } catch (error) {
-    throw new Error(`parity contract could not be read: ${requestedPath}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`${label} could not be read: ${requestedPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
-    return { path: relative, contract: JSON.parse(text) as unknown };
+    return { path: relative, value: JSON.parse(text) as unknown };
   } catch (error) {
-    throw new Error(`parity contract is not valid JSON: ${requestedPath}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`${label} is not valid JSON: ${requestedPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+export async function readLocalParityContract(rootInput: string, contractPathInput: string): Promise<LocalParityContractInput> {
+  const input = await readLocalJsonFile(rootInput, contractPathInput, 'parity contract');
+  return { path: input.path, contract: input.value };
+}
+
+export async function readLocalTestClaimCatalog(rootInput: string, catalogPathInput: string): Promise<LocalTestClaimCatalogInput> {
+  const input = await readLocalJsonFile(rootInput, catalogPathInput, 'test claim catalog');
+  return { path: input.path, catalog: normalizeTestClaimCatalog(input.value) };
 }
 
 function maintainedParityReceipt(graph: IntelligenceGraph, input: LocalParityContractInput): Record<string, unknown> {
@@ -129,8 +145,13 @@ function maintainedParityReceipt(graph: IntelligenceGraph, input: LocalParityCon
       replacementEligible,
       blockers,
       ...(result.matched ? { matched: result.matched } : {}),
+      ...(result.predicate ? { predicate: result.predicate } : {}),
+      ...(result.expectation ? { expectation: result.expectation } : {}),
       ...(result.observed?.traversal ? { traversal: result.observed.traversal } : {}),
       ...(result.observed?.sourceScope ? { sourceScope: result.observed.sourceScope } : {}),
+      ...(Array.isArray(result.observed?.counterexamples) ? { counterexamples: result.observed.counterexamples } : {}),
+      ...(Array.isArray(result.observed?.tentativePaths) ? { tentativePaths: result.observed.tentativePaths } : {}),
+      ...(result.observed?.connectivityWarning ? { connectivityWarning: result.observed.connectivityWarning } : {}),
       explanation: result.explanation,
     };
   });
@@ -157,7 +178,7 @@ function maintainedParityReceipt(graph: IntelligenceGraph, input: LocalParityCon
   };
 }
 
-export async function analyzeLocalGraph(root: string, project?: string, parityContract?: LocalParityContractInput): Promise<Record<string, unknown>> {
+export async function analyzeLocalGraph(root: string, project?: string, parityContract?: LocalParityContractInput, testClaimCatalog?: LocalTestClaimCatalogInput): Promise<Record<string, unknown>> {
   const graph = await buildLocalGraph(root, project, 'W');
   const coverage = graph.coverage ?? null;
   const eligibleComplete = Boolean(
@@ -180,6 +201,9 @@ export async function analyzeLocalGraph(root: string, project?: string, parityCo
   );
   const factualityClean = semanticAudit.counts.factualityNeedsReview === 0;
   const parityReceipt = parityContract ? maintainedParityReceipt(graph, parityContract) : null;
+  const testClaims = testClaimCatalog
+    ? await buildTestClaimDecisionRecord(path.resolve(root), graph, testClaimCatalog.catalog, (parityReceipt as any)?.claims ?? [])
+    : null;
   const valid = eligibleComplete && authoritySafe && factualityClean && (!parityReceipt || parityReceipt.valid === true);
 
   return {
@@ -214,6 +238,7 @@ export async function analyzeLocalGraph(root: string, project?: string, parityCo
       authoritySafe,
     },
     ...(parityReceipt ? { parityContract: parityReceipt } : {}),
+    ...(testClaims ? { testClaimDecisionRecord: { path: testClaimCatalog!.path, ...testClaims } } : {}),
     policy: {
       checkpointRead: false,
       checkpointWritten: false,

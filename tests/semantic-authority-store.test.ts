@@ -172,6 +172,15 @@ test('semantic compaction retains latest accepted and rejected dispositions with
     const staged = await persistSemanticReviews(project, [previewAccepted, rejected], first.etag);
     assert.equal(staged.ledger?.records.length, 3, 'Preview may temporarily retain base + current review state');
 
+    const tiedStorageLedger = staged.ledger
+      ? { ...staged.ledger, records: staged.ledger.records.map(record => ({ ...record, storedAt: '2026-09-29T02:00:00.000Z' })) }
+      : null;
+    assert.equal(
+      latestAcceptedMeanings(tiedStorageLedger).find(item => item.meaningId === baseAccepted.meaningId)?.proposalRevision,
+      previewRevision,
+      'review chronology deterministically breaks equal persistence timestamps',
+    );
+
     const compacted = await compactSemanticAuthorityToCurrentAccepted(project);
     assert.equal(compacted.state, 'stored');
     assert.equal(compacted.ledger?.records.length, 2);

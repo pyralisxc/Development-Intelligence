@@ -12,6 +12,9 @@ inputs:
   parity-contract:
     description: Optional repository-relative JSON parity contract. Analyze fails unless every claim is satisfied with qualified, replacement-eligible evidence.
     required: false
+  test-claim-catalog:
+    description: Optional repository-relative claim catalog. Produces an assertion-level decision record joined to the supplied parity contract without changing graph authority.
+    required: false
 
 runs:
   using: composite
@@ -41,9 +44,13 @@ runs:
         if [[ -n "$DEVINT_PARITY_CONTRACT" ]]; then
           args+=(--parity-contract "$DEVINT_PARITY_CONTRACT")
         fi
+        if [[ -n "$DEVINT_TEST_CLAIM_CATALOG" ]]; then
+          args+=(--test-claim-catalog "$DEVINT_TEST_CLAIM_CATALOG")
+        fi
         node "$GITHUB_ACTION_PATH/dist/src/graphCli.js" "${args[@]}"
       shell: bash
       env:
         DEVINT_CHECKPOINT_MODE: ${{ inputs.mode }}
         DEVINT_PROJECT: ${{ inputs.project }}
         DEVINT_PARITY_CONTRACT: ${{ inputs['parity-contract'] }}
+        DEVINT_TEST_CLAIM_CATALOG: ${{ inputs['test-claim-catalog'] }}
