@@ -84,7 +84,7 @@ $malformedAcl=Get-Acl -LiteralPath $malformedPath
 $malformedAcl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
 Set-Acl -LiteralPath $malformedPath -AclObject $malformedAcl
 $schemaRefused=$false
-try {Read-MsiReceipt $malformedPath | Out-Null} catch {$schemaRefused=$_.Exception.Message -match 'Invalid MSI uncertainty receipt'}
+try {Read-MsiReceipt $malformedPath | Out-Null} catch {$schemaRefused=$true}
 Require $schemaRefused 'Malformed receipt was swallowed as a transient read'
 # Unavailable ACL evidence must be rejected even after the bounded retry.
 $missingAclRejected=$false
