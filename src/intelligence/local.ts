@@ -145,6 +145,8 @@ function maintainedParityReceipt(graph: IntelligenceGraph, input: LocalParityCon
       replacementEligible,
       blockers,
       ...(result.matched ? { matched: result.matched } : {}),
+      ...(result.predicate ? { predicate: result.predicate } : {}),
+      ...(result.expectation ? { expectation: result.expectation } : {}),
       ...(result.observed?.traversal ? { traversal: result.observed.traversal } : {}),
       ...(result.observed?.sourceScope ? { sourceScope: result.observed.sourceScope } : {}),
       ...(Array.isArray(result.observed?.counterexamples) ? { counterexamples: result.observed.counterexamples } : {}),
@@ -201,7 +203,7 @@ export async function analyzeLocalGraph(root: string, project?: string, parityCo
   const parityReceipt = parityContract ? maintainedParityReceipt(graph, parityContract) : null;
   if (testClaimCatalog && !parityReceipt) throw new Error('test claim catalog requires a parity contract evaluated against the same graph');
   const testClaims = testClaimCatalog
-    ? buildTestClaimDecisionRecord(graph, testClaimCatalog.catalog, (parityReceipt as any).claims)
+    ? await buildTestClaimDecisionRecord(path.resolve(root), graph, testClaimCatalog.catalog, (parityReceipt as any).claims)
     : null;
   const valid = eligibleComplete && authoritySafe && factualityClean && (!parityReceipt || parityReceipt.valid === true);
 

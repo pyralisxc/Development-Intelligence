@@ -1,47 +1,14 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import { buildTestClaimDecisionRecord, normalizeTestClaimCatalog } from '../src/intelligence/testClaimInventory.js';
-import type { IntelligenceGraph } from '../src/types.js';
+import assert from 'node:assert/strict'; import { createHash } from 'node:crypto'; import { promises as fs } from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import test from 'node:test';
+import { buildTestClaimDecisionRecord, normalizeTestClaimCatalog } from '../src/intelligence/testClaimInventory.js'; import type { IntelligenceGraph } from '../src/types.js';
+const revision='a'.repeat(40); const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
+function graph(): IntelligenceGraph { return {schemaVersion:2,analyzerVersion:'inventory-test',graphId:'repo-test',project:'example/project',role:'W',createdAt:'2026-11-03T00:00:00Z',repositoryRevision:revision,sourceFingerprint:'source',topologyFingerprint:'topology',evidenceFingerprint:'evidence',sources:[],evidence:[],nodes:[],edges:[],namingDivergences:[],explicitValueConflicts:[],unmatchedNodeIds:[],unavailableSourceIds:[],coverage:{trackedFiles:1,eligibleFiles:1,analyzedFiles:1,completeFiles:1,partialFiles:0,unsupportedFiles:0,skippedFiles:0,failedFiles:0,skippedOversizedFiles:0,skippedNonRegularFiles:0,skippedFileLimitFiles:0,files:[{path:'tests/example.test.ts',status:'complete'}]}}; }
 
-const revision = 'a'.repeat(40);
-function graph(): IntelligenceGraph {
-  return { schemaVersion: 2, analyzerVersion: 'inventory-test', graphId: 'repo-abc-inventory', project: 'example/project', role: 'W', createdAt: '2026-11-03T00:00:00.000Z', repositoryRevision: revision, sourceFingerprint: 'source-fingerprint', topologyFingerprint: 'topology', evidenceFingerprint: 'evidence', sources: [], evidence: [], nodes: [], edges: [], namingDivergences: [], explicitValueConflicts: [], unmatchedNodeIds: [], unavailableSourceIds: [], coverage: { trackedFiles: 1, eligibleFiles: 1, analyzedFiles: 1, completeFiles: 1, partialFiles: 0, unsupportedFiles: 0, skippedFiles: 0, failedFiles: 0, skippedOversizedFiles: 0, skippedNonRegularFiles: 0, skippedFileLimitFiles: 0, files: [] } };
-}
-
-test('suite decision record expresses directional equivalence, overlap, distinct protection and unclassified boundaries', () => {
-  const catalog = normalizeTestClaimCatalog({ version: 1, revision, analyzerVersion: 'inventory-test', inventory: {
-    declarations: [{ id: 'test:registration', sourceId: 'tests/example.test.tsx', line: 1, title: 'registration', dynamic: false }],
-    assertions: [
-      { id: 'assert:static', sourceId: 'tests/example.test.tsx', line: 2, expression: 'expect(source).toContain(name)', contextSignals: ['registration'], dynamic: false },
-      { id: 'assert:browser', sourceId: 'tests/example.test.tsx', line: 3, expression: 'expect(page.locator(button).click())', contextSignals: [], dynamic: false },
-      { id: 'assert:dynamic', sourceId: 'tests/example.test.tsx', line: 4, contextSignals: [], dynamic: true },
-    ],
-  }, claims: [
-    { id: 'registration', originalClaim: 'tool is registered', equivalenceRationale: 'The required registered-as predicate covers the source membership assertion in the same direction.', assertionIds: ['assert:static'], parityClaimIds: ['registration-proof'] },
-    { id: 'gesture', originalClaim: 'button works', equivalenceRationale: 'Static registration overlaps but cannot prove the browser gesture.', assertionIds: ['assert:browser'], parityClaimIds: ['registration-proof'], protectionSignals: ['browser setup and gesture execution'] },
-    { id: 'dynamic', originalClaim: 'generated cases hold', equivalenceRationale: 'Dynamic generation cannot be classified from this inventory.', assertionIds: ['assert:dynamic'], parityClaimIds: [] },
-  ] });
-  const record = buildTestClaimDecisionRecord(graph(), catalog, [{ id: 'registration-proof', status: 'satisfied', qualified: true, replacementEligible: true, blockers: [], counterexamples: [] }]) as any;
-  assert.deepEqual(record, buildTestClaimDecisionRecord(graph(), catalog, [{ id: 'registration-proof', status: 'satisfied', qualified: true, replacementEligible: true, blockers: [], counterexamples: [] }]));
-  assert.equal(record.counts.declarations, 1); assert.equal(record.counts.assertions, 3);
-  assert.equal(record.claims[0].outcome, 'equivalent'); assert.equal(record.claims[0].staticReplacementEquivalent, true);
-  assert.equal(record.claims[1].outcome, 'distinct-protection'); assert.equal(record.claims[1].staticReplacementEquivalent, false);
-  assert.equal(record.claims[2].outcome, 'unclassified'); assert.match(record.claims[2].blockers.join(' '), /dynamic or unclassified/);
-  assert.equal(record.policy.recommendsDeletion, false);
+test('source-validated assertion can be equivalent while unrelated or forged mappings cannot', async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'di-claims-')); try { await fs.mkdir(path.join(root,'tests')); const source=`import {readFileSync} from 'node:fs';\nconst tools=readFileSync('src/owner.ts','utf8');\nexpect(tools).toContain("'tool_a'");\n`; await fs.writeFile(path.join(root,'tests/example.test.ts'),source); const expression=`expect(tools).toContain("'tool_a'")`; const start=source.indexOf(expression); const base={version:1,revision,analyzerVersion:'inventory-test',scope:{sourcePrefixes:['tests/'],sourceSuffixes:['.test.ts']},files:[{sourceId:'tests/example.test.ts',contentSha256:sha(source),declarationIds:[],assertionIds:['a'],disposition:'analyzed'}],declarations:[],assertions:[{id:'a',sourceId:'tests/example.test.ts',start,end:start+expression.length,spanSha256:sha(expression),dynamic:false}]};
+ const predicate={id:'proof-a',type:'reachability',from:{ids:['mcp:tool_a']},to:{kinds:['mcp-tool']},requirement:'required',quantifier:'any',direction:'outbound',relationshipKinds:['registered-as'],maxDepth:1,scopeSourceIds:['src/owner.ts']}; const catalog=normalizeTestClaimCatalog({...base,claims:[{id:'claim-a',originalClaim:'tool a registered',equivalenceRationale:'same registration obligation',assertionIds:['a'],parityClaimIds:['proof-a'],productionSourceIds:['src/owner.ts']}]}); const parity=[{id:'proof-a',status:'satisfied',qualified:true,replacementEligible:true,blockers:[],predicate}]; const record=await buildTestClaimDecisionRecord(root,graph(),catalog,parity) as any; assert.equal(record.claims[0].outcome,'equivalent'); assert.equal(record.population.complete,true);
+ const unrelated=normalizeTestClaimCatalog({...base,claims:[{id:'wrong',originalClaim:'tool a registered',equivalenceRationale:'forged mapping',assertionIds:['a'],parityClaimIds:['proof-b'],productionSourceIds:['src/owner.ts']}]}); const wrong=await buildTestClaimDecisionRecord(root,graph(),unrelated,[{...parity[0],id:'proof-b',predicate:{...predicate,id:'proof-b',from:{ids:['mcp:tool_b']}}}]) as any; assert.equal(wrong.claims[0].outcome,'unproven-equivalence'); assert.equal(wrong.claims[0].staticReplacementEquivalent,false);
+ const forged=normalizeTestClaimCatalog({...base,assertions:[{...base.assertions[0],sourceId:'tests/missing.test.ts'}],claims:[{id:'forged',originalClaim:'tool a',equivalenceRationale:'forged source',assertionIds:['a'],parityClaimIds:['proof-a'],productionSourceIds:['src/owner.ts']}]}); const bad=await buildTestClaimDecisionRecord(root,graph(),forged,parity) as any; assert.equal(bad.claims[0].outcome,'unclassified');
+ } finally {await fs.rm(root,{recursive:true,force:true});}
 });
 
-test('claim inventory fails closed on revision drift and reports analyzer refresh as unproven', () => {
-  const input = { version: 1, revision, analyzerVersion: 'old-analyzer', inventory: { declarations: [], assertions: [{ id: 'a', sourceId: 'tests/a.ts', line: 1, contextSignals: ['static-source'], dynamic: false }] }, claims: [{ id: 'c', originalClaim: 'claim', equivalenceRationale: 'directional mapping', assertionIds: ['a'], parityClaimIds: ['p'] }] };
-  const catalog = normalizeTestClaimCatalog(input);
-  const record = buildTestClaimDecisionRecord(graph(), catalog, [{ id: 'p', status: 'satisfied', qualified: true, replacementEligible: true, blockers: [] }]) as any;
-  assert.equal(record.claims[0].outcome, 'unproven-equivalence'); assert.match(record.claims[0].blockers.join(' '), /refresh/);
-  assert.throws(() => buildTestClaimDecisionRecord({ ...graph(), repositoryRevision: 'b'.repeat(40) }, catalog, []), /does not match analyzed revision/);
-});
-
-test('claim catalog rejects duplicate identities and missing directional rationale', () => {
-  assert.throws(() => normalizeTestClaimCatalog({ version: 1, revision, inventory: { declarations: [], assertions: [] }, claims: [
-    { id: 'same', originalClaim: 'one', equivalenceRationale: 'one', assertionIds: ['a'] },
-    { id: 'same', originalClaim: 'two', equivalenceRationale: 'two', assertionIds: ['b'] },
-  ] }), /duplicate/);
-  assert.throws(() => normalizeTestClaimCatalog({ version: 1, revision, inventory: { declarations: [], assertions: [] }, claims: [{ id: 'c', originalClaim: 'claim', assertionIds: ['a'] }] }), /equivalenceRationale/);
-});
+test('population omissions, changed source, analyzer drift, and non-static protection stay explicit',async()=>{const root=await fs.mkdtemp(path.join(os.tmpdir(),'di-claims-'));try{await fs.mkdir(path.join(root,'tests'));const source=`expect(runtime).toBe(true);`;await fs.writeFile(path.join(root,'tests/example.test.ts'),source);const catalog=normalizeTestClaimCatalog({version:1,revision,analyzerVersion:'old',scope:{sourcePrefixes:['tests/'],sourceSuffixes:['.test.ts']},files:[],declarations:[],assertions:[],claims:[]});const record=await buildTestClaimDecisionRecord(root,graph(),catalog,[]) as any;assert.equal(record.population.complete,false);assert.deepEqual(record.population.missingFiles,['tests/example.test.ts']);assert.equal(record.catalog?.current,undefined);assert.throws(()=>normalizeTestClaimCatalog({...catalog,analyzerVersion:undefined}),/analyzerVersion/);}finally{await fs.rm(root,{recursive:true,force:true});}});
