@@ -64,7 +64,7 @@ function Open-OperatorReadStream([string]$Path) {
     $stream
 }
 function Test-ReceiptPathPresence([string]$Path) {
-    Test-Path -LiteralPath $Path -PathType Leaf
+    Test-Path -LiteralPath $Path -ErrorAction Stop
 }
 function Read-MsiReceipt([string]$Path) {
     $presenceObserved=$false

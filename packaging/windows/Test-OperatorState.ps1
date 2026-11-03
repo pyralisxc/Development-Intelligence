@@ -36,6 +36,17 @@ try {
 } finally {Set-Item -Path Function:\Test-ReceiptPathPresence -Value $originalPresence}
 $originalOpen=${function:Open-OperatorReadStream}
 try {
+    # Reproduce the observed check/open race: the first open loses the atomic
+    # name, while the second uses the genuine ACL/size/schema validation path.
+    $script:openAttempts=0
+    function Open-OperatorReadStream {
+        param([string]$Path)
+        $script:openAttempts++
+        if($script:openAttempts -eq 1){throw [IO.FileNotFoundException]::new('Synthetic first-open replacement gap')}
+        & $originalOpen $Path
+    }
+    $recoveredOpenReceipt=Read-MsiReceipt $path
+    Require ($script:openAttempts -eq 2 -and $recoveredOpenReceipt.operationId -eq $record.operationId) 'Transient open gap did not recover through genuine receipt validation'
     # Once presence or a transient open was observed, later absence cannot be
     # downgraded to the mutation-allowed no-receipt state.
     $script:presenceAttempts=0
@@ -61,6 +72,11 @@ try {
     Set-Item -Path Function:\Test-ReceiptPathPresence -Value $originalPresence
     Set-Item -Path Function:\Open-OperatorReadStream -Value $originalOpen
 }
+$directoryReceipt=Join-Path $root 'directory-receipt.json'
+New-Item -ItemType Directory -Path $directoryReceipt | Out-Null
+$directoryRefused=$false
+try {Read-MsiReceipt $directoryReceipt | Out-Null} catch {$directoryRefused=$_.Exception.Message -match 'Invalid operator state file'}
+Require $directoryRefused 'Existing directory receipt path was downgraded to absent'
 $malformedPath=Join-Path $root 'malformed-receipt.json'
 Copy-Item -LiteralPath $path -Destination $malformedPath
 [IO.File]::WriteAllText($malformedPath,'{"formatVersion":1}')
