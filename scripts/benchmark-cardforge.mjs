@@ -548,7 +548,9 @@ const persistenceMotifAssessment = assessGraph(graph, persistenceSubject.id);
 const persistenceMotifElapsedMs = Number(process.hrtime.bigint() - persistenceMotifStarted) / 1_000_000;
 const persistenceMotif = persistenceMotifAssessment.orientation?.certainty?.derived?.find(item => item.kind === 'persistence-owner');
 if (!persistenceMotif || persistenceMotif.confidence !== 'high' || persistenceMotif.signals.length < 3 || persistenceMotif.proofEligible !== false) throw new Error('CardForge profile store persistence-owner motif was not conservatively derived');
-if (Math.max(pipelineMotifElapsedMs, persistenceMotifElapsedMs) > 1000) throw new Error('CardForge motif query exceeded 1000 ms acceptance budget');
+if (Math.max(pipelineMotifElapsedMs, persistenceMotifElapsedMs) > 1000) {
+  throw new Error(`CardForge motif query exceeded 1000 ms acceptance budget: pipeline ${pipelineMotifElapsedMs.toFixed(2)} ms / persistence ${persistenceMotifElapsedMs.toFixed(2)} ms`);
+}
 
 const assessmentStarted = Date.now();
 const featureAssessment = await callTool('query_intelligence', { project, graphId: scan.graphId, question: 'How is storage management implemented?' });
