@@ -979,6 +979,33 @@ test('multi-question investigation keeps one graph context and isolates question
     }) as any;
     assert.deepEqual(explicitSubjectRepeat.items, explicitSubjectBatch.items, 'the same pinned explicit-subject batch must be deterministic');
 
+    const refPinned = await callTool('investigate', {
+      project: fixture.project,
+      questions: ['What is Panel?', explicitSubjectQuestion, 'What evidence supports it?'],
+      ref: 'refs/heads/main',
+    }) as any;
+    assert.equal(refPinned.counts.error, 0, 'the caller ref must be consumed only by initial graph selection');
+    assert.equal(refPinned.request.graphId, graph.graphId);
+    assert.equal(refPinned.items[1].resolvedQuestion, explicitSubjectQuestion);
+    assert.equal(refPinned.items[1].inheritedSubject, null);
+    assert.equal(refPinned.items[1].subject.id, explicitSubjectSingle.subject.id);
+    assert.equal(refPinned.items[2].inheritedSubject, refPinned.items[1].subject.id);
+    assert.ok(refPinned.items[2].resolvedQuestion.includes(refPinned.items[1].subject.id));
+    assert.deepEqual(
+      refPinned.items.map((item: any) => ({ status: item.status, intent: item.intent, subject: item.subject, inheritedSubject: item.inheritedSubject })),
+      (await queryWorkbenchRequest({
+        project: fixture.project,
+        questions: ['What is Panel?', explicitSubjectQuestion, 'What evidence supports it?'],
+        graphId: graph.graphId,
+      }) as any).items.map((item: any) => ({ status: item.status, intent: item.intent, subject: item.subject, inheritedSubject: item.inheritedSubject })),
+      'ref and graphId entry paths must converge on the same pinned semantic outputs',
+    );
+    await assert.rejects(
+      queryWorkbenchRequest({ project: fixture.project, questions: ['What is Panel?', 'What evidence supports it?'], ref: 'refs/heads/does-not-exist' }),
+      /does-not-exist|revision|ref|remote/iu,
+      'an unavailable ref must fail initial selection instead of falling back to another graph',
+    );
+
     const mixedSubjects = await queryWorkbenchRequest({
       project: fixture.project,
       questions: ['What is Panel?', 'What evidence supports Panel helper?', 'What evidence supports it?'],

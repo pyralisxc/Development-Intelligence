@@ -2864,7 +2864,13 @@ export async function queryWorkbenchRequest(input: {
     let inherited = { text: originalQuestion, inherited: false };
     let inheritedFromSubjectId: string | null = null;
     try {
-      inherited = await inheritedQuestion({ ...input, graphId: graph.graphId }, originalQuestion, inheritedSubjectId);
+      inherited = await inheritedQuestion({
+        project: input.project,
+        graphId: graph.graphId,
+        ...(input.scope ? { scope: input.scope } : {}),
+        ...(input.sourceId ? { sourceId: input.sourceId } : {}),
+        ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
+      }, originalQuestion, inheritedSubjectId);
       inheritedFromSubjectId = inherited.inherited ? inheritedSubjectId : null;
       const result = await queryWorkbench({
         project: input.project,
