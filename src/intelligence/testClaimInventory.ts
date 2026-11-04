@@ -67,6 +67,7 @@ export async function generateTestClaimCatalog(root: string, graph: Intelligence
   if (scope.sourcePrefixes.length > 50 || scope.sourceSuffixes.length > 50) throw new Error('test claim catalog scope supports at most 50 prefixes and 50 suffixes');
   const coverageByPath = new Map((graph.coverage?.files ?? []).map(file => [file.path, file]));
   const paths = [...coverageByPath.keys()].filter(sourceId => scoped(sourceId, scope)).sort();
+  const realRoot = await fs.realpath(root);
   const files: FileInput[] = []; const declarations: DeclarationInput[] = []; const assertions: AssertionInput[] = [];
   for (const sourceId of paths) {
     const lexical = path.resolve(root, ...sourceId.split('/'));
@@ -78,7 +79,7 @@ export async function generateTestClaimCatalog(root: string, graph: Intelligence
     const maxFileBytes = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
     if (!Number.isFinite(maxFileBytes) || maxFileBytes < 1 || stat.size > maxFileBytes) throw new Error(`test claim catalog source exceeds the analyzer file-size boundary: ${sourceId}`);
     const real = await fs.realpath(lexical);
-    const realRelative = path.relative(root, real);
+    const realRelative = path.relative(realRoot, real);
     if (!realRelative || realRelative === '..' || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) throw new Error(`test claim catalog source resolves outside repository root: ${sourceId}`);
     let source: string;
     try { source = await fs.readFile(real, 'utf8'); }
