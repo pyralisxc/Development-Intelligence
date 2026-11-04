@@ -253,10 +253,11 @@ test('authenticated tool contract exposes exact-source test claim pages without 
   const { listTools } = await import('../src/mcp.js');
   const tool = listTools().find(item => item.name === 'get_test_claim_report') as any;
   assert.ok(tool);
-  assert.deepEqual(tool.inputSchema.required, ['project', 'catalogRef', 'catalogPath']);
+  assert.deepEqual(tool.inputSchema.required, ['project', 'sourcePrefixes', 'sourceSuffixes']);
   assert.ok(tool.inputSchema.properties.ref);
   assert.ok(tool.inputSchema.properties.graphId);
-  assert.ok(tool.inputSchema.properties.parityContractPath);
+  assert.ok(tool.inputSchema.properties.sourcePrefixes);
+  assert.ok(tool.inputSchema.properties.sourceSuffixes);
   assert.ok(tool.inputSchema.properties.expectedReportDigest);
   assert.equal('artifactUrl' in tool.inputSchema.properties, false);
   assert.equal(tool.annotations.readOnlyHint, true);

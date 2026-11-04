@@ -1,23 +1,21 @@
 import { graphContext } from './service.js';
-import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
-import { maintainedParityReceipt, readLocalParityContract, readLocalTestClaimCatalog } from './local.js';
-import { buildTestClaimDecisionRecord } from './testClaimInventory.js';
+import { withResolvedProjectCheckout } from '../source/git.js';
+import { buildTestClaimDecisionRecord, generateTestClaimCatalog } from './testClaimInventory.js';
 import { projectTestClaimDecisionPage } from './testClaimReport.js';
 
 export async function queryTestClaimReport(input: {
   project: string;
   ref?: string;
   graphId?: string;
-  catalogRef: string;
-  catalogPath: string;
-  parityContractPath?: string;
+  sourcePrefixes: string[];
+  sourceSuffixes: string[];
   page?: number;
   pageSize?: number;
   expectedReportDigest?: string;
 }): Promise<Record<string, unknown>> {
   if (input.ref && !/^commit:[0-9a-f]{40}$/iu.test(input.ref)) throw new Error('test claim source ref must be an immutable commit:<full-sha> selector');
   if (!input.ref && !input.graphId) throw new Error('test claim reads require an immutable source ref or graphId');
-  if (!/^commit:[0-9a-f]{40}$/iu.test(input.catalogRef)) throw new Error('test claim catalogRef must be an immutable commit:<full-sha> selector');
+  if (!input.sourcePrefixes.length || !input.sourceSuffixes.length) throw new Error('test claim reads require non-empty sourcePrefixes and sourceSuffixes');
   const page = input.page ?? 0;
   const pageSize = input.pageSize ?? 100;
   if (!Number.isInteger(page) || page < 0) throw new Error('page must be a non-negative integer');
@@ -27,40 +25,20 @@ export async function queryTestClaimReport(input: {
     ...(input.ref ? { ref: input.ref } : {}),
     ...(input.graphId ? { graphId: input.graphId } : {}),
   });
-  const catalogRevision = await resolveProjectRevision(input.project, input.catalogRef);
-  return await withResolvedProjectCheckout(context.revision, async checkout => await withResolvedProjectCheckout(catalogRevision, async catalogCheckout => {
-    let catalog;
-    try {
-      catalog = await readLocalTestClaimCatalog(catalogCheckout.root, input.catalogPath);
-    } catch (error) {
-      if (/could not be read.*ENOENT/u.test(error instanceof Error ? error.message : String(error))) {
-        return {
-          available: false,
-          reason: 'missing-validated-catalog',
-          project: input.project,
-          revision: context.revision.sha,
-          graphId: context.graph.graphId,
-          catalogPath: input.catalogPath,
-          catalogRevision: catalogRevision.sha,
-        };
-      }
-      throw error;
-    }
-    const parity = input.parityContractPath
-      ? maintainedParityReceipt(context.graph, await readLocalParityContract(catalogCheckout.root, input.parityContractPath)) as any
-      : null;
+  return await withResolvedProjectCheckout(context.revision, async checkout => {
+    const catalog = await generateTestClaimCatalog(checkout.root, context.graph, { sourcePrefixes: input.sourcePrefixes, sourceSuffixes: input.sourceSuffixes });
     const report = await buildTestClaimDecisionRecord(
       checkout.root,
       context.graph,
-      catalog.catalog,
-      parity?.claims ?? [],
+      catalog,
+      [],
     ) as Record<string, any>;
     const producerCommit = [process.env.DEVINT_BUILD_SHA, process.env.VERCEL_GIT_COMMIT_SHA]
       .map(value => value?.trim().toLowerCase()).find(value => value && /^[0-9a-f]{40}$/u.test(value)) ?? null;
     if (!producerCommit) throw new Error('test claim agent reads require an exact deployed DI producer commit');
     const projection = projectTestClaimDecisionPage({
         report,
-        catalog: catalog.catalog,
+        catalog,
         producerCommit,
         page,
         pageSize,
@@ -70,11 +48,10 @@ export async function queryTestClaimReport(input: {
     return {
       ...projection,
       source: {
-        catalogPath: catalog.path,
-        catalogRevision: catalogRevision.sha,
-        parityContractPath: input.parityContractPath ?? null,
-        historicalReceipt: 'Use the action artifact manifest digest for immutable CI history; this response is an exact-source recomputation.',
+        scope: catalog.scope,
+        catalogMode: 'derived-from-exact-source',
+        historicalReceipt: 'Optional action artifacts retain immutable CI history; this response derives and evaluates source facts directly from the selected exact revision.',
       },
     };
-  }));
+  });
 }
