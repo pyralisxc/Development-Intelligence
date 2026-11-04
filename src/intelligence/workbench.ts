@@ -2752,8 +2752,47 @@ function decomposeQuestionText(text: string): string[] {
   return [trimmed];
 }
 
-function inheritedQuestion(question: string, subjectId: string | null): { text: string; inherited: boolean } {
+function continuityReferenceOnly(query: string | null): boolean {
+  if (!query) return true;
+  return /^(?:it|those answers|that answer|this (?:entity|feature|function|class|page|route|api|subject))$/iu.test(query.trim());
+}
+
+function hasContinuityReference(question: string): boolean {
+  return /\b(?:it|those answers|that answer|this (?:entity|feature|function|class|page|route|api|subject))\b/iu.test(question);
+}
+
+function hasQuotedContinuityReference(question: string): boolean {
+  return /(["'`])(?:it|those answers|that answer|this (?:entity|feature|function|class|page|route|api|subject))\1/iu.test(question);
+}
+
+async function inheritedQuestion(
+  input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined; sourceId?: string | undefined; semanticDepth?: SemanticQueryDepth | undefined },
+  question: string,
+  subjectId: string | null,
+): Promise<{ text: string; inherited: boolean }> {
   if (!subjectId) return { text: question, inherited: false };
+  const plan = planInvestigationQuestion({
+    text: question,
+    ...(input.sourceId ? { sourceId: input.sourceId } : {}),
+    ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
+  });
+  if (plan.subjectStrategy !== 'entity-or-query' && plan.subjectStrategy !== 'scope-or-entity') {
+    return { text: question, inherited: false };
+  }
+  const referenceQuery = querySubject(question, subjectMarkersForLane(plan.lane));
+  const quotedReference = hasQuotedContinuityReference(question);
+  if (!quotedReference && hasContinuityReference(question) && continuityReferenceOnly(referenceQuery)) {
+    return inheritQuestionReference(question, subjectId);
+  }
+  const target = await resolveInvestigationTarget(input, question, plan);
+  if (quotedReference || target.node || target.ambiguous || !continuityReferenceOnly(target.query)) {
+    return { text: question, inherited: false };
+  }
+
+  return inheritQuestionReference(question, subjectId);
+}
+
+function inheritQuestionReference(question: string, subjectId: string): { text: string; inherited: boolean } {
   let resolved = question;
   const patterns = [
     /\bthose answers\b/giu,
@@ -2822,9 +2861,11 @@ export async function queryWorkbenchRequest(input: {
   const items: Array<Record<string, unknown>> = [];
   let inheritedSubjectId: string | null = null;
   for (const [index, originalQuestion] of questions.entries()) {
-    const inherited = inheritedQuestion(originalQuestion, inheritedSubjectId);
-    const inheritedFromSubjectId = inherited.inherited ? inheritedSubjectId : null;
+    let inherited = { text: originalQuestion, inherited: false };
+    let inheritedFromSubjectId: string | null = null;
     try {
+      inherited = await inheritedQuestion({ ...input, graphId: graph.graphId }, originalQuestion, inheritedSubjectId);
+      inheritedFromSubjectId = inherited.inherited ? inheritedSubjectId : null;
       const result = await queryWorkbench({
         project: input.project,
         text: inherited.text,
@@ -2886,10 +2927,11 @@ export async function queryWorkbenchRequest(input: {
     policy: {
       deterministicDecomposition: true,
       inheritedSubjectOnlyFromImmediateExactPriorResult: true,
+      explicitCurrentSubjectPrecedesInheritance: true,
       failedOrSubjectlessQuestionClearsInheritance: true,
       failureIsolation: true,
       persisted: false,
-      note: 'Each question is routed independently over one pinned graph context. Only the immediately prior successful exact subject may resolve simple pronouns; failed, ambiguous, repository-level, and other subjectless questions clear inheritance.',
+      note: 'Each question is routed independently over one pinned graph context. An explicit current subject is resolved before continuity. Only the immediately prior successful exact subject may resolve a reference-only continuation; failed, ambiguous, unknown, repository-level, and other subjectless questions clear inheritance.',
     },
   };
 }

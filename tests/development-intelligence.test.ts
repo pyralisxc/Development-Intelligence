@@ -54,6 +54,7 @@ async function populateFixture(root: string) {
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
   await fs.writeFile(path.join(source, 'src', 'helper.ts'), `
 export function helper() { return 'ok'; }
+export function it() { return 'vitest-shaped binding'; }
 `);
   await fs.writeFile(path.join(source, 'src', 'ArchitectureAggregateProbe.cs'), `
 public sealed class ArchitectureAggregateProbe
@@ -914,7 +915,7 @@ test('multi-question investigation keeps one graph context and isolates question
   const fixture = await makeFixture();
   try {
     clearGraphCache(fixture.project);
-    await scanGraph(fixture.project);
+    const graph = await scanGraph(fixture.project);
     const paragraph = 'What is Panel? What does it depend on? Where is it implemented? What evidence supports those answers?';
     const batch = await queryWorkbenchRequest({ project: fixture.project, text: paragraph }) as any;
     assert.equal(batch.intent, 'batch');
@@ -937,6 +938,65 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(explicit.graphId, batch.graphId);
     assert.deepEqual(explicit.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
     assert.equal(explicit.items[1].inheritedSubject, explicit.items[0].subject.id, 'batch metadata must record the subject a pronoun inherited from before routing the follow-up');
+
+    const collidingPronoun = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', 'What evidence supports it?'],
+      graphId: graph.graphId,
+    }) as any;
+    assert.equal(collidingPronoun.items[1].inheritedSubject, collidingPronoun.items[0].subject.id, 'reference-only syntax must inherit even when the graph contains a symbol named it');
+    assert.ok(collidingPronoun.items[1].resolvedQuestion.includes(collidingPronoun.items[0].subject.id));
+
+    const quotedIt = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', 'What evidence supports "it"?'],
+      graphId: graph.graphId,
+    }) as any;
+    assert.equal(quotedIt.items[1].inheritedSubject, null, 'a quoted identity must remain an explicit current subject');
+    assert.equal(quotedIt.items[1].resolvedQuestion, 'What evidence supports "it"?');
+    assert.notEqual(quotedIt.items[1].subject.id, quotedIt.items[0].subject.id);
+
+    const explicitSubjectQuestion = 'What evidence supports helper, and does it exist?';
+    const explicitSubjectBatch = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', explicitSubjectQuestion],
+      graphId: graph.graphId,
+    }) as any;
+    const explicitSubjectSingle = await queryWorkbench({
+      project: fixture.project,
+      text: explicitSubjectQuestion,
+      graphId: graph.graphId,
+    }) as any;
+    assert.equal(explicitSubjectBatch.items[1].resolvedQuestion, explicitSubjectQuestion, 'an explicit current subject must be resolved before pronoun continuity');
+    assert.equal(explicitSubjectBatch.items[1].inheritedSubject, null);
+    assert.equal(explicitSubjectBatch.items[1].subject.id, explicitSubjectSingle.subject.id, 'explicit-new-subject batch routing must match the same standalone question');
+    assert.notEqual(explicitSubjectBatch.items[1].subject.id, explicitSubjectBatch.items[0].subject.id);
+    assert.equal(explicitSubjectBatch.items[1].answer, explicitSubjectSingle.answer);
+    const explicitSubjectRepeat = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', explicitSubjectQuestion],
+      graphId: graph.graphId,
+    }) as any;
+    assert.deepEqual(explicitSubjectRepeat.items, explicitSubjectBatch.items, 'the same pinned explicit-subject batch must be deterministic');
+
+    const mixedSubjects = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', 'What evidence supports Panel helper?', 'What evidence supports it?'],
+      graphId: graph.graphId,
+    }) as any;
+    assert.equal(mixedSubjects.items[1].resolvedQuestion, 'What evidence supports Panel helper?');
+    assert.equal(mixedSubjects.items[1].inheritedSubject, null, 'multiple explicit subjects must not be rewritten to the prior subject');
+    assert.equal(mixedSubjects.items[1].subject.ambiguous, true);
+    assert.equal(mixedSubjects.items[2].inheritedSubject, null, 'an ambiguous current subject must clear continuity for the next question');
+
+    const unknownSubject = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', 'What evidence supports definitely-not-real and does it exist?', 'What evidence supports it?'],
+      graphId: graph.graphId,
+    }) as any;
+    assert.equal(unknownSubject.items[1].resolvedQuestion, 'What evidence supports definitely-not-real and does it exist?');
+    assert.equal(unknownSubject.items[1].inheritedSubject, null, 'an explicit unknown subject must not be rewritten to the prior subject');
+    assert.equal(unknownSubject.items[2].inheritedSubject, null, 'an unresolved explicit subject must clear continuity for the next question');
 
     const trailingNaturalLanguage = await queryWorkbenchRequest({
       project: fixture.project,
