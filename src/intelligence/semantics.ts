@@ -83,6 +83,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
       relationships: [
         { kind: 'automated-by', to: 'mcp:query_parity' },
         { kind: 'automated-by', to: 'mcp:evaluate_parity' },
+        { kind: 'automated-by', to: 'mcp:get_test_claim_report' },
       ],
     },
   },
@@ -218,6 +219,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     'verify_transition',
     'query_parity',
     'evaluate_parity',
+    'get_test_claim_report',
   ].map(id => ({
     developmentIntelligence: {
       kind: 'mcp',

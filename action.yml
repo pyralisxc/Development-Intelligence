@@ -15,6 +15,24 @@ inputs:
   test-claim-catalog:
     description: Optional repository-relative claim catalog. Produces an assertion-level decision record joined to the supplied parity contract without changing graph authority.
     required: false
+  test-claim-report-path:
+    description: Repository-relative directory for the deterministic test-claim report bundle.
+    required: false
+    default: .development-intelligence/test-claims
+
+outputs:
+  test-claim-report-path:
+    description: Repository-relative canonical report directory, when a catalog is supplied.
+    value: ${{ steps.test-claim-report.outputs.path }}
+  test-claim-report-digest:
+    description: SHA-256 identity of the canonical report payload.
+    value: ${{ steps.test-claim-report.outputs.digest }}
+  test-claim-report-status:
+    description: complete or diagnostic; diagnostic receipts are retained without implying redundancy.
+    value: ${{ steps.test-claim-report.outputs.status }}
+  test-claim-report-artifact:
+    description: Immutable GitHub artifact name containing manifest, normalized catalog, and report.
+    value: ${{ steps.test-claim-report.outputs.artifact }}
 
 runs:
   using: composite
@@ -30,6 +48,8 @@ runs:
       run: npm run build:server:runtime --prefix "$GITHUB_ACTION_PATH"
       shell: bash
     - name: Run Development Intelligence operation
+      id: operation
+      continue-on-error: true
       run: |
         set -euo pipefail
         case "$DEVINT_CHECKPOINT_MODE" in
@@ -45,12 +65,71 @@ runs:
           args+=(--parity-contract "$DEVINT_PARITY_CONTRACT")
         fi
         if [[ -n "$DEVINT_TEST_CLAIM_CATALOG" ]]; then
+          report_path="$DEVINT_TEST_CLAIM_REPORT_PATH/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          node -e '
+            const fs=require("fs"),path=require("path");
+            const root=fs.realpathSync(process.env.GITHUB_WORKSPACE);
+            const target=path.resolve(root,process.argv[1]);
+            const relative=path.relative(root,target);
+            if(!relative||relative===".."||relative.startsWith(`..${path.sep}`)||path.isAbsolute(relative)) throw new Error("test claim report path must remain inside the repository");
+            let cursor=root;
+            for(const segment of relative.split(path.sep)){ cursor=path.join(cursor,segment); if(!fs.existsSync(cursor)) break; const stat=fs.lstatSync(cursor); if(stat.isSymbolicLink()) throw new Error("test claim report path must not traverse a symbolic link"); }
+            if(fs.existsSync(target)) throw new Error("test claim report run directory already exists");
+          ' "$report_path"
           args+=(--test-claim-catalog "$DEVINT_TEST_CLAIM_CATALOG")
+          producer_commit="$DEVINT_PRODUCER_COMMIT"
+          [[ "$producer_commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || { echo "test-claim reporting requires the action to be pinned to an exact commit" >&2; exit 2; }
+          args+=(--test-claim-report-path "$report_path" --producer-commit "$producer_commit")
         fi
+        set +e
         node "$GITHUB_ACTION_PATH/dist/src/graphCli.js" "${args[@]}"
+        operation_status=$?
+        set -e
+        if [[ -n "${report_path:-}" && -f "$GITHUB_WORKSPACE/$report_path/manifest-v1.json" && -f "$GITHUB_WORKSPACE/$report_path/catalog-v1.json" && -f "$GITHUB_WORKSPACE/$report_path/report-v1.json" ]]; then
+          echo "report-path=$report_path" >> "$GITHUB_OUTPUT"
+        fi
+        exit "$operation_status"
       shell: bash
       env:
         DEVINT_CHECKPOINT_MODE: ${{ inputs.mode }}
         DEVINT_PROJECT: ${{ inputs.project }}
         DEVINT_PARITY_CONTRACT: ${{ inputs['parity-contract'] }}
         DEVINT_TEST_CLAIM_CATALOG: ${{ inputs['test-claim-catalog'] }}
+        DEVINT_TEST_CLAIM_REPORT_PATH: ${{ inputs['test-claim-report-path'] }}
+        DEVINT_PRODUCER_COMMIT: ${{ github.action_ref || github.sha }}
+    - name: Publish test-claim report outputs
+      id: test-claim-report
+      if: ${{ always() && inputs['test-claim-catalog'] != '' }}
+      run: |
+        set -euo pipefail
+        if [[ -z "$DEVINT_TEST_CLAIM_REPORT_PATH" ]]; then
+          echo "retained=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        manifest="$GITHUB_WORKSPACE/$DEVINT_TEST_CLAIM_REPORT_PATH/manifest-v1.json"
+        node -e '
+          const fs=require("fs");
+          const manifest=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+          const output=process.env.GITHUB_OUTPUT;
+          const artifact=`development-intelligence-test-claims-${manifest.sourceRevision}-${manifest.manifestSha256}`;
+          fs.appendFileSync(output,`retained=true\npath=${process.env.DEVINT_TEST_CLAIM_REPORT_PATH}\ndigest=${manifest.manifestSha256}\nstatus=${manifest.status}\nartifact=${artifact}\n`);
+        ' "$manifest"
+      shell: bash
+      env:
+        DEVINT_TEST_CLAIM_REPORT_PATH: ${{ steps.operation.outputs.report-path }}
+    - name: Retain immutable test-claim report
+      if: ${{ always() && steps.test-claim-report.outputs.retained == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.test-claim-report.outputs.artifact }}
+        path: |
+          ${{ github.workspace }}/${{ steps.operation.outputs.report-path }}/manifest-v1.json
+          ${{ github.workspace }}/${{ steps.operation.outputs.report-path }}/catalog-v1.json
+          ${{ github.workspace }}/${{ steps.operation.outputs.report-path }}/report-v1.json
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 30
+    - name: Preserve Development Intelligence operation result
+      if: ${{ always() && steps.operation.outcome == 'failure' }}
+      run: exit 1
+      shell: bash

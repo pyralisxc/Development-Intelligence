@@ -1567,6 +1567,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'verify_transition',
     'query_parity',
     'evaluate_parity',
+    'get_test_claim_report',
   ]);
   for (const retired of [
     'graph_status', 'query_graph', 'scan_parity', 'diff_parity', 'clear_cache',
@@ -1600,8 +1601,9 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('verify_transition')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('get_test_claim_report')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 34, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: 35, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });
@@ -1641,7 +1643,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 34);
+  assert.equal(identity.mcp.toolCount, 35);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
@@ -1649,6 +1651,54 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     VERCEL_GIT_COMMIT_REF: 'bad ref with spaces',
     VERCEL_TARGET_ENV: 'secret-environment-name',
   }).deployment, { revision: null, gitRef: null, environment: null });
+});
+
+test('authenticated test-claim query derives a nonempty catalog directly from exact source with stable scope-bound paging', async () => {
+  const fixture = await makeFixture();
+  const previousBuild = process.env.DEVINT_BUILD_SHA;
+  try {
+    await fs.mkdir(path.join(fixture.source, 'tests'), { recursive: true });
+    await fs.writeFile(path.join(fixture.source, 'tests', 'native-query.test.ts'), "import { expect, test } from 'vitest';\ntest('native query', () => { expect(1).toBe(1); });\n");
+    const sourceRevision = await commit(fixture.source, 'add native query test source');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    process.env.DEVINT_BUILD_SHA = 'd'.repeat(40);
+    const first = await callTool('get_test_claim_report', {
+      project: fixture.project,
+      ref: `commit:${sourceRevision}`,
+      sourcePrefixes: ['tests/'],
+      sourceSuffixes: ['.test.ts'],
+      page: 0,
+      pageSize: 1,
+    }) as any;
+    assert.equal(first.available, true);
+    assert.equal(first.identity.sourceRevision, sourceRevision);
+    assert.equal(first.identity.producerCommit, 'd'.repeat(40));
+    assert.equal(first.counts.assertions, 1);
+    assert.equal(first.counts.nativeObligations, 1);
+    assert.deepEqual(first.source.scope, { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] });
+    const repeated = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] }) as any;
+    assert.equal(repeated.identity.projectionSha256, first.identity.projectionSha256);
+    const second = await callTool('get_test_claim_report', {
+      project: fixture.project,
+      ref: `commit:${sourceRevision}`,
+      sourcePrefixes: ['tests/'],
+      sourceSuffixes: ['.test.ts'],
+      expectedReportDigest: first.identity.projectionSha256,
+      page: 1,
+      pageSize: 1,
+    }) as any;
+    assert.equal(second.identity.projectionSha256, first.identity.projectionSha256);
+    const changedScope = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.tsx'] }) as any;
+    assert.equal(changedScope.counts.assertions, 0);
+    assert.notEqual(changedScope.identity.projectionSha256, first.identity.projectionSha256);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: 'branch:main', sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] }), /immutable commit/u);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], page: 1 }), /expectedReportDigest/u);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], page: 1, expectedReportDigest: '0'.repeat(64) }), /digest does not match/u);
+  } finally {
+    if (previousBuild === undefined) delete process.env.DEVINT_BUILD_SHA; else process.env.DEVINT_BUILD_SHA = previousBuild;
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test('registry rejects project identities that collide in derived keys', async () => {
