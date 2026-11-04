@@ -54,6 +54,7 @@ async function populateFixture(root: string) {
   await fs.mkdir(path.join(source, 'src'), { recursive: true });
   await fs.writeFile(path.join(source, 'src', 'helper.ts'), `
 export function helper() { return 'ok'; }
+export function it() { return 'vitest-shaped binding'; }
 `);
   await fs.writeFile(path.join(source, 'src', 'ArchitectureAggregateProbe.cs'), `
 public sealed class ArchitectureAggregateProbe
@@ -937,6 +938,23 @@ test('multi-question investigation keeps one graph context and isolates question
     assert.equal(explicit.graphId, batch.graphId);
     assert.deepEqual(explicit.items.map((item: any) => item.intent), ['inspect', 'trace', 'code']);
     assert.equal(explicit.items[1].inheritedSubject, explicit.items[0].subject.id, 'batch metadata must record the subject a pronoun inherited from before routing the follow-up');
+
+    const collidingPronoun = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', 'What evidence supports it?'],
+      graphId: graph.graphId,
+    }) as any;
+    assert.equal(collidingPronoun.items[1].inheritedSubject, collidingPronoun.items[0].subject.id, 'reference-only syntax must inherit even when the graph contains a symbol named it');
+    assert.ok(collidingPronoun.items[1].resolvedQuestion.includes(collidingPronoun.items[0].subject.id));
+
+    const quotedIt = await queryWorkbenchRequest({
+      project: fixture.project,
+      questions: ['What is Panel?', 'What evidence supports "it"?'],
+      graphId: graph.graphId,
+    }) as any;
+    assert.equal(quotedIt.items[1].inheritedSubject, null, 'a quoted identity must remain an explicit current subject');
+    assert.equal(quotedIt.items[1].resolvedQuestion, 'What evidence supports "it"?');
+    assert.notEqual(quotedIt.items[1].subject.id, quotedIt.items[0].subject.id);
 
     const explicitSubjectQuestion = 'What evidence supports helper, and does it exist?';
     const explicitSubjectBatch = await queryWorkbenchRequest({

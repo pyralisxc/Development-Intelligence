@@ -2757,6 +2757,14 @@ function continuityReferenceOnly(query: string | null): boolean {
   return /^(?:it|those answers|that answer|this (?:entity|feature|function|class|page|route|api|subject))$/iu.test(query.trim());
 }
 
+function hasContinuityReference(question: string): boolean {
+  return /\b(?:it|those answers|that answer|this (?:entity|feature|function|class|page|route|api|subject))\b/iu.test(question);
+}
+
+function hasQuotedContinuityReference(question: string): boolean {
+  return /(["'`])(?:it|those answers|that answer|this (?:entity|feature|function|class|page|route|api|subject))\1/iu.test(question);
+}
+
 async function inheritedQuestion(
   input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined; sourceId?: string | undefined; semanticDepth?: SemanticQueryDepth | undefined },
   question: string,
@@ -2771,10 +2779,20 @@ async function inheritedQuestion(
   if (plan.subjectStrategy !== 'entity-or-query' && plan.subjectStrategy !== 'scope-or-entity') {
     return { text: question, inherited: false };
   }
+  const referenceQuery = querySubject(question, subjectMarkersForLane(plan.lane));
+  const quotedReference = hasQuotedContinuityReference(question);
+  if (!quotedReference && hasContinuityReference(question) && continuityReferenceOnly(referenceQuery)) {
+    return inheritQuestionReference(question, subjectId);
+  }
   const target = await resolveInvestigationTarget(input, question, plan);
-  if (target.node || target.ambiguous || !continuityReferenceOnly(target.query)) {
+  if (quotedReference || target.node || target.ambiguous || !continuityReferenceOnly(target.query)) {
     return { text: question, inherited: false };
   }
+
+  return inheritQuestionReference(question, subjectId);
+}
+
+function inheritQuestionReference(question: string, subjectId: string): { text: string; inherited: boolean } {
   let resolved = question;
   const patterns = [
     /\bthose answers\b/giu,
@@ -2846,7 +2864,7 @@ export async function queryWorkbenchRequest(input: {
     let inherited = { text: originalQuestion, inherited: false };
     let inheritedFromSubjectId: string | null = null;
     try {
-      inherited = await inheritedQuestion(input, originalQuestion, inheritedSubjectId);
+      inherited = await inheritedQuestion({ ...input, graphId: graph.graphId }, originalQuestion, inheritedSubjectId);
       inheritedFromSubjectId = inherited.inherited ? inheritedSubjectId : null;
       const result = await queryWorkbench({
         project: input.project,
