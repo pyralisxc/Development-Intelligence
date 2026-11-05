@@ -324,8 +324,18 @@ test('realization does not turn incoming calls into implementation proof for sib
   assert.equal(result.realization.facets.implementation.observed, false);
   assert.equal(result.realization.paths.some((path: any) => path.targetId === sibling.id), false);
 
-  fixture.edges.push(edge('assessed-to-sibling', assessed.id, sibling.id, 'calls'));
-  const directed = assessGraph(fixture, assessed.id, ['implementation']) as any;
+  // The subject exists even when a required connected-realization facet has no eligible path.
+  assert.ok(result.claims.some((item: any) => item.type === 'entity-exists' && item.status === 'supported'));
+  assert.ok(result.claims.some((item: any) => item.type === 'contract-facet' && item.status === 'contradicted'));
+
+  // Context indexes are memoized by graph identity; model the alternate source state
+  // with a fresh graph instead of mutating an already-assessed graph.
+  const directFixture = graph();
+  directFixture.nodes.push(assessed, caller, sibling);
+  directFixture.edges.push(edge('caller-to-assessed', caller.id, assessed.id, 'calls'));
+  directFixture.edges.push(edge('caller-to-sibling', caller.id, sibling.id, 'calls'));
+  directFixture.edges.push(edge('assessed-to-sibling', assessed.id, sibling.id, 'calls'));
+  const directed = assessGraph(directFixture, assessed.id, ['implementation']) as any;
   assert.equal(directed.answerStatus, 'supported');
   assert.ok(directed.realization.paths.some((path: any) => path.targetId === sibling.id && path.edgeIds.includes('assessed-to-sibling')));
 });
