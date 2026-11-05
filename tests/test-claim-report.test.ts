@@ -18,7 +18,7 @@ const catalog: TestClaimCatalog = {
 };
 const decision = {
   formatVersion: 1,
-  evaluatorVersion: '1.1.0',
+  evaluatorVersion: '1.2.0',
   project: 'example/project',
   revision,
   graphId: 'repo-a',
