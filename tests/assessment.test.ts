@@ -309,3 +309,33 @@ test('rule-out queries distinguish falsified existence hypotheses from missing a
   assert.deepEqual(present.orientation.certainty.missing, []);
   assert.ok(present.orientation.certainty.known.some((item: string) => /directly observed/i.test(item)));
 });
+
+test('realization does not turn incoming calls into implementation proof for sibling functions', () => {
+  const fixture = graph();
+  const assessed = node('function:assessed', 'function', 'structural', 'assessed');
+  const caller = node('function:caller', 'function', 'structural', 'caller');
+  const sibling = node('function:sibling', 'function', 'structural', 'sibling');
+  fixture.nodes.push(assessed, caller, sibling);
+  fixture.edges.push(edge('caller-to-assessed', caller.id, assessed.id, 'calls'));
+  fixture.edges.push(edge('caller-to-sibling', caller.id, sibling.id, 'calls'));
+
+  const result = assessGraph(fixture, assessed.id, ['implementation']) as any;
+  assert.equal(result.answerStatus, 'contradicted');
+  assert.equal(result.realization.facets.implementation.observed, false);
+  assert.equal(result.realization.paths.some((path: any) => path.targetId === sibling.id), false);
+
+  // The subject exists even when a required connected-realization facet has no eligible path.
+  assert.ok(result.claims.some((item: any) => item.type === 'entity-exists' && item.status === 'supported'));
+  assert.ok(result.claims.some((item: any) => item.type === 'contract-facet' && item.status === 'contradicted'));
+
+  // Context indexes are memoized by graph identity; model the alternate source state
+  // with a fresh graph instead of mutating an already-assessed graph.
+  const directFixture = graph();
+  directFixture.nodes.push(assessed, caller, sibling);
+  directFixture.edges.push(edge('caller-to-assessed', caller.id, assessed.id, 'calls'));
+  directFixture.edges.push(edge('caller-to-sibling', caller.id, sibling.id, 'calls'));
+  directFixture.edges.push(edge('assessed-to-sibling', assessed.id, sibling.id, 'calls'));
+  const directed = assessGraph(directFixture, assessed.id, ['implementation']) as any;
+  assert.equal(directed.answerStatus, 'supported');
+  assert.ok(directed.realization.paths.some((path: any) => path.targetId === sibling.id && path.edgeIds.includes('assessed-to-sibling')));
+});

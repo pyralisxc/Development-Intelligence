@@ -234,6 +234,9 @@ function realizationTraversal(graph: IntelligenceGraph, seed: GraphNode, depth =
     const next: string[] = [];
     for (const id of frontier) for (const edge of context.incident(id)) {
       if (!edgeAdmissible(edge, 'realization') || !edge.from || !edge.to) continue;
+      // A caller may reach its callee, but a callee cannot acquire its caller's
+      // unrelated dependencies as proof of its own implementation.
+      if (edge.kind === 'calls' && edge.from !== id) continue;
       const neighbor = edge.from === id ? edge.to : edge.to === id ? edge.from : null;
       if (!neighbor || pathByNode.has(neighbor) || pathByNode.size >= limit) continue;
       const parent = pathByNode.get(id)!;
