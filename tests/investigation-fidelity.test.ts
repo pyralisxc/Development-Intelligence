@@ -28,6 +28,10 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
       "import { target } from './workbench.js';\nexport function consumer() { return target(); }\n");
     await fs.writeFile(path.join(source, 'tests', 'consumer.test.ts'),
       "import { target } from '../src/workbench.js';\nvoid target;\n");
+    await fs.writeFile(path.join(source, 'src', 'duplicate-one.ts'),
+      'export function duplicateName() { return 1; }\n');
+    await fs.writeFile(path.join(source, 'src', 'duplicate-two.ts'),
+      'export function duplicateName() { return 2; }\n');
     await runChecked('git', ['-C', source, 'add', '.']);
     await runChecked('git', ['-C', source, '-c', 'user.email=di@example.invalid', '-c', 'user.name=DI Test', 'commit', '-m', 'fixture']);
     const sha = (await runChecked('git', ['-C', source, 'rev-parse', 'HEAD'])).stdout.trim();
@@ -61,6 +65,14 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     const unknown = await queryWorkbench({ ...input, text: 'What does nonexistentTarget do?' }) as any;
     assert.equal(unknown.intent, 'unresolved');
     assert.equal(unknown.result.outcome, 'unresolved-input');
+    const lowercaseUnknown = await queryWorkbench({ ...input, text: 'What does leafextra do?' }) as any;
+    assert.equal(lowercaseUnknown.intent, 'unresolved', 'a lowercase unknown must not resolve to leaf');
+    assert.equal(lowercaseUnknown.result.outcome, 'unresolved-input');
+    const duplicate = await queryWorkbench({ ...input, text: 'What is duplicateName?' }) as any;
+    assert.equal(duplicate.subject.ambiguous, true, 'two distinct declarations cannot become one confident identity');
+    assert.equal(duplicate.subject.id, undefined);
+    assert.equal(duplicate.result.ambiguous, true);
+    assert.equal(duplicate.subject.candidates.length, 2);
     const again = await queryWorkbench({ ...input, text: 'What does target call?' }) as any;
     assert.equal(again.subject.id, outgoing.subject.id);
     assert.equal(again.routing.direction, outgoing.routing.direction);

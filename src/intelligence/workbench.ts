@@ -2180,7 +2180,11 @@ function requestedEntityRole(text: string): RequestedEntityRole {
 }
 
 function isExactSymbolQuestion(query: string): boolean {
-  return /^[A-Za-z_$][\w$]*$/u.test(query) && /[A-Z_$]/u.test(query);
+  // Case is not evidence of identity: a lowercase symbol is just as exact as an uppercase one.
+  // Exclude deictic/generic requests, whose meaning depends on context rather than identifier spelling.
+  return /^[A-Za-z_$][\w$]*$/u.test(query)
+    && !GENERIC_SUBJECT_NAMES.has(plainMention(query))
+    && !['it', 'this', 'that', 'these', 'those', 'me', 'you', 'we', 'us'].includes(query.toLowerCase());
 }
 
 function compatibleEntityRole(node: GraphNode, role: RequestedEntityRole): boolean {
@@ -2331,7 +2335,19 @@ async function resolveInvestigationSubject(
     const compatible = exact.filter(node => node.id === cleaned || compatibleEntityRole(node, role));
     if (compatible.length === 1) return { query: cleaned, node: compatible[0]!, ambiguous: false, candidates: compatible };
     if (compatible.length > 1) {
-      if (!role) return { query: cleaned, node: compatible[0]!, ambiguous: false, candidates: [compatible[0]!] };
+      if (!role) {
+        // A real declaration is stronger identity evidence than another file's import of it.
+        const definitions = compatible.filter(node => node.id.startsWith('symbol:')
+          && ['function', 'method', 'class', 'variable', 'interface', 'type'].includes(node.kind));
+        if (definitions.length === 1) {
+          return { query: cleaned, node: definitions[0]!, ambiguous: false, candidates: [definitions[0]!] };
+        }
+        if (definitions.length > 1) {
+          return { query: cleaned, node: null, ambiguous: true, candidates: definitions };
+        }
+        // Preserve existing unqualified exact-name behavior for non-declaration observations.
+        return { query: cleaned, node: compatible[0]!, ambiguous: false, candidates: [compatible[0]!] };
+      }
       return { query: cleaned, node: null, ambiguous: true, candidates: compatible };
     }
     if (exact.length && role) return { query: cleaned, node: null, ambiguous: true, candidates: exact };
