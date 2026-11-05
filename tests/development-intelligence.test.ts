@@ -1740,6 +1740,11 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
   }).deployment, { revision: null, gitRef: null, environment: null });
 });
 
+test('test-claim tool describes unbounded full population recovery', () => {
+  const description = listTools().find(tool => tool.name === 'get_test_claim_report')!.description;
+  assert.match(description, /pageSize does not bound population diagnostics/u);
+});
+
 test('authenticated test-claim query derives a nonempty catalog directly from exact source with stable scope-bound paging', async () => {
   const fixture = await makeFixture();
   const previousBuild = process.env.DEVINT_BUILD_SHA;
@@ -1781,6 +1786,19 @@ test('authenticated test-claim query derives a nonempty catalog directly from ex
     assert.equal(compact.identity.projectionSha256, first.identity.projectionSha256);
     const recovered = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], pageSize: 1, expectedReportDigest: compact.identity.projectionSha256 }) as any;
     assert.deepEqual(recovered.population, first.population);
+    assert.equal(first.page.hasNext, true);
+    const compactSecond = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], page: 1, pageSize: 1, populationDetail: 'summary', expectedReportDigest: compact.identity.projectionSha256 }) as any;
+    assert.equal(compactSecond.page.index, 1);
+    assert.equal(compactSecond.population.detailsOmitted, true);
+    assert.deepEqual(compactSecond.items, second.items);
+    assert.equal(compactSecond.identity.projectionSha256, first.identity.projectionSha256);
+    const fullFromCompactPage = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], page: 1, pageSize: 1, populationDetail: 'full', expectedReportDigest: compactSecond.identity.projectionSha256 }) as any;
+    assert.deepEqual(fullFromCompactPage.population, first.population);
+    assert.deepEqual(fullFromCompactPage.items, compactSecond.items);
+    const compactFromFull = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], page: 1, pageSize: 1, populationDetail: 'summary', expectedReportDigest: first.identity.projectionSha256 }) as any;
+    assert.deepEqual(compactFromFull, compactSecond);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], page: 0, pageSize: 1, populationDetail: 'full', expectedReportDigest: '0'.repeat(64) }), /digest does not match/u);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], page: 1, pageSize: 1, populationDetail: 'full', expectedReportDigest: '0'.repeat(64) }), /digest does not match/u);
     await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], populationDetail: 'bogus' }), /populationDetail/u);
     const changedScope = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.tsx'] }) as any;
     assert.equal(changedScope.counts.assertions, 0);
