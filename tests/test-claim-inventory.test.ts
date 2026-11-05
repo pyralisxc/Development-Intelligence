@@ -86,3 +86,28 @@ test('native node:test and bound node:assert methods are discovered without acce
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('named imported Node assert aliases remain bound while local lookalikes stay unsupported', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-node-alias-'));
+  try {
+    await fs.mkdir(path.join(root, 'tests'));
+    const source = [
+      "import { test as check } from 'node:test';",
+      "import { equal as same } from 'node:assert/strict';",
+      "import * as verification from 'node:assert/strict';",
+      "check('bound aliases', () => { same(3, 3); verification.deepEqual([1], [1]); });",
+      "function lookalike(assert: { equal(a: number, b: number): void }) { assert.equal(4, 4); }",
+      "",
+    ].join('\n');
+    await fs.writeFile(path.join(root, 'tests', 'example.test.ts'), source);
+    const catalog = await generateTestClaimCatalog(root, graph(), { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] });
+    assert.equal(catalog.declarations.length, 1);
+    assert.equal(catalog.assertions.length, 3);
+    const record = await buildTestClaimDecisionRecord(root, graph(), catalog, []) as any;
+    assert.deepEqual(record.nativeObligations.map((item: any) => item.matcher).sort(), ['deepEqual', 'equal']);
+    assert.equal(record.nativeObligations.every((item: any) => item.executionObserved === false), true);
+    assert.equal(record.population.supportedDiscoveryComplete, true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
