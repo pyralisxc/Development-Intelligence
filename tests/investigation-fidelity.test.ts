@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { clearGraphCache } from '../src/intelligence/service.js';
 import { queryWorkbench } from '../src/intelligence/workbench.js';
+import { callTool } from '../src/mcp.js';
 
 test('investigation keeps callable identity, call direction and unknown-symbol boundaries', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-investigation-fidelity-'));
@@ -28,6 +29,9 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
       "import { target } from './workbench.js';\nexport function consumer() { return target(); }\n");
     await fs.writeFile(path.join(source, 'tests', 'consumer.test.ts'),
       "import { target } from '../src/workbench.js';\nvoid target;\n");
+    await fs.writeFile(path.join(source, 'src', 'many-callers.ts'),
+      "import { target } from './workbench.js';\n"
+      + Array.from({ length: 112 }, (_, index) => `export function generatedCaller${index}() { return target(); }\n`).join(''));
     await fs.writeFile(path.join(source, 'src', 'duplicate-one.ts'),
       'export function duplicateName() { return 1; }\n');
     await fs.writeFile(path.join(source, 'src', 'duplicate-two.ts'),
@@ -73,6 +77,27 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     assert.equal(duplicate.subject.id, undefined);
     assert.equal(duplicate.result.ambiguous, true);
     assert.equal(duplicate.subject.candidates.length, 2);
+    const explicitBlank = await callTool('investigate', {
+      ...input, questions: ['What is target?', '   '],
+    }) as any;
+    assert.equal(explicitBlank.request.questionCount, 2, 'blank positions must not be erased');
+    assert.deepEqual(explicitBlank.items.map((item: any) => item.status), ['ok', 'error']);
+    assert.equal(explicitBlank.items[1].index, 1);
+    assert.equal(explicitBlank.items[1].question, '');
+    assert.match(explicitBlank.items[1].error, /non-empty/u);
+    const oneBlank = await callTool('investigate', { ...input, questions: ['  '] }) as any;
+    assert.equal(oneBlank.request.questionCount, 1);
+    assert.equal(oneBlank.counts.error, 1);
+
+    const inspected = await callTool('inspect_entity', { ...input, node: outgoing.subject.id }) as any;
+    const connectionTotal = Object.values(inspected.connectionCounts)
+      .reduce((sum: number, count: any) => sum + Number(count), 0);
+    assert.ok(connectionTotal > 100, 'fixture must actually exercise the compact 100-connection bound');
+    assert.equal(inspected.connections.length, 100);
+    assert.equal(inspected.connectionProjection.total, connectionTotal);
+    assert.equal(inspected.connectionProjection.returned, 100);
+    assert.equal(inspected.connectionProjection.truncated, true);
+    assert.equal(inspected.connectionProjection.detailTool, 'trace_path');
     const again = await queryWorkbench({ ...input, text: 'What does target call?' }) as any;
     assert.equal(again.subject.id, outgoing.subject.id);
     assert.equal(again.routing.direction, outgoing.routing.direction);

@@ -2915,7 +2915,8 @@ export async function queryWorkbenchRequest(input: {
   rankBy?: ScopeRankBy | undefined;
   semanticDepth?: SemanticQueryDepth | undefined;
 }): Promise<Record<string, unknown>> {
-  const explicit = (input.questions ?? []).map(question => question.trim()).filter(Boolean);
+  // Preserve explicit positions: a blank item is an isolated failure, never a silently removed question.
+  const explicit = (input.questions ?? []).map(question => question.trim());
   if (explicit.length > 10) throw new Error('questions supports at most 10 items');
   const originalText = input.text?.trim() ?? '';
   if (explicit.length && originalText) throw new Error('provide text or questions, not both');
@@ -2928,7 +2929,7 @@ export async function queryWorkbenchRequest(input: {
   const mode = explicit.length ? 'explicit' : questions.length > 1 ? 'decomposed' : 'single';
   const orientationReuse: OrientationQueryReuse = { graph };
 
-  if (questions.length === 1) {
+  if (questions.length === 1 && questions[0] !== '') {
     const result = await queryWorkbench({
       project: input.project,
       text: questions[0]!,
