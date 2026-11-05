@@ -152,6 +152,7 @@ export function projectTestClaimDecisionPage(input: {
   producerCommit: string | null;
   page?: number;
   pageSize?: number;
+  populationDetail?: 'full' | 'summary';
 }): Record<string, unknown> {
   const pageSize = Math.min(Math.max(input.pageSize ?? 100, 1), 500);
   const page = Math.max(input.page ?? 0, 0);
@@ -176,7 +177,17 @@ export function projectTestClaimDecisionPage(input: {
   return {
     available: true,
     identity: { ...identity, projectionSha256: sha256(canonical(identity)) },
-    population: input.report.population,
+    population: input.populationDetail === 'summary'
+      ? {
+          supportedDiscoveryComplete: input.report.population.supportedDiscoveryComplete,
+          wholeLanguageComplete: input.report.population.wholeLanguageComplete,
+          discoveryContract: input.report.population.discoveryContract,
+          detailsOmitted: true,
+          detailCounts: Object.fromEntries(Object.entries(input.report.population)
+            .filter(([key]) => !['supportedDiscoveryComplete', 'wholeLanguageComplete', 'discoveryContract'].includes(key))
+            .map(([key, value]) => [key, Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.keys(value).length : 1])),
+        }
+      : input.report.population,
     counts: input.report.counts,
     page: { index: page, size: pageSize, totalItems: items.length, hasNext: start + pageSize < items.length },
     items: items.slice(start, start + pageSize),

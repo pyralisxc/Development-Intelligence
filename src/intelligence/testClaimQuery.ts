@@ -12,6 +12,7 @@ export async function queryTestClaimReport(input: {
   page?: number;
   pageSize?: number;
   expectedReportDigest?: string;
+  populationDetail?: 'full' | 'summary';
 }): Promise<Record<string, unknown>> {
   if (input.ref && !/^commit:[0-9a-f]{40}$/iu.test(input.ref)) throw new Error('test claim source ref must be an immutable commit:<full-sha> selector');
   if (!input.ref && !input.graphId) throw new Error('test claim reads require an immutable source ref or graphId');
@@ -42,6 +43,7 @@ export async function queryTestClaimReport(input: {
         producerCommit,
         page,
         pageSize,
+        ...(input.populationDetail ? { populationDetail: input.populationDetail } : {}),
       });
     const reportDigest = String((projection as any).identity?.projectionSha256 ?? '');
     if (input.expectedReportDigest && input.expectedReportDigest !== reportDigest) throw new Error('test claim report digest does not match the requested immutable page identity');
