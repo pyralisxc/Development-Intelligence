@@ -111,3 +111,23 @@ test('named imported Node assert aliases remain bound while local lookalikes sta
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('shadowed imported Node assertion aliases cannot become native obligations', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-node-shadow-'));
+  try {
+    await fs.mkdir(path.join(root, 'tests'));
+    const source = [
+      "import { equal as same } from 'node:assert/strict';",
+      "function shadow(same: (a: number, b: number) => void) { same(4, 4); }",
+      "",
+    ].join('\n');
+    await fs.writeFile(path.join(root, 'tests', 'example.test.ts'), source);
+    const catalog = await generateTestClaimCatalog(root, graph(), { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] });
+    assert.equal(catalog.assertions.length, 1);
+    const record = await buildTestClaimDecisionRecord(root, graph(), catalog, []) as any;
+    assert.equal(record.counts.nativeObligations, 0);
+    assert.equal(record.population.supportedDiscoveryComplete, true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
