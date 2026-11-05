@@ -131,3 +131,73 @@ test('shadowed imported Node assertion aliases cannot become native obligations'
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('bare switch CaseBlock declarations shadow imported Node assertions and aliases', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-node-case-'));
+  try {
+    await fs.mkdir(path.join(root, 'tests'));
+    const source = [
+      "import assert from 'node:assert/strict';",
+      "import { equal as same } from 'node:assert/strict';",
+      "switch (kind) {",
+      "  case 1:",
+      "    const assert = { equal() {} };",
+      "    assert.equal(1, 2);",
+      "    break;",
+      "  case 2:",
+      "    const same = (a: number, b: number) => {};",
+      "    same(1, 2);",
+      "    break;",
+      "}",
+      "",
+    ].join('\n');
+    await fs.writeFile(path.join(root, 'tests/example.test.ts'), source);
+    const catalog = await generateTestClaimCatalog(root, graph(), { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] });
+    const report = await buildTestClaimDecisionRecord(root, graph(), catalog, []) as any;
+    assert.equal(report.counts.nativeObligations, 0);
+    assert.equal(report.population.supportedDiscoveryComplete, true);
+    assert.equal(catalog.assertions.length, 2, 'bare switch shadow sites remain explicitly unsupported');
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('type-only Node imports never become executable provider identities', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-node-type-'));
+  try {
+    await fs.mkdir(path.join(root, 'tests'));
+    const source = [
+      "import type assert from 'node:assert/strict';",
+      "import { type equal as same } from 'node:assert/strict';",
+      "import type * as namespace from 'node:assert/strict';",
+      "import type test from 'node:test';",
+      "assert.equal(1, 2);",
+      "same(1, 2);",
+      "namespace.equal(1, 2);",
+      "test('erased', () => {});",
+      "",
+    ].join('\n');
+    await fs.writeFile(path.join(root, 'tests/example.test.ts'), source);
+    const catalog = await generateTestClaimCatalog(root, graph(), { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] });
+    const report = await buildTestClaimDecisionRecord(root, graph(), catalog, []) as any;
+    assert.equal(catalog.declarations.length, 0);
+    assert.equal(report.counts.nativeObligations, 0);
+    assert.equal(catalog.assertions.length, 3, 'erased assert call sites remain explicitly unsupported');
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('namespace object Node assert supports member calls but not direct invocation', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-node-namespace-'));
+  try {
+    await fs.mkdir(path.join(root, 'tests'));
+    const source = [
+      "import * as verification from 'node:assert/strict';",
+      "verification.equal(1, 1);",
+      "verification(1);",
+      "",
+    ].join('\n');
+    await fs.writeFile(path.join(root, 'tests/example.test.ts'), source);
+    const catalog = await generateTestClaimCatalog(root, graph(), { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] });
+    const report = await buildTestClaimDecisionRecord(root, graph(), catalog, []) as any;
+    assert.deepEqual(report.nativeObligations.map((item: any) => item.matcher), ['equal']);
+    assert.equal(catalog.assertions.length, 2, 'direct namespace invocation remains an unsupported site');
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
