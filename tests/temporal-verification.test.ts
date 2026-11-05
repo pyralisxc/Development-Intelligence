@@ -6,9 +6,10 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { graphContext } from '../src/intelligence/service.js';
 import { verifyTransition } from '../src/intelligence/temporalVerification.js';
+import { analyzeImpact } from '../src/intelligence/query.js';
 import { runChecked } from '../src/util/process.js';
 
-async function fixture() {
+async function fixture(unmappedOnly = false) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-transition-test-'));
   const source = path.join(root, 'source');
   const remote = path.join(root, 'remote.git');
@@ -21,7 +22,12 @@ async function fixture() {
   await runChecked('git', ['-C', source, 'add', '.']);
   await runChecked('git', ['-C', source, 'commit', '-m', 'base']);
   const base = (await runChecked('git', ['-C', source, 'rev-parse', 'HEAD'])).stdout.trim();
-  await fs.writeFile(path.join(source, 'src', 'work.ts'), 'export function keep() { return 2; }\nexport function added() { return keep(); }\n');
+  if (unmappedOnly) {
+    await fs.writeFile(path.join(source, 'notes.txt'), 'unmapped change\n');
+    await runChecked('git', ['-C', source, 'add', 'notes.txt']);
+  } else {
+    await fs.writeFile(path.join(source, 'src', 'work.ts'), 'export function keep() { return 2; }\nexport function added() { return keep(); }\n');
+  }
   await runChecked('git', ['-C', source, 'commit', '-am', 'head']);
   const head = (await runChecked('git', ['-C', source, 'rev-parse', 'HEAD'])).stdout.trim();
   await runChecked('git', ['init', '--bare', remote]);
@@ -38,6 +44,74 @@ async function fixture() {
   }));
   return { root, config, base, head };
 }
+
+test('bounded impact distinguishes skipped traversal and propagates incomplete paths to transition review', async () => {
+  const item = await fixture();
+  const previous = process.env.DEVINT_PROJECTS_FILE;
+  process.env.DEVINT_PROJECTS_FILE = item.config;
+  try {
+    const input = { project: 'Transition', baseRef: `commit:${item.base}`, ref: `commit:${item.head}`, limit: 1 };
+    const impact = await analyzeImpact(input) as any;
+    assert.equal(impact.afterImpact.seedTruncated, true);
+    assert.equal(impact.afterImpact.edgeTotal, 0);
+    assert.equal(impact.afterImpact.traversalStatus, 'not-performed');
+    assert.equal(impact.afterImpact.traversalReason, 'seed-limit');
+    const result = await verifyTransition(input) as any;
+    assert.equal(result.impact.after.traversalStatus, 'not-performed');
+    assert.equal(result.reviewSurface.affectedPathsComplete, false);
+  } finally {
+    if (previous === undefined) delete process.env.DEVINT_PROJECTS_FILE;
+    else process.env.DEVINT_PROJECTS_FILE = previous;
+    await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('zero-depth and fully traversed empty neighborhoods are distinguished', async () => {
+  const item = await fixture();
+  const previous = process.env.DEVINT_PROJECTS_FILE;
+  process.env.DEVINT_PROJECTS_FILE = item.config;
+  try {
+    const input = { project: 'Transition', baseRef: `commit:${item.base}`, ref: `commit:${item.head}`, limit: 50 };
+    const empty = await analyzeImpact({ ...input, relationshipKinds: ['not-a-relationship'] }) as any;
+    assert.equal(empty.afterImpact.edgeTotal, 0);
+    assert.equal(empty.afterImpact.traversalStatus, 'complete');
+    const complete = await verifyTransition({ ...input, relationshipKinds: ['not-a-relationship'] }) as any;
+    assert.equal(complete.reviewSurface.affectedPathsComplete, null);
+    assert.equal(complete.reviewSurface.truncated, false);
+    const unchanged = await verifyTransition({ ...input, baseRef: input.ref, depth: 0 }) as any;
+    assert.equal(unchanged.impact.after.seedTotal, 0);
+    assert.equal(unchanged.reviewSurface.affectedPathsComplete, null);
+    assert.equal(unchanged.reviewSurface.truncated, false);
+    const zero = await analyzeImpact({ ...input, depth: 0 }) as any;
+    assert.equal(zero.afterImpact.traversalStatus, 'not-performed');
+    assert.equal(zero.afterImpact.traversalReason, 'zero-depth');
+    const transition = await verifyTransition({ ...input, depth: 0 }) as any;
+    assert.equal(transition.reviewSurface.affectedPathsComplete, false);
+    assert.equal(transition.reviewSurface.truncated, true);
+  } finally {
+    if (previous === undefined) delete process.env.DEVINT_PROJECTS_FILE;
+    else process.env.DEVINT_PROJECTS_FILE = previous;
+    await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('wholly unmapped changes disclose incomplete affected paths', async () => {
+  const item = await fixture(true);
+  const previous = process.env.DEVINT_PROJECTS_FILE;
+  process.env.DEVINT_PROJECTS_FILE = item.config;
+  try {
+    const result = await verifyTransition({ project: 'Transition', baseRef: `commit:${item.base}`, ref: `commit:${item.head}` }) as any;
+    assert.deepEqual(result.impact.mapping.headUnmappedPaths, ['notes.txt']);
+    assert.equal(result.impact.after.traversalReason, 'no-seeds');
+    assert.deepEqual(result.reviewSurface.affectedPaths, []);
+    assert.equal(result.reviewSurface.affectedPathsComplete, false);
+    assert.equal(result.reviewSurface.truncated, false);
+  } finally {
+    if (previous === undefined) delete process.env.DEVINT_PROJECTS_FILE;
+    else process.env.DEVINT_PROJECTS_FILE = previous;
+    await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
 
 test('temporal verification composes exact A/B delta, expectations, invariants, impact, and unexpected change', async () => {
   const item = await fixture();

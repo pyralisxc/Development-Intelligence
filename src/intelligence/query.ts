@@ -244,6 +244,11 @@ function impactNeighborhood(
     depth: maxDepth,
     limit,
     truncated: reachedLimit,
+    traversalStatus: uniqueSeeds.length > boundedSeeds.length || maxDepth === 0 || boundedSeeds.length === 0
+      ? 'not-performed' : reachedLimit ? 'partial' : 'complete',
+    traversalReason: uniqueSeeds.length > boundedSeeds.length ? 'seed-limit'
+      : maxDepth === 0 ? 'zero-depth' : boundedSeeds.length === 0 ? 'no-seeds'
+        : reachedLimit ? 'node-limit' : null,
     nodeTotal: nodes.length,
     edgeTotal: selectedEdges.length,
     paths: [...pathSet].sort(),
@@ -320,7 +325,7 @@ export async function analyzeImpact(input: {
     },
     beforeImpact: impactNeighborhood(base.graph, baseSeeds, input),
     afterImpact: impactNeighborhood(head.graph, headSeeds, input),
-    note: 'Impact is seeded from actual Git changed paths, then projected through the selected revision graphs. Resolved relationships are used by default; candidate or unresolved relationships are included only when explicitly requested. Coverage and unmapped changed paths remain explicit.',
+    note: 'Impact is seeded from actual Git changed paths, then projected through the selected revision graphs. Traversal status describes only the selected depth, direction and filters, not source coverage or mapping completeness; edgeTotal counts observed edges, not edges that were not traversed. Resolved relationships are used by default; candidate or unresolved relationships are included only when explicitly requested. Coverage and unmapped changed paths remain explicit.',
   };
 }
 

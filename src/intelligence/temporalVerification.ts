@@ -209,6 +209,10 @@ export async function verifyTransition(input: {
   const afterPaths = Array.isArray((impact as any).afterImpact?.paths) ? (impact as any).afterImpact.paths as string[] : [];
   const affectedPaths = [...new Set([...beforePaths, ...afterPaths])].sort();
   const unexpectedTotal = unexpected.nodes.length + unexpected.edges.length;
+  const traversalLimited = [(impact as any).beforeImpact, (impact as any).afterImpact].some(side =>
+    side?.truncated || (side?.traversalReason === 'zero-depth' && side.seedTotal > 0));
+  const unmappedChanges = ((impact as any).mapping?.baseUnmappedPaths?.length ?? 0) > 0
+    || ((impact as any).mapping?.headUnmappedPaths?.length ?? 0) > 0;
 
   return {
     project: input.project,
@@ -278,10 +282,14 @@ export async function verifyTransition(input: {
     reviewSurface: {
       changedFiles: changedFiles.slice(0, limit),
       affectedPaths: affectedPaths.slice(0, limit),
+      // Even a completed bounded traversal does not prove source coverage or mapping completeness.
+      affectedPathsComplete: traversalLimited || unmappedChanges || affectedPaths.length > limit ? false : null,
+      affectedPathsCompletenessNote: 'False indicates a traversal or output limit, or unmapped changed paths; null means completeness is not established, including for source coverage.',
       expectationIssues: issues.slice(0, limit),
       unexpectedNodes: unexpected.nodes.slice(0, limit),
       unexpectedEdges: unexpected.edges.slice(0, limit),
-      truncated: changedFiles.length > limit || affectedPaths.length > limit || issues.length > limit || unexpected.nodes.length > limit || unexpected.edges.length > limit,
+      truncated: traversalLimited || changedFiles.length > limit || affectedPaths.length > limit || issues.length > limit || unexpected.nodes.length > limit || unexpected.edges.length > limit,
+      truncationNote: 'True indicates a traversal or review-array limit. False does not establish completeness; see affectedPathsComplete and impact.mapping.',
     },
     policy: {
       persisted: false,

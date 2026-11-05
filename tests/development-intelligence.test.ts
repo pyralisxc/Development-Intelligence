@@ -398,6 +398,13 @@ export function helper() { return 'changed implementation'; }
       impact.afterImpact.nodes.some((node: any) => node.sourceId === 'repo:src/panel.tsx'),
       'inbound impact should reach a caller in panel.tsx',
     );
+    const bounded = await analyzeImpact({
+      project: fixture.project, baseRef: `commit:${base}`, ref: `commit:${head}`,
+      direction: 'inbound', depth: 3, limit: impact.afterImpact.seedTotal,
+    }) as any;
+    assert.equal(bounded.afterImpact.seedTruncated, false);
+    assert.equal(bounded.afterImpact.traversalStatus, 'partial');
+    assert.equal(bounded.afterImpact.traversalReason, 'node-limit');
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
