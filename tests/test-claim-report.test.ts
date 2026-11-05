@@ -74,6 +74,20 @@ test('native exact-source projections share canonical ordering and evaluator ide
   assert.equal(first.policy.recommendsDeletion, false);
 });
 
+test('compact population omits bulky diagnostics but preserves digest-bound full recovery', () => {
+  const report = { ...decision, population: { ...decision.population, wholeLanguageComplete: false, universe: ['tests/a', 'tests/b'], fileValidation: { 'tests/a': { valid: false, reason: 'bad' } }, missingFiles: ['tests/b'] } };
+  const full = projectTestClaimDecisionPage({ report, catalog, producerCommit, pageSize: 1 }) as any;
+  const compact = projectTestClaimDecisionPage({ report, catalog, producerCommit, pageSize: 1, populationDetail: 'summary' } as any) as any;
+  assert.equal(compact.identity.projectionSha256, full.identity.projectionSha256);
+  assert.deepEqual(compact.items, full.items);
+  assert.equal(compact.population.supportedDiscoveryComplete, false);
+  assert.equal(compact.population.wholeLanguageComplete, false);
+  assert.equal(compact.population.detailsOmitted, true);
+  assert.deepEqual(compact.population.detailCounts, { problems: 1, universe: 2, fileValidation: 1, missingFiles: 1 });
+  assert.equal(compact.population.fileValidation, undefined);
+  assert.deepEqual(full.population, report.population);
+});
+
 test('bundle reader rejects self-consistent catalog and report identity mismatches', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-claim-report-mismatch-'));
   try {

@@ -1776,6 +1776,12 @@ test('authenticated test-claim query derives a nonempty catalog directly from ex
       pageSize: 1,
     }) as any;
     assert.equal(second.identity.projectionSha256, first.identity.projectionSha256);
+    const compact = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], pageSize: 1, populationDetail: 'summary' }) as any;
+    assert.equal(compact.population.detailsOmitted, true);
+    assert.equal(compact.identity.projectionSha256, first.identity.projectionSha256);
+    const recovered = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], pageSize: 1, expectedReportDigest: compact.identity.projectionSha256 }) as any;
+    assert.deepEqual(recovered.population, first.population);
+    await assert.rejects(callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'], populationDetail: 'bogus' }), /populationDetail/u);
     const changedScope = await callTool('get_test_claim_report', { project: fixture.project, ref: `commit:${sourceRevision}`, sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.tsx'] }) as any;
     assert.equal(changedScope.counts.assertions, 0);
     assert.notEqual(changedScope.identity.projectionSha256, first.identity.projectionSha256);
