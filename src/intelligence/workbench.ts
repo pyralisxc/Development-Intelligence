@@ -2330,7 +2330,10 @@ async function resolveInvestigationSubject(
     const exact = direct.filter(node => node.id === cleaned || normalizedMention(node.name ?? '') === normalizedMention(cleaned));
     const compatible = exact.filter(node => node.id === cleaned || compatibleEntityRole(node, role));
     if (compatible.length === 1) return { query: cleaned, node: compatible[0]!, ambiguous: false, candidates: compatible };
-    if (compatible.length > 1) return { query: cleaned, node: null, ambiguous: true, candidates: compatible };
+    if (compatible.length > 1) {
+      if (!role) return { query: cleaned, node: compatible[0]!, ambiguous: false, candidates: [compatible[0]!] };
+      return { query: cleaned, node: null, ambiguous: true, candidates: compatible };
+    }
     if (exact.length && role) return { query: cleaned, node: null, ambiguous: true, candidates: exact };
     // An explicit symbol must not silently resolve to a different semantic concept.
     if (isExactSymbolQuestion(cleaned)) {

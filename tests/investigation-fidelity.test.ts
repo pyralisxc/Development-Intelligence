@@ -45,6 +45,9 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     const implementation = await queryWorkbench({ ...input, text: 'Where is target implemented?' }) as any;
     assert.equal(implementation.subject.kind, 'function');
     assert.match(implementation.subject.id, /src\/workbench\.ts#function:target/u);
+    const neutral = await queryWorkbench({ ...input, text: 'What is target?' }) as any;
+    assert.equal(neutral.intent, 'inspect');
+    assert.equal(typeof neutral.subject.id, 'string');
     const outgoing = await queryWorkbench({ ...input, text: 'What does target call?' }) as any;
     assert.equal(outgoing.subject.kind, 'function');
     assert.equal(outgoing.routing.direction, 'outbound');
