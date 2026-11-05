@@ -278,6 +278,9 @@ export async function verifyTransition(input: {
     reviewSurface: {
       changedFiles: changedFiles.slice(0, limit),
       affectedPaths: affectedPaths.slice(0, limit),
+      // Even a completed bounded traversal does not prove source coverage or mapping completeness.
+      affectedPathsComplete: (impact as any).beforeImpact?.truncated || (impact as any).afterImpact?.truncated || (impact as any).beforeImpact?.traversalReason === 'zero-depth' || (impact as any).afterImpact?.traversalReason === 'zero-depth' || affectedPaths.length > limit ? false : null,
+      affectedPathsCompletenessNote: 'False indicates a known traversal or output limit; null means completeness is not established, including for source coverage and unmapped paths.',
       expectationIssues: issues.slice(0, limit),
       unexpectedNodes: unexpected.nodes.slice(0, limit),
       unexpectedEdges: unexpected.edges.slice(0, limit),

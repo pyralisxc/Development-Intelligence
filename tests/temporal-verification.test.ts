@@ -6,6 +6,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { graphContext } from '../src/intelligence/service.js';
 import { verifyTransition } from '../src/intelligence/temporalVerification.js';
+import { analyzeImpact } from '../src/intelligence/query.js';
 import { runChecked } from '../src/util/process.js';
 
 async function fixture() {
@@ -38,6 +39,48 @@ async function fixture() {
   }));
   return { root, config, base, head };
 }
+
+test('bounded impact distinguishes skipped traversal and propagates incomplete paths to transition review', async () => {
+  const item = await fixture();
+  const previous = process.env.DEVINT_PROJECTS_FILE;
+  process.env.DEVINT_PROJECTS_FILE = item.config;
+  try {
+    const input = { project: 'Transition', baseRef: `commit:${item.base}`, ref: `commit:${item.head}`, limit: 1 };
+    const impact = await analyzeImpact(input) as any;
+    assert.equal(impact.afterImpact.seedTruncated, true);
+    assert.equal(impact.afterImpact.edgeTotal, 0);
+    assert.equal(impact.afterImpact.traversalStatus, 'not-performed');
+    assert.equal(impact.afterImpact.traversalReason, 'seed-limit');
+    const result = await verifyTransition(input) as any;
+    assert.equal(result.impact.after.traversalStatus, 'not-performed');
+    assert.equal(result.reviewSurface.affectedPathsComplete, false);
+  } finally {
+    if (previous === undefined) delete process.env.DEVINT_PROJECTS_FILE;
+    else process.env.DEVINT_PROJECTS_FILE = previous;
+    await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test('zero-depth and fully traversed empty neighborhoods are distinguished', async () => {
+  const item = await fixture();
+  const previous = process.env.DEVINT_PROJECTS_FILE;
+  process.env.DEVINT_PROJECTS_FILE = item.config;
+  try {
+    const input = { project: 'Transition', baseRef: `commit:${item.base}`, ref: `commit:${item.head}`, limit: 50 };
+    const empty = await analyzeImpact({ ...input, relationshipKinds: ['not-a-relationship'] }) as any;
+    assert.equal(empty.afterImpact.edgeTotal, 0);
+    assert.equal(empty.afterImpact.traversalStatus, 'complete');
+    const zero = await analyzeImpact({ ...input, depth: 0 }) as any;
+    assert.equal(zero.afterImpact.traversalStatus, 'not-performed');
+    assert.equal(zero.afterImpact.traversalReason, 'zero-depth');
+    const transition = await verifyTransition({ ...input, depth: 0 }) as any;
+    assert.equal(transition.reviewSurface.affectedPathsComplete, false);
+  } finally {
+    if (previous === undefined) delete process.env.DEVINT_PROJECTS_FILE;
+    else process.env.DEVINT_PROJECTS_FILE = previous;
+    await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
 
 test('temporal verification composes exact A/B delta, expectations, invariants, impact, and unexpected change', async () => {
   const item = await fixture();
