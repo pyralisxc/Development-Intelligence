@@ -100,6 +100,45 @@ export const actionDefinition = {
 export const privateServiceConfig = { authorization: 'must-not-be-persisted' };
 server.registerTool('manage_item', { title: 'Manage item' }, async () => ({ ok: true }));
 `);
+  await fs.writeFile(path.join(source, 'src', 'behavior.ts'), `
+export function decideEligibility(action: string) {
+  const reasons: string[] = [];
+  if (action === 'expire') reasons.push('physical_expiry_unavailable');
+  return { eligible: reasons.length === 0, reasons };
+}
+export function contactKey(requestId: string | null) {
+  return requestId ? \`contact-\${requestId}\` : \`contact-\${Date.now()}\`;
+}
+export async function resolveAttempt(request: (lookup: boolean) => Promise<string | null>, retry: boolean) {
+  const destination = await request(true);
+  return destination ?? (retry ? await request(false) : null);
+}
+export function partialGuard(action: string) {
+  const reasons: string[] = [];
+  if (action === 'expire') reasons.push('blocked');
+  return { eligible: true, reasons };
+}
+export function opaqueMutation(run: (value: string[]) => void) {
+  const reasons: string[] = [];
+  run(reasons);
+  return { eligible: reasons.length === 0, reasons };
+}
+export function earlyReturnBypass(action: string) {
+  const reasons: string[] = [];
+  if (action === 'expire') return { eligible: true, reasons };
+  reasons.push('physical_expiry_unavailable');
+  return { eligible: reasons.length === 0, reasons };
+}
+export async function retryAnotherBranch(request: (lookup: boolean) => Promise<string | null>, retry: boolean) {
+  const destination = await request(true);
+  if (retry) return await request(false);
+  return destination;
+}
+export function unresolvedHelper(action: string) {
+  return decideViaHelper(action);
+}
+declare function decideViaHelper(action: string): { eligible: boolean };
+`);
   await fs.writeFile(path.join(source, 'README.md'), '# Sample Project\n\nManage item from the application.\n');
   await fs.writeFile(path.join(source, 'config.json'), JSON.stringify({ endpoint: '/api/manage', module: 'NodeNext', access_token: 'must-not-be-persisted' }, null, 2));
   await fs.mkdir(path.join(source, '.github', 'workflows'), { recursive: true });
@@ -807,6 +846,95 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     if ('semanticDepth' in expected) assert.equal(plan.semanticDepth, expected.semanticDepth, expected.question);
     if ('completeness' in expected) assert.equal(plan.completeness, expected.completeness, expected.question);
     assert.equal(plan.continuity, 'immediate-exact-pronoun-only');
+  }
+});
+
+test('behavioral questions derive bounded conditional propositions without claiming runtime outcomes', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    const graph = await scanGraph(fixture.project);
+    const eligibilityQuestion = 'When action is expire, does decideEligibility always return eligible false?';
+    const eligibility = await queryWorkbenchRequest({
+      project: fixture.project,
+      graphId: graph.graphId,
+      text: eligibilityQuestion,
+      scope: 'src/behavior.ts',
+    }) as any;
+    assert.equal(eligibility.intent, 'behavioral-claim');
+    assert.equal(eligibility.subject.name, 'decideEligibility');
+    assert.equal(eligibility.result.verdict, 'supported');
+    assert.equal(eligibility.result.propositions[0].kind, 'conditional-accumulator-outcome');
+    assert.match(eligibility.result.propositions[0].statement, /physical_expiry_unavailable/u);
+    assert.equal(eligibility.result.boundary.runtimeObserved, false);
+
+    const assessed = await callTool('query_intelligence', {
+      project: fixture.project,
+      graphId: graph.graphId,
+      question: eligibilityQuestion,
+      scope: 'src/behavior.ts',
+    }) as any;
+    assert.equal(assessed.behavioralProposition.subject.id, eligibility.result.subject.id);
+    assert.deepEqual(assessed.behavioralProposition.propositions, eligibility.result.propositions);
+    assert.equal(assessed.answerStatus, 'supported');
+
+    const key = await callTool('investigate', {
+      project: fixture.project,
+      graphId: graph.graphId,
+      question: 'When requestId is present or missing, which value does contactKey return?',
+      scope: 'src/behavior.ts',
+    }) as any;
+    assert.equal(key.result.verdict, 'supported');
+    assert.equal(key.result.propositions[0].kind, 'conditional-value-selection');
+    assert.match(key.result.propositions[0].statement, /Date\.now/u);
+
+    const retry = await callTool('investigate', {
+      project: fixture.project,
+      graphId: graph.graphId,
+      question: 'Does resolveAttempt call request(false) only after request(true) returns null, and is retry skipped if request(true) throws?',
+      scope: 'src/behavior.ts',
+    }) as any;
+    assert.equal(retry.result.verdict, 'supported');
+    assert.equal(retry.result.propositions[0].kind, 'sequential-await-fallback');
+    assert.match(retry.result.propositions[0].statement, /not reached/u);
+
+    const composite = await callTool('investigate', {
+      project: fixture.project,
+      graphId: graph.graphId,
+      question: 'When requestId is present, does contactKey prevent actual duplicate network delivery?',
+      scope: 'src/behavior.ts',
+    }) as any;
+    assert.equal(composite.result.verdict, 'partial');
+    assert.ok(composite.result.unknowns.includes('source control flow does not prove external or runtime outcomes'));
+
+    for (const [question, name] of [
+      ['When action is expire, does partialGuard return eligible false?', 'partialGuard'],
+      ['When run mutates reasons, does opaqueMutation return eligible false?', 'opaqueMutation'],
+      ['When action is expire, does earlyReturnBypass return eligible false?', 'earlyReturnBypass'],
+      ['Does retryAnotherBranch call request(false) only when the first request returns null?', 'retryAnotherBranch'],
+      ['When action is expire, does unresolvedHelper return eligible false?', 'unresolvedHelper'],
+    ]) {
+      const unproven = await callTool('investigate', {
+        project: fixture.project,
+        graphId: graph.graphId,
+        question,
+        scope: 'src/behavior.ts',
+      }) as any;
+      assert.equal(unproven.subject.name, name);
+      assert.equal(unproven.result.verdict, 'unproven');
+      assert.equal(unproven.result.propositions.length, 0);
+    }
+
+    const repeated = await queryWorkbenchRequest({
+      project: fixture.project,
+      graphId: graph.graphId,
+      text: eligibilityQuestion,
+      scope: 'src/behavior.ts',
+    }) as any;
+    assert.deepEqual(repeated.result, eligibility.result);
+  } finally {
+    clearGraphCache(fixture.project);
+    await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 

@@ -4,6 +4,7 @@ import { graphQueryContext } from './queryContext.js';
 import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
 import { projectOrientation } from './orientation.js';
+import { evaluateBehavioralProposition } from './behavioralProposition.js';
 
 export type AssessmentStatus = 'supported' | 'contradicted' | 'unproven' | 'indeterminate';
 export type RealizationFacet = 'human' | 'agent' | 'transport' | 'implementation' | 'persistence' | 'provider';
@@ -503,7 +504,23 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   };
 }
 
-export async function queryIntelligence(input: { project: string; question: string; ref?: string; graphId?: string; requiredFacets?: RealizationFacet[] }): Promise<Record<string, unknown>> {
+export async function queryIntelligence(input: { project: string; question: string; ref?: string; graphId?: string; scope?: string; requiredFacets?: RealizationFacet[] }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
-  return assessGraph(graph, input.question, input.requiredFacets);
+  const assessment = assessGraph(graph, input.question, input.requiredFacets);
+  const behavioralProposition = await evaluateBehavioralProposition({
+    project: input.project,
+    graph,
+    question: input.question,
+    ...(input.scope ? { scope: input.scope } : {}),
+  });
+  if (!behavioralProposition) return assessment;
+  const behavioralSubject = behavioralProposition.subject && typeof behavioralProposition.subject === 'object'
+    ? behavioralProposition.subject as Record<string, unknown>
+    : null;
+  return {
+    ...assessment,
+    interpretedSubject: behavioralSubject?.name ?? assessment.interpretedSubject,
+    answerStatus: behavioralProposition.verdict,
+    behavioralProposition,
+  };
 }

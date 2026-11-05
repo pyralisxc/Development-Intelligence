@@ -13,6 +13,7 @@ import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthori
 import { graphRecordWeight } from './capacity.js';
 import { repositoryAudit } from './repositoryAudit.js';
 import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from './interfaceRuntimeObservation.js';
+import { evaluateBehavioralProposition, isConditionalBehaviorQuestion } from './behavioralProposition.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -968,6 +969,7 @@ async function implementationMechanismProjection(input: {
 export type InvestigationQuestionLane =
   | 'source-query'
   | 'interface'
+  | 'behavioral-claim'
   | 'semantic-lifecycle'
   | 'implementation-explanation'
   | 'change'
@@ -1056,6 +1058,7 @@ export function planInvestigationQuestion(input: {
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
+  else if (isConditionalBehaviorQuestion(text)) lane = 'behavioral-claim';
   else if (implementationInventory || implementationMetaInquiry || deploymentPortabilityInquiry) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
@@ -1076,7 +1079,7 @@ export function planInvestigationQuestion(input: {
   else lane = 'entity';
 
   const proofMode: InvestigationQuestionProofMode =
-    lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
+    lane === 'implementation-claim' || lane === 'behavioral-claim' || (lane === 'evidence' && claimIntent)
       ? 'claim'
       : lane === 'evidence'
         ? 'evidence'
@@ -2451,7 +2454,14 @@ export async function queryWorkbench(input: {
     ...(input.sourceId ? { sourceId: input.sourceId } : {}),
     ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
   });
-  const target = await resolveInvestigationTarget(input, text, plan);
+  const behavioralGraph = plan.lane === 'behavioral-claim'
+    ? await currentGraph(input.project, input.ref, input.graphId)
+    : null;
+  const target = await resolveInvestigationTarget(
+    behavioralGraph ? { ...input, graphId: behavioralGraph.graphId } : input,
+    text,
+    plan,
+  );
   const result = await (async (): Promise<Record<string, unknown>> => {
 
   if (input.sourceId) {
@@ -2461,6 +2471,28 @@ export async function queryWorkbench(input: {
 
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
+
+  if (plan.lane === 'behavioral-claim') {
+    const behavioralProposition = await evaluateBehavioralProposition({
+      project: input.project,
+      graph: behavioralGraph!,
+      question: text,
+      ...(input.scope ? { scope: input.scope } : {}),
+      ...(target.node ? { subject: target.node } : {}),
+    });
+    const verdict = String(behavioralProposition?.verdict ?? 'unproven');
+    return {
+      intent: 'behavioral-claim',
+      subject: subjectDescriptor(target.node, target.query, target.ambiguous, target.candidates),
+      routing: { tool: 'query_intelligence', projection: 'behavioral-proposition' },
+      answer: verdict === 'supported'
+        ? 'The bounded local source establishes the reported behavioral proposition.'
+        : verdict === 'partial'
+          ? 'The bounded local source establishes part of the proposition; explicit unknowns remain.'
+          : 'The requested behavioral proposition is unproven by the supported local source analysis.',
+      result: behavioralProposition,
+    };
+  }
 
   if (plan.lane === 'implementation-explanation') {
     const result = await implementationMechanismProjection({
