@@ -2169,6 +2169,27 @@ function plainMention(value: string): string {
   return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/gu, ' ').trim();
 }
 
+type RequestedEntityRole = 'implementation' | 'import' | 'callable' | null;
+
+function requestedEntityRole(text: string): RequestedEntityRole {
+  const lower = text.toLowerCase();
+  if (/\b(imported|import(?:s|ing)? binding|import statement)\b/u.test(lower)) return 'import';
+  if (/\b(implemented|implementation|defined|definition|declaration)\b/u.test(lower)) return 'implementation';
+  if (/\b(callers?|callees?|called by|calls?)\b/u.test(lower)) return 'callable';
+  return null;
+}
+
+function isExactSymbolQuestion(query: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/u.test(query) && /[A-Z_$]/u.test(query);
+}
+
+function compatibleEntityRole(node: GraphNode, role: RequestedEntityRole): boolean {
+  if (!role) return true;
+  if (role === 'import') return node.kind === 'import-binding';
+  if (role === 'callable') return node.id.startsWith('symbol:') && ['function', 'method'].includes(node.kind);
+  return node.id.startsWith('symbol:') && ['function', 'method', 'class', 'variable', 'interface', 'type'].includes(node.kind);
+}
+
 const GENERIC_SUBJECT_NAMES = new Set([
   'api', 'class', 'code', 'config', 'configuration', 'dependency', 'dependencies', 'entity', 'feature',
   'file', 'function', 'implementation', 'module', 'object', 'project', 'provider', 'relationship',
@@ -2253,6 +2274,7 @@ interface InvestigationTargetResolution {
   node: GraphNode | null;
   ambiguous: boolean;
   candidates: GraphNode[];
+  exactUnresolved?: boolean;
 }
 
 function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
@@ -2287,7 +2309,7 @@ async function resolveInvestigationSubject(
   input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
   text: string,
   markers: RegExp[],
-): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[] }> {
+): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[]; exactUnresolved?: boolean }> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const scoped = input.scope ? scopeNodeIds(graph, input.scope) : null;
   const scopeIds = scoped && (scoped.kind === 'file' || scoped.kind === 'path' || scoped.kind === 'entity') ? scoped.ids : null;
@@ -2299,18 +2321,27 @@ async function resolveInvestigationSubject(
   }
 
   const cleaned = querySubject(text, markers);
+  const role = requestedEntityRole(text);
   if (cleaned) {
-    const direct = inScope(findGraphNodeCandidates(graph, cleaned, 20)).filter(node => {
+    const direct = inScope(findGraphNodeCandidates(graph, cleaned, 100)).filter(node => {
       const name = plainMention(node.name ?? '');
       return !GENERIC_SUBJECT_NAMES.has(name) || plainMention(cleaned) === name;
     });
-    const exact = direct.find(node => node.id === cleaned || normalizedMention(node.name ?? '') === normalizedMention(cleaned));
-    if (exact) return { query: cleaned, node: exact, ambiguous: false, candidates: [exact] };
-    if (direct.length === 1) return { query: cleaned, node: direct[0]!, ambiguous: false, candidates: direct };
+    const exact = direct.filter(node => node.id === cleaned || normalizedMention(node.name ?? '') === normalizedMention(cleaned));
+    const compatible = exact.filter(node => node.id === cleaned || compatibleEntityRole(node, role));
+    if (compatible.length === 1) return { query: cleaned, node: compatible[0]!, ambiguous: false, candidates: compatible };
+    if (compatible.length > 1) return { query: cleaned, node: null, ambiguous: true, candidates: compatible };
+    if (exact.length && role) return { query: cleaned, node: null, ambiguous: true, candidates: exact };
+    // An explicit symbol must not silently resolve to a different semantic concept.
+    if (isExactSymbolQuestion(cleaned)) {
+      return { query: cleaned, node: null, ambiguous: false, candidates: direct.slice(0, 10), exactUnresolved: true };
+    }
+    const suitable = direct.filter(node => compatibleEntityRole(node, role));
+    if (suitable.length === 1) return { query: cleaned, node: suitable[0]!, ambiguous: false, candidates: suitable };
   }
 
   const haystack = normalizedMention(text);
-  const mentions = inScope(graph.nodes)
+  const mentions = inScope(graph.nodes).filter(node => compatibleEntityRole(node, role))
     .map(node => {
       const values = [node.id, node.name ?? '']
         .map(value => ({ raw: value, normalized: normalizedMention(value), plain: plainMention(value) }))
@@ -2378,6 +2409,9 @@ async function resolveInvestigationTarget(
         candidates: resolved.candidates,
       };
     }
+    if (resolved.exactUnresolved) {
+      return { ...base, mode: 'query', query: resolved.query, exactUnresolved: true, candidates: resolved.candidates };
+    }
     if (resolved.ambiguous) {
       return {
         strategy: plan.subjectStrategy,
@@ -2402,6 +2436,7 @@ async function resolveInvestigationTarget(
     node: resolved.node,
     ambiguous: resolved.ambiguous,
     candidates: resolved.candidates,
+    ...(resolved.exactUnresolved ? { exactUnresolved: true } : {}),
   };
 }
 
@@ -2412,6 +2447,7 @@ function targetResolutionForRouting(target: InvestigationTargetResolution): Reco
     query: target.query,
     scope: target.scope,
     ambiguous: target.ambiguous,
+    exactUnresolved: target.exactUnresolved === true,
     node: target.node
       ? {
           id: target.node.id,
@@ -2453,6 +2489,16 @@ export async function queryWorkbench(input: {
   });
   const target = await resolveInvestigationTarget(input, text, plan);
   const result = await (async (): Promise<Record<string, unknown>> => {
+
+  if (target.exactUnresolved) {
+    return {
+      intent: 'unresolved',
+      subject: subjectDescriptor(null, target.query, false, target.candidates),
+      routing: { tool: 'none', reason: 'exact-identity-not-resolved' },
+      answer: 'The exact requested identifier was not resolved in this graph revision. Similar matches are candidates, not proof of the requested identity.',
+      result: { outcome: 'unresolved-input', candidates: target.candidates.map(node => ({ id: node.id, name: node.name, kind: node.kind })) },
+    };
+  }
 
   if (input.sourceId) {
     const external = await queryTechnicalSource({ project: input.project, sourceId: input.sourceId, capability: input.capability, query: text });
@@ -2646,15 +2692,43 @@ export async function queryWorkbench(input: {
     }
     const subject = resolved.node?.id ?? resolved.query;
     if (subject) {
-      const direction = /used by|callers?|called by|consumers?|^\s*what\s+depends?\s+on\b|^\s*which\b[^?]*\bdepends?\s+on\b|\bwhich\b.*\buses?\b|\bwhat\b.*\b(?:calls?|constructs?)\b/.test(lower)
-        ? 'inbound'
-        : /depend(?:s)? on|uses/.test(lower) ? 'outbound' : 'both';
-      const result = await traceGraph({ project: input.project, ref: input.ref, graphId: input.graphId, node: subject, direction, depth: 2, statuses: ['resolved'], limit: 250 }) as any;
+      const outboundCall = /\b(?:what|which)\s+(?:functions?\s+)?(?:does|do)\b[^?]*\bcall\b/u.test(lower);
+      const inboundCall = /^\s*(?:what|who|which)\s+(?:functions?\s+)?calls?\b/u.test(lower)
+        || /\b(?:callers?|called by)\b/u.test(lower);
+      const isCallQuestion = outboundCall || inboundCall;
+      const direction = outboundCall ? 'outbound' : inboundCall ? 'inbound'
+        : /used by|consumers?|^\s*what\s+depends?\s+on\b|^\s*which\b[^?]*\bdepends?\s+on\b|\bwhich\b.*\buses?\b|\bwhat\b.*\bconstructs?\b/u.test(lower)
+          ? 'inbound'
+          : /depend(?:s)? on|uses/u.test(lower) ? 'outbound' : 'both';
+      const result = await traceGraph({
+        project: input.project, ref: input.ref, graphId: input.graphId,
+        node: subject, direction, depth: isCallQuestion ? 1 : 2,
+        ...(isCallQuestion ? { relationshipKinds: ['calls'] } : {}),
+        statuses: ['resolved'], limit: 250,
+      }) as any;
+      const callEdges = isCallQuestion && !result.ambiguous
+        ? (result.edges ?? []).filter((edge: any) => edge.kind === 'calls'
+          && (direction === 'outbound' ? edge.from === subject : edge.to === subject))
+        : [];
+      const names = new Map<string, string>((result.nodes ?? []).map((node: any) => [node.id, node.name || node.id]));
+      const observed = [...new Set<string>(callEdges.map((edge: any) =>
+        names.get(direction === 'outbound' ? edge.to : edge.from) ?? String(direction === 'outbound' ? edge.to : edge.from)))].sort();
+      const answer = result.ambiguous
+        ? 'The requested graph subject is ambiguous; choose an exact entity.'
+        : isCallQuestion
+          ? observed.length
+            ? 'Observed resolved direct ' + (direction === 'outbound' ? 'callees' : 'callers')
+              + ' of “' + displayName(resolved.node ?? undefined, subject) + '”: ' + observed.join(', ')
+              + '. These source relationships do not establish exhaustive runtime behavior.'
+            : 'No resolved direct call relationship was observed for the selected subject and direction; this does not prove an absence of runtime calls.'
+          : (result.nodes?.length ?? 0) + ' entities and ' + (result.edges?.length ?? 0)
+            + ' resolved relationships are in the traced neighborhood of “' + displayName(resolved.node ?? undefined, subject) + '”.';
       return {
         intent: 'trace',
         subject: subjectDescriptor(resolved.node, resolved.query),
-        routing: { tool: 'trace_path', direction },
-        answer: result.ambiguous ? `“${subject}” is ambiguous; choose an exact entity.` : `${result.nodes?.length ?? 0} entities and ${result.edges?.length ?? 0} resolved relationships are in the traced neighborhood of “${displayName(resolved.node ?? undefined, subject)}”.`,
+        routing: { tool: 'trace_path', direction, ...(isCallQuestion ? { relationshipKinds: ['calls'] } : {}) },
+        answer,
+        answerClassification: result.ambiguous ? 'unresolved-input' : isCallQuestion && observed.length ? 'established-bounded' : 'evidence-only',
         result,
       };
     }
