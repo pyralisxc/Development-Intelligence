@@ -749,12 +749,18 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
     answer:'Candidate ' + item.proposal.name + ': ' + String(item.support.fileCount) + ' source file(s), '
       + String(item.support.nodeCount) + ' nodes, ' + String(item.support.resolvedEdgeCount)
       + ' resolved edges; evidence families: ' + item.provenance.evidenceFamilies.join(', ')
+      + '. Audit factuality: ' + item.reviewAssessment.factuality
+      + '; candidate classification: ' + item.reviewAssessment.classification
       + '. This is source qualification, not runtime verification or accepted intent.',
     result:{ ...base,candidate:{
       id:item.id,scope:item.scope,proposal:item.proposal,support:item.support,
       evidenceFamilies:item.provenance.evidenceFamilies,
       representativeNodes:item.evidencePacket.representativeNodes.slice(0,8),
       representativeEdges:item.evidencePacket.representativeEdges.slice(0,8),
+      auditFactuality:item.reviewAssessment.factuality,
+      coreClassification:item.reviewAssessment.classification,
+      reviewAssessment:item.reviewAssessment,
+      autonomousState:item.autonomousAssessment.state,
       derivedCurrent:derivedIds.has(item.id),explicitlyAccepted:item.review?.accepted === true,
     } },
   };
