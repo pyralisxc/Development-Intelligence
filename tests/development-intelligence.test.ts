@@ -797,6 +797,9 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'Can the graph replace the HTTP assertion comparing healthBody.mcp with toolContract()?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Are parity passed, status and counterexample assertions redundant?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Would removing the tampered-report rejection test preserve its guarantee?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Which semantic meanings were automatically saved for this exact Preview revision, and how many were explicitly accepted?', lane: 'semantic-lifecycle', subjectStrategy: 'repository' },
+    { question: 'Why is src/mcp.ts excluded from the semantic candidate census? Show its source support and exclusion reason.', lane: 'semantic-audit', subjectStrategy: 'repository' },
+    { question: 'What source evidence supports the Packaging candidate, and what remains uncertain?', lane: 'semantic-audit', subjectStrategy: 'repository' },
     { question: 'Where is Panel implemented?', lane: 'code' },
     { question: 'What does Panel depend on?', lane: 'trace' },
     { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
@@ -820,6 +823,36 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     if ('completeness' in expected) assert.equal(plan.completeness, expected.completeness, expected.question);
     assert.equal(plan.continuity, 'immediate-exact-pronoun-only');
   }
+});
+
+test('saved meanings and missing semantic scope questions use revision-bound semantic evidence without inventing acceptance', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const saved = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which semantic meanings were automatically saved for this exact revision, and how many were explicitly accepted?',
+    }) as any;
+    assert.equal(saved.intent, 'semantic-lifecycle');
+    assert.equal(saved.routing.tool, 'semantic_review_surface');
+    assert.equal(saved.result.counts.accepted, 0);
+    assert.equal(saved.result.counts.reviewRecords, 0);
+    assert.equal(saved.result.authority.enrollmentState, 'not-enrolled');
+    const missing = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Why is src/missing.ts excluded from the semantic candidate census?',
+    }) as any;
+    assert.equal(missing.intent, 'semantic-audit');
+    assert.equal(missing.routing.tool, 'semantic_review_surface');
+    assert.equal(missing.routing.resolved, false);
+    const unknown = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What source evidence supports the NonexistentCapability candidate?',
+    }) as any;
+    assert.equal(unknown.intent, 'semantic-audit');
+    assert.equal(unknown.routing.resolved, false);
+  } finally { await fs.rm(fixture.root,{recursive:true,force:true}); clearGraphCache(fixture.project); }
 });
 
 test('meta-capability inventory questions bypass domain entity resolution', async () => {
