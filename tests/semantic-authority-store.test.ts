@@ -15,6 +15,7 @@ import {
   persistSemanticReview,
   persistSemanticReviews,
   persistDerivedSemanticMeanings,
+  persistQualifiedSemanticMeanings,
   promoteCanonicalAcceptedGraph,
   semanticPromotionEnrollmentState,
   semanticReviewsAtRevision,
@@ -454,6 +455,46 @@ test('semantic compaction preserves newest terminal disposition without reviving
     assert.equal(compacted.ledger?.records.length, 1);
     assert.equal(compacted.ledger?.records[0]?.review.state, 'superseded');
     assert.deepEqual(compacted.ledger?.derivedMeanings?.[0]?.evidenceIds, ['evidence:source']);
+  } finally {
+    if (previous === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
+    else process.env.DEVINT_CANONICAL_GRAPH_DIR = previous;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('source-proven technical acceptance and pending derived evidence commit atomically without overwriting review', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-machine-accepted-'));
+  const previous = process.env.DEVINT_CANONICAL_GRAPH_DIR;
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
+  try {
+    const revision = 'c'.repeat(40);
+    const machine = applySemanticReviewAction(semanticMeaningReview(candidate('candidate:source', revision)), {
+      kind: 'accept', actor: { kind: 'intrinsic-derivation', id: 'intrinsic-technical-scope.v1' },
+      at: '2026-11-06T00:00:00Z',
+      rationale: 'Exact source-backed technical scope; no product intent inferred.',
+    });
+    const derived = [{
+      candidateId: 'candidate:pending', revision, meaningId: 'derived:pending',
+      evidenceIds: ['evidence:pending'], sourceIds: ['src/pending.ts'],
+      disposition: 'evidence-qualified' as const,
+    }];
+    const original = await loadSemanticAuthority('FixtureMachine');
+    const stored = await persistQualifiedSemanticMeanings('FixtureMachine', revision, derived, [machine], original.etag);
+    assert.equal(stored.state, 'stored');
+    assert.equal(stored.ledger?.records.length, 1);
+    assert.equal(stored.ledger?.records[0]?.review.acceptance?.actor.kind, 'intrinsic-derivation');
+    assert.equal(latestAcceptedMeanings(stored.ledger).length, 1);
+    assert.equal(stored.ledger?.derivedMeanings?.length, 1);
+    assert.equal(stored.ledger?.enrollment, undefined);
+    assert.equal((await persistQualifiedSemanticMeanings('FixtureMachine', revision, derived, [machine], original.etag)).state, 'conflict');
+    assert.equal((await persistQualifiedSemanticMeanings('FixtureMachine', revision, derived, [machine], stored.etag)).state, 'conflict');
+    const human = applySemanticReviewAction(semanticMeaningReview(candidate('candidate:manual', revision)), {
+      kind: 'reject', actor: { kind: 'human', id: 'owner' }, at: '2026-11-06T00:00:00Z',
+    });
+    const corrected = await persistSemanticReview('FixtureMachine', human, stored.etag);
+    assert.equal(corrected.state, 'stored');
+    assert.equal(corrected.ledger?.records.find(item => item.candidateId === human.candidateId)?.review.state, 'rejected');
+    assert.equal(corrected.ledger?.records.find(item => item.candidateId === machine.candidateId)?.review.state, 'accepted');
   } finally {
     if (previous === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     else process.env.DEVINT_CANONICAL_GRAPH_DIR = previous;

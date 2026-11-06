@@ -218,40 +218,96 @@ export async function loadSemanticAuthority(project: string): Promise<SemanticAu
  * Maintain revision-bound source-derived semantics in the existing canonical
  * ledger. This is not acceptance and never modifies the human review records.
  */
+/**
+ * Atomically maintain source-qualified candidates and machine-accepted technical
+ * meaning in the existing DI ledger. Manual dispositions are never overwritten.
+ * A machine acceptance is a provenance-bearing review, not a Main release grant.
+ */
+export async function persistQualifiedSemanticMeanings(
+  project: string,
+  revision: string,
+  entries: NonNullable<SemanticAuthorityLedger['derivedMeanings']>,
+  acceptedReviews: SemanticMeaningReview[],
+  expectedEtag: string | null,
+): Promise<SemanticAuthorityWrite> {
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(revision)) throw new Error('Derived semantic revision must be exact');
+  if (entries.length > 1000 || entries.some(entry => entry.revision !== revision || entry.disposition !== 'evidence-qualified')) {
+    throw new Error('Invalid derived semantic revision set');
+  }
+  if (acceptedReviews.length > 1000) throw new Error('Automatic semantic review exceeds bounded capacity');
+  const acceptedCandidateIds = new Set<string>();
+  for (const review of acceptedReviews) {
+    validateReview(review);
+    if (!review.accepted || review.proposalRevision !== revision
+        || review.acceptance?.actor.kind !== 'intrinsic-derivation'
+        || review.acceptance.actor.id !== 'intrinsic-technical-scope.v1'
+        || review.proposalProvenance.origin !== 'intrinsic-derivation'
+        || !review.proposalProvenance.nodeIds.length
+        || !review.proposalProvenance.edgeIds.length) {
+      throw new Error('Automatic semantic acceptance requires exact intrinsic source proof and machine identity');
+    }
+    if (acceptedCandidateIds.has(review.candidateId)) throw new Error('Duplicate machine-accepted candidate');
+    acceptedCandidateIds.add(review.candidateId);
+  }
+  if (entries.some(entry => acceptedCandidateIds.has(entry.candidateId))) {
+    throw new Error('One semantic candidate cannot be both pending-derived and machine-accepted');
+  }
+  const current = await loadSemanticAuthority(project);
+  if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
+  if (current.state === 'invalid') throw new Error(current.error ?? 'Semantic ledger is invalid');
+  if (current.etag !== expectedEtag) return { state: 'conflict', etag: current.etag, ledger: current.ledger };
+  if ((current.ledger?.records ?? []).some(item => item.revision === revision && acceptedCandidateIds.has(item.candidateId))) {
+    return { state: 'conflict', etag: current.etag, ledger: current.ledger };
+  }
+  const unique = new Map(entries.map(item => [item.candidateId, item]));
+  if (unique.size !== entries.length) throw new Error('Duplicate derived candidate identity');
+  const retained = current.ledger?.derivedMeanings ?? [];
+  const submitted = new Set(entries.map(entry => entry.candidateId));
+  // Preserve old provenance, even if a subsequent correction makes it ineffective.
+  const formerAtRevision = retained.filter(entry => entry.revision === revision && !submitted.has(entry.candidateId));
+  const now = new Date().toISOString();
+  const newRecords = acceptedReviews.map(review => {
+    const next = persistedReview(review);
+    return {
+      recordId: recordId(next),
+      meaningId: next.meaningId,
+      revision: next.proposalRevision,
+      candidateId: next.candidateId,
+      storedAt: now,
+      review: next,
+    } satisfies StoredSemanticAuthorityRecord;
+  });
+  const ledger: SemanticAuthorityLedger = {
+    formatVersion: 1,
+    project,
+    generation: (current.ledger?.generation ?? 0) + 1,
+    updatedAt: now,
+    records: [...(current.ledger?.records ?? []), ...newRecords].sort((a, b) =>
+      a.meaningId.localeCompare(b.meaningId)
+      || String(a.revision).localeCompare(String(b.revision))
+      || a.candidateId.localeCompare(b.candidateId)
+    ),
+    derivedMeanings: [...retained.filter(item => item.revision !== revision), ...formerAtRevision, ...entries],
+    changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
+    ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
+  };
+  if (ledger.records.length > MAX_AUTHORITY_RECORDS || ledger.derivedMeanings!.length > MAX_AUTHORITY_RECORDS) {
+    throw new Error('Semantic ledger exceeds bounded record limit');
+  }
+  const body = JSON.stringify(ledger);
+  if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Semantic ledger exceeds storage limit');
+  const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
+  return { state: written.state, etag: written.etag, ledger: written.state === 'stored' ? ledger : current.ledger };
+}
+
+/** Compatibility entry point: persist derived-only evidence with identical CAS semantics. */
 export async function persistDerivedSemanticMeanings(
   project: string,
   revision: string,
   entries: NonNullable<SemanticAuthorityLedger['derivedMeanings']>,
   expectedEtag: string | null,
 ): Promise<SemanticAuthorityWrite> {
-  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(revision)) throw new Error('Derived semantic revision must be exact');
-  if (entries.length > 1000 || entries.some(entry => entry.revision !== revision || entry.disposition !== 'evidence-qualified')) throw new Error('Invalid derived semantic revision set');
-  const current = await loadSemanticAuthority(project);
-  if (current.state === 'not-configured') return { state: 'not-configured', etag: null, ledger: null };
-  if (current.state === 'invalid') throw new Error(current.error ?? 'Semantic ledger is invalid');
-  if (current.etag !== expectedEtag) return { state: 'conflict', etag: current.etag, ledger: current.ledger };
-  const unique = new Map(entries.map(item => [item.candidateId, item]));
-  if (unique.size !== entries.length) throw new Error('Duplicate derived candidate identity');
-  const retained = current.ledger?.derivedMeanings ?? [];
-  const submitted = new Set(entries.map(entry => entry.candidateId));
-  // Previous source qualification remains historical evidence even when an
-  // explicit correction makes it ineffective at this revision. The query
-  // projection, not destructive ledger pruning, determines effective status.
-  const formerAtRevision = retained.filter(entry => entry.revision === revision && !submitted.has(entry.candidateId));
-  const ledger: SemanticAuthorityLedger = {
-    formatVersion: 1, project,
-    generation: (current.ledger?.generation ?? 0) + 1,
-    updatedAt: new Date().toISOString(),
-    records: [...(current.ledger?.records ?? [])],
-    derivedMeanings: [...retained.filter(item => item.revision !== revision), ...formerAtRevision, ...entries],
-    changeVerifications: [...(current.ledger?.changeVerifications ?? [])],
-    ...(current.ledger?.enrollment ? { enrollment: copyEnrollment(current.ledger.enrollment) } : {}),
-  };
-  if (ledger.derivedMeanings!.length > MAX_AUTHORITY_RECORDS) throw new Error('Derived semantic ledger exceeds bounded record limit');
-  const body = JSON.stringify(ledger);
-  if (Buffer.byteLength(body, 'utf8') > MAX_AUTHORITY_BYTES) throw new Error('Derived semantic ledger exceeds storage limit');
-  const written = await writeCanonicalDerivedObjectConditional(project, AUTHORITY_PATH, body, 'application/json', expectedEtag);
-  return { state: written.state, etag: written.etag, ledger: written.state === 'stored' ? ledger : current.ledger };
+  return persistQualifiedSemanticMeanings(project, revision, entries, [], expectedEtag);
 }
 
 export async function persistSemanticReviews(
