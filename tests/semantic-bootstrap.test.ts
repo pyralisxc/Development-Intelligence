@@ -581,3 +581,24 @@ test('excluded low-support scope preserves structure and its gate reason, not se
   assert.equal(first.capacity.excludedScopes.returned, first.capacity.rejectedScopeCount);
   assert.equal(first.capacity.excludedScopes.truncated, false);
 });
+
+
+test('external modules with unavailable source are not fabricated into local semantic scopes', () => {
+  const fixture = graph();
+  fixture.nodes = [
+    { ...node('module:csharp:System.IO', 'module', 'csharp:System.IO', 'System.IO'),
+      sourceId: 'repository', tags: ['csharp', 'module', 'source-unavailable'],
+      value: { language: 'csharp', module: 'System.IO', localSource: false } },
+    node('file:local', 'file', 'src/interop/Local.cs'),
+    node('symbol:local', 'class', 'src/interop/Local.cs:2', 'Local'),
+  ];
+  fixture.edges = [
+    edge('external-to-local', 'module:csharp:System.IO', 'symbol:local', 'imports'),
+    edge('local-contains', 'file:local', 'symbol:local', 'contains'),
+  ];
+  const result = bootstrapSemanticCandidates(fixture, { limit: 10 });
+  assert.equal(result.capacity.excludedScopes.items.some(item => item.scope === 'csharp:System.IO'), false);
+  assert.equal(result.candidates.some(item => item.scope === 'csharp:System.IO'), false);
+  assert.equal(result.capacity.groupedScopeCount, 1);
+  assert.ok(result.capacity.excludedScopes.items.some(item => item.scope === 'src/interop'));
+});
