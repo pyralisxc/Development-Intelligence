@@ -14,7 +14,8 @@ export interface AutonomousSemanticProof {
 
 /**
  * Accept only mechanically named, multi-file technical areas with complete source
- * coverage and independently resolved structural + behavioral evidence.
+ * coverage and substantial resolved structure. Behavioral family labels only
+ * select candidate areas; they do not prove a claimed product capability.
  * "Supported" in the candidate audit is necessary, not sufficient.
  */
 export function assessAutonomousSemanticProof(

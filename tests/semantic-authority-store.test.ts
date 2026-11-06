@@ -468,9 +468,17 @@ test('source-proven technical acceptance and pending derived evidence commit ato
   process.env.DEVINT_CANONICAL_GRAPH_DIR = root;
   try {
     const revision = 'c'.repeat(40);
-    const machine = applySemanticReviewAction(semanticMeaningReview(candidate('candidate:source', revision)), {
-      kind: 'accept', actor: { kind: 'intrinsic-derivation', id: 'intrinsic-technical-scope.v1' },
-      at: '2026-11-06T00:00:00Z',
+    const source = candidate('candidate:source', revision);
+    const actor = { kind: 'intrinsic-derivation' as const, id: 'intrinsic-technical-scope.v1' };
+    const sourceOnly = applySemanticReviewAction(semanticMeaningReview(source), {
+      kind: 'amend', actor, at: '2026-11-06T00:00:00Z',
+      proposal: {
+        name: source.scope, kind: 'domain',
+        description: `Observed technical source scope ${source.scope}: 5 completely analyzed files with resolved source relationships. This is not a verified product capability or runtime behavior.`,
+      },
+    });
+    const machine = applySemanticReviewAction(sourceOnly, {
+      kind: 'accept', actor, at: '2026-11-06T00:00:00Z',
       rationale: 'Exact source-backed technical scope; no product intent inferred.',
     });
     const derived = [{
@@ -483,6 +491,8 @@ test('source-proven technical acceptance and pending derived evidence commit ato
     assert.equal(stored.state, 'stored');
     assert.equal(stored.ledger?.records.length, 1);
     assert.equal(stored.ledger?.records[0]?.review.acceptance?.actor.kind, 'intrinsic-derivation');
+    assert.equal(stored.ledger?.records[0]?.review.proposal.kind, 'domain');
+    assert.equal(stored.ledger?.records[0]?.review.history[0]?.kind, 'amend');
     assert.equal(latestAcceptedMeanings(stored.ledger).length, 1);
     assert.equal(stored.ledger?.derivedMeanings?.length, 1);
     assert.equal(stored.ledger?.enrollment, undefined);

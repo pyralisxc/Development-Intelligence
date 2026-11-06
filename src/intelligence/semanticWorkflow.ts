@@ -754,6 +754,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       aiProposalRequiresOwnerImport: true,
       modelOutputAcceptedAutomatically: false,
       sourceProvenTechnicalScopeAutomaticallyAccepted: true,
+      lexicalCapabilityInterpretationAutomaticallyAccepted: false,
       promotionAuditItemized: true,
       promotionAuditDesiredOutcomeInferred: false,
       promotionGateVerificationCanBeDelegated: true,
@@ -807,11 +808,26 @@ export async function maintainDerivedSemanticsForGraph(project: string, graph: A
       && ['preserved', 'realization-changed'].includes(evolution?.status ?? ''));
     if (proof.accepted && inheritedSafe) {
       const current = initialSemanticReview(candidate, all.candidates, priorAccepted);
-      automaticReviews.push(applySemanticReviewAction(current, {
+      const at = new Date().toISOString();
+      // The bootstrap's capability kind and lexical API/storage categories are
+      // candidate heuristics. Machine acceptance records ONLY the source scope
+      // whose physical file membership and relationships were established.
+      const sourceOnly = applySemanticReviewAction(current, {
+        kind: 'amend',
+        actor: machineActor,
+        at,
+        proposal: {
+          name: candidate.scope,
+          kind: 'domain',
+          description: `Observed technical source scope ${candidate.scope}: ${proof.completeSourceFiles} completely analyzed files with resolved source relationships. This is not a verified product capability or runtime behavior.`,
+        },
+        rationale: `Machine source-scope grounding under ${proof.rule}; no inferred product purpose.`,
+      });
+      automaticReviews.push(applySemanticReviewAction(sourceOnly, {
         kind: 'accept',
         actor: machineActor,
-        at: new Date().toISOString(),
-        rationale: `Source-proven technical scope only; rule ${proof.rule}, ${proof.completeSourceFiles} complete source files. No product intent, runtime verification, or Main authorization inferred.`,
+        at,
+        rationale: `Machine-accepted technical source scope only; ${proof.rule}. No inferred product purpose, runtime verification, or Main authorization.`,
       }));
       continue;
     }

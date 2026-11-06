@@ -215,10 +215,6 @@ export async function loadSemanticAuthority(project: string): Promise<SemanticAu
 }
 
 /**
- * Maintain revision-bound source-derived semantics in the existing canonical
- * ledger. This is not acceptance and never modifies the human review records.
- */
-/**
  * Atomically maintain source-qualified candidates and machine-accepted technical
  * meaning in the existing DI ledger. Manual dispositions are never overwritten.
  * A machine acceptance is a provenance-bearing review, not a Main release grant.
@@ -242,6 +238,9 @@ export async function persistQualifiedSemanticMeanings(
         || review.acceptance?.actor.kind !== 'intrinsic-derivation'
         || review.acceptance.actor.id !== 'intrinsic-technical-scope.v1'
         || review.proposalProvenance.origin !== 'intrinsic-derivation'
+        || review.proposal.kind !== 'domain'
+        || review.proposal.name !== review.scope
+        || !review.proposal.description.startsWith(`Observed technical source scope ${review.scope}: `)
         || !review.proposalProvenance.nodeIds.length
         || !review.proposalProvenance.edgeIds.length) {
       throw new Error('Automatic semantic acceptance requires exact intrinsic source proof and machine identity');
