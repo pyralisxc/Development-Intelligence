@@ -839,6 +839,22 @@ test('saved meanings and missing semantic scope questions use revision-bound sem
     assert.equal(saved.result.counts.accepted, 0);
     assert.equal(saved.result.counts.reviewRecords, 0);
     assert.equal(saved.result.authority.enrollmentState, 'not-enrolled');
+    const scoped = await callTool('investigate', {
+      project: fixture.project,
+      scope: 'src/missing.ts',
+      question: 'Why is this excluded from semantic candidates?',
+    }) as any;
+    assert.equal(scoped.intent, 'semantic-audit');
+    assert.equal(scoped.routing.tool, 'semantic_review_surface');
+    assert.equal(scoped.routing.resolved, false);
+    assert.equal(scoped.result.path, 'src/missing.ts', 'structured scope must survive question planning');
+    const explicitMissingCandidate = await callTool('investigate', {
+      project: fixture.project,
+      scope: 'semantic-candidate:not-real',
+      question: 'What evidence supports this candidate?',
+    }) as any;
+    assert.equal(explicitMissingCandidate.routing.resolved, false);
+    assert.equal(explicitMissingCandidate.result.candidates.length, 0);
     const missing = await callTool('investigate', {
       project: fixture.project,
       question: 'Why is src/missing.ts excluded from the semantic candidate census?',
