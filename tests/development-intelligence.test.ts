@@ -895,7 +895,7 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.ok(observed.answer.includes('tests/contract.test.ts'));
     assert.match(observed.answer, /not an established finding about the protection lost/u);
     await fs.appendFile(path.join(fixture.source, 'tests', 'contract.test.ts'),
-      'const unrelatedValue = nonexistentGuaranteeXYZ;\n');
+      'const unrelatedValue = nonexistentGuaranteeXYZ;\nconst quotedQuestion = "assert.equal(nonexistentGuaranteeXYZ, true)";\n');
     await commit(fixture.source, 'add unrelated operand mention');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
     clearGraphCache(fixture.project);
@@ -908,7 +908,8 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.equal(missing.subject, null);
     assert.equal(missing.result.mechanism.assuranceComparison.requestedSubject.kind, 'assertion-call-site');
     assert.match(missing.result.mechanism.assuranceComparison.requestedSubject.value, /assert\.equal\(nonexistentGuaranteeXYZ/u);
-    assert.equal(missing.result.mechanism.assuranceComparison.requestedSubject.status, 'not-found');
+    assert.equal(missing.result.mechanism.assuranceComparison.requestedSubject.status, 'not-established-in-bounded-source');
+    assert.equal(missing.result.sourceValidatedMatchCount, 0);
     assert.equal(missing.result.mechanism.assuranceComparison.sourceObservations.length, 0,
       'generic assert.equal matches must never substitute for the missing requested assertion');
     assert.match(missing.answer, /equivalence and lost protection remain unknown/u);
