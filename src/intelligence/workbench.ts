@@ -786,9 +786,10 @@ async function implementationMechanismProjection(input: {
   // An explicit assertion operand is stronger subject evidence than a common
   // provider method such as assert.equal. Never replace a missing operand with
   // unrelated lexical matches from other tests.
-  const requestedAssertionOperand = assuranceComparison
-    ? (input.text.match(/\b(?:assert|expect)\.[A-Za-z_$][A-Za-z0-9_$]*\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)/u)?.[1] ?? null)
+  const requestedAssertionSyntax = assuranceComparison
+    ? input.text.match(/\b((?:assert|expect)\.[A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)/u)
     : null;
+  const requestedAssertionOperand = requestedAssertionSyntax?.[2] ?? null;
   const requestedFile = assuranceComparison ? explicitInvestigationScope(input.text) : null;
   const anchors = assuranceComparison
     ? [...new Set([
@@ -799,8 +800,8 @@ async function implementationMechanismProjection(input: {
         ...[...input.text.matchAll(/\bliteral\s+([0-9]+)\b/giu)].map(match => match[1]!),
       ])].slice(0, 8)
     : [];
-  const pattern = requestedAssertionOperand
-    ? regexEscape(requestedAssertionOperand)
+  const pattern = requestedAssertionSyntax
+    ? regexEscape(requestedAssertionSyntax[1]!) + '\\\\s*\\\\(\\\\s*' + regexEscape(requestedAssertionSyntax[2]!) + '\\\\b'
     : anchors.length
       ? '(?:' + anchors.map(regexEscape).join('|') + ')'
       : implementationExplorationPattern(input.text);
@@ -964,9 +965,9 @@ async function implementationMechanismProjection(input: {
   // Matching a symbol or a number is not proof that an assertion is equivalent.
   const proposedLiteral = input.text.match(/\bliteral\s+([0-9]+)\b/iu)?.[1] ?? null;
   const proposedLength = input.text.match(/\b([A-Za-z_$][A-Za-z0-9_$]*\.length)\b/u)?.[1] ?? null;
-  const resolvedSubject = requestedAssertionOperand
-    ? { kind: 'assertion-operand', value: requestedAssertionOperand,
-        status: matches.some((match: any) => String(match.text ?? '').includes(requestedAssertionOperand)) ? 'source-matched' : 'not-found' }
+  const resolvedSubject = requestedAssertionSyntax
+    ? { kind: 'assertion-call-site', value: requestedAssertionSyntax[0],
+        status: matches.length ? 'lexical-call-match' : 'not-found' }
     : anchors.length
       ? { kind: 'named-source-anchors', values: anchors, status: matches.length ? 'source-matched' : 'not-found' }
       : { kind: 'unresolved-source-subject', status: 'not-established' };
