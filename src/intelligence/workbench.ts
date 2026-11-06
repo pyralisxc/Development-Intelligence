@@ -744,10 +744,16 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
   const nameInQuestion = (value: string) => {
     const phrase = normalized(value.trim());
     if (!phrase) return false;
-    const escaped = phrase.replace(/[.*+?^$\{\}()|[\]\\]/gu, '\\  const lower = text.toLowerCase();
-  const matches = c.filter(item => lower.includes(item.proposal.name.toLowerCase())
-    || lower.includes(item.scope.toLowerCase()));');
-    return new RegExp('(^|[^a-z0-9_])' + escaped + '(?=$|[^a-z0-9_])', 'u').test(lower);
+    let at = lower.indexOf(phrase);
+    while (at !== -1) {
+      const before = at === 0 ? '' : lower[at - 1]!;
+      const afterIndex = at + phrase.length;
+      const after = afterIndex >= lower.length ? '' : lower[afterIndex]!;
+      const token = /[a-z0-9_]/u;
+      if ((!before || !token.test(before)) && (!after || !token.test(after))) return true;
+      at = lower.indexOf(phrase, at + 1);
+    }
+    return false;
   };
   const matches = requestedScope
     ? c.filter(item => item.id === requestedScope || item.scope === requestedScope)
