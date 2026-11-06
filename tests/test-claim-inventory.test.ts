@@ -238,7 +238,7 @@ test('Node loose and strict comparison providers survive native claim output, in
       ["strictEqualAlias(1, '1')", 'node:assert/strict', 'strict'],
       ["strictNamespace.deepEqual({a:1}, {a:'1'})", 'node:assert/strict', 'strict'],
       ["loose.strictEqual(1, '1')", 'node:assert', 'strict'],
-    ]) {
+    ] as const) {
       const observation = byExpression.get(expression);
       assert.ok(observation, expression);
       assert.equal(observation.provider, expectedProvider, expression);
