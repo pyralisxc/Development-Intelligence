@@ -836,8 +836,14 @@ test('saved meanings and missing semantic scope questions use revision-bound sem
     }) as any;
     assert.equal(saved.intent, 'semantic-lifecycle');
     assert.equal(saved.routing.tool, 'semantic_review_surface');
-    assert.equal(saved.result.counts.accepted, 0);
-    assert.equal(saved.result.counts.reviewRecords, 0);
+    const directReview = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    const directAccepted = directReview.candidates.filter((item: any) => item.review?.accepted === true);
+    const machineAccepted = directAccepted.filter((item: any) => item.review?.acceptance?.actor.kind === 'intrinsic-derivation');
+    assert.equal(saved.result.counts.accepted, directAccepted.length);
+    assert.equal(saved.result.counts.machineAccepted, machineAccepted.length);
+    assert.equal(saved.result.counts.humanAccepted, 0);
+    assert.equal(saved.result.counts.reviewRecords, directReview.authority.recordCount);
+    assert.equal(saved.result.policy.acceptedByDerivation, machineAccepted.length > 0);
     assert.equal(saved.result.authority.enrollmentState, 'not-enrolled');
     const scoped = await callTool('investigate', {
       project: fixture.project,
@@ -869,6 +875,33 @@ test('saved meanings and missing semantic scope questions use revision-bound sem
     assert.equal(unknown.intent, 'semantic-audit');
     assert.equal(unknown.routing.resolved, false);
   } finally { await fs.rm(fixture.root,{recursive:true,force:true}); clearGraphCache(fixture.project); }
+});
+
+test('exact semantic candidate identity outranks an incidental comparison file in question prose', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const direct = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    const candidate = direct.candidates[0];
+    assert.ok(candidate, 'fixture should provide at least one candidate');
+    const exact = await callTool('investigate', {
+      project: fixture.project,
+      question: `What source evidence supports candidate ${candidate.id}, unlike src/missing.ts?`,
+    }) as any;
+    assert.equal(exact.intent, 'semantic-audit');
+    assert.equal(exact.routing.resolved, true);
+    assert.equal(exact.result.candidate.id, candidate.id);
+    const scoped = await callTool('investigate', {
+      project: fixture.project,
+      scope: 'src/missing.ts',
+      question: `What source evidence supports candidate ${candidate.id}, unlike src/missing.ts?`,
+    }) as any;
+    assert.equal(scoped.routing.resolved, false, 'explicit structured scope must take priority');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+    clearGraphCache(fixture.project);
+  }
 });
 
 test('meta-capability inventory questions bypass domain entity resolution', async () => {

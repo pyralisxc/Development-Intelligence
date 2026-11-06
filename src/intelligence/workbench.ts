@@ -693,6 +693,9 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
   const surface = await semanticReviewSurface({ project, graphId, limit: 1000 });
   const c = surface.candidates;
   const derivedIds = new Set(surface.derivedMeanings.map(item => item.candidateId));
+  const accepted = c.filter(item => item.review?.accepted === true);
+  const machineAccepted = accepted.filter(item => item.review?.acceptance?.actor.kind === 'intrinsic-derivation');
+  const humanAccepted = accepted.filter(item => item.review?.acceptance?.actor.kind === 'human');
   const base = {
     revision: surface.revision, graphId: surface.graphId,
     authority: { state: surface.authority.state, generation: surface.authority.generation,
@@ -700,7 +703,8 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
     capacity: { eligible: surface.capacity.eligibleCandidateCount,
       excluded: surface.capacity.rejectedScopeCount, exhausted: surface.capacity.exhausted,
       exclusionsTruncated: surface.capacity.excludedScopes.truncated },
-    policy: { evidenceOnly: true, acceptedByDerivation: false, runtimeVerified: false },
+    policy: { evidenceOnly: true, acceptedByDerivation: machineAccepted.length > 0,
+      automaticAcceptanceRestrictedToTechnicalScope: true, runtimeVerified: false },
   };
   if (kind === 'saved') {
     const saved = c.filter(item => derivedIds.has(item.id)).map(item => ({
@@ -708,11 +712,14 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
       meaningId:surface.derivedMeanings.find(row => row.candidateId === item.id)?.meaningId ?? null,
       explicitlyAccepted: item.review?.accepted === true,
     }));
-    const accepted = c.filter(item => item.review?.accepted === true).length;
     return { intent:'semantic-lifecycle', subject:null, routing:{tool:'semantic_review_surface',projection:'saved-inventory'},
-      answer: String(saved.length) + ' current-revision automatically derived meaning(s), and ' + String(accepted)
-        + ' explicitly accepted current candidate(s). Derived qualification is not approval or execution proof.',
-      result:{ ...base, saved, counts:{derived:saved.length,accepted,reviewRecords:surface.authority.recordCount} } };
+      answer: String(saved.length) + ' currently pending source-derived meaning(s), '
+        + String(machineAccepted.length) + ' machine-accepted technical source scope(s), and '
+        + String(humanAccepted.length) + ' human-accepted meaning(s). Machine acceptance proves technical source scope only, not product purpose or runtime execution.',
+      result:{ ...base, saved, counts:{derived:saved.length,accepted:accepted.length,
+        machineAccepted:machineAccepted.length,humanAccepted:humanAccepted.length,
+        otherAccepted:accepted.length-machineAccepted.length-humanAccepted.length,
+        reviewRecords:surface.authority.recordCount} } };
   }
   if (kind === 'excluded') {
     // An explicit caller scope is authoritative input for selection, not a
@@ -736,8 +743,10 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
       result:{...base,exclusion:item,candidateAuthorityAssigned:false} };
   }
   const lower = text.toLowerCase();
-  const requestedScope = callerScope?.trim() || explicitInvestigationScope(text);
-  const explicitCandidateIds = [...new Set(text.match(/semantic-candidate:[a-z0-9]+/giu) ?? [])];
+  const explicitCandidateIds = [...new Set((text.match(/semantic-candidate:[a-z0-9]+/giu) ?? []).map(id => id.toLowerCase()))];
+  // Structured caller scope is authoritative. Otherwise a literal candidate ID
+  // outranks an incidental prose file path (e.g. "unlike src/mcp.ts").
+  const requestedScope = callerScope?.trim() || (explicitCandidateIds.length ? null : explicitInvestigationScope(text));
   // Exact identity takes precedence. A short candidate such as "Git" must
   // not match incidental "GitHub", and ambiguities remain visible.
   const normalized = (value: string) => value.toLocaleLowerCase('en-US');
@@ -776,7 +785,10 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
       + ' resolved edges; evidence families: ' + item.provenance.evidenceFamilies.join(', ')
       + '. Audit factuality: ' + item.reviewAssessment.factuality
       + '; candidate classification: ' + item.reviewAssessment.classification
-      + '. This is source qualification, not runtime verification or accepted intent.',
+      + (item.review?.accepted === true && item.review.acceptance?.actor.kind === 'intrinsic-derivation'
+        ? '. Only its literal technical source scope is machine-accepted; its candidate functional meaning is not proven.'
+        : item.review?.accepted === true ? '. Acceptance is recorded separately from runtime verification.'
+          : '. This is source qualification, not runtime verification or accepted intent.'),
     result:{ ...base,candidate:{
       id:item.id,scope:item.scope,proposal:item.proposal,support:item.support,
       evidenceFamilies:item.provenance.evidenceFamilies,
@@ -786,7 +798,13 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
       coreClassification:item.reviewAssessment.classification,
       reviewAssessment:item.reviewAssessment,
       autonomousState:item.autonomousAssessment.state,
-      derivedCurrent:derivedIds.has(item.id),explicitlyAccepted:item.review?.accepted === true,
+      derivedCurrent:derivedIds.has(item.id),
+      accepted:item.review?.accepted === true,
+      acceptanceActorKind:item.review?.acceptance?.actor.kind ?? null,
+      machineAcceptedTechnicalScope:item.review?.accepted === true
+        && item.review?.acceptance?.actor.kind === 'intrinsic-derivation',
+      humanAccepted:item.review?.accepted === true && item.review?.acceptance?.actor.kind === 'human',
+      explicitlyAccepted:item.review?.accepted === true && item.review?.acceptance?.actor.kind === 'human',
     } },
   };
 }
