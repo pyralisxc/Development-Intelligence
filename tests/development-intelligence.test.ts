@@ -875,9 +875,9 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
       "assert.equal(toolContract.toolCount, names.length);",
       "assert.match(String(toolContract.toolCount), /[0-9]+/);",
       '',
-    ].join('\\n'));
+    ].join('\n'));
     await fs.writeFile(path.join(fixture.source, 'src', 'tool-contract.ts'),
-      "export function toolContract() { return { toolCount: 35 }; }\\n");
+      "export function toolContract() { return { toolCount: 35 }; }\n");
     await commit(fixture.source, 'add bounded assurance source evidence');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
     clearGraphCache(fixture.project);
@@ -889,7 +889,7 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.equal(observed.result.mechanism.assuranceComparison.proposedChange.source, 'user-question-only');
     assert.ok(observed.result.mechanism.assuranceComparison.sourceObservations.some((item: any) =>
       item.file === 'tests/contract.test.ts' && item.text.includes('toolCount')));
-    assert.match(observed.answer, /tests\\/contract\\.test\\.ts/u);
+    assert.ok(observed.answer.includes('tests/contract.test.ts'));
     assert.match(observed.answer, /not an established finding about the protection lost/u);
     const control = await callTool('investigate', { project: fixture.project, question: 'What does Panel depend on?' }) as any;
     assert.equal(control.intent, 'trace', 'ordinary graph relationship questions keep their existing route');
