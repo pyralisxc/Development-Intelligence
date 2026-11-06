@@ -54,9 +54,9 @@ test('summary is proportional, identity-preserving, honest, and read-only', () =
   assert.deepEqual(compact.gateExplanation, original.gateExplanation);
   assert.deepEqual(compact.policy, original.policy);
   const c = compact.candidates[0];
-  assert.equal(c.id, original.candidates[0].id);
-  assert.deepEqual(c.reviewAssessment, original.candidates[0].reviewAssessment);
-  assert.deepEqual(c.continuity, original.candidates[0].continuity);
+  assert.equal(c.id, original.candidates[0]!.id);
+  assert.deepEqual(c.reviewAssessment, original.candidates[0]!.reviewAssessment);
+  assert.deepEqual(c.continuity, original.candidates[0]!.continuity);
   assert.equal(c.provenanceProjection.nodeIdsTotal, 4070);
   assert.equal(c.provenanceProjection.edgeIdsTotal, 8721);
   assert.equal(c.provenanceProjection.evidenceIdsTotal, 1);
@@ -65,7 +65,7 @@ test('summary is proportional, identity-preserving, honest, and read-only', () =
   assert.equal(c.provenanceProjection.aiProposalPacketOmitted, true);
   assert.equal(c.autonomousAssessment.provenance, undefined);
   assert.equal(c.aiProposalPacket, undefined);
-  assert.deepEqual(c.evidencePacket, original.candidates[0].evidencePacket);
+  assert.deepEqual(c.evidencePacket, original.candidates[0]!.evidencePacket);
   assert.equal(compact.derivedMeanings[0].meaningId, 'meaning-1');
   assert.equal(compact.derivedMeanings[0].evidenceProjection.sourceIdsTotal, 4070);
   assert.equal(compact.presentation.candidatePopulationTruncated, true);
