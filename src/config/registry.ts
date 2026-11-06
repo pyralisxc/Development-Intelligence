@@ -128,14 +128,28 @@ function githubProjectConfig(project: string): ProjectConfig | null {
  * Do not reinterpret the ordinary owner/repository identity or Main's HEAD.
  * No additional GitHub owner, credentials, or approval authority is granted.
  */
+export function previewCanonicalRuntimeRole(): {
+  state: 'verified-preview' | 'missing' | 'conflicting' | 'not-preview';
+  vercelEnvPresent: boolean;
+  targetEnvPresent: boolean;
+} {
+  const environment = process.env.VERCEL_ENV?.trim() ?? '';
+  const targetEnvironment = process.env.VERCEL_TARGET_ENV?.trim() ?? '';
+  const vercelEnvPresent = Boolean(environment);
+  const targetEnvPresent = Boolean(targetEnvironment);
+  const signals = [environment, targetEnvironment].filter(Boolean);
+  const state = signals.length === 0 ? 'missing'
+    : signals.includes('preview') && signals.some(value => value !== 'preview') ? 'conflicting'
+      : signals.every(value => value === 'preview') ? 'verified-preview' : 'not-preview';
+  return { state, vercelEnvPresent, targetEnvPresent };
+}
+
 function githubPreviewProjectConfig(project: string): ProjectConfig | null {
   const match = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]+)@preview$/u.exec(project);
   if (!match) return null;
-  const environment = process.env.VERCEL_ENV?.trim();
-  const targetEnvironment = process.env.VERCEL_TARGET_ENV?.trim();
-  // Fail closed for absent or contradictory deployment role signals.
-  if ((environment && environment !== 'preview') || (targetEnvironment && targetEnvironment !== 'preview')) return null;
-  if (environment !== 'preview' && targetEnvironment !== 'preview') return null;
+  // Reuse the same non-secret, fail-closed runtime-role decision surfaced by
+  // list_projects so hosted deployment identity failures are inspectable.
+  if (previewCanonicalRuntimeRole().state !== 'verified-preview') return null;
   const original = githubProjectConfig(`${match[1]}/${match[2]}`);
   if (!original) return null;
   return validateProject(project, {
