@@ -1,3 +1,4 @@
+import ts from 'typescript';
 import { listAuthorizedGithubOwners, loadRegistry } from '../config/registry.js';
 import { projectStatus } from '../projectStatus.js';
 import { listPublicProjects } from '../source/git.js';
@@ -771,6 +772,23 @@ function rankedMechanismSourceFiles(
       || a.file.localeCompare(b.file))
     .slice(0, Math.max(1, limit));
 }
+/** A raw source-search hit can be inside a string, comment, or question
+ * fixture. Only admit a syntactic call with the requested first operand.
+ * Single-line validation is bounded; multiline calls remain unproven. */
+function observedAssertionCallOnLine(line: string, callee: string, operand: string): boolean {
+  const file = ts.createSourceFile('assertion-observation.ts', line, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let observed = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && node.expression.getText(file).replace(/\s+/gu, '') === callee) {
+      const first = node.arguments[0];
+      if (first && ts.isIdentifier(first) && first.text === operand) observed = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return observed;
+}
+
 async function implementationMechanismProjection(input: {
   project: string;
   text: string;
@@ -828,7 +846,11 @@ async function implementationMechanismProjection(input: {
     context: 3,
     limit: Math.min(Math.max(input.limit ?? 100, 1), 250),
   }) as any;
-  const matches = Array.isArray(source.matches) ? source.matches : [];
+  const rawMatches = Array.isArray(source.matches) ? source.matches : [];
+  const matches = requestedAssertionSyntax
+    ? rawMatches.filter((match: any) => observedAssertionCallOnLine(
+        String(match.text ?? ''), requestedAssertionSyntax[1]!, requestedAssertionSyntax[2]!))
+    : rawMatches;
   const fileMap = new Map<string, any[]>();
   for (const match of matches) {
     const file = String(match.file ?? '').trim();
@@ -967,7 +989,7 @@ async function implementationMechanismProjection(input: {
   const proposedLength = input.text.match(/\b([A-Za-z_$][A-Za-z0-9_$]*\.length)\b/u)?.[1] ?? null;
   const resolvedSubject = requestedAssertionSyntax
     ? { kind: 'assertion-call-site', value: requestedAssertionSyntax[0],
-        status: matches.length ? 'lexical-call-match' : 'not-found' }
+        status: matches.length ? 'observed-bounded-call-site' : 'not-established-in-bounded-source' }
     : anchors.length
       ? { kind: 'named-source-anchors', values: anchors, status: matches.length ? 'source-matched' : 'not-found' }
       : { kind: 'unresolved-source-subject', status: 'not-established' };
@@ -996,6 +1018,13 @@ async function implementationMechanismProjection(input: {
 
   return {
     ...source,
+    ...(assuranceComparison ? {
+      matches,
+      rawSourceMatchCount: rawMatches.length,
+      sourceValidatedMatchCount: matches.length,
+      sourceValidationScope: requestedAssertionSyntax
+        ? 'single-line-ast-call-and-first-operand' : 'bounded-lexical-anchor',
+    } : {}),
     summary,
     mechanism: {
       pattern,
