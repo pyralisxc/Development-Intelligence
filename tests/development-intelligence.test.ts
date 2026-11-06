@@ -895,7 +895,7 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.ok(observed.answer.includes('tests/contract.test.ts'));
     assert.match(observed.answer, /not an established finding about the protection lost/u);
     await fs.appendFile(path.join(fixture.source, 'tests', 'contract.test.ts'),
-      'const unrelatedValue = nonexistentGuaranteeXYZ;\\n');
+      'const unrelatedValue = nonexistentGuaranteeXYZ;\n');
     await commit(fixture.source, 'add unrelated operand mention');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
     clearGraphCache(fixture.project);
