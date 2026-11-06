@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
+import { loadSemanticAuthority, persistDerivedSemanticMeanings } from '../src/intelligence/semanticAuthorityStore.js';
 import { clearGraphCache, currentGraph, graphCacheDiagnostics, graphStatus, scanGraph } from '../src/intelligence/service.js';
 import { searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
@@ -31,6 +32,7 @@ async function startBlobServer() {
   const blobs = new Map<string, any>();
   const etags = new Map<string, string>();
   let etagSequence = 0;
+  let metadataEtagOverride: string | null = null;
   const requests: Array<{ method: string; pathname: string; query: string; headers: Record<string, string | string[] | undefined> }> = [];
   let origin = '';
   const server = http.createServer(async (request: any, response: any) => {
@@ -38,6 +40,13 @@ async function startBlobServer() {
     requests.push({ method: request.method ?? 'GET', pathname: url.pathname, query: url.search, headers: { ...request.headers } });
     if (request.headers.authorization !== 'Bearer test-oidc' || request.headers['x-vercel-blob-store-id'] !== 'test-store') {
       response.statusCode = 403; response.end('forbidden'); return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/blob') {
+      const pathname = url.searchParams.get('url');
+      if (!pathname || !blobs.has(pathname)) { response.statusCode = 404; response.end('not found'); return; }
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ pathname, etag: metadataEtagOverride ?? etags.get(pathname), size: blobs.get(pathname).byteLength }));
+      return;
     }
     if (request.method === 'PUT' && url.pathname === '/api/blob') {
       const pathname = url.searchParams.get('pathname');
@@ -84,7 +93,7 @@ async function startBlobServer() {
       response.setHeader('content-type', pathname.endsWith('.gz') ? 'application/gzip' : 'application/json');
       response.setHeader('content-length', String(value.byteLength));
       const etag = etags.get(pathname);
-      if (etag) response.setHeader('etag', etag);
+      if (etag) response.setHeader('etag', pathname.includes('/derived/') ? `W/${etag}` : etag);
       response.end(value); return;
     }
     response.statusCode = 404; response.end('not found');
@@ -95,7 +104,7 @@ async function startBlobServer() {
   });
   const address = server.address() as any;
   origin = `http://127.0.0.1:${address.port}`;
-  return { blobs, requests, origin, close: () => new Promise<void>((resolve, reject) => server.close((error: any) => error ? reject(error) : resolve())) };
+  return { blobs, requests, origin, setMetadataEtagOverride: (value: string | null) => { metadataEtagOverride = value; }, close: () => new Promise<void>((resolve, reject) => server.close((error: any) => error ? reject(error) : resolve())) };
 }
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-vercel-blob-'));
@@ -143,6 +152,54 @@ function cleanupEnv() {
   clearGraphCache();
   for (const key of ['DEVINT_PROJECTS_FILE','DEVINT_SCRATCH_DIR','DEVINT_GRAPH_CACHE_SIZE','DEVINT_CANONICAL_GRAPH_DIR','BLOB_STORE_ID','VERCEL_OIDC_TOKEN','BLOB_READ_WRITE_TOKEN','DEVINT_CANONICAL_BLOB_API_URL','DEVINT_CANONICAL_BLOB_BASE_URL','DEVINT_CANONICAL_BLOB_STORE_ID','DEVINT_CANONICAL_BLOB_TOKEN']) delete process.env[key];
 }
+
+test('derived authority refresh uses strong Blob metadata ETag despite weak content validator', async () => {
+  const item = await fixture();
+  try {
+    const initial = {
+      candidateId: 'semantic-candidate:fixture-a',
+      revision: item.firstSha,
+      meaningId: 'derived:semantic-candidate:fixture-a',
+      evidenceIds: ['evidence:a'],
+      sourceIds: ['src/value.ts'],
+      disposition: 'evidence-qualified' as const,
+    };
+    const first = await persistDerivedSemanticMeanings(item.project, item.firstSha, [initial], null);
+    assert.equal(first.state, 'stored');
+    const loaded = await loadSemanticAuthority(item.project);
+    assert.equal(loaded.state, 'hit');
+    assert.equal(loaded.etag, first.etag);
+    assert.ok(loaded.etag?.startsWith('"'), 'conditional write token must be a strong ETag');
+    assert.equal(loaded.ledger?.derivedMeanings?.length, 1);
+    const secondEntry = {
+      ...initial, candidateId: 'semantic-candidate:fixture-b',
+      meaningId: 'derived:semantic-candidate:fixture-b',
+    };
+    const second = await persistDerivedSemanticMeanings(item.project, item.firstSha, [secondEntry], loaded.etag);
+    assert.equal(second.state, 'stored', 'strong metadata ETag permits a guarded refresh');
+    const stale = await persistDerivedSemanticMeanings(item.project, item.firstSha, [initial], loaded.etag);
+    assert.equal(stale.state, 'conflict', 'a stale strong ETag must never overwrite newer authority');
+    const after = await loadSemanticAuthority(item.project);
+    assert.equal(after.state, 'hit');
+    assert.equal(after.ledger?.generation, 2);
+    assert.equal(after.ledger?.derivedMeanings?.length, 2);
+    item.blob.setMetadataEtagOverride('"wrong-object-version"');
+    const mismatched = await loadSemanticAuthority(item.project);
+    assert.equal(mismatched.state, 'invalid', 'mismatched content and metadata validators must fail closed');
+    assert.match(mismatched.error ?? '', /content and authoritative version disagree/u);
+    item.blob.setMetadataEtagOverride(null);
+    const recovered = await loadSemanticAuthority(item.project);
+    assert.equal(recovered.state, 'hit');
+    assert.equal(recovered.ledger?.generation, 2);
+    assert.ok(item.blob.requests.some(entry => entry.method === 'GET' && entry.pathname === '/api/blob'
+      && entry.query.includes('url=')), 'metadata API must provide the authoritative conditional-write version');
+    assert.ok(item.blob.requests.some(entry => entry.method === 'PUT' && entry.headers['x-if-match'] === loaded.etag));
+  } finally {
+    cleanupEnv();
+    await item.blob.close();
+    await fs.rm(item.root, { recursive: true, force: true });
+  }
+});
 
 test('Vercel canonical hit bypasses Git checkout after process-cache eviction', async () => {
   const item = await fixture();

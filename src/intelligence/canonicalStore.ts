@@ -301,6 +301,25 @@ function localDerivedEtag(body: Uint8Array): string {
   return `"${stableHash([Buffer.from(body).toString('base64')])}"`;
 }
 
+/** Read the authoritative strong object version, not the weak CDN content ETag.
+ * A weak entity tag cannot satisfy a conditional If-Match write. */
+async function readCanonicalDerivedStrongEtag(config: BlobBackend, pathname: string): Promise<string> {
+  const requestUrl = new URL(config.apiUrl);
+  requestUrl.searchParams.set('url', pathname);
+  const response = await fetch(requestUrl, {
+    method: 'GET',
+    headers: { ...blobHeaders(config), 'x-api-version': BLOB_API_VERSION },
+    cache: 'no-store',
+    redirect: 'error',
+  });
+  if (!response.ok) throw new Error(`Vercel canonical derived metadata read failed with HTTP ${response.status}`);
+  const metadata = await response.json() as { pathname?: unknown; etag?: unknown };
+  if (metadata.pathname !== pathname || typeof metadata.etag !== 'string' || !/^"[^"]+"$/u.test(metadata.etag)) {
+    throw new Error('Vercel canonical derived metadata has no exact path-bound strong ETag');
+  }
+  return metadata.etag;
+}
+
 export async function readCanonicalDerivedObjectVersioned(
   project: string,
   relativePath: string,
@@ -333,7 +352,15 @@ export async function readCanonicalDerivedObjectVersioned(
   if (Number.isFinite(contentLength) && contentLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
   const body = new Uint8Array(await response.arrayBuffer());
   if (body.byteLength > bounded) throw new Error('Canonical derived object exceeds the bounded storage size');
-  return { body, etag: response.headers.get('etag') };
+  const pathname = canonicalDerivedObjectBlobPath(project, relativePath);
+  const contentEtag = response.headers.get('etag');
+  const strongEtag = await readCanonicalDerivedStrongEtag(selected, pathname);
+  // Compare the opaque tag only to detect stale CDN content; never forward a
+  // weak content validator as an If-Match token for authority writes.
+  if (!contentEtag || contentEtag.replace(/^W\//u, '') !== strongEtag) {
+    throw new Error('Vercel canonical derived content and authoritative version disagree');
+  }
+  return { body, etag: strongEtag };
 }
 
 export async function readCanonicalDerivedObject(
