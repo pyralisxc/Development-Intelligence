@@ -672,9 +672,11 @@ function implementationExplorationIntent(text: string): boolean {
  * assert semantic equivalence or replace runtime verification. */
 function testAssuranceComparisonIntent(text: string): boolean {
   const lower = text.toLowerCase();
-  return /\b(?:tests?|assertions?|checks?|fixtures?)\b/u.test(lower)
-    && /\b(?:replac\w*|remov\w*|chang\w*|substitut\w*|instead)\b/u.test(lower)
-    && /\b(?:protection|guarantee|assurance|coverage|lost|lose|preserv\w*|redundan\w*|equivalen\w*)\b/u.test(lower);
+  // A test/assurance comparison may ask whether the graph can replace an
+  // assertion, or whether two checks overlap, without saying "protection lost".
+  const protectionSubject = /\b(?:tests?|assertions?|checks?|fixtures?|expectations?|guarantees?)\b/u.test(lower);
+  const comparison = /\b(?:replac\w*|remov\w*|chang\w*|substitut\w*|instead|drop(?:ped)?|eliminat\w*|redundan\w*|overlap\w*|equivalen\w*|lost|lose|preserv\w*)\b/u.test(lower);
+  return protectionSubject && comparison;
 }
 
 function implementationInventoryIntent(text: string): boolean {
@@ -781,18 +783,29 @@ async function implementationMechanismProjection(input: {
   const assuranceComparison = testAssuranceComparisonIntent(input.text);
   // Prefer source symbols and the concrete proposed replacement over incidental
   // words such as "protection" or "lost". No match is an explicit unknown.
+  // An explicit assertion operand is stronger subject evidence than a common
+  // provider method such as assert.equal. Never replace a missing operand with
+  // unrelated lexical matches from other tests.
+  const requestedAssertionOperand = assuranceComparison
+    ? (input.text.match(/\b(?:assert|expect)\.[A-Za-z_$][A-Za-z0-9_$]*\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)/u)?.[1] ?? null)
+    : null;
+  const requestedFile = assuranceComparison ? explicitInvestigationScope(input.text) : null;
   const anchors = assuranceComparison
     ? [...new Set([
+        ...(requestedAssertionOperand ? [requestedAssertionOperand] : []),
         ...(input.text.match(/\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9_$]*\b/gu) ?? []),
-        ...(input.text.match(/\b[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$]*\b/gu) ?? []),
+        ...(input.text.match(/\b[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$]*\b/gu) ?? [])
+          .filter(value => !/^(?:assert|expect)\./u.test(value)),
         ...[...input.text.matchAll(/\bliteral\s+([0-9]+)\b/giu)].map(match => match[1]!),
       ])].slice(0, 8)
     : [];
-  const pattern = anchors.length
-    ? '\\b(?:' + anchors.map(regexEscape).join('|') + ')\\b'
-    : implementationExplorationPattern(input.text);
+  const pattern = requestedAssertionOperand
+    ? regexEscape(requestedAssertionOperand)
+    : anchors.length
+      ? '(?:' + anchors.map(regexEscape).join('|') + ')'
+      : implementationExplorationPattern(input.text);
   const queryTerms = implementationExplorationTerms(input.text);
-  const explicitScope = input.scope?.trim() ?? '';
+  const explicitScope = input.scope?.trim() || requestedFile || '';
   const rankedFiles = explicitScope || anchors.length ? [] : rankedMechanismSourceFiles(graph, input.text, 12);
   const rankedFilePattern = rankedFiles.length
     ? '^(?:' + rankedFiles.map(item => regexEscape(item.file)).join('|') + ')$'
@@ -951,6 +964,12 @@ async function implementationMechanismProjection(input: {
   // Matching a symbol or a number is not proof that an assertion is equivalent.
   const proposedLiteral = input.text.match(/\bliteral\s+([0-9]+)\b/iu)?.[1] ?? null;
   const proposedLength = input.text.match(/\b([A-Za-z_$][A-Za-z0-9_$]*\.length)\b/u)?.[1] ?? null;
+  const resolvedSubject = requestedAssertionOperand
+    ? { kind: 'assertion-operand', value: requestedAssertionOperand,
+        status: matches.some((match: any) => String(match.text ?? '').includes(requestedAssertionOperand)) ? 'source-matched' : 'not-found' }
+    : anchors.length
+      ? { kind: 'named-source-anchors', values: anchors, status: matches.length ? 'source-matched' : 'not-found' }
+      : { kind: 'unresolved-source-subject', status: 'not-established' };
   const sourceObservations = matches
     .filter((match: any) => typeof match.file === 'string' && Number.isInteger(match.line) && typeof match.text === 'string')
     .map((match: any) => ({
@@ -980,6 +999,7 @@ async function implementationMechanismProjection(input: {
     mechanism: {
       pattern,
       ...(assuranceComparison ? { assuranceComparison: {
+        requestedSubject: { source: 'user-question-only', scope: explicitScope || null, ...resolvedSubject },
         proposedChange: { source: 'user-question-only', literal: proposedLiteral, replacementExpression: proposedLength },
         sourceObservations,
         assessment: 'not-established',
