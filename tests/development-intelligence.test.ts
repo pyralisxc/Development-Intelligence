@@ -794,6 +794,9 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'How does Panel implementation persist accepted state?', lane: 'implementation-claim', proofMode: 'claim' },
     { question: 'What protection is lost if the toolCount test replaces literal 35 with names.length?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Which guarantee is preserved if an assertion is removed instead of rewritten?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Can the graph replace the HTTP assertion comparing healthBody.mcp with toolContract()?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Are parity passed, status and counterexample assertions redundant?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Would removing the tampered-report rejection test preserve its guarantee?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Where is Panel implemented?', lane: 'code' },
     { question: 'What does Panel depend on?', lane: 'trace' },
     { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
@@ -891,6 +894,30 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
       item.file === 'tests/contract.test.ts' && item.text.includes('toolCount')));
     assert.ok(observed.answer.includes('tests/contract.test.ts'));
     assert.match(observed.answer, /not an established finding about the protection lost/u);
+    const missing = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What protection would be lost if nonexistent assert.equal(nonexistentGuaranteeXYZ, true) in tests/contract.test.ts were removed?',
+    }) as any;
+    assert.equal(missing.intent, 'implementation-explanation');
+    assert.equal(missing.subject, null);
+    assert.equal(missing.result.mechanism.assuranceComparison.requestedSubject.kind, 'assertion-operand');
+    assert.equal(missing.result.mechanism.assuranceComparison.requestedSubject.value, 'nonexistentGuaranteeXYZ');
+    assert.equal(missing.result.mechanism.assuranceComparison.requestedSubject.status, 'not-found');
+    assert.equal(missing.result.mechanism.assuranceComparison.sourceObservations.length, 0,
+      'generic assert.equal matches must never substitute for the missing requested assertion');
+    assert.match(missing.answer, /equivalence and lost protection remain unknown/u);
+    for (const comparison of [
+      'Can the graph replace the HTTP assertion comparing healthBody.mcp with toolContract()?',
+      'Are parity passed, status and counterexample assertions redundant?',
+      'Would removing the tampered-report rejection test preserve its guarantee?',
+    ]) {
+      const answer = await callTool('investigate', { project: fixture.project, question: comparison }) as any;
+      assert.equal(answer.intent, 'implementation-explanation', comparison);
+      assert.equal(answer.routing.tool, 'search_code', comparison);
+      assert.equal(answer.subject, null);
+      assert.equal(answer.result.mechanism.assuranceComparison.assessment, 'not-established');
+      assert.equal(answer.result.mechanism.assuranceComparison.runtimeEquivalenceProven, false);
+    }
     const control = await callTool('investigate', { project: fixture.project, question: 'What does Panel depend on?' }) as any;
     assert.equal(control.intent, 'trace', 'ordinary graph relationship questions keep their existing route');
   } finally { await fs.rm(fixture.root, { recursive: true, force: true }); clearGraphCache(fixture.project); }
