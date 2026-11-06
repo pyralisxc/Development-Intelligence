@@ -573,7 +573,7 @@ test('excluded low-support scope preserves structure and its gate reason, not se
   assert.deepEqual(first.capacity.excludedScopes, reversed.capacity.excludedScopes);
   const excluded = first.capacity.excludedScopes.items.find(item => item.scope === 'src/utils/string.ts');
   assert.ok(excluded);
-  assert.equal(excluded.reason, 'insufficient-file-support');
+  assert.equal(excluded.reason, 'insufficient-evidence-families');
   assert.ok(excluded.evidenceFamilies.includes('structure'));
   assert.equal(excluded.fileCount, 1);
   assert.ok(excluded.representativeNodes.some(item => item.locator === 'src/utils/string.ts'));
