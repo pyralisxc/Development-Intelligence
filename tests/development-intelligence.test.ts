@@ -867,6 +867,30 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.equal(routed.result.mechanism.assuranceComparison.independentProtectionEstablished, false);
     assert.match(routed.answer, /No bounded source matches established the requested test-assurance comparison/u);
     assert.match(routed.answer, /equivalence and lost protection remain unknown/u);
+    await fs.mkdir(path.join(fixture.source, 'tests'), { recursive: true });
+    await fs.writeFile(path.join(fixture.source, 'tests', 'contract.test.ts'), [
+      "const names = ['one', 'two'];",
+      "const toolContract = { toolCount: names.length };",
+      "assert.deepEqual(names, ['one', 'two']);",
+      "assert.equal(toolContract.toolCount, names.length);",
+      "assert.match(String(toolContract.toolCount), /[0-9]+/);",
+      '',
+    ].join('\\n'));
+    await fs.writeFile(path.join(fixture.source, 'src', 'tool-contract.ts'),
+      "export function toolContract() { return { toolCount: 35 }; }\\n");
+    await commit(fixture.source, 'add bounded assurance source evidence');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const observed = await callTool('investigate', { project: fixture.project, question }) as any;
+    assert.equal(observed.intent, 'implementation-explanation');
+    assert.equal(observed.subject, null);
+    assert.equal(observed.result.mechanism.assuranceComparison.assessment, 'not-established');
+    assert.equal(observed.result.mechanism.assuranceComparison.proposedChange.source, 'user-question-only');
+    assert.ok(observed.result.mechanism.assuranceComparison.sourceObservations.some((item: any) =>
+      item.file === 'tests/contract.test.ts' && item.text.includes('toolCount')));
+    assert.match(observed.answer, /tests\\/contract\\.test\\.ts/u);
+    assert.match(observed.answer, /not an established finding about the protection lost/u);
     const control = await callTool('investigate', { project: fixture.project, question: 'What does Panel depend on?' }) as any;
     assert.equal(control.intent, 'trace', 'ordinary graph relationship questions keep their existing route');
   } finally { await fs.rm(fixture.root, { recursive: true, force: true }); clearGraphCache(fixture.project); }
