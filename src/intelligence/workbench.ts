@@ -962,7 +962,7 @@ async function implementationMechanismProjection(input: {
     }))
     .slice(0, 24);
   const sourceExamples = sourceObservations.slice(0, 4)
-    .map(item => item.file + ':' + item.line + ' (' + item.kind + ')').join('; ');
+    .map((item: {file: string; line: number; kind: string}) => item.file + ':' + item.line + ' (' + item.kind + ')').join('; ');
   const summary = assuranceComparison
     ? (sourceObservations.length
       ? 'Found ' + matches.length + ' bounded source match(es) in ' + fileMap.size
