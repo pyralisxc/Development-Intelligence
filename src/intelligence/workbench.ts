@@ -801,7 +801,7 @@ async function implementationMechanismProjection(input: {
       ])].slice(0, 8)
     : [];
   const pattern = requestedAssertionSyntax
-    ? regexEscape(requestedAssertionSyntax[1]!) + '\\\\s*\\\\(\\\\s*' + regexEscape(requestedAssertionSyntax[2]!) + '\\\\b'
+    ? regexEscape(requestedAssertionSyntax[1]!) + '\\s*\\(\\s*' + regexEscape(requestedAssertionSyntax[2]!) + '\\b'
     : anchors.length
       ? '(?:' + anchors.map(regexEscape).join('|') + ')'
       : implementationExplorationPattern(input.text);
