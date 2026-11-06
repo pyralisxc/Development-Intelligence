@@ -1020,7 +1020,9 @@ async function implementationMechanismProjection(input: {
     ...source,
     ...(assuranceComparison ? {
       matches,
+      total: matches.length,
       rawSourceMatchCount: rawMatches.length,
+      rawSourceTotal: Number(source.total ?? rawMatches.length),
       sourceValidatedMatchCount: matches.length,
       sourceValidationScope: requestedAssertionSyntax
         ? 'single-line-ast-call-and-first-operand' : 'bounded-lexical-anchor',
