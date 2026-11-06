@@ -860,6 +860,11 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.equal(routed.subject, null, 'a comparison must not resolve to an incidental field called count');
     assert.equal(routed.result.mechanism.assuranceComparison.sourceEvidenceOnly, true);
     assert.equal(routed.result.mechanism.assuranceComparison.runtimeEquivalenceProven, false);
+    assert.equal(routed.result.mechanism.assuranceComparison.assessment, 'not-established');
+    assert.deepEqual(routed.result.mechanism.assuranceComparison.proposedChange, {
+      source: 'user-question-only', literal: '35', replacementExpression: 'names.length',
+    });
+    assert.equal(routed.result.mechanism.assuranceComparison.independentProtectionEstablished, false);
     assert.match(routed.answer, /No bounded source matches established the requested test-assurance comparison/u);
     assert.match(routed.answer, /equivalence and lost protection remain unknown/u);
     const control = await callTool('investigate', { project: fixture.project, question: 'What does Panel depend on?' }) as any;
