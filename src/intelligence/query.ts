@@ -656,6 +656,56 @@ interface TraceGraphInput {
   limit?: number | undefined;
 }
 
+
+/**
+ * A trace is a bounded view, not negative dependency proof. Limit both node and
+ * edge output, account for qualifying edges encountered but not returned, and
+ * avoid dangling edge endpoints in the delivered projection. Unvisited
+ * frontiers and relationships outside requested depth/filters remain unknown.
+ */
+function traceResponseProjection(
+  context: GraphQueryContext,
+  visited: Set<string>,
+  encounteredEdges: GraphEdge[],
+  limit: number,
+  depth: number,
+  frontier: string[],
+): Record<string, unknown> {
+  const returnedIds = new Set(visited);
+  const projectedEdges: GraphEdge[] = [];
+  let knownOmittedEdges = 0;
+  let edgesToUnreturnedNodes = 0;
+  for (const edge of encounteredEdges) {
+    if (!edge.from || !edge.to || !returnedIds.has(edge.from) || !returnedIds.has(edge.to)) {
+      knownOmittedEdges += 1;
+      edgesToUnreturnedNodes += 1;
+    } else if (projectedEdges.length < limit) {
+      projectedEdges.push(edge);
+    } else {
+      knownOmittedEdges += 1;
+    }
+  }
+  const limitReachedWithFrontier = visited.size >= limit && frontier.length > 0;
+  const truncated = knownOmittedEdges > 0 || limitReachedWithFrontier || depth === 0;
+  const traversalStatus = depth === 0 ? 'not-performed' : truncated ? 'partial' : 'complete-within-requested-depth';
+  return {
+    nodes: [...visited].map(id => context.node(id)).filter(Boolean),
+    edges: projectedEdges,
+    traceProjection: {
+      returnedNodes: visited.size,
+      nodeLimit: limit,
+      returnedEdges: projectedEdges.length,
+      edgeLimit: limit,
+      knownOmittedEdges,
+      edgesToUnreturnedNodes,
+      truncated,
+      traversalStatus,
+      reason: depth === 0 ? 'zero-depth' : knownOmittedEdges > 0 ? 'edge-or-node-limit' : limitReachedWithFrontier ? 'node-limit' : null,
+      note: 'Known omitted edges were encountered within the requested traversal; unvisited paths, unmatched statuses and relationships outside depth or filters are not counted. A bounded trace cannot establish absent dependencies. No continuation cursor is available.',
+    },
+  };
+}
+
 function fullTraceGraphResult(
   graph: IntelligenceGraph,
   input: TraceGraphInput,
@@ -714,8 +764,7 @@ function fullTraceGraphResult(
     coverage: coverageSummary(graph),
     ambiguous: false,
     start,
-    nodes: [...visited].map(id => context.node(id)).filter(Boolean),
-    edges: selectedEdges,
+    ...traceResponseProjection(context, visited, selectedEdges, limit, maxDepth, frontier),
     ...(queryPlane ? { queryPlane } : {}),
   };
 }
@@ -905,8 +954,7 @@ async function adaptiveCurrentTrace(
       coverage: queryArtifactCoverage(loaded.index),
       ambiguous: false,
       start,
-      nodes: [...visited].map(id => context.node(id)).filter(Boolean),
-      edges: selectedEdges,
+      ...traceResponseProjection(context, visited, selectedEdges, limit, maxDepth, frontier),
       queryPlane: queryPlane(),
     },
     reason: 'adaptive',
