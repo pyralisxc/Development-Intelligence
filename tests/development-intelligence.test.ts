@@ -860,8 +860,8 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.equal(routed.subject, null, 'a comparison must not resolve to an incidental field called count');
     assert.equal(routed.result.mechanism.assuranceComparison.sourceEvidenceOnly, true);
     assert.equal(routed.result.mechanism.assuranceComparison.runtimeEquivalenceProven, false);
-    assert.match(routed.answer, /fixed literal supplies an independently stated expectation/u);
-    assert.match(routed.answer, /do not prove runtime equivalence/u);
+    assert.match(routed.answer, /No bounded source matches established the requested test-assurance comparison/u);
+    assert.match(routed.answer, /equivalence and lost protection remain unknown/u);
     const control = await callTool('investigate', { project: fixture.project, question: 'What does Panel depend on?' }) as any;
     assert.equal(control.intent, 'trace', 'ordinary graph relationship questions keep their existing route');
   } finally { await fs.rm(fixture.root, { recursive: true, force: true }); clearGraphCache(fixture.project); }
