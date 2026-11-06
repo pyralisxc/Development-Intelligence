@@ -131,7 +131,11 @@ function githubProjectConfig(project: string): ProjectConfig | null {
 function githubPreviewProjectConfig(project: string): ProjectConfig | null {
   const match = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]+)@preview$/u.exec(project);
   if (!match) return null;
-  if (process.env.VERCEL_ENV !== 'preview' && process.env.VERCEL_TARGET_ENV !== 'preview') return null;
+  const environment = process.env.VERCEL_ENV?.trim();
+  const targetEnvironment = process.env.VERCEL_TARGET_ENV?.trim();
+  // Fail closed for absent or contradictory deployment role signals.
+  if ((environment && environment !== 'preview') || (targetEnvironment && targetEnvironment !== 'preview')) return null;
+  if (environment !== 'preview' && targetEnvironment !== 'preview') return null;
   const original = githubProjectConfig(`${match[1]}/${match[2]}`);
   if (!original) return null;
   return validateProject(project, {

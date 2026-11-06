@@ -97,6 +97,9 @@ test('Preview-only canonical project identity isolates derived storage without b
     await assert.rejects(resolveProjectRevision(alias, 'commit:' + 'a'.repeat(40)), /not allowed/u);
     await assert.rejects(getProjectConfig('someone-else/Development-Intelligence@preview'), /Unknown project/u);
     process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_TARGET_ENV = 'preview';
+    await assert.rejects(getProjectConfig(alias), /Unknown project/u, 'contradictory environment roles must not permit Preview authority');
+    process.env.VERCEL_ENV = 'production';
     process.env.VERCEL_TARGET_ENV = 'production';
     await assert.rejects(getProjectConfig(alias), /Unknown project/u);
   } finally {
