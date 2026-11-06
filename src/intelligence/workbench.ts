@@ -687,7 +687,7 @@ function specificSemanticQuestion(text: string): SpecificSemanticQuestion | null
     && /\b(?:evidence|support|uncertain|uncertainty|why)\b/u.test(lower)) return 'candidate';
   return null;
 }
-async function explainSpecificSemanticQuestion(project: string, graphId: string, text: string, kind: SpecificSemanticQuestion): Promise<Record<string, unknown>> {
+async function explainSpecificSemanticQuestion(project: string, graphId: string, text: string, kind: SpecificSemanticQuestion, callerScope?: string): Promise<Record<string, unknown>> {
   // The source of truth is the existing revision-bound, read-only review
   // surface. Return a proportional projection, not a second meaning model.
   const surface = await semanticReviewSurface({ project, graphId, limit: 1000 });
@@ -715,9 +715,11 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
       result:{ ...base, saved, counts:{derived:saved.length,accepted,reviewRecords:surface.authority.recordCount} } };
   }
   if (kind === 'excluded') {
-    const path = explicitInvestigationScope(text);
+    // An explicit caller scope is authoritative input for selection, not a
+    // reason to infer product meaning. Do not discard it for question prose.
+    const path = callerScope?.trim() || explicitInvestigationScope(text);
     const matches = surface.capacity.excludedScopes.items.filter(item => path && (
-      item.scope === path || item.representativeNodes.some(node => node.locator.split(':')[0] === path)));
+      item.scope === path || item.representativeNodes.some(node => node.locator === path || node.locator.startsWith(path + ':'))));
     if (matches.length !== 1) return {
       intent:'semantic-audit',subject:path ? {query:path}:null,
       routing:{tool:'semantic_review_surface',projection:'excluded-scope',resolved:false},
@@ -734,8 +736,25 @@ async function explainSpecificSemanticQuestion(project: string, graphId: string,
       result:{...base,exclusion:item,candidateAuthorityAssigned:false} };
   }
   const lower = text.toLowerCase();
+  const requestedScope = callerScope?.trim() || explicitInvestigationScope(text);
+  const explicitCandidateIds = [...new Set(text.match(/semantic-candidate:[a-z0-9]+/giu) ?? [])];
+  // Exact identity takes precedence. A short candidate such as "Git" must
+  // not match incidental "GitHub", and ambiguities remain visible.
+  const normalized = (value: string) => value.toLocaleLowerCase('en-US');
+  const nameInQuestion = (value: string) => {
+    const phrase = normalized(value.trim());
+    if (!phrase) return false;
+    const escaped = phrase.replace(/[.*+?^$\{\}()|[\]\\]/gu, '\\  const lower = text.toLowerCase();
   const matches = c.filter(item => lower.includes(item.proposal.name.toLowerCase())
-    || lower.includes(item.scope.toLowerCase()));
+    || lower.includes(item.scope.toLowerCase()));');
+    return new RegExp('(^|[^a-z0-9_])' + escaped + '(?=$|[^a-z0-9_])', 'u').test(lower);
+  };
+  const matches = requestedScope
+    ? c.filter(item => item.id === requestedScope || item.scope === requestedScope)
+    : explicitCandidateIds.length
+      ? c.filter(item => explicitCandidateIds.includes(item.id))
+      : c.filter(item => nameInQuestion(item.proposal.name));
+
   if (matches.length !== 1) return {
     intent:'semantic-audit',subject:null,
     routing:{tool:'semantic_review_surface',projection:'candidate-evidence',resolved:false},
@@ -2715,7 +2734,7 @@ export async function queryWorkbench(input: {
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
   const specificSemantic = specificSemanticQuestion(text);
-  if (specificSemantic) return await explainSpecificSemanticQuestion(input.project, (await currentGraph(input.project,input.ref,input.graphId)).graphId, text, specificSemantic);
+  if (specificSemantic) return await explainSpecificSemanticQuestion(input.project, (await currentGraph(input.project,input.ref,input.graphId)).graphId, text, specificSemantic, input.scope);
 
   if (plan.lane === 'implementation-explanation') {
     const result = await implementationMechanismProjection({
