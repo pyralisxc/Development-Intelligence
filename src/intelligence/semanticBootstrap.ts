@@ -71,6 +71,11 @@ export interface SemanticBootstrapProjection {
       insufficientFileSupport: number;
       genericSupportScope: number;
     };
+    excludedScopes: {
+      returned: number;
+      truncated: boolean;
+      items: ExcludedSemanticScope[];
+    };
   };
   policy: {
     stage: 'T1-derived-candidates';
@@ -80,6 +85,16 @@ export interface SemanticBootstrapProjection {
     modelOutputAcceptedAutomatically: false;
     explicitReviewRequiredForAcceptance: true;
   };
+}
+
+export interface ExcludedSemanticScope {
+  scope: string;
+  reason: 'generic-support-scope' | 'insufficient-evidence-families' | 'insufficient-file-support';
+  evidenceFamilies: SemanticEvidenceFamily[];
+  fileCount: number;
+  nodeCount: number;
+  resolvedEdgeCount: number;
+  representativeNodes: Array<{ id: string; kind: string; locator: string }>;
 }
 
 interface CandidateGroup {
@@ -283,6 +298,7 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   }
 
   const candidates: SemanticCandidate[] = [];
+  const excludedScopes: ExcludedSemanticScope[] = [];
   const rejectionReasons = {
     insufficientEvidenceFamilies: 0,
     insufficientFileSupport: 0,
@@ -291,16 +307,29 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   for (const group of groups.values()) {
     const { families, motifs } = familyEvidence(group, graph);
     const strongFamily = families.some(family => ['interface', 'api', 'persistence', 'motif', 'state'].includes(family));
-    if (group.scopeRole === 'direct' && SUPPORT_SEGMENTS.has(group.token.toLowerCase())) {
-      rejectionReasons.genericSupportScope += 1;
-      continue;
-    }
-    if (families.length < 2) {
-      rejectionReasons.insufficientEvidenceFamilies += 1;
-      continue;
-    }
-    if (group.files.size < 2 && !strongFamily) {
-      rejectionReasons.insufficientFileSupport += 1;
+    const excludedReason: ExcludedSemanticScope['reason'] | null =
+      group.scopeRole === 'direct' && SUPPORT_SEGMENTS.has(group.token.toLowerCase())
+        ? 'generic-support-scope'
+        : families.length < 2
+          ? 'insufficient-evidence-families'
+          : group.files.size < 2 && !strongFamily
+            ? 'insufficient-file-support'
+            : null;
+    if (excludedReason) {
+      if (excludedReason === 'generic-support-scope') rejectionReasons.genericSupportScope += 1;
+      else if (excludedReason === 'insufficient-evidence-families') rejectionReasons.insufficientEvidenceFamilies += 1;
+      else rejectionReasons.insufficientFileSupport += 1;
+      excludedScopes.push({
+        scope: group.scope,
+        reason: excludedReason,
+        evidenceFamilies: families,
+        fileCount: group.files.size,
+        nodeCount: group.nodes.length,
+        resolvedEdgeCount: group.edges.filter(edge => edge.status === 'resolved').length,
+        representativeNodes: group.nodes
+          .slice().sort((a, b) => a.id.localeCompare(b.id)).slice(0, 4)
+          .map(node => ({ id: node.id, kind: node.kind, locator: node.locator })),
+      });
       continue;
     }
 
@@ -382,6 +411,8 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
       || a.scope.localeCompare(b.scope);
   });
 
+  excludedScopes.sort((a, b) => a.scope.localeCompare(b.scope));
+  const visibleExcludedScopes = excludedScopes.slice(0, 100);
   const semanticNodes = graph.nodes.filter(node => (node.layer ?? 'structural') === 'semantic');
   const declaredSemanticCount = semanticNodes.filter(node => node.tags?.includes('declared')).length;
   const returnedCandidates = candidates.slice(0, limit);
@@ -402,6 +433,11 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
       truncated: returnedCandidates.length < candidates.length,
       exhausted: returnedCandidates.length === candidates.length,
       rejectionReasons,
+      excludedScopes: {
+        returned: visibleExcludedScopes.length,
+        truncated: visibleExcludedScopes.length < excludedScopes.length,
+        items: visibleExcludedScopes,
+      },
     },
     policy: {
       stage: 'T1-derived-candidates',
