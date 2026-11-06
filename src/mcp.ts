@@ -1,6 +1,6 @@
 import { listPublicProjects, resolveProjectRevision, revisionIdentity } from './source/git.js';
 import { computeOnly, assertAuthorityWritesAllowed } from './config/runtimeRole.js';
-import { listAuthorizedGithubOwners } from './config/registry.js';
+import { listAuthorizedGithubOwners, previewCanonicalRuntimeRole } from './config/registry.js';
 import { projectStatus } from './projectStatus.js';
 import { scanGraph } from './intelligence/service.js';
 import { analyzeImpact, diffAcceptedToWorking, diffRevisions, graphArchitecture, graphCoverage, graphEvidence, graphSchema, parityLens, searchGraph, traceGraph } from './intelligence/query.js';
@@ -343,6 +343,7 @@ const realizationFacetsSchema = { type: 'array', items: { enum: ['human', 'agent
 export const tools: ToolDefinition[] = [
   { name: 'list_projects', description: 'List configured project identities and dynamic GitHub owner namespaces Development Intelligence is authorized to inspect. Repositories under an authorized owner are addressed as owner/repository. Access configuration grants technical reach; it does not define project meaning.', inputSchema: objectSchema({}), handler: async () => ({
     projects: await listPublicProjects(),
+    previewCanonicalIdentity: { available: previewCanonicalRuntimeRole().state === 'verified-preview', ...previewCanonicalRuntimeRole(), note: 'Runtime role status is not a project grant; missing or conflicting role evidence fails closed.' },
     githubOwnerNamespaces: listAuthorizedGithubOwners().map(owner => ({
       owner,
       projectPattern: `${owner}/<repository>`,
