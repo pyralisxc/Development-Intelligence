@@ -571,9 +571,9 @@ test('excluded low-support scope preserves structure and its gate reason, not se
   const first = bootstrapSemanticCandidates(graph(false), { limit: 10 });
   const reversed = bootstrapSemanticCandidates(graph(true), { limit: 10 });
   assert.deepEqual(first.capacity.excludedScopes, reversed.capacity.excludedScopes);
-  const excluded = first.capacity.excludedScopes.items.find(item => item.scope === 'src/utils/string.ts');
+  const excluded = first.capacity.excludedScopes.items.find(item => item.scope === 'src/utils');
   assert.ok(excluded);
-  assert.equal(excluded.reason, 'insufficient-evidence-families');
+  assert.equal(excluded.reason, 'generic-support-scope');
   assert.ok(excluded.evidenceFamilies.includes('structure'));
   assert.equal(excluded.fileCount, 1);
   assert.ok(excluded.representativeNodes.some(item => item.locator === 'src/utils/string.ts'));
