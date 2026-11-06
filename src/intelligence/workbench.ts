@@ -667,6 +667,16 @@ function implementationExplorationIntent(text: string): boolean {
   return asksMechanism && mechanism;
 }
 
+/** Comparative test-assurance questions need source claims, not an incidental
+ * entity with a coincidentally named field. This routes evidence; it does not
+ * assert semantic equivalence or replace runtime verification. */
+function testAssuranceComparisonIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  return /\b(?:tests?|assertions?|checks?|fixtures?)\b/u.test(lower)
+    && /\b(?:replac\w*|remov\w*|chang\w*|substitut\w*|instead)\b/u.test(lower)
+    && /\b(?:protection|guarantee|assurance|coverage|lost|lose|preserv\w*|redundan\w*|equivalen\w*)\b/u.test(lower);
+}
+
 function implementationInventoryIntent(text: string): boolean {
   const lower = text.toLowerCase();
   const asksInventory = /\b(?:what|which|show|list|explain|describe)\b/u.test(lower)
@@ -925,7 +935,18 @@ async function implementationMechanismProjection(input: {
     .slice(0, 20);
 
   const fileNames = files.slice(0, 4).map(item => item.file);
-  const summary = matches.length
+  const assuranceComparison = testAssuranceComparisonIntent(input.text);
+  const literalToDerivedLength = /\bliteral\s+\d+\b/iu.test(input.text)
+    && /\b[A-Za-z_$][A-Za-z0-9_$]*\.length\b/u.test(input.text);
+  const summary = assuranceComparison
+    ? (matches.length
+      ? 'Source-backed test-assurance comparison: ' + matches.length + ' bounded source match(es) in ' + fileMap.size
+        + ' file(s). ' + (literalToDerivedLength
+          ? 'A fixed literal supplies an independently stated expectation, whereas a derived length checks consistency with its input; whether that expectation is already protected by a separate exact-list assertion requires source comparison. '
+          : '')
+        + 'These source matches do not prove runtime equivalence, test redundancy, or safe retirement.'
+      : 'No bounded source matches established the requested test-assurance comparison; equivalence and lost protection remain unknown.')
+    : matches.length
     ? String(matches.length) + ' bounded source match(es) across ' + String(fileMap.size) + ' file(s); '
       + String(resolved.length) + ' resolved graph relationship(s) connect entities in or directly adjacent to those files'
       + (fileNames.length ? ', led by ' + semanticNameList(fileNames, 4) : '') + '.'
@@ -936,6 +957,7 @@ async function implementationMechanismProjection(input: {
     summary,
     mechanism: {
       pattern,
+      ...(assuranceComparison ? { assuranceComparison: { sourceEvidenceOnly: true, runtimeEquivalenceProven: false, replacementAuthorized: false, independentlySpecifiedExpectation: literalToDerivedLength ? 'fixed-literal-versus-derived-length' : 'unassessed' } } : {}),
       selection: {
         mode: explicitScope ? 'explicit-scope' : rankedFiles.length ? 'graph-ranked-files' : 'repository-fallback',
         explicitScope: explicitScope || null,
@@ -1050,13 +1072,14 @@ export function planInvestigationQuestion(input: {
     )
     && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
+  const testAssuranceComparison = testAssuranceComparisonIntent(text);
   const implementationInventory = implementationInventoryIntent(text);
   const implementationMetaInquiry = implementationMetaInquiryIntent(text);
   const deploymentPortabilityInquiry = deploymentPortabilityInquiryIntent(text);
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
-  else if (implementationInventory || implementationMetaInquiry || deploymentPortabilityInquiry) lane = 'implementation-explanation';
+  else if (testAssuranceComparison || implementationInventory || implementationMetaInquiry || deploymentPortabilityInquiry) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
