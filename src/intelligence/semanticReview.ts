@@ -186,8 +186,14 @@ export function applySemanticReviewAction(
     throw new Error('terminal semantic meaning must be followed through lineage rather than reviewed in place');
   }
 
+  // An intrinsically accepted technical observation is correctable by a human:
+  // unlike owner-accepted product meaning, it must never become an irreversible
+  // automated decision. Retain the original machine acceptance in review history.
+  const humanCorrectsMachine = who.kind === 'human' && current.state === 'accepted'
+    && current.acceptance?.actor.kind === 'intrinsic-derivation';
+
   if (action.kind === 'amend') {
-    if (current.state === 'accepted' || current.state === 'rejected') {
+    if (current.state === 'rejected' || (current.state === 'accepted' && !humanCorrectsMachine)) {
       throw new Error('accepted/rejected semantic meaning must be replaced or superseded rather than silently amended');
     }
     const before = cloneProposal(current.proposal);
@@ -203,6 +209,8 @@ export function applySemanticReviewAction(
       proposal: nextProposal,
       state: 'reviewed',
       reviewed: true,
+      accepted: false,
+      acceptance: null,
       history: [...current.history, { kind: 'amend', actor: who, at, rationale: why, before, after: cloneProposal(nextProposal) }],
     };
   }
@@ -220,7 +228,9 @@ export function applySemanticReviewAction(
   }
 
   if (action.kind === 'reject') {
-    if (current.state === 'accepted') throw new Error('accepted semantic meaning must be superseded rather than destructively rejected');
+    if (current.state === 'accepted' && !humanCorrectsMachine) {
+      throw new Error('accepted semantic meaning must be superseded rather than destructively rejected');
+    }
     return {
       ...current,
       state: 'rejected',
