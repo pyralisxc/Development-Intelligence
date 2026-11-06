@@ -566,3 +566,18 @@ test('semantic capacity can honestly enumerate more than 100 evidence-qualified 
   assert.deepEqual(at50.candidates.map(candidate => candidate.id), at100.candidates.slice(0, 50).map(candidate => candidate.id));
   assert.deepEqual(at100.candidates.map(candidate => candidate.id), at200.candidates.slice(0, 100).map(candidate => candidate.id));
 });
+
+test('excluded low-support scope preserves structure and its gate reason, not semantic authority', () => {
+  const first = bootstrapSemanticCandidates(graph(false), { limit: 10 });
+  const reversed = bootstrapSemanticCandidates(graph(true), { limit: 10 });
+  assert.deepEqual(first.capacity.excludedScopes, reversed.capacity.excludedScopes);
+  const excluded = first.capacity.excludedScopes.items.find(item => item.scope === 'src/utils');
+  assert.ok(excluded);
+  assert.equal(excluded.reason, 'generic-support-scope');
+  assert.ok(excluded.evidenceFamilies.includes('structure'));
+  assert.equal(excluded.fileCount, 1);
+  assert.ok(excluded.representativeNodes.some(item => item.locator === 'src/utils/string.ts'));
+  assert.equal(first.candidates.some(candidate => candidate.scope === excluded.scope), false);
+  assert.equal(first.capacity.excludedScopes.returned, first.capacity.rejectedScopeCount);
+  assert.equal(first.capacity.excludedScopes.truncated, false);
+});

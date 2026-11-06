@@ -111,6 +111,7 @@ function bootstrap(candidates: SemanticCandidate[]): SemanticBootstrapProjection
         insufficientFileSupport: 1,
         genericSupportScope: 0,
       },
+      excludedScopes: { returned: 0, truncated: true, items: [] },
     },
     policy: {
       stage: 'T1-derived-candidates',

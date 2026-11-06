@@ -40,6 +40,7 @@ export interface SemanticAuditProjection {
     truncated: boolean;
     groupedScopes: number;
     rejectedScopes: number;
+    excludedScopes: SemanticBootstrapProjection['capacity']['excludedScopes'];
   };
   counts: {
     audited: number;
@@ -179,6 +180,7 @@ export function auditSemanticCandidates(
       truncated: bootstrap.capacity.truncated,
       groupedScopes: bootstrap.capacity.groupedScopeCount,
       rejectedScopes: bootstrap.capacity.rejectedScopeCount,
+      excludedScopes: bootstrap.capacity.excludedScopes,
     },
     counts: {
       audited: audited.length,
