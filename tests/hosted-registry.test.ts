@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getProjectConfig, listAuthorizedGithubOwners, loadRegistry } from '../src/config/registry.js';
+import { getProjectConfig, listAuthorizedGithubOwners, loadRegistry, previewCanonicalRuntimeRole } from '../src/config/registry.js';
 import { callTool } from '../src/mcp.js';
 import { renderProjectChooser } from '../src/viewer.js';
 import { canonicalProjectStorageKey } from '../src/intelligence/canonicalStore.js';
@@ -87,6 +87,9 @@ test('Preview-only canonical project identity isolates derived storage without b
     delete process.env.DEVINT_GITHUB_APP_PRIVATE_KEY;
     process.env.VERCEL_ENV = 'preview';
     process.env.VERCEL_TARGET_ENV = 'preview';
+    assert.equal(previewCanonicalRuntimeRole().state, 'verified-preview');
+    const inventory = await callTool('list_projects') as any;
+    assert.equal(inventory.previewCanonicalIdentity.available, true);
     const config = await getProjectConfig(alias);
     assert.equal(config.repository, 'https://github.com/pyralisxc/Development-Intelligence.git');
     assert.equal(config.defaultRef, 'refs/heads/preview');
@@ -98,9 +101,16 @@ test('Preview-only canonical project identity isolates derived storage without b
     await assert.rejects(getProjectConfig('someone-else/Development-Intelligence@preview'), /Unknown project/u);
     process.env.VERCEL_ENV = 'production';
     process.env.VERCEL_TARGET_ENV = 'preview';
+    assert.equal(previewCanonicalRuntimeRole().state, 'conflicting');
     await assert.rejects(getProjectConfig(alias), /Unknown project/u, 'contradictory environment roles must not permit Preview authority');
     process.env.VERCEL_ENV = 'production';
     process.env.VERCEL_TARGET_ENV = 'production';
+    await assert.rejects(getProjectConfig(alias), /Unknown project/u);
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_TARGET_ENV;
+    const unavailable = await callTool('list_projects') as any;
+    assert.equal(unavailable.previewCanonicalIdentity.state, 'missing');
+    assert.equal(unavailable.previewCanonicalIdentity.available, false);
     await assert.rejects(getProjectConfig(alias), /Unknown project/u);
   } finally {
     for (const key of variables) {
