@@ -675,6 +675,9 @@ function implementationExplorationIntent(text: string): boolean {
 type SpecificSemanticQuestion = 'saved' | 'excluded' | 'candidate';
 function specificSemanticQuestion(text: string): SpecificSemanticQuestion | null {
   const lower = text.toLowerCase();
+  // A repository orientation may enumerate all semantic candidates without
+  // requesting evidence about one candidate. Preserve the existing depth route.
+  if (/\b(?:what does (?:this|the) project do|project overview|repository overview)\b/u.test(lower)) return null;
   const asks = /\b(?:which|what|list|show|how many|why)\b/u.test(lower);
   if (asks && /\b(?:semantic|meanings?|candidates?)\b/u.test(lower)
     && /\b(?:saved|stored|persisted|automatically derived|automatically maintained)\b/u.test(lower)) return 'saved';
