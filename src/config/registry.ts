@@ -122,6 +122,30 @@ function githubProjectConfig(project: string): ProjectConfig | null {
   });
 }
 
+/**
+ * The explicitly requested Preview workspace identity uses the same authorized
+ * GitHub repository, but owns a distinct canonical/derived storage namespace.
+ * Do not reinterpret the ordinary owner/repository identity or Main's HEAD.
+ * No additional GitHub owner, credentials, or approval authority is granted.
+ */
+function githubPreviewProjectConfig(project: string): ProjectConfig | null {
+  const match = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]+)@preview$/u.exec(project);
+  if (!match) return null;
+  const environment = process.env.VERCEL_ENV?.trim();
+  const targetEnvironment = process.env.VERCEL_TARGET_ENV?.trim();
+  // Fail closed for absent or contradictory deployment role signals.
+  if ((environment && environment !== 'preview') || (targetEnvironment && targetEnvironment !== 'preview')) return null;
+  if (environment !== 'preview' && targetEnvironment !== 'preview') return null;
+  const original = githubProjectConfig(`${match[1]}/${match[2]}`);
+  if (!original) return null;
+  return validateProject(project, {
+    ...original,
+    defaultRef: 'refs/heads/preview',
+    allowedRefs: ['refs/heads/preview'],
+    revisionPolicy: 'allowlisted',
+  });
+}
+
 function parseRegistry(raw: string, source: string): ProjectRegistry {
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -163,7 +187,7 @@ export async function getProjectConfig(project: string): Promise<ProjectConfig> 
   const registry = await loadRegistry();
   const config = registry[project];
   if (config) return config;
-  const github = githubProjectConfig(project);
+  const github = githubProjectConfig(project) ?? githubPreviewProjectConfig(project);
   if (github) return github;
   const owners = listAuthorizedGithubOwners();
   const hint = owners.length ? ` Use owner/repository under an authorized GitHub owner: ${owners.join(', ')}.` : '';
