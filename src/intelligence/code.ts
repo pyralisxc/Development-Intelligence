@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { runChecked } from '../util/process.js';
 import { graphContext } from './service.js';
@@ -63,6 +64,8 @@ export async function searchCode(input: {
   regex?: boolean | undefined;
   context?: number | undefined;
   limit?: number | undefined;
+  /** Internal exact-revision syntax check; observes AST shape, not provider/binding identity. */
+  syntacticCall?: { callee: string; firstArgumentIdentifier: string } | undefined;
 }): Promise<Record<string, unknown>> {
   if (!input.pattern) throw new Error('pattern must be a non-empty string');
   if (input.ref && input.graphId) throw new Error('Use either ref or graphId, not both');
@@ -86,9 +89,34 @@ export async function searchCode(input: {
       try { text = await fs.readFile(absolute, 'utf8'); } catch { continue; }
       if (text.includes('\0')) continue;
       const lines: string[] = text.split(/\r?\n/u);
+      // Use the entire exact-revision file: reparsing a matching line alone
+      // would mistake multiline comments/template strings for executable calls.
+      // The result establishes syntactic presence only, never provider binding
+      // or execution. Unsupported syntax/file types fail closed.
+      let syntacticCallLines: Set<number> | null = null;
+      if (input.syntacticCall) {
+        if (!/\.(?:[cm]?[jt]s|tsx|jsx)$/iu.test(relative)) continue;
+        const kind = /\.(?:tsx|jsx)$/iu.test(relative) ? ts.ScriptKind.TSX
+          : /\.(?:[cm]?js)$/iu.test(relative) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
+        const parsed = ts.createSourceFile(relative, text, ts.ScriptTarget.Latest, true, kind) as
+          ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+        if (parsed.parseDiagnostics?.length) continue;
+        syntacticCallLines = new Set<number>();
+        const visit = (node: ts.Node): void => {
+          if (ts.isCallExpression(node)
+            && node.expression.getText(parsed).replace(/\s+/gu, '') === input.syntacticCall!.callee
+            && node.arguments[0] && ts.isIdentifier(node.arguments[0]!)
+            && (node.arguments[0] as ts.Identifier).text === input.syntacticCall!.firstArgumentIdentifier) {
+            syntacticCallLines!.add(parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1);
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(parsed);
+      }
       for (let index = 0; index < lines.length && matches.length < limit; index += 1) {
         const line = lines[index]!;
-        const hit = matcher ? matcher.test(line) : line.toLowerCase().includes(input.pattern.toLowerCase());
+        const hit = syntacticCallLines ? syntacticCallLines.has(index + 1)
+          : matcher ? matcher.test(line) : line.toLowerCase().includes(input.pattern.toLowerCase());
         if (!hit) continue;
         matches.push({
           file: relative,
@@ -100,7 +128,9 @@ export async function searchCode(input: {
       }
       if (matches.length >= limit) break;
     }
-    return { project: input.project, graphId: input.graphId ?? null, ref: checkout.ref, revision: checkout.sha, matches, total: matches.length };
+    return { project: input.project, graphId: input.graphId ?? null, ref: checkout.ref, revision: checkout.sha, matches, total: matches.length,
+      ...(input.syntacticCall ? { sourceValidationScope: 'whole-file-ast-call-and-first-operand-syntax-only' } : {}),
+    };
   });
 }
 
