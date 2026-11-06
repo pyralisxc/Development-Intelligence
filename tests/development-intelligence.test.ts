@@ -792,6 +792,8 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'Which runtime capabilities are provider-neutral versus specifically Vercel-dependent?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Does this project include Docker or container packaging, standalone server startup, persistent storage abstraction, and environment-driven host and port configuration?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'How does Panel implementation persist accepted state?', lane: 'implementation-claim', proofMode: 'claim' },
+    { question: 'What protection is lost if the toolCount test replaces literal 35 with names.length?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Which guarantee is preserved if an assertion is removed instead of rewritten?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Where is Panel implemented?', lane: 'code' },
     { question: 'What does Panel depend on?', lane: 'trace' },
     { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
@@ -843,6 +845,55 @@ test('meta-capability inventory questions bypass domain entity resolution', asyn
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test('test-assurance comparison uses bounded source evidence rather than an incidental count entity', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const question = 'What protection is lost if the toolCount test replaces literal 35 with names.length?';
+    const routed = await callTool('investigate', { project: fixture.project, question }) as any;
+    assert.equal(routed.intent, 'implementation-explanation');
+    assert.equal(routed.routing.tool, 'search_code');
+    assert.equal(routed.routing.targetResolution.mode, 'source-keywords');
+    assert.equal(routed.subject, null, 'a comparison must not resolve to an incidental field called count');
+    assert.equal(routed.result.mechanism.assuranceComparison.sourceEvidenceOnly, true);
+    assert.equal(routed.result.mechanism.assuranceComparison.runtimeEquivalenceProven, false);
+    assert.equal(routed.result.mechanism.assuranceComparison.assessment, 'not-established');
+    assert.deepEqual(routed.result.mechanism.assuranceComparison.proposedChange, {
+      source: 'user-question-only', literal: '35', replacementExpression: 'names.length',
+    });
+    assert.equal(routed.result.mechanism.assuranceComparison.independentProtectionEstablished, false);
+    assert.match(routed.answer, /No bounded source matches established the requested test-assurance comparison/u);
+    assert.match(routed.answer, /equivalence and lost protection remain unknown/u);
+    await fs.mkdir(path.join(fixture.source, 'tests'), { recursive: true });
+    await fs.writeFile(path.join(fixture.source, 'tests', 'contract.test.ts'), [
+      "const names = ['one', 'two'];",
+      "const toolContract = { toolCount: names.length };",
+      "assert.deepEqual(names, ['one', 'two']);",
+      "assert.equal(toolContract.toolCount, names.length);",
+      "assert.match(String(toolContract.toolCount), /[0-9]+/);",
+      '',
+    ].join('\n'));
+    await fs.writeFile(path.join(fixture.source, 'src', 'tool-contract.ts'),
+      "export function toolContract() { return { toolCount: 35 }; }\n");
+    await commit(fixture.source, 'add bounded assurance source evidence');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const observed = await callTool('investigate', { project: fixture.project, question }) as any;
+    assert.equal(observed.intent, 'implementation-explanation');
+    assert.equal(observed.subject, null);
+    assert.equal(observed.result.mechanism.assuranceComparison.assessment, 'not-established');
+    assert.equal(observed.result.mechanism.assuranceComparison.proposedChange.source, 'user-question-only');
+    assert.ok(observed.result.mechanism.assuranceComparison.sourceObservations.some((item: any) =>
+      item.file === 'tests/contract.test.ts' && item.text.includes('toolCount')));
+    assert.ok(observed.answer.includes('tests/contract.test.ts'));
+    assert.match(observed.answer, /not an established finding about the protection lost/u);
+    const control = await callTool('investigate', { project: fixture.project, question: 'What does Panel depend on?' }) as any;
+    assert.equal(control.intent, 'trace', 'ordinary graph relationship questions keep their existing route');
+  } finally { await fs.rm(fixture.root, { recursive: true, force: true }); clearGraphCache(fixture.project); }
 });
 
 test('repository-level self-audit questions bypass entity resolution and use audit_repository', async () => {
@@ -1697,7 +1748,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('get_test_claim_report')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
-  assert.deepEqual(contract, { toolCount: 35, contractFingerprint: contract.contractFingerprint });
+  assert.deepEqual(contract, { toolCount: names.length, contractFingerprint: contract.contractFingerprint });
   assert.match(contract.contractFingerprint, /^[0-9a-f]{24}$/);
   assert.equal(toolContract().contractFingerprint, contract.contractFingerprint);
 });

@@ -667,6 +667,16 @@ function implementationExplorationIntent(text: string): boolean {
   return asksMechanism && mechanism;
 }
 
+/** Comparative test-assurance questions need source claims, not an incidental
+ * entity with a coincidentally named field. This routes evidence; it does not
+ * assert semantic equivalence or replace runtime verification. */
+function testAssuranceComparisonIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  return /\b(?:tests?|assertions?|checks?|fixtures?)\b/u.test(lower)
+    && /\b(?:replac\w*|remov\w*|chang\w*|substitut\w*|instead)\b/u.test(lower)
+    && /\b(?:protection|guarantee|assurance|coverage|lost|lose|preserv\w*|redundan\w*|equivalen\w*)\b/u.test(lower);
+}
+
 function implementationInventoryIntent(text: string): boolean {
   const lower = text.toLowerCase();
   const asksInventory = /\b(?:what|which|show|list|explain|describe)\b/u.test(lower)
@@ -768,10 +778,22 @@ async function implementationMechanismProjection(input: {
   limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const pattern = implementationExplorationPattern(input.text);
+  const assuranceComparison = testAssuranceComparisonIntent(input.text);
+  // Prefer source symbols and the concrete proposed replacement over incidental
+  // words such as "protection" or "lost". No match is an explicit unknown.
+  const anchors = assuranceComparison
+    ? [...new Set([
+        ...(input.text.match(/\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9_$]*\b/gu) ?? []),
+        ...(input.text.match(/\b[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$]*\b/gu) ?? []),
+        ...[...input.text.matchAll(/\bliteral\s+([0-9]+)\b/giu)].map(match => match[1]!),
+      ])].slice(0, 8)
+    : [];
+  const pattern = anchors.length
+    ? '\\b(?:' + anchors.map(regexEscape).join('|') + ')\\b'
+    : implementationExplorationPattern(input.text);
   const queryTerms = implementationExplorationTerms(input.text);
   const explicitScope = input.scope?.trim() ?? '';
-  const rankedFiles = explicitScope ? [] : rankedMechanismSourceFiles(graph, input.text, 12);
+  const rankedFiles = explicitScope || anchors.length ? [] : rankedMechanismSourceFiles(graph, input.text, 12);
   const rankedFilePattern = rankedFiles.length
     ? '^(?:' + rankedFiles.map(item => regexEscape(item.file)).join('|') + ')$'
     : undefined;
@@ -925,7 +947,28 @@ async function implementationMechanismProjection(input: {
     .slice(0, 20);
 
   const fileNames = files.slice(0, 4).map(item => item.file);
-  const summary = matches.length
+  // Source observations and the user's proposed change are separate truth classes.
+  // Matching a symbol or a number is not proof that an assertion is equivalent.
+  const proposedLiteral = input.text.match(/\bliteral\s+([0-9]+)\b/iu)?.[1] ?? null;
+  const proposedLength = input.text.match(/\b([A-Za-z_$][A-Za-z0-9_$]*\.length)\b/u)?.[1] ?? null;
+  const sourceObservations = matches
+    .filter((match: any) => typeof match.file === 'string' && Number.isInteger(match.line) && typeof match.text === 'string')
+    .map((match: any) => ({
+      file: String(match.file),
+      line: Number(match.line),
+      text: String(match.text).trim().slice(0, 500),
+      kind: /^(?:tests|test)\//u.test(String(match.file)) ? 'test-source'
+        : /^scripts\//u.test(String(match.file)) ? 'verification-script' : 'implementation-source',
+    }))
+    .slice(0, 24);
+  const sourceExamples = sourceObservations.slice(0, 4)
+    .map((item: {file: string; line: number; kind: string}) => item.file + ':' + item.line + ' (' + item.kind + ')').join('; ');
+  const summary = assuranceComparison
+    ? (sourceObservations.length
+      ? 'Found ' + matches.length + ' bounded source match(es) in ' + fileMap.size
+        + ' file(s), including ' + sourceExamples + '. These are source locations, not an established finding about the protection lost by the proposed change. Compare the original assertion, independent assertions, and runtime checks before concluding redundancy or equivalence.'
+      : 'No bounded source matches established the requested test-assurance comparison; equivalence and lost protection remain unknown.')
+    : matches.length
     ? String(matches.length) + ' bounded source match(es) across ' + String(fileMap.size) + ' file(s); '
       + String(resolved.length) + ' resolved graph relationship(s) connect entities in or directly adjacent to those files'
       + (fileNames.length ? ', led by ' + semanticNameList(fileNames, 4) : '') + '.'
@@ -936,6 +979,15 @@ async function implementationMechanismProjection(input: {
     summary,
     mechanism: {
       pattern,
+      ...(assuranceComparison ? { assuranceComparison: {
+        proposedChange: { source: 'user-question-only', literal: proposedLiteral, replacementExpression: proposedLength },
+        sourceObservations,
+        assessment: 'not-established',
+        sourceEvidenceOnly: true,
+        runtimeEquivalenceProven: false,
+        replacementAuthorized: false,
+        independentProtectionEstablished: false,
+      } } : {}),
       selection: {
         mode: explicitScope ? 'explicit-scope' : rankedFiles.length ? 'graph-ranked-files' : 'repository-fallback',
         explicitScope: explicitScope || null,
@@ -1050,13 +1102,14 @@ export function planInvestigationQuestion(input: {
     )
     && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
+  const testAssuranceComparison = testAssuranceComparisonIntent(text);
   const implementationInventory = implementationInventoryIntent(text);
   const implementationMetaInquiry = implementationMetaInquiryIntent(text);
   const deploymentPortabilityInquiry = deploymentPortabilityInquiryIntent(text);
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
-  else if (implementationInventory || implementationMetaInquiry || deploymentPortabilityInquiry) lane = 'implementation-explanation';
+  else if (testAssuranceComparison || implementationInventory || implementationMetaInquiry || deploymentPortabilityInquiry) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
