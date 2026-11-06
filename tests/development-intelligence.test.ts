@@ -895,7 +895,17 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.ok(observed.answer.includes('tests/contract.test.ts'));
     assert.match(observed.answer, /not an established finding about the protection lost/u);
     await fs.appendFile(path.join(fixture.source, 'tests', 'contract.test.ts'),
-      'const unrelatedValue = nonexistentGuaranteeXYZ;\nconst quotedQuestion = "assert.equal(nonexistentGuaranteeXYZ, true)";\n');
+      [
+        'const unrelatedValue = nonexistentGuaranteeXYZ;',
+        'const quotedQuestion = "assert.equal(nonexistentGuaranteeXYZ, true)";',
+        '/* multiline block comment:',
+        'assert.equal(nonexistentGuaranteeXYZ, true);',
+        '*/',
+        'const multilineTemplate = \`',
+        'assert.equal(nonexistentGuaranteeXYZ, true);',
+        '\`;',
+        '',
+      ].join('\n'));
     await commit(fixture.source, 'add unrelated operand mention');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
     clearGraphCache(fixture.project);
@@ -913,6 +923,22 @@ test('test-assurance comparison uses bounded source evidence rather than an inci
     assert.equal(missing.result.mechanism.assuranceComparison.sourceObservations.length, 0,
       'generic assert.equal matches must never substitute for the missing requested assertion');
     assert.match(missing.answer, /equivalence and lost protection remain unknown/u);
+    await fs.appendFile(path.join(fixture.source, 'tests', 'contract.test.ts'),
+      'assert.equal(nonexistentGuaranteeXYZ, true);\n');
+    await commit(fixture.source, 'add actual syntactic call-site control');
+    await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const present = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What protection would be lost if assert.equal(nonexistentGuaranteeXYZ, true) in tests/contract.test.ts were removed?',
+    }) as any;
+    assert.equal(present.intent, 'implementation-explanation');
+    assert.equal(present.result.mechanism.assuranceComparison.requestedSubject.status, 'observed-syntactic-call-site');
+    assert.equal(present.result.mechanism.assuranceComparison.runtimeEquivalenceProven, false);
+    assert.equal(present.result.sourceValidationScope, 'whole-file-ast-call-and-first-operand-syntax-only');
+    assert.equal(present.result.sourceValidatedMatchCount, 1);
+    assert.equal(present.result.mechanism.assuranceComparison.assessment, 'not-established');
     for (const comparison of [
       'Can the graph replace the HTTP assertion comparing healthBody.mcp with toolContract()?',
       'Are parity passed, status and counterexample assertions redundant?',
