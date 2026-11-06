@@ -32,6 +32,7 @@ async function startBlobServer() {
   const blobs = new Map<string, any>();
   const etags = new Map<string, string>();
   let etagSequence = 0;
+  let metadataEtagOverride: string | null = null;
   const requests: Array<{ method: string; pathname: string; query: string; headers: Record<string, string | string[] | undefined> }> = [];
   let origin = '';
   const server = http.createServer(async (request: any, response: any) => {
@@ -44,7 +45,7 @@ async function startBlobServer() {
       const pathname = url.searchParams.get('url');
       if (!pathname || !blobs.has(pathname)) { response.statusCode = 404; response.end('not found'); return; }
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ pathname, etag: etags.get(pathname), size: blobs.get(pathname).byteLength }));
+      response.end(JSON.stringify({ pathname, etag: metadataEtagOverride ?? etags.get(pathname), size: blobs.get(pathname).byteLength }));
       return;
     }
     if (request.method === 'PUT' && url.pathname === '/api/blob') {
@@ -103,7 +104,7 @@ async function startBlobServer() {
   });
   const address = server.address() as any;
   origin = `http://127.0.0.1:${address.port}`;
-  return { blobs, requests, origin, close: () => new Promise<void>((resolve, reject) => server.close((error: any) => error ? reject(error) : resolve())) };
+  return { blobs, requests, origin, setMetadataEtagOverride: (value: string | null) => { metadataEtagOverride = value; }, close: () => new Promise<void>((resolve, reject) => server.close((error: any) => error ? reject(error) : resolve())) };
 }
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'devint-vercel-blob-'));
@@ -182,6 +183,14 @@ test('derived authority refresh uses strong Blob metadata ETag despite weak cont
     assert.equal(after.state, 'hit');
     assert.equal(after.ledger?.generation, 2);
     assert.equal(after.ledger?.derivedMeanings?.length, 2);
+    item.blob.setMetadataEtagOverride('"wrong-object-version"');
+    const mismatched = await loadSemanticAuthority(item.project);
+    assert.equal(mismatched.state, 'invalid', 'mismatched content and metadata validators must fail closed');
+    assert.match(mismatched.error ?? '', /content and authoritative version disagree/u);
+    item.blob.setMetadataEtagOverride(null);
+    const recovered = await loadSemanticAuthority(item.project);
+    assert.equal(recovered.state, 'hit');
+    assert.equal(recovered.ledger?.generation, 2);
     assert.ok(item.blob.requests.some(entry => entry.method === 'GET' && entry.pathname === '/api/blob'
       && entry.query.includes('url=')), 'metadata API must provide the authoritative conditional-write version');
     assert.ok(item.blob.requests.some(entry => entry.method === 'PUT' && entry.headers['x-if-match'] === loaded.etag));
