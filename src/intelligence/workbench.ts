@@ -8,6 +8,7 @@ import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLe
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
+import { semanticReviewSurface } from './semanticWorkflow.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
 import { graphRecordWeight } from './capacity.js';
@@ -670,6 +671,92 @@ function implementationExplorationIntent(text: string): boolean {
 /** Comparative test-assurance questions need source claims, not an incidental
  * entity with a coincidentally named field. This routes evidence; it does not
  * assert semantic equivalence or replace runtime verification. */
+
+type SpecificSemanticQuestion = 'saved' | 'excluded' | 'candidate';
+function specificSemanticQuestion(text: string): SpecificSemanticQuestion | null {
+  const lower = text.toLowerCase();
+  const asks = /\b(?:which|what|list|show|how many|why)\b/u.test(lower);
+  if (asks && /\b(?:semantic|meanings?|candidates?)\b/u.test(lower)
+    && /\b(?:saved|stored|persisted|automatically derived|automatically maintained)\b/u.test(lower)) return 'saved';
+  if (asks && /\b(?:exclud\w*|omitt\w*|not eligible|not promoted)\b/u.test(lower)
+    && /\b(?:semantic|candidates?|meanings?|scopes?)\b/u.test(lower)) return 'excluded';
+  if (asks && /\bcandidate\b/u.test(lower)
+    && /\b(?:evidence|support|uncertain|uncertainty|why)\b/u.test(lower)) return 'candidate';
+  return null;
+}
+async function explainSpecificSemanticQuestion(project: string, graphId: string, text: string, kind: SpecificSemanticQuestion): Promise<Record<string, unknown>> {
+  // The source of truth is the existing revision-bound, read-only review
+  // surface. Return a proportional projection, not a second meaning model.
+  const surface = await semanticReviewSurface({ project, graphId, limit: 1000 });
+  const c = surface.candidates;
+  const derivedIds = new Set(surface.derivedMeanings.map(item => item.candidateId));
+  const base = {
+    revision: surface.revision, graphId: surface.graphId,
+    authority: { state: surface.authority.state, generation: surface.authority.generation,
+      recordCount: surface.authority.recordCount, enrollmentState: surface.authority.enrollmentState },
+    capacity: { eligible: surface.capacity.eligibleCandidateCount,
+      excluded: surface.capacity.rejectedScopeCount, exhausted: surface.capacity.exhausted,
+      exclusionsTruncated: surface.capacity.excludedScopes.truncated },
+    policy: { evidenceOnly: true, acceptedByDerivation: false, runtimeVerified: false },
+  };
+  if (kind === 'saved') {
+    const saved = c.filter(item => derivedIds.has(item.id)).map(item => ({
+      candidateId:item.id, name:item.proposal.name, scope:item.scope,
+      meaningId:surface.derivedMeanings.find(row => row.candidateId === item.id)?.meaningId ?? null,
+      explicitlyAccepted: item.review?.accepted === true,
+    }));
+    const accepted = c.filter(item => item.review?.accepted === true).length;
+    return { intent:'semantic-lifecycle', subject:null, routing:{tool:'semantic_review_surface',projection:'saved-inventory'},
+      answer: String(saved.length) + ' current-revision automatically derived meaning(s), and ' + String(accepted)
+        + ' explicitly accepted current candidate(s). Derived qualification is not approval or execution proof.',
+      result:{ ...base, saved, counts:{derived:saved.length,accepted,reviewRecords:surface.authority.recordCount} } };
+  }
+  if (kind === 'excluded') {
+    const path = explicitInvestigationScope(text);
+    const matches = surface.capacity.excludedScopes.items.filter(item => path && (
+      item.scope === path || item.representativeNodes.some(node => node.locator.split(':')[0] === path)));
+    if (matches.length !== 1) return {
+      intent:'semantic-audit',subject:path ? {query:path}:null,
+      routing:{tool:'semantic_review_surface',projection:'excluded-scope',resolved:false},
+      answer:'No single excluded scope resolved in the bounded census; this does not establish absence or eligibility.',
+      result:{...base,path,matches:matches.slice(0,5)},
+    };
+    const item = matches[0]!;
+    return { intent:'semantic-audit',subject:{query:item.scope},
+      routing:{tool:'semantic_review_surface',projection:'excluded-scope',resolved:true},
+      answer:'Scope ' + item.scope + ' is excluded for ' + item.reason + ': '
+        + String(item.fileCount) + ' file(s), ' + String(item.nodeCount) + ' nodes, '
+        + String(item.resolvedEdgeCount) + ' resolved edges; evidence families: '
+        + item.evidenceFamilies.join(', ') + '. Exclusion does not mean absent or incorrect source.',
+      result:{...base,exclusion:item,candidateAuthorityAssigned:false} };
+  }
+  const lower = text.toLowerCase();
+  const matches = c.filter(item => lower.includes(item.proposal.name.toLowerCase())
+    || lower.includes(item.scope.toLowerCase()));
+  if (matches.length !== 1) return {
+    intent:'semantic-audit',subject:null,
+    routing:{tool:'semantic_review_surface',projection:'candidate-evidence',resolved:false},
+    answer:matches.length ? 'Multiple candidate identities matched; provide an exact scope or candidate ID.'
+      : 'No candidate identity resolved from the requested name or scope.',
+    result:{...base,candidates:matches.slice(0,10).map(item => ({id:item.id,name:item.proposal.name,scope:item.scope}))},
+  };
+  const item = matches[0]!;
+  return {intent:'semantic-audit',subject:{query:item.proposal.name,candidateId:item.id,scope:item.scope},
+    routing:{tool:'semantic_review_surface',projection:'candidate-evidence',resolved:true},
+    answer:'Candidate ' + item.proposal.name + ': ' + String(item.support.fileCount) + ' source file(s), '
+      + String(item.support.nodeCount) + ' nodes, ' + String(item.support.resolvedEdgeCount)
+      + ' resolved edges; evidence families: ' + item.provenance.evidenceFamilies.join(', ')
+      + '. This is source qualification, not runtime verification or accepted intent.',
+    result:{ ...base,candidate:{
+      id:item.id,scope:item.scope,proposal:item.proposal,support:item.support,
+      evidenceFamilies:item.provenance.evidenceFamilies,
+      representativeNodes:item.evidencePacket.representativeNodes.slice(0,8),
+      representativeEdges:item.evidencePacket.representativeEdges.slice(0,8),
+      derivedCurrent:derivedIds.has(item.id),explicitlyAccepted:item.review?.accepted === true,
+    } },
+  };
+}
+
 function testAssuranceComparisonIntent(text: string): boolean {
   const lower = text.toLowerCase();
   // A test/assurance comparison may ask whether the graph can replace an
@@ -1139,6 +1226,7 @@ export function planInvestigationQuestion(input: {
     )
     && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
+  const specificSemantic = specificSemanticQuestion(text);
   const testAssuranceComparison = testAssuranceComparisonIntent(text);
   const implementationInventory = implementationInventoryIntent(text);
   const implementationMetaInquiry = implementationMetaInquiryIntent(text);
@@ -1146,6 +1234,7 @@ export function planInvestigationQuestion(input: {
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
+  else if (specificSemantic) lane = specificSemantic === 'saved' ? 'semantic-lifecycle' : 'semantic-audit';
   else if (testAssuranceComparison || implementationInventory || implementationMetaInquiry || deploymentPortabilityInquiry) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
@@ -2616,6 +2705,8 @@ export async function queryWorkbench(input: {
 
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
+  const specificSemantic = specificSemanticQuestion(text);
+  if (specificSemantic) return await explainSpecificSemanticQuestion(input.project, (await currentGraph(input.project,input.ref,input.graphId)).graphId, text, specificSemantic);
 
   if (plan.lane === 'implementation-explanation') {
     const result = await implementationMechanismProjection({
