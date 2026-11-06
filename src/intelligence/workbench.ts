@@ -947,15 +947,26 @@ async function implementationMechanismProjection(input: {
     .slice(0, 20);
 
   const fileNames = files.slice(0, 4).map(item => item.file);
-  const literalToDerivedLength = /\bliteral\s+\d+\b/iu.test(input.text)
-    && /\b[A-Za-z_$][A-Za-z0-9_$]*\.length\b/u.test(input.text);
+  // Source observations and the user's proposed change are separate truth classes.
+  // Matching a symbol or a number is not proof that an assertion is equivalent.
+  const proposedLiteral = input.text.match(/\bliteral\s+([0-9]+)\b/iu)?.[1] ?? null;
+  const proposedLength = input.text.match(/\b([A-Za-z_$][A-Za-z0-9_$]*\.length)\b/u)?.[1] ?? null;
+  const sourceObservations = matches
+    .filter((match: any) => typeof match.file === 'string' && Number.isInteger(match.line) && typeof match.text === 'string')
+    .map((match: any) => ({
+      file: String(match.file),
+      line: Number(match.line),
+      text: String(match.text).trim().slice(0, 500),
+      kind: /^(?:tests|test)\//u.test(String(match.file)) ? 'test-source'
+        : /^scripts\//u.test(String(match.file)) ? 'verification-script' : 'implementation-source',
+    }))
+    .slice(0, 24);
+  const sourceExamples = sourceObservations.slice(0, 4)
+    .map(item => item.file + ':' + item.line + ' (' + item.kind + ')').join('; ');
   const summary = assuranceComparison
-    ? (matches.length
-      ? 'Source-backed test-assurance comparison: ' + matches.length + ' bounded source match(es) in ' + fileMap.size
-        + ' file(s). ' + (literalToDerivedLength
-          ? 'A fixed literal supplies an independently stated expectation, whereas a derived length checks consistency with its input; whether that expectation is already protected by a separate exact-list assertion requires source comparison. '
-          : '')
-        + 'These source matches do not prove runtime equivalence, test redundancy, or safe retirement.'
+    ? (sourceObservations.length
+      ? 'Found ' + matches.length + ' bounded source match(es) in ' + fileMap.size
+        + ' file(s), including ' + sourceExamples + '. These are source locations, not an established finding about the protection lost by the proposed change. Compare the original assertion, independent assertions, and runtime checks before concluding redundancy or equivalence.'
       : 'No bounded source matches established the requested test-assurance comparison; equivalence and lost protection remain unknown.')
     : matches.length
     ? String(matches.length) + ' bounded source match(es) across ' + String(fileMap.size) + ' file(s); '
@@ -968,7 +979,15 @@ async function implementationMechanismProjection(input: {
     summary,
     mechanism: {
       pattern,
-      ...(assuranceComparison ? { assuranceComparison: { sourceEvidenceOnly: true, runtimeEquivalenceProven: false, replacementAuthorized: false, independentlySpecifiedExpectation: literalToDerivedLength ? 'fixed-literal-versus-derived-length' : 'unassessed' } } : {}),
+      ...(assuranceComparison ? { assuranceComparison: {
+        proposedChange: { source: 'user-question-only', literal: proposedLiteral, replacementExpression: proposedLength },
+        sourceObservations,
+        assessment: 'not-established',
+        sourceEvidenceOnly: true,
+        runtimeEquivalenceProven: false,
+        replacementAuthorized: false,
+        independentProtectionEstablished: false,
+      } } : {}),
       selection: {
         mode: explicitScope ? 'explicit-scope' : rankedFiles.length ? 'graph-ranked-files' : 'repository-fallback',
         explicitScope: explicitScope || null,
