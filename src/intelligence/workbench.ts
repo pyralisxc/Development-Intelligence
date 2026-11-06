@@ -778,10 +778,22 @@ async function implementationMechanismProjection(input: {
   limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const pattern = implementationExplorationPattern(input.text);
+  const assuranceComparison = testAssuranceComparisonIntent(input.text);
+  // Prefer source symbols and the concrete proposed replacement over incidental
+  // words such as "protection" or "lost". No match is an explicit unknown.
+  const anchors = assuranceComparison
+    ? [...new Set([
+        ...(input.text.match(/\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9_$]*\b/gu) ?? []),
+        ...(input.text.match(/\b[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$]*\b/gu) ?? []),
+        ...[...input.text.matchAll(/\bliteral\s+([0-9]+)\b/giu)].map(match => match[1]!),
+      ])].slice(0, 8)
+    : [];
+  const pattern = anchors.length
+    ? '\\b(?:' + anchors.map(regexEscape).join('|') + ')\\b'
+    : implementationExplorationPattern(input.text);
   const queryTerms = implementationExplorationTerms(input.text);
   const explicitScope = input.scope?.trim() ?? '';
-  const rankedFiles = explicitScope ? [] : rankedMechanismSourceFiles(graph, input.text, 12);
+  const rankedFiles = explicitScope || anchors.length ? [] : rankedMechanismSourceFiles(graph, input.text, 12);
   const rankedFilePattern = rankedFiles.length
     ? '^(?:' + rankedFiles.map(item => regexEscape(item.file)).join('|') + ')$'
     : undefined;
@@ -935,7 +947,6 @@ async function implementationMechanismProjection(input: {
     .slice(0, 20);
 
   const fileNames = files.slice(0, 4).map(item => item.file);
-  const assuranceComparison = testAssuranceComparisonIntent(input.text);
   const literalToDerivedLength = /\bliteral\s+\d+\b/iu.test(input.text)
     && /\b[A-Za-z_$][A-Za-z0-9_$]*\.length\b/u.test(input.text);
   const summary = assuranceComparison
