@@ -248,6 +248,7 @@ TypeScript/JavaScript analysis currently provides:
 - import-to-definition resolution;
 - provable cross-file calls;
 - a bounded TypeScript compiler-signature lens that links existing file nodes to uniquely matched declaration nodes with compile-time `references-symbol` edges and exact callsite evidence, without adding competing symbol nodes or asserting runtime dispatch;
+  Its real-source budget permits at most 1,600 tracked TypeScript/JavaScript roots and 12 MiB of source content, with a separately disclosed maximum of 3,000 source-proven binding observations. Beyond those budgets the compiler lens is bounded-out or partial, while the ordinary syntax graph remains available; no exhaustive or runtime conclusion follows from this optional frontend.
 - UI/HTTP/navigation/MCP representation evidence;
 - source search and exact-revision snippets.
 

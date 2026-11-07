@@ -54,8 +54,42 @@ export function dynamic(value: any) { return value.run(); }
   }
 });
 
+
+test('compiler retains exact TypeChecker truth beyond the old 600-source ceiling', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-typescript-large-compiler-lens-'));
+  try {
+    for (let i = 0; i < 601; i += 1) {
+      await fs.writeFile(path.join(root, 'neutral-' + String(i).padStart(4, '0') + '.ts'),
+        'export const neutral' + i + ' = ' + i + ';\n');
+    }
+    await fs.writeFile(path.join(root, 'types.ts'),
+      'export function helper(input: number): number { return input + 1; }\n');
+    await fs.writeFile(path.join(root, 'consumer.ts'),
+      "import { helper } from './types.js';\nexport const value = helper(42);\n");
+    await runChecked('git', ['init', '--initial-branch=main', root]);
+    await runChecked('git', ['-C', root, 'add', '.']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=fixture@example.com',
+      '-c', 'user.name=Fixture', 'commit', '-m', 'large compiler fixture']);
+    const graph = await buildLocalGraph(root, 'typescript-large-lens', 'W');
+    assert.equal(graph.coverage?.failedFiles, 0);
+    const target = graph.nodes.find(node => node.kind === 'function'
+      && node.name === 'helper' && node.sourceId === 'repo:types.ts');
+    assert.ok(target, 'the native source declaration must be present');
+    const proven = graph.edges.filter(edge => edge.strategy === 'typescript-checker-symbol.v1'
+      && edge.kind === 'references-symbol' && edge.status === 'resolved'
+      && edge.from === 'file:consumer.ts' && edge.to === target.id);
+    assert.equal(proven.length, 1,
+      'compiler must establish the exact source signature after 600 other files');
+    assert.ok(proven[0]!.evidence.some(locator => locator.startsWith('consumer.ts:2:')));
+    assert.equal(graph.edges.some(edge => edge.strategy === 'typescript-checker-symbol.v1'
+      && edge.kind === 'calls'), false, 'static binding is not runtime execution');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('compiler-level precision gaps are explicitly disclosed without inventing negative evidence', () => {
-  const content = new Map(Array.from({ length: 601 }, (_, i) => [`file${i}.ts`, 'export const value = 1;']));
+  const content = new Map(Array.from({ length: 1601 }, (_, i) => [`file${i}.ts`, 'export const value = 1;']));
   const result = compilerTypeScriptReferences({
     root: '/root/unused', sourceTexts: content, nodes: [], fileNodes: new Map(), options: {},
   });
