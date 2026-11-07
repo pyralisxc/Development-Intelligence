@@ -207,6 +207,20 @@ semantic acceptance. The projected graph identity includes the explicit
 project prefix as well as its source-graph/index hashes, preventing two different
 scope mappings from sharing a graph identity.
 
+Real producer compatibility is explicit: pinned `scip-typescript@0.6.1` has
+been observed to emit documents with `position_encoding=0` (unspecified),
+which the SCIP protocol says does not establish offset units. The importer
+does **not** silently guess an encoding. The local caller may opt in with
+`--scip-legacy-position-encoding utf16` for such a producer; this selection
+applies **only** to unspecified documents. The choice and number of affected
+documents appear in the receipt and are included in the ephemeral graph
+identity. It is not independent compiler evidence: resolved facts still require
+same-source, same-callsite TypeChecker corroboration; unmatched interpretations
+remain candidates. The disposable, read-only `SCIP real-producer acceptance`
+CI job executes the pinned real indexer and asserts source/definition/verified
+relationship reconciliation. Its pass does not create a signed indexer
+attestation, imply all SCIP projects are compatible, or publish canonical W.
+
 For example:
 ```sh
 node dist/src/graphCli.js scip-evidence --repo-path /checkout \

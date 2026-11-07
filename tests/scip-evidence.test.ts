@@ -54,6 +54,7 @@ function scip(options: {
   otherDefinition?: boolean;
   definitionFile?: string;
   encoding?: number;
+  definitionEncoding?: number;
 } = {}): Buffer {
   const name = 'handler';
   const definition = occurrence(0, api.indexOf(name), api.indexOf(name) + name.length, 1, options.variant);
@@ -62,7 +63,7 @@ function scip(options: {
   const reference = occurrence(options.refLine ?? 1, start, start + name.length, 0, options.variant);
   return Buffer.concat([
     header(),
-    message(2, document(options.definitionFile ?? 'src/api.ts', [definition])),
+    message(2, document(options.definitionFile ?? 'src/api.ts', [definition], options.definitionEncoding ?? 2)),
     ...(options.otherDefinition ? [message(2, document('src/other.ts', [definition]))] : []),
     message(2, document(options.file ?? 'src/consumer.ts', [reference], options.encoding)),
   ]);
@@ -282,5 +283,65 @@ test('SCIP project roots are not inferred from untrusted metadata or escaping pa
     await assert.rejects(projectLocalScipEvidence({
       root, indexPath: 'scip-cache/index.scip', graph, projectPrefix: prefix,
     }), /document path is not canonical or would escape/u);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+
+test('actual producer-style unspecified SCIP offsets need explicit compatibility and compiler confirmation', async () => {
+  const { root, graph } = await fixture();
+  try {
+    await writeIndex(root, scip({ encoding: 0, definitionEncoding: 0 }));
+    const excluded = await projectLocalScipEvidence({ root, graph, indexPath: 'scip-cache/index.scip' });
+    assert.equal(excluded.counts.sourceDocumentsMatched, 0, 'unspecified encoding must not silently select a unit');
+    assert.equal(excluded.counts.resolvedEdges, 0);
+    assert.equal(excluded.index.assumedPositionEncodingDocuments, 0);
+
+    const compatible = await projectLocalScipEvidence({
+      root, graph, indexPath: 'scip-cache/index.scip', legacyPositionEncoding: 'utf16',
+    });
+    assert.equal(compatible.counts.sourceDocumentsMatched, 2);
+    assert.equal(compatible.index.assumedPositionEncodingDocuments, 2);
+    assert.equal(compatible.index.legacyPositionEncoding, 'utf16');
+    assert.equal(compatible.counts.resolvedEdges, 1, 'only independently compiler-verified relationships become truth');
+    assert.equal(compatible.policy.assumedLegacyPositionEncodingIsNotIndependentProof, true);
+    assert.equal(compatible.policy.externallySuppliedIndexNotAttested, true);
+    assert.notEqual(compatible.graph.graphId, excluded.graph.graphId, 'interpretation policy belongs in graph identity');
+    const again = await projectLocalScipEvidence({
+      root, graph, indexPath: 'scip-cache/index.scip', legacyPositionEncoding: 'utf16',
+    });
+    assert.equal(again.graph.graphId, compatible.graph.graphId);
+    assert.deepEqual(again.graph.edges.filter(e => e.strategy === SCIP_EVIDENCE_STRATEGY),
+      compatible.graph.edges.filter(e => e.strategy === SCIP_EVIDENCE_STRATEGY));
+
+    const cli = await run(process.execPath, [
+      path.resolve('dist/src/graphCli.js'), 'scip-evidence',
+      '--repo-path', root, '--project', 'scip-legacy', '--scip-index', 'scip-cache/index.scip',
+      '--scip-legacy-position-encoding', 'utf16',
+    ]);
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.equal(JSON.parse(cli.stdout).counts.resolvedEdges, 1);
+    const invalid = await run(process.execPath, [
+      path.resolve('dist/src/graphCli.js'), 'scip-evidence',
+      '--repo-path', root, '--project', 'scip-legacy', '--scip-index', 'scip-cache/index.scip',
+      '--scip-legacy-position-encoding', 'untrusted',
+    ]);
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.stderr, /requires utf8, utf16 or utf32/u);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('SCIP legacy-offset compatibility never promotes forged same-name relationships', async () => {
+  const { root, graph } = await fixture(true);
+  try {
+    await writeIndex(root, scip({ encoding: 0, definitionEncoding: 0, definitionFile: 'src/other.ts' }));
+    const forged = await projectLocalScipEvidence({
+      root, graph, indexPath: 'scip-cache/index.scip', legacyPositionEncoding: 'utf16',
+    });
+    assert.equal(forged.index.assumedPositionEncodingDocuments, 2);
+    assert.equal(forged.counts.candidateEdges, 1);
+    assert.equal(forged.counts.resolvedEdges, 0);
+    assert.equal(forged.counts.compilerCorroboratedOccurrences, 0);
+    assert.ok(forged.graph.edges.some(edge => edge.strategy === SCIP_EVIDENCE_STRATEGY
+      && edge.status === 'candidate' && edge.to?.includes('other.ts')));
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
