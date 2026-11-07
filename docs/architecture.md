@@ -175,7 +175,7 @@ If an ephemeral `snapshot-…` graph expires, callers recreate it; DI does not c
 
 ## Code intelligence
 
-Generic An optional local SCIP source sensor (the `scip-evidence` command) can
+An optional local SCIP source sensor (the `scip-evidence` command) can
 consume a bounded precomputed SCIP protobuf Index over an exact clean Git
 checkout. It correlates definition/reference occurrences and source encodings
 with existing tracked DI declaration/file nodes. An externally supplied index
@@ -193,6 +193,29 @@ remain unchanged. Unsupported/unsafe ranges and unavailable source documents
 are excluded with counts, not reported as absence. Generate SCIP with an
 appropriate project-aware indexer in isolated controlled compute; supplying an
 index never executes the indexer, build scripts or a language server.
+
+A SCIP producer may use a **subproject root** (for example `packages/studio`)
+while DI owns repository-relative source paths. The local CLI explicitly accepts
+`--scip-project-prefix packages/studio` to map that index's canonical
+`Document.relative_path` values into the exact checked-out repository before
+matching tracked DI file/declaration nodes. The prefix must be a canonical
+repository-relative path containing tracked graph source; all index paths are
+validated again before mapping. An invalid/missing project-root mapping yields
+skipped documents or a hard error, **never** guessed bindings. Index metadata
+itself does not authorize a source revision, prefix, producer identity, or
+semantic acceptance. The projected graph identity includes the explicit
+project prefix as well as its source-graph/index hashes, preventing two different
+scope mappings from sharing a graph identity.
+
+For example:
+```sh
+node dist/src/graphCli.js scip-evidence --repo-path /checkout \
+  --project Workspace --scip-index .scip-cache/index.scip \
+  --scip-project-prefix packages/studio
+```
+The output is an ephemeral native DI graph projection; successful source/TypeChecker
+corroboration is resolved code evidence, but normal hosted `scan_graph` cannot
+claim to have run an external SCIP producer or published its output into W.
 
 TypeScript/JavaScript analysis currently provides:
 
