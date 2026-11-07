@@ -27,20 +27,21 @@ export function dynamic(value: any) { return value.run(); }
       'commit', '-m', 'typechecker fixture']);
     const first = await buildLocalGraph(root, 'typechecker-fixture', 'W');
     const bindings = first.edges.filter(edge => edge.strategy === 'typescript-checker-symbol.v1'
-      && edge.kind === 'resolves_to' && edge.status === 'resolved');
-    const resolved = bindings.map(edge => {
-      const reference = first.nodes.find(node => node.id === edge.from);
-      const target = first.nodes.find(node => node.id === edge.to);
-      return { reference, target };
-    });
+      && edge.kind === 'references-symbol' && edge.status === 'resolved');
+    const resolved = bindings.map(edge => ({
+      from: first.nodes.find(node => node.id === edge.from),
+      target: first.nodes.find(node => node.id === edge.to),
+      location: edge.evidence[0],
+    }));
     assert.equal(resolved.length, 2, 'only exact First/Second method calls should be compiler-bound');
-    assert.deepEqual(resolved.map(item => [item.reference?.locator, item.target?.locator]).sort(), [
+    assert.deepEqual(resolved.map(item => [item.location, item.target?.locator]).sort(), [
       ['consumer.ts:2:49', 'types.ts:2'],
       ['consumer.ts:3:52', 'types.ts:5'],
     ].sort());
-    assert.ok(resolved.every(item => item.reference?.kind === 'compiler-call-reference'
-      && item.target?.name === 'run'));
-    assert.equal(resolved.some(item => item.reference?.locator.startsWith('consumer.ts:4:')), false);
+    assert.ok(resolved.every(item => item.from?.kind === 'file' && item.target?.name === 'run'));
+    assert.equal(resolved.some(item => item.location?.startsWith('consumer.ts:4:')), false);
+    assert.equal(first.nodes.some(node => node.kind === 'compiler-call-reference'), false,
+      'compiler evidence must not create competing selectable symbol identities');
     assert.equal(first.edges.some(edge => edge.strategy === 'typescript-checker-symbol.v1'
       && edge.kind === 'calls'), false, 'static type binding is not runtime execution proof');
     const again = await buildLocalGraph(root, 'typechecker-fixture', 'W');

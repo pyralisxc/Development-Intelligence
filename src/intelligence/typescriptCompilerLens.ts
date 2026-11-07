@@ -1,8 +1,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 import type { GraphNode, GraphEdge } from '../types.js';
-import { observation, resolution } from './model.js';
-import { stableHash } from '../util/hash.js';
+import { resolution } from './model.js';
 
 /**
  * Optional, bounded compiler-symbol lens over the existing graph.
@@ -113,24 +112,13 @@ export function compilerTypeScriptReferences(input: {
                 const target = targets[0]!;
                 const start = source.getLineAndCharacterOfPosition(node.expression.getStart(source));
                 const locator = `${file}:${start.line + 1}:${start.character + 1}`;
-                const reference = observation({
-                  id: `compiler-call-reference:${stableHash([TYPESCRIPT_COMPILER_LENS, file, node.expression.getStart(source), target.id])}`,
-                  sourceId: `repo:${file}`, kind: 'compiler-call-reference', locator,
-                  name: node.expression.getText(source).slice(0,120),
-                  value: { target: target.id, declarationFile: found.file, binding: 'static-compiler-signature' },
-                  raw: node.expression.getText(source).slice(0,120),
-                  tags: ['source-compiler', 'not-runtime-execution'],
-                  layer: 'structural', checkpoint: false,
-                });
-                resultNodes.push(reference);
+                // Preserve existing DI structural identities: do not introduce a
+                // same-name call-reference node that can displace a declaration
+                // in general natural-language and parity query selection.
                 resultEdges.push(resolution({
-                  from: owner.id, to: reference.id, kind: 'contains',
+                  from: owner.id, to: target.id, kind: 'references-symbol',
                   strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved',
-                  evidence: [locator], layer: 'structural', checkpoint: false,
-                }), resolution({
-                  from: reference.id, to: target.id, kind: 'resolves_to',
-                  strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved',
-                  evidence: [locator, `${found.file}:${found.line}`],
+                  evidence: [locator, `${found.file}:${found.line}`, 'TypeScript TypeChecker resolved static signature; runtime dispatch not established'],
                   layer: 'structural', checkpoint: false,
                 }));
                 resolvedBindings += 1;

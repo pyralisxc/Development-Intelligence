@@ -18,7 +18,7 @@ export const SOURCE_ANALYSIS_SUPPORT = [
   {
     technology: 'TypeScript/JavaScript',
     extensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
-    precision: 'declarations, containment, modules, imports, re-exports, provable calls, component callback bindings, dynamic HTTP targets, state, navigation, RPC and selected representation evidence; bounded TypeScript compiler signatures additionally resolve unique tracked cross-file call sites to declaration symbols (static binding, not runtime dispatch)',
+    precision: 'declarations, containment, modules, imports, re-exports, provable calls, component callback bindings, dynamic HTTP targets, state, navigation, RPC and selected representation evidence; bounded TypeScript compiler signatures add exact-callsite, file-to-declaration reference evidence for unique tracked cross-file symbols (static binding, not runtime dispatch)',
   },
   {
     technology: 'C#',
