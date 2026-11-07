@@ -393,7 +393,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
       }),
       answerStatus: projected.status,
       claims: [resultClaim], realization: null, reach: null,
-      findings: [], findingSummary: summarizeFindings(graph, []),
+      findings: [], findingSummary: summarizeFindings(graph, [], null),
       hypotheses: [], orientation: null, coverage: graphCoverage(graph),
       sourceRelationship: projected,
       note: 'Exact source and symbol routing uses existing resolved graph relationships. '
