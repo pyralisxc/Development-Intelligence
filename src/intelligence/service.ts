@@ -879,6 +879,7 @@ async function scanRuntimeUrl(project: string, urlText: string, repositoryRevisi
         observedAt: deployment.observedAt,
         evidenceClass: deployment.evidenceClass,
       },
+      raw: `deployment ${deployment.deploymentId} at source ${deployment.revision}`,
       layer: 'representation', checkpoint: false,
     };
     const provenance = resolution({
