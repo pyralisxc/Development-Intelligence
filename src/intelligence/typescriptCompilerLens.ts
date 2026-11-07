@@ -9,7 +9,9 @@ import { resolution } from './model.js';
  * No independent symbol authority or persisted TypeScript program is created.
  */
 export const TYPESCRIPT_COMPILER_LENS = 'typescript-checker-symbol.v1';
-const MAX_FILES = 600;
+// Wider source-only compiler analysis is permitted when the real file/byte budgets fit.
+// The binding budget remains independent, so incomplete precision is disclosed.
+export const TYPESCRIPT_COMPILER_MAX_FILES = 1600;
 const MAX_SOURCE_BYTES = 12 * 1024 * 1024;
 const MAX_BINDINGS = 3000;
 const DECLARATION_KINDS = new Set(['function', 'method', 'declaration', 'constructor']);
@@ -74,7 +76,7 @@ export function compilerTypeScriptReferences(input: {
   const empty = (state: CompilerBindingResult['state'], reason: string | null): CompilerBindingResult =>
     ({ nodes: [], edges: [], sourceFiles: relatives.length, resolvedBindings: 0, state, reason });
   if (!relatives.length) return empty('not-applicable', null);
-  if (relatives.length > MAX_FILES
+  if (relatives.length > TYPESCRIPT_COMPILER_MAX_FILES
     || [...input.sourceTexts.values()].reduce((sum, content) => sum + Buffer.byteLength(content, 'utf8'), 0) > MAX_SOURCE_BYTES) {
     return empty('bounded-out', 'TypeScript compiler lens exceeded its bounded source-file or byte limit');
   }
