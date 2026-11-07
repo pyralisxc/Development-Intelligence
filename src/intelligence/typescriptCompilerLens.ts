@@ -34,9 +34,11 @@ function relativeFile(root: string, name: string): string | null {
 
 function declarationLocation(
   root: string,
-  declaration: ts.SignatureDeclaration,
+  declaration: ts.SignatureDeclaration | ts.JSDocSignature,
   tracked: ReadonlySet<string>,
 ): NamedLocation | null {
+  // Documentation-only signatures do not establish a tracked implementation.
+  if (ts.isJSDocSignature(declaration)) return null;
   const source = declaration.getSourceFile();
   const file = relativeFile(root, source.fileName);
   if (!file || !tracked.has(file)) return null;
