@@ -4,6 +4,7 @@ import { graphQueryContext } from './queryContext.js';
 import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
 import { projectOrientation } from './orientation.js';
+import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer } from './sourceReferenceQuestion.js';
 
 export type AssessmentStatus = 'supported' | 'contradicted' | 'unproven' | 'indeterminate';
 export type RealizationFacet = 'human' | 'agent' | 'transport' | 'implementation' | 'persistence' | 'provider';
@@ -364,6 +365,41 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
 }
 
 export function assessGraph(graph: IntelligenceGraph, question: string, requiredFacets: RealizationFacet[] = []): Record<string, unknown> {
+  const explicitReference = parseSourceReferenceQuestion(question);
+  if (explicitReference) {
+    const projected = sourceReferenceProjection(graph, explicitReference);
+    const context = graphQueryContext(graph);
+    const sourceNode = projected.sourceNodeId ? context.node(projected.sourceNodeId) : undefined;
+    const targetNode = projected.targetNodeId ? context.node(projected.targetNodeId) : undefined;
+    const nodes = [sourceNode, targetNode].filter((node): node is GraphNode => Boolean(node));
+    const claimProof = proof(graph, 'source-reference.' + projected.reason, nodes,
+      projected.edges, 'existence');
+    const resultClaim = claim({
+      type: 'relationship-resolved',
+      status: projected.status,
+      statement: sourceReferenceAnswer(projected),
+      subjectId: sourceNode?.id ?? null,
+      ...(targetNode ? { objectId: targetNode.id } : {}),
+      proof: claimProof,
+    });
+    return {
+      project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
+      analyzerVersion: graph.analyzerVersion, question,
+      mode: 'source-relationship',
+      interpretedSubject: projected.symbol, ambiguous: projected.reason.startsWith('ambiguous'),
+      candidates: projected.targetCandidates.map(id => {
+        const node = context.node(id);
+        return { id, name: node?.name ?? id, kind: node?.kind ?? 'unknown' };
+      }),
+      answerStatus: projected.status,
+      claims: [resultClaim], realization: null, reach: null,
+      findings: [], findingSummary: summarizeFindings(graph, []),
+      hypotheses: [], orientation: null, coverage: graphCoverage(graph),
+      sourceRelationship: projected,
+      note: 'Exact source and symbol routing uses existing resolved graph relationships. '
+        + 'Unobserved bindings remain unproven, never proof of absent runtime behavior.',
+    };
+  }
   const lower = question.toLowerCase();
   const mode = /\b(?:rule|ruled)\s+out\b/u.test(lower)
     ? 'rule-out'

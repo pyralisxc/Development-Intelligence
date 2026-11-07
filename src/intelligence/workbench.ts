@@ -6,6 +6,7 @@ import { getCodeSnippet, searchCode } from './code.js';
 import { currentGraph } from './service.js';
 import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLens, searchGraph, traceGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
+import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer } from './sourceReferenceQuestion.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
@@ -2657,6 +2658,26 @@ export async function queryWorkbench(input: {
     ...(input.sourceId ? { sourceId: input.sourceId } : {}),
     ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
   });
+  const sourceReference = !input.sourceId ? parseSourceReferenceQuestion(text) : null;
+  if (sourceReference) {
+    const graph = await currentGraph(input.project, input.ref, input.graphId);
+    const result = sourceReferenceProjection(graph, sourceReference, input.scope);
+    return {
+      intent: 'source-relationship',
+      subject: result.targetNodeId ? { id: result.targetNodeId, name: result.symbol } : null,
+      routing: {
+        tool: 'canonical-graph-relationships', projection: 'source-reference',
+        questionPlan: { ...plan, lane: 'source-relationship', proofMode: 'evidence',
+          subjectStrategy: 'entity-or-query' },
+        targetResolution: { strategy: 'exact-source-and-symbol', mode: 'source-relationship',
+          query: result.symbol, scope: result.sourcePath, ambiguous: result.reason.startsWith('ambiguous') },
+      },
+      answer: sourceReferenceAnswer(result),
+      answerClassification: result.status === 'supported' ? 'established-bounded' : 'evidence-only',
+      result: { ...result, graphId: graph.graphId, revision: graph.repositoryRevision,
+        analyzerVersion: graph.analyzerVersion },
+    };
+  }
   const target = await resolveInvestigationTarget(input, text, plan);
   const result = await (async (): Promise<Record<string, unknown>> => {
 
