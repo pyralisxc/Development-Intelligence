@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { clearGraphCache } from '../src/intelligence/service.js';
 import { callTool } from '../src/mcp.js';
+import { parseSourceReferenceQuestion } from '../src/intelligence/sourceReferenceQuestion.js';
 
 test('ordinary source-reference questions reuse exact compiler graph proof in investigate and query_intelligence', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-source-reference-'));
@@ -48,6 +49,8 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
     clearGraphCache();
 
     const selected = { project: 'SourceReferenceFixture', ref: 'commit:' + sha };
+    assert.equal(parseSourceReferenceQuestion('Which functions does src/http.ts call?'), null,
+      'broad file traversal questions must retain their existing routes');
     const question = 'Where in src/http.ts is provideAnswer referenced or called, and which exact declaration does it resolve to?';
     const direct = await callTool('search_graph',
       { ...selected, query: 'provideAnswer', limit: 100 }) as any;
@@ -112,6 +115,11 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
     assert.equal(outOfScope.result.status, 'unproven');
     assert.equal(outOfScope.result.reason, 'out-of-scope');
     assert.equal(outOfScope.result.coverage.absenceProven, false);
+    const facetRequest = await callTool('query_intelligence', {
+      ...selected, question, requiredFacets: ['provider'],
+    }) as any;
+    assert.notEqual(facetRequest.mode, 'source-relationship',
+      'caller-provided realization requirements must not be silently dropped');
     const again = await callTool('query_intelligence', { ...selected, question }) as any;
     assert.deepEqual(again.claims.map((c: any) => c.id), assessed.claims.map((c: any) => c.id),
       'same question, source revision and analyzer must preserve proof identity');

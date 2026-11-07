@@ -1,4 +1,4 @@
-import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
+import type { GraphEdge, IntelligenceGraph } from '../types.js';
 import { graphQueryContext } from './queryContext.js';
 
 /**
@@ -50,6 +50,9 @@ export function parseSourceReferenceQuestion(text: string): ExplicitSourceRefere
   for (const file of paths) rest = rest.split(file).join(' ');
   const symbols = [...new Set((rest.match(/[A-Za-z_$][A-Za-z0-9_$]*/gu) ?? [])
     .filter(token => !COMMON.has(token.toLowerCase())))].sort();
+  // Questions about everything a file calls are broad traversal requests,
+  // not exact-source/symbol identity requests. Preserve the ordinary route.
+  if (!symbols.length) return null;
   return { paths, symbols };
 }
 

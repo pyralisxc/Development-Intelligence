@@ -365,7 +365,9 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
 }
 
 export function assessGraph(graph: IntelligenceGraph, question: string, requiredFacets: RealizationFacet[] = []): Record<string, unknown> {
-  const explicitReference = parseSourceReferenceQuestion(question);
+  // Caller-owned realization facet expectations retain their existing assessment
+  // path; source-reference proof alone cannot establish those facets.
+  const explicitReference = requiredFacets.length ? null : parseSourceReferenceQuestion(question);
   if (explicitReference) {
     const projected = sourceReferenceProjection(graph, explicitReference);
     const context = graphQueryContext(graph);
