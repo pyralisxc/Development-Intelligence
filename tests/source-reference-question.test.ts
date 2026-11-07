@@ -43,6 +43,14 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
       + " } from './batchFunctions.js';\n"
       + 'export function manyCalls(): number { return '
       + Array.from({ length: 26 }, (_, index) => 'batch' + index + '()').join(' + ') + '; }\n');
+    await fs.writeFile(path.join(source, 'src', 'left.ts'),
+      'export function duplicateName(): number { return 1; }\n');
+    await fs.writeFile(path.join(source, 'src', 'right.ts'),
+      'export function duplicateName(): number { return 2; }\n');
+    await fs.writeFile(path.join(source, 'src', 'sameNameCalls.ts'),
+      "import { duplicateName as left } from './left.js';\n"
+      + "import { duplicateName as right } from './right.js';\n"
+      + 'export function both() { return left() + right(); }\n');
     await runChecked('git', ['-C', source, 'add', '.']);
     await runChecked('git', ['-C', source,
       '-c', 'user.email=di@example.invalid', '-c', 'user.name=DI Test',
@@ -210,6 +218,16 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
       && target.declaration.startsWith('src/batchFunctions.ts:')));
     assert.equal(bounded.result.direction, 'outbound');
     assert.match(bounded.answer, /not an exhaustive callee inventory/u);
+    const distinctDeclarations = await callTool('investigate', {
+      ...selected, question: 'Which functions does src/sameNameCalls.ts call?',
+    }) as any;
+    const duplicates = distinctDeclarations.result.targets.filter(
+      (target: any) => target.name === 'duplicateName');
+    assert.equal(duplicates.length, 2,
+      'same-name functions in different source files must remain distinct declarations');
+    assert.equal(new Set(duplicates.map((target: any) => target.id)).size, 2);
+    assert.ok(duplicates.some((target: any) => target.declaration.startsWith('src/left.ts:')));
+    assert.ok(duplicates.some((target: any) => target.declaration.startsWith('src/right.ts:')));
     const sameBounded = await callTool('query_intelligence',
       { ...selected, question: boundedQuestion }) as any;
     assert.equal(sameBounded.fileOutbound.totalTargets, 26);
@@ -218,6 +236,20 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
     assert.ok(sameBounded.claims[0].proof.edgeIds.length > 0,
       'the compact assessment must retain actual accepted source proof');
     const graph = await currentGraph(selected.project, selected.ref);
+    // Explicitly inject an unproven source relationship into an immutable
+    // independent fixture; the canonical projection must not upgrade it.
+    const unprovenGraph = { ...graph, edges: [...graph.edges, {
+      id: 'fixture:candidate-outbound', from: 'file:src/noCalls.ts',
+      to: exact.to, kind: 'references-symbol' as const,
+      status: 'candidate' as const, confidence: null, strategy: 'fixture',
+      layer: 'structural' as const, checkpoint: false, evidenceIds: [],
+      evidence: ['src/noCalls.ts:2:1', 'src/impl.ts:1'],
+    }] };
+    const unknownCandidate = fileOutboundProjection(unprovenGraph, { paths: ['src/noCalls.ts'] });
+    assert.equal(unknownCandidate.status, 'unproven');
+    assert.equal(unknownCandidate.totalTargets, 0);
+    assert.equal(unknownCandidate.edges.length, 0);
+    assert.ok(unknownCandidate.unprovenRelationships >= 1);
     const slice = fileOutboundProjection(graph, { paths: ['src/manyCalls.ts'] }, undefined, 3);
     assert.equal(slice.totalTargets, 26);
     assert.equal(slice.returnedTargets, 3);

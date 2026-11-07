@@ -237,9 +237,15 @@ export function fileOutboundProjection(
   if (!ordered.length) return { ...empty('no-resolved-outbound'), unlocatedRelationships, unprovenRelationships };
   const maxTargets = Math.max(1, Math.min(20, Math.trunc(limit) || 20));
   const shown = ordered.slice(0, maxTargets);
-  const edges = shown.flatMap(target => target.edges.slice().sort((a, b) => a.id.localeCompare(b.id)).slice(0, 3));
+  // A compiler-corroborated callsite must remain in the bounded proof even
+  // when several parser-level call observations share the same declaration.
+  const bestEdges = (edges: GraphEdge[]) => edges.slice().sort((a, b) =>
+    Number(b.kind === 'references-symbol' && b.strategy === 'typescript-checker-symbol.v1')
+    - Number(a.kind === 'references-symbol' && a.strategy === 'typescript-checker-symbol.v1')
+    || a.id.localeCompare(b.id)).slice(0, 3);
+  const edges = shown.flatMap(target => bestEdges(target.edges));
   const targets: FileOutboundTarget[] = shown.map(target => {
-    const boundedEdges = target.edges.slice().sort((a, b) => a.id.localeCompare(b.id)).slice(0, 3);
+    const boundedEdges = bestEdges(target.edges);
     return {
       id: target.id, name: target.name, kind: target.kind, declaration: target.declaration,
       callsites: [...new Set(boundedEdges.map(edge => exactSourceCallsite(path, edge)).filter(
