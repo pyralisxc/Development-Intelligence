@@ -1292,9 +1292,11 @@ export function planInvestigationQuestion(input: {
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
   // Project-level "what does this codebase do" questions must inspect the
-  // current graph even if the prose also mentions semantic acceptance/history.
-  // Explicit review/governance questions still take the lifecycle lane.
-  else if (repositorySemanticOrientationIntent) lane = 'orientation';
+  // current graph even if the prose mentions historic semantic acceptance.
+  // A question explicitly about a release gate, enrollment or promotion
+  // baseline remains governance, never a description of current code.
+  else if (repositorySemanticOrientationIntent
+    && !/\b(?:baseline|enroll(?:ed|ment|ing)?|gate|promot(?:e|ed|ion|ing)?)\b/u.test(lower)) lane = 'orientation';
   else if (semanticLifecycleIntent) lane = 'semantic-lifecycle';
   else if (implementationExplorationIntent(text)) lane = 'implementation-explanation';
   else if (/\b(what changed|changes?|diff|delta)\b/u.test(lower)) lane = 'change';
