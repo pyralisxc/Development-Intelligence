@@ -293,7 +293,7 @@ function databaseEvidence(source: TechnicalSourceConfig, data: unknown, observed
         locator, name: qualified + '.' + name,
         value: { table: qualified, column: name,
           dataType: textField(column, 'data_type', 'type', 'format'),
-          nullable: typeof column.nullable === 'boolean' ? column.nullable : null },
+          nullable: typeof column?.nullable === 'boolean' ? column.nullable : null },
         observedAt, revision,
       }));
       relationships.push(relationship({
