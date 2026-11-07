@@ -1,5 +1,7 @@
 import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
+import { buildLocalGraph } from './intelligence/local.js';
+import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
 
 const command = process.argv[2];
 const arg = (name: string): string | undefined => {
@@ -15,6 +17,7 @@ const testClaimCatalogFlag = process.argv.includes('--test-claim-catalog');
 const testClaimCatalogPath = arg('--test-claim-catalog');
 const testClaimReportPath = arg('--test-claim-report-path');
 const producerCommit = arg('--producer-commit');
+const scipIndexPath = arg('--scip-index');
 
 async function main(): Promise<void> {
   if (parityContractFlag && !parityContractPath) throw new Error('--parity-contract requires a path');
@@ -22,6 +25,7 @@ async function main(): Promise<void> {
   if (testClaimCatalogFlag && !testClaimCatalogPath) throw new Error('--test-claim-catalog requires a path');
   if (testClaimCatalogFlag && command !== 'analyze') throw new Error('--test-claim-catalog is supported only for analyze');
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
+  if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
   if (command === 'analyze') {
     const parityContract = parityContractPath ? await readLocalParityContract(root, parityContractPath) : undefined;
     const testClaimCatalog = testClaimCatalogPath ? await readLocalTestClaimCatalog(root, testClaimCatalogPath) : undefined;
@@ -29,6 +33,23 @@ async function main(): Promise<void> {
     const result = await analyzeLocalGraph(root, project, parityContract, testClaimCatalog, testClaimReportPath ? { path: testClaimReportPath, producerCommit: producerCommit! } : undefined);
     console.log(JSON.stringify(result, null, 2));
     if (result.valid !== true) process.exitCode = 1;
+  } else if (command === 'scip-evidence') {
+    if (!scipIndexPath) throw new Error('scip-evidence requires --scip-index');
+    const canonical = await buildLocalGraph(root, project);
+    const projection = await projectLocalScipEvidence({
+      root, indexPath: scipIndexPath, graph: canonical,
+    });
+    console.log(JSON.stringify({
+      mode: 'ephemeral-scip-evidence',
+      project: canonical.project,
+      revision: canonical.repositoryRevision,
+      graphId: projection.graph.graphId,
+      canonicalGraphId: canonical.graphId,
+      index: projection.index,
+      counts: projection.counts,
+      sampleEdges: projection.graph.edges.slice(canonical.edges.length, canonical.edges.length + 12),
+      policy: projection.policy,
+    }, null, 2));
   } else if (command === 'catalog') {
     const sourcePrefixes = args('--source-prefix');
     const sourceSuffixes = args('--source-suffix');
@@ -52,7 +73,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     if (result.current !== true) process.exitCode = 1;
   } else {
-    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH]');
+    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip]');
     process.exitCode = 2;
   }
 }
