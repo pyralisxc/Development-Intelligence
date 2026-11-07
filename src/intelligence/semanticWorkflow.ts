@@ -665,6 +665,9 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       excludedCandidateScopes: {
         ...completeCurrentTruth.exclusions.excludedCandidateScopes,
         items: completeCurrentTruth.exclusions.excludedCandidateScopes.items.slice(0, limit),
+        returned: Math.min(limit, completeCurrentTruth.exclusions.excludedCandidateScopes.items.length),
+        truncated: completeCurrentTruth.exclusions.excludedCandidateScopes.truncated
+          || completeCurrentTruth.exclusions.excludedCandidateScopes.items.length > limit,
       },
     },
     population: {
