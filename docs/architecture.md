@@ -342,6 +342,8 @@ No provider-specific graph database query language or public cache-management to
 
 Runtime URLs must use operator-allowlisted HTTP(S) origins. Redirects are revalidated. Authenticated redirects remain on the originally requested origin. Requests are GET-only and bounded by timeout/size. Credentials come from server-side environment-backed headers and never enter accepted checkpoints.
 
+External technical-source data is sanitized before constructing normalized evidence, graph IDs or outward query results. Arbitrary provider row contents, nested secrets, request/response bodies, credentials and personal identifiers are not returned by default; the envelope reports redaction/truncation counts and retains bounded technical metadata only. Source discovery exposes provider origins rather than credential-bearing query/path details. Such observations remain ephemeral, never accepted graph truth.
+
 ## Human visualization
 
 `/graph` is a human client of the same graph contracts agents use. It accepts canonical project/ref context or an explicit runtime `graphId`.
