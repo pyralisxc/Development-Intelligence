@@ -374,7 +374,9 @@ function snapshotState(source: TechnicalSourceConfig, response: Response, data: 
     ? 'unknown'
     : ageMs <= source.freshnessMs ? 'fresh' : 'stale';
   const revision = sourceRevision(data);
-  const snapshotId = response.headers.get('etag')
+  const etag = response.headers.get('etag');
+  const safeEtag = etag ? sanitizeExternalPayload(etag).value as string : null;
+  const snapshotId = safeEtag
     ?? revision
     ?? textField(data, 'snapshotId', 'snapshot', 'id')
     ?? null;
@@ -460,7 +462,7 @@ export async function queryTechnicalSource(input: {
       signal: controller.signal,
     });
     const body = await readBounded(response);
-    const contentType = response.headers.get('content-type') ?? '';
+    const contentType = (sanitizeExternalPayload(response.headers.get('content-type') ?? '').value as string);
     let data: unknown = body;
     if (contentType.includes('application/json')) {
       try { data = body ? JSON.parse(body) : null; } catch { data = body; }

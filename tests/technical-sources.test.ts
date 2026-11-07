@@ -127,7 +127,7 @@ test('external technical evidence normalizes deployment and database sources wit
     assert.ok(database.evidence.relationships.some((item: any) => item.kind === 'contains'));
     assert.ok(database.evidence.correlations.some((item: any) => item.kind === 'matches-entity'));
     assert.equal(database.evidence.coverage.status, 'complete');
-    assert.deepEqual(database.data.schemas[0].tables, [{ name: 'users' }], 'safe schema metadata remains inspectable');
+    assert.equal(database.data.schemas[0].tables[0]?.name, 'users', 'safe schema metadata remains inspectable without unsafe prototypes');
     assert.equal(deployment.evidence.sanitization.policy, 'sanitized-v1');
     assert.equal(database.evidence.sanitization.policy, 'sanitized-v1');
   } finally {

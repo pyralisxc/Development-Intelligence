@@ -11,7 +11,8 @@ export interface SanitizedExternalPayload { value: unknown; redaction: Redaction
 
 const SECRET_KEY = /(?:password|passwd|passphrase|secret|token|api[_-]?key|authorization|cookie|credential|private[_-]?key|access[_-]?key|refresh[_-]?key|session[_-]?(?:id|key|token)?|bearer|service[_-]?role|client[_-]?secret)/iu;
 const PERSONAL_KEY = /(?:email|phone|personal|owner[_-]?id|account[_-]?id|user[_-]?id|device[_-]?id|ip[_-]?address|remote[_-]?addr)/iu;
-const UNSAFE_CONTENT_KEY = /(?:^|[_-])(?:body|headers?|payload|raw|stack|env(?:ironment)?|query|params?|request|response|rows?|record(?:s|values)?)($|[_-])/iu;
+// Case-insensitive substring catches camelCase provider keys; exact environment remains a safe deployment label.
+const UNSAFE_CONTENT_KEY = /(?:body|headers?|payload|stack|query|params?|request|response|rows?|records?|rowValues|environmentVariables|(?:^|[_-])(?:raw|env)(?:$|[_-]))/iu;
 const SECRET_VALUE = /(?:\bBearer\s+\S+|\b(?:sk[-_](?:live|test|proj)[-_]|sb_secret_|eyJ[A-Za-z0-9_-]{15})[A-Za-z0-9._~+/-]{8,}|\b(?:password|token|secret|api[_-]?key)\s*[:=]\s*\S+)/giu;
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu;
 const IPV4 = /\b(?:\d{1,3}\.){3}\d{1,3}\b/gu;
