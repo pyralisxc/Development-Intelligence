@@ -795,6 +795,7 @@ test('question planning separates lane, subject strategy, depth, and proof burde
   const cases = [
     { question: 'How is the Workbench interface implemented in source?', lane: 'interface', subjectStrategy: 'scope-or-entity' },
     { question: 'Where in source is accepted semantic meaning persisted and evolved?', lane: 'semantic-lifecycle', subjectStrategy: 'repository' },
+    { question: 'What does this repository do? Compare current semantic understanding with prior acceptance records.', lane: 'orientation', subjectStrategy: 'scope-or-entity' },
     { question: 'Are there source-backed implementation gaps or contradictions in semantic review, authority, and promotion workflow?', lane: 'repository-audit', subjectStrategy: 'repository' },
     { question: 'How does the adaptive query planner choose between indexed and sharded reads, and what evidence exposes that choice?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'What interface and interaction projection capabilities already exist?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
