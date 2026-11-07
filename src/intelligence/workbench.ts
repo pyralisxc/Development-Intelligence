@@ -10,7 +10,8 @@ import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from '.
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
-import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
+import { loadSemanticAuthority } from './semanticAuthorityStore.js';
+import { deriveCurrentSemanticTruth } from './semanticCurrentTruth.js';
 import { assessSemanticCurrentEvidence } from './semanticEvidenceRealization.js';
 import { graphRecordWeight } from './capacity.js';
 import { repositoryAudit } from './repositoryAudit.js';
@@ -1342,258 +1343,145 @@ async function repositorySemanticUnderstanding(
   depth: SemanticQueryDepth,
   orientationReuse?: OrientationQueryReuse,
 ): Promise<Record<string, unknown>> {
-  const authority = await loadSemanticAuthority(project);
-  const accepted = latestAcceptedMeanings(authority.ledger);
-  let acceptedItems = accepted.map(meaning => ({
-    meaningId: meaning.meaningId,
-    name: meaning.proposal.name,
-    description: meaning.proposal.description,
-    kind: meaning.proposal.kind,
-    scope: meaning.scope,
-    acceptedBy: meaning.acceptance?.actor ?? null,
-    verified: Boolean(meaning.verification),
-    verification: meaning.verification
-      ? { actor: meaning.verification.actor, evidenceCount: meaning.verification.evidenceIds.length }
-      : null,
+  // The selected exact-revision graph is the sole input to present meaning.
+  // A prior review ledger, acceptance event, or recorded interpretation must
+  // never outrank the current code (including for historical Git selectors).
+  const truth = orientationReuse
+    ? (orientationReuse.currentSemanticTruth ??= deriveCurrentSemanticTruth(graph))
+    : deriveCurrentSemanticTruth(graph);
+  const proven = truth.provenTechnicalScopes;
+  const observed = truth.declaredConcepts.map(node => ({
+    id: node.id, name: node.name, kind: node.kind, locator: node.locator,
+    declared: true, evidenceCount: node.evidenceIds.length,
   }));
-
-  const observed = graph.nodes
-    .filter(node => node.layer === 'semantic' && ['feature', 'capability', 'domain', 'surface'].includes(node.kind))
-    .sort((a, b) =>
-      Number((b.evidenceIds ?? []).length) - Number((a.evidenceIds ?? []).length)
-      || a.kind.localeCompare(b.kind)
-      || displayName(a).localeCompare(displayName(b)));
-  const observedItems = observed.map(node => ({
-    id: node.id,
-    name: displayName(node),
-    kind: node.kind,
-    locator: node.locator,
-    declared: Boolean(node.tags?.includes('declared')),
-    evidenceCount: (node.evidenceIds ?? []).length,
-  }));
-
-  const candidateLimit = depth === 'exhaustive'
-    ? 1000
-    : depth === 'expanded'
-      ? Math.min(Math.max(limit * 6, 64), 250)
-      : Math.min(Math.max(limit * 2, 24), 100);
-  // Build the exact-revision candidate universe once per sequential request;
-  // projecting bounded prefixes preserves bootstrap ordering and capacity.
-  const allCandidates = orientationReuse
-    ? (orientationReuse.semanticCensus ??= bootstrapSemanticCandidates(graph, { limit: 1000 }))
-    : null;
-  const bootstrap = allCandidates
-    ? {
-        ...allCandidates,
-        candidates: allCandidates.candidates.slice(0, candidateLimit),
-        capacity: {
-          ...allCandidates.capacity,
-          requestedLimit: candidateLimit,
-          returnedCandidateCount: Math.min(candidateLimit, allCandidates.candidates.length),
-          truncated: Math.min(candidateLimit, allCandidates.candidates.length) < allCandidates.capacity.eligibleCandidateCount,
-          exhausted: Math.min(candidateLimit, allCandidates.candidates.length) === allCandidates.capacity.eligibleCandidateCount,
-        },
-      }
-    : bootstrapSemanticCandidates(graph, { limit: candidateLimit });
-  const audit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
-  const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
-  // Accepted meaning is durable history, while realization belongs to the
-  // exact inspected graph. Recheck the full candidate universe so a bounded
-  // projection cannot misclassify an omitted accepted meaning as unsupported.
-  const acceptedCensus = accepted.length
-    ? allCandidates ?? (bootstrap.capacity.exhausted ? bootstrap : bootstrapSemanticCandidates(graph, { limit: 1000 }))
-    : bootstrap;
-  const acceptedAudit = acceptedCensus === bootstrap
-    ? audit
-    : auditSemanticCandidates(graph, acceptedCensus, { limit: acceptedCensus.candidates.length });
-  const acceptedAuditById = new Map(acceptedAudit.items.map(item => [item.candidateId, item]));
-  const acceptedRealizations = accepted.map(meaning =>
-    assessSemanticCurrentEvidence(graph, meaning, acceptedCensus.candidates, acceptedAuditById));
-  acceptedItems = acceptedItems.map((item, index) => ({
-    ...item, currentEvidence: acceptedRealizations[index] ?? null,
-  }));
-  const currentSourceSupportedCount = acceptedRealizations.filter(item => item.sourceStatus === 'supported').length;
-  const currentMachineTechnicalProofCount = acceptedRealizations.filter(item => item.currentlyProvenTechnicalScope === true).length;
-  const sourceUnprovenCount = accepted.length - currentSourceSupportedCount;
-  const derivedItems = bootstrap.candidates
-    .map(candidate => {
-      const assessment = auditById.get(candidate.id);
-      const observedMatch = observed.find(node => normalizedMention(displayName(node)) === normalizedMention(candidate.proposal.name));
-      return {
-        id: candidate.id,
-        name: candidate.proposal.name,
-        description: candidate.proposal.description,
-        kind: candidate.proposal.kind,
-        scope: candidate.scope,
-        evidenceFamilies: candidate.provenance.evidenceFamilies,
-        evidenceFamilyCount: candidate.support.evidenceFamilyCount,
-        fileCount: candidate.support.fileCount,
-        resolvedEdgeCount: candidate.support.resolvedEdgeCount,
-        coreness: assessment?.coreness.classification ?? 'supporting-candidate',
-        factuality: assessment?.factuality.status ?? 'needs-review',
-        observedSemanticMatch: observedMatch?.id ?? null,
-        authority: {
-          accepted: false,
-          reviewed: false,
-          persisted: false,
-          proofEligible: false,
-          requiresExplicitReview: true,
-        },
-      };
-    })
-    .sort((a, b) =>
+  const derivedAll = truth.interpretations
+    .map(item => ({
+      id: item.candidateId, name: item.name, description: item.description,
+      kind: item.proposedKind, scope: item.scope,
+      evidenceFamilies: item.evidenceFamilies,
+      evidenceFamilyCount: item.evidenceFamilies.length,
+      fileCount: item.sourceFileCount,
+      resolvedEdgeCount: item.resolvedRelationships,
+      coreness: item.coreness, factuality: item.factuality,
+      sourceStatus: item.sourceStatus,
+      technicalScopeProven: item.technicalScopeProven,
+      proofBlockers: item.proofBlockers,
+      authority: {
+        source: 'selected-graph', acceptedFromHistory: false,
+        technicalEvidenceUsableWithoutReview: true,
+        productIntentProven: false, persisted: false,
+      },
+    }))
+    .sort((a,b) =>
       Number(b.coreness === 'core-candidate') - Number(a.coreness === 'core-candidate')
       || b.evidenceFamilyCount - a.evidenceFamilyCount
       || b.fileCount - a.fileCount
-      || a.name.localeCompare(b.name)
-      || a.scope.localeCompare(b.scope));
-
-  const coreDerived = derivedItems.filter(item => item.coreness === 'core-candidate' && item.factuality === 'supported');
-  const verifiedCount = accepted.filter(meaning => Boolean(meaning.verification)).length;
-  const primarySource = acceptedItems.length
-    ? 'accepted-authority'
-    : coreDerived.length || derivedItems.length
-      ? 'derived-candidates'
-      : observedItems.length
-        ? 'observed-semantic-graph'
-        : 'structural-only';
-
-  const primaryItems = primarySource === 'accepted-authority'
-    ? acceptedItems
-    : primarySource === 'derived-candidates'
-      ? (coreDerived.length ? coreDerived : derivedItems)
-      : primarySource === 'observed-semantic-graph'
-        ? observedItems
-        : [];
-
-  let summary: string;
-  if (primarySource === 'accepted-authority') {
-    const features = accepted.filter(meaning => meaning.proposal.kind === 'feature').map(meaning => meaning.proposal.name);
-    const capabilities = accepted.filter(meaning => meaning.proposal.kind === 'capability').map(meaning => meaning.proposal.name);
-    const allNames = accepted.map(meaning => meaning.proposal.name);
-    const lead = features.length
-      ? `${project} is represented by accepted semantic feature${features.length === 1 ? '' : 's'} ${semanticNameList(features, 3)}.`
-      : `DI's accepted semantic authority for ${project} includes ${semanticNameList(allNames, 5)}.`;
-    const capabilitySentence = capabilities.length
-      ? ` Connected accepted capabilities include ${semanticNameList(capabilities, 6)}.`
-      : '';
-    summary = `${lead}${capabilitySentence} ${accepted.length} accepted meaning${accepted.length === 1 ? '' : 's'} are recorded; ${verifiedCount} have separate evidence verification.`
-      + (sourceUnprovenCount
-        ? ` ${sourceUnprovenCount} accepted record(s) lack currently proven source realization; historical acceptance does not establish current technical truth.`
-        : ' Current source realization is supported for the recorded meanings.');
-  } else if (primarySource === 'derived-candidates') {
-    summary = `Evidence-derived semantic candidates for ${project} currently identify ${semanticNameList(primaryItems.map(item => String(item.name)), 6)}. These are source-backed proposals, not accepted product intent; deeper query modes expose supporting layers and uncertainty without upgrading their authority.`;
-  } else if (primarySource === 'observed-semantic-graph') {
-    summary = `Observed semantic graph concepts for ${project} include ${semanticNameList(observedItems.map(item => item.name), 6)}. These observations are evidence-backed but are not represented as accepted product intent.`;
-  } else {
-    summary = 'No semantic meaning has been accepted, observed, or evidence-qualified yet. DI can describe repository structure, but it should not invent product intent from topology alone.';
-  }
-
-  const expandedLimit = Math.min(Math.max(limit * 2, 24), 64);
-  const supportingDerived = derivedItems.filter(item => item.coreness !== 'core-candidate' || item.factuality !== 'supported');
-  const derivedLayerItems = depth === 'exhaustive'
-    ? derivedItems
-    : depth === 'expanded'
-      ? [...coreDerived, ...supportingDerived.slice(0, expandedLimit)]
-      : [];
-  const acceptedLayerItems = depth === 'nucleus'
-    ? []
-    : depth === 'exhaustive'
-      ? acceptedItems
-      : acceptedItems.slice(0, expandedLimit);
-  const observedLayerItems = depth === 'nucleus'
-    ? []
-    : depth === 'exhaustive'
-      ? observedItems
-      : observedItems.slice(0, expandedLimit);
-
-  const eligibleCoverageComplete = Boolean(
-    graph.coverage
-    && graph.coverage.eligibleFiles === graph.coverage.completeFiles
-    && graph.coverage.partialFiles === 0
-    && graph.coverage.failedFiles === 0
-    && graph.coverage.skippedFiles === 0
-  );
-  const nextDepth = depth === 'nucleus' ? 'expanded' : depth === 'expanded' ? 'exhaustive' : null;
-
+      || a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
+  const coreDerived = derivedAll.filter(x => x.coreness === 'core-candidate' && x.factuality === 'supported');
+  const supportDerived = derivedAll.filter(x => x.coreness !== 'core-candidate' || x.factuality !== 'supported');
+  const candidateLimit = depth === 'exhaustive' ? 1000
+    : depth === 'expanded' ? Math.min(Math.max(limit * 6,64),250)
+    : Math.min(Math.max(limit * 2,24),100);
+  const bounded = derivedAll.slice(0,candidateLimit);
+  const censusExhausted = truth.counts.candidatePopulationExhausted;
+  const projectedExhausted = censusExhausted && bounded.length === derivedAll.length;
+  const source = proven.length ? 'current-source-proven'
+    : observed.length ? 'current-source-declared'
+      : derivedAll.length ? 'current-source-derived' : 'structural-only';
+  const primary = proven.length ? proven.map(x => x.scope)
+    : observed.length ? observed.map(x=>x.name) : coreDerived.length
+      ? coreDerived.map(x=>x.name) : derivedAll.map(x=>x.name);
+  const coverageNote = truth.exclusions.completeForEligibleSources
+    ? 'All eligible source files were analyzed.'
+    : 'Source coverage is incomplete; absence and exhaustive conclusions are unavailable.';
+  const summary = primary.length
+    ? 'Current source understanding of ' + project + ' at ' + String(graph.repositoryRevision)
+      + ': ' + truth.counts.provenTechnicalScopes + ' independently proven technical source scope(s), '
+      + truth.counts.sourceDeclaredConcepts + ' source-declared semantic concept(s), '
+      + truth.counts.supportedInterpretations + ' source-supported interpretation(s). '
+      + 'Leading evidence-backed areas: ' + semanticNameList(primary,6) + '. '
+      + coverageNote + ' These facts do not establish desired product intent or runtime execution.'
+    : 'No currently source-proven technical scopes or semantic declarations were found for '
+      + project + '. ' + coverageNote + ' DI must not reuse older acceptance as current truth.';
+  const supportingLimit=Math.min(Math.max(limit*2,24),64);
+  const derivedLayer = depth === 'nucleus' ? [] : depth === 'exhaustive'
+    ? bounded
+    : [...coreDerived.filter(x=>bounded.includes(x)),...supportDerived.filter(x=>bounded.includes(x)).slice(0,supportingLimit)];
+  const provenLayer = depth === 'nucleus' ? [] : depth === 'exhaustive'
+    ? proven : proven.slice(0,supportingLimit);
+  const observedLayer = depth === 'nucleus' ? [] : depth === 'exhaustive'
+    ? observed : observed.slice(0,supportingLimit);
+  const nextDepth = depth === 'nucleus' ? 'expanded'
+    : depth === 'expanded' ? 'exhaustive' : null;
   return {
-    source: primarySource,
-    depth,
-    summary,
+    source, depth, summary,
+    graphId: graph.graphId,
+    revision: graph.repositoryRevision,
+    analyzerVersion: graph.analyzerVersion,
     authority: {
-      storageState: authority.state,
-      durable: authority.durable,
-      acceptedCount: acceptedItems.length,
-      verifiedCount,
-      currentSourceSupportedCount,
-      currentSourceUnprovenCount: sourceUnprovenCount,
-      currentMachineTechnicalProofCount,
+      source: 'selected-exact-graph',
+      durable: false,
+      acceptedCount: 0,
+      verifiedCount: 0,
       acceptanceImpliesVerification: false,
-      acceptedIdentityIsNotCurrentCodeProof: true,
+      previouslyAcceptedMeaningsNotConsulted: true,
+      currentProvenTechnicalScopeCount: proven.length,
+      currentSourceDeclaredCount: observed.length,
+      currentSourceSupportedInterpretationCount: truth.counts.supportedInterpretations,
     },
-    ...(primarySource === 'accepted-authority' ? { meanings: acceptedItems.slice(0, limit) } : {}),
-    ...(primarySource === 'derived-candidates' ? { candidates: primaryItems.slice(0, limit) } : {}),
-    ...(primarySource === 'observed-semantic-graph' ? { concepts: observedItems.slice(0, limit) } : {}),
+    ...(proven.length ? { meanings: proven.slice(0,limit) } : {}),
+    ...(!proven.length && observed.length ? { concepts: observed.slice(0,limit) } : {}),
+    ...(!proven.length && !observed.length && derivedAll.length ? { candidates: (coreDerived.length ? coreDerived : derivedAll).slice(0,limit) } : {}),
     layers: {
-      accepted: {
-        count: acceptedItems.length,
-        returned: acceptedLayerItems.length,
-        items: acceptedLayerItems,
-        authority: 'accepted',
-      },
-      observed: {
-        count: observedItems.length,
-        returned: observedLayerItems.length,
-        items: observedLayerItems,
-        authority: 'observed-not-accepted',
-      },
+      proven: { count: proven.length, returned: provenLayer.length, items: provenLayer,
+        authority: 'current-source-proven' },
+      observed: { count: observed.length, returned: observedLayer.length, items: observedLayer,
+        authority: 'current-source-declared' },
       derived: {
-        eligibleCount: bootstrap.capacity.eligibleCandidateCount,
-        returned: derivedLayerItems.length,
-        exhausted: bootstrap.capacity.exhausted,
-        truncated: bootstrap.capacity.truncated,
-        coreCandidateCount: audit.counts.coreCandidates,
-        coreReturned: derivedLayerItems.filter(item => item.coreness === 'core-candidate' && item.factuality === 'supported').length,
-        supportingCandidateCount: audit.counts.supportingCandidates,
-        supportingReturned: derivedLayerItems.filter(item => item.coreness !== 'core-candidate' || item.factuality !== 'supported').length,
-        supportingPresentationTruncated: depth === 'expanded' && supportingDerived.length > expandedLimit,
-        factualityNeedsReview: audit.counts.factualityNeedsReview,
-        items: derivedLayerItems,
-        authority: 'proposed-not-accepted',
+        eligibleCount: derivedAll.length, returned: derivedLayer.length,
+        exhausted: projectedExhausted, truncated: !projectedExhausted,
+        coreCandidateCount: coreDerived.length,
+        coreReturned: derivedLayer.filter(x=>x.coreness==='core-candidate'&&x.factuality==='supported').length,
+        supportingCandidateCount: supportDerived.length,
+        supportingReturned: derivedLayer.filter(x=>x.coreness!=='core-candidate'||x.factuality!=='supported').length,
+        supportingPresentationTruncated: depth === 'expanded' && supportDerived.length > supportingLimit,
+        factualityNeedsReview: derivedAll.filter(x=>x.factuality!=='supported').length,
+        items: derivedLayer, authority: 'current-source-interpretation-not-product-intent',
       },
+      accepted: { count: 0, returned: 0, items: [],
+        authority: 'not-a-current-source-evidence-input' },
     },
     completeness: {
       requestedDepth: depth,
-      semanticCandidateUniverseExhausted: bootstrap.capacity.exhausted,
-      candidateOperationalLimit: bootstrap.capacity.operationalLimit,
-      eligibleSourceCoverageComplete: eligibleCoverageComplete,
-      unsupportedFiles: graph.coverage?.unsupportedFiles ?? null,
+      semanticCandidateUniverseExhausted: censusExhausted && depth === 'exhaustive',
+      candidateOperationalLimit: 1000,
+      eligibleSourceCoverageComplete: truth.exclusions.completeForEligibleSources,
+      unsupportedFiles: truth.exclusions.unsupportedFiles,
       claim: depth === 'exhaustive'
-        ? (bootstrap.capacity.exhausted ? 'exhaustive-derived-candidate-census' : 'exhaustive-request-bounded-by-operational-limit')
+        ? (censusExhausted ? 'exhaustive-derived-candidate-census' : 'exhaustive-request-bounded-by-operational-limit')
         : 'non-exhaustive-semantic-answer',
       repositoryOmissionMeansAbsent: false,
-      candidateOmissionWithinExhaustedCensusMeansAbsent: depth === 'exhaustive' && bootstrap.capacity.exhausted,
-      expandedCoreCoverageComplete: depth !== 'expanded' ? null : bootstrap.capacity.exhausted,
-      expandedSupportingPresentationComplete: depth !== 'expanded' ? null : supportingDerived.length <= expandedLimit,
+      candidateOmissionWithinExhaustedCensusMeansAbsent: depth === 'exhaustive' && censusExhausted,
+      expandedCoreCoverageComplete: depth !== 'expanded' ? null : censusExhausted,
+      expandedSupportingPresentationComplete: depth !== 'expanded' ? null : supportDerived.length <= supportingLimit,
     },
     expansion: {
-      currentDepth: depth,
-      nextDepth,
-      availableDepths: ['nucleus', 'expanded', 'exhaustive'],
+      currentDepth: depth, nextDepth,
+      availableDepths: ['nucleus','expanded','exhaustive'],
       note: nextDepth
-        ? `The same graph context can be expanded to ${nextDepth} without changing semantic authority.`
-        : 'Exhaustive depth enumerates the current evidence-qualified candidate census; it still does not convert proposals into accepted product intent.',
+        ? 'The same exact graph can be expanded to ' + nextDepth + ' without consulting prior semantic history.'
+        : 'Exhaustive depth enumerates the current qualified candidate census, not product intent.',
     },
     policy: {
-      layeredSemanticEvidence: true,
-      acceptedObservedDerivedRemainDistinct: true,
+      builtOnlyFromSelectedGraph: true,
+      historicalAcceptanceNeverInput: true,
+      technicalSourceFactsNeedNoManualReview: true,
+      sourceDerivedInterpretationDoesNotProveProductIntent: true,
       omissionIsNotAbsenceOutsideDeclaredCompleteScope: true,
-      productIntentInferred: false,
       persisted: false,
     },
   };
 }
-
 
 async function semanticLifecycleOverview(project: string): Promise<Record<string, unknown>> {
   const authority = await loadSemanticAuthority(project);
@@ -1736,6 +1624,7 @@ type OrientationQueryReuse = {
   metrics?: Map<string, ReturnType<typeof orientationMetric>>;
   rankBy?: ScopeRankBy;
   semanticCensus?: ReturnType<typeof bootstrapSemanticCandidates>;
+  currentSemanticTruth?: ReturnType<typeof deriveCurrentSemanticTruth>;
 };
 
 export async function scopeOrientation(input: {
