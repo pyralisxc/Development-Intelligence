@@ -19,6 +19,7 @@ test('external technical evidence normalizes deployment and database sources wit
   await fs.mkdir(path.join(root, 'src'));
   await fs.writeFile(path.join(root, 'src', 'provider.ts'), "import { waitUntil } from '@vercel/functions';\nexport const provider = waitUntil;\n");
   await fs.writeFile(path.join(root, 'schema.sql'), 'create table public.users (id bigint primary key);\n');
+  await fs.writeFile(path.join(root, 'unqualified.sql'), 'create table orders (id bigint);\n');
   await fs.mkdir(path.join(root, 'supabase', 'migrations'), { recursive: true });
   await fs.mkdir(path.join(root, 'supabase', 'functions', 'cleanup'), { recursive: true });
   await fs.writeFile(path.join(root, 'supabase', 'migrations', '202605220001_initial.sql'), '-- source migration identity\n');
@@ -93,7 +94,7 @@ test('external technical evidence normalizes deployment and database sources wit
             { name: 'groups', columns: [{ name: 'id', data_type: 'uuid' }] }
           ],
           functions: [{ name: 'refresh_users' }]
-        }],
+        }, { name: 'audit', tables: [{ name: 'orders' }] }],
         migrations: [{ version: '202605220001' }],
         edge_functions: [{ slug: 'cleanup' }]
       }), {
@@ -152,6 +153,12 @@ test('external technical evidence normalizes deployment and database sources wit
       x.kind === 'database-migration' && x.value.version === '202605220001'));
     assert.ok(database.evidence.observations.some((x: any) =>
       x.kind === 'edge-function' && x.name === 'cleanup'));
+    const auditOrders = database.evidence.observations.find((x: any) =>
+      x.kind === 'database-table' && x.name === 'audit.orders') as any;
+    assert.ok(auditOrders, 'provider schema-qualified name is present');
+    assert.equal(database.evidence.correlations.some((x: any) =>
+      x.externalId === auditOrders.id && x.kind === 'matches-entity'), false,
+      'unqualified SQL table orders must not prove audit.orders without a search_path');
     assert.ok(database.evidence.correlations.some((x: any) =>
       x.kind === 'matches-entity' && x.repositoryTarget === 'file:supabase/migrations/202605220001_initial.sql'));
     assert.ok(database.evidence.correlations.some((x: any) =>

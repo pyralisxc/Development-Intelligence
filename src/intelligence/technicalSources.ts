@@ -432,13 +432,10 @@ async function correlate(project: string, source: TechnicalSourceConfig, observa
       }
       if (item.kind === 'database-table') {
         const qualified = typeof value?.qualifiedName === 'string' ? value.qualifiedName.toLowerCase() : null;
-        const short = typeof value?.name === 'string' ? value.name.toLowerCase() : null;
-        const candidates = graph.nodes.filter(node => {
-          if (node.kind !== 'sql-table') return false;
-          const candidateQualified = graphText(node, 'qualifiedName')?.toLowerCase();
-          const candidateName = node.name?.toLowerCase();
-          return Boolean((qualified && candidateQualified === qualified) || (short && candidateName === short));
-        });
+        // Source SQL may use an unqualified name whose real search_path is unknown.
+        // Never resolve a provider-qualified table from a coincident short name.
+        const candidates = graph.nodes.filter(node => node.kind === 'sql-table'
+          && qualified !== null && graphText(node, 'qualifiedName')?.toLowerCase() === qualified);
         if (candidates.length === 1) correlations.push({
           externalId: item.id,
           repositoryTarget: candidates[0]!.id,
