@@ -54,7 +54,7 @@ jobs:
               presentInCheckout: existsSync(doc.path), occurrences: doc.occurrences.length })),
           }));
           JS
-          node dist/src/graphCli.js scip-evidence --repo-path "$GITHUB_WORKSPACE" --project pyralisxc/Development-Intelligence --scip-index index.scip > scip-acceptance.json
+          node dist/src/graphCli.js scip-evidence --repo-path "$GITHUB_WORKSPACE" --project pyralisxc/Development-Intelligence --scip-index index.scip --scip-legacy-position-encoding utf16 > scip-acceptance.json
           node --input-type=module <<'JS'
           import { readFileSync } from 'node:fs';
           import assert from 'node:assert/strict';
