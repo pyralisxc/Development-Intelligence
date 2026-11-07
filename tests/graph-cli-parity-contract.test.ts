@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { run, runChecked } from '../src/util/process.js';
+import { ANALYZER_VERSION } from '../src/intelligence/repository.js';
 
 const cli = path.resolve('dist/src/graphCli.js');
 const ownerSource = `export function registerOwnerTools(server: any) {
@@ -54,7 +55,7 @@ async function fixture(): Promise<string> {
   const declarationStart = ownerTestSource.indexOf("test('registration'");
   const declarationExpression = ownerTestSource.slice(declarationStart).trim().replace(/;$/u, '');
   const sha = (value: string) => createHash('sha256').update(value).digest('hex');
-  await fs.writeFile(path.join(root, 'claims.json'), `${JSON.stringify({ version: 1, revision, analyzerVersion: '2.16.0-fresh-array-callback-provenance', scope: { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] }, files: [{ sourceId: 'tests/owner.test.ts', contentSha256: sha(ownerTestSource), declarationIds: ['test:owner-registration'], assertionIds: ['assert:owner-registration'], disposition: 'analyzed' }], declarations: [{ id: 'test:owner-registration', sourceId: 'tests/owner.test.ts', start: declarationStart, end: declarationStart + declarationExpression.length, spanSha256: sha(declarationExpression), title: 'registration', dynamic: false }], assertions: [{ id: 'assert:owner-registration', sourceId: 'tests/owner.test.ts', start, end: start + expression.length, spanSha256: sha(expression), dynamic: false }], claims: [{ id: 'owner-registration-source-assertion', originalClaim: 'Owner snapshot tool is registered', equivalenceRationale: 'The required registered-as predicate covers source membership in the same direction.', assertionIds: ['assert:owner-registration'], parityClaimIds: ['owner-get-snapshot-is-registered'], productionSourceIds: ['src/owner.ts'] }] }, null, 2)}\n`);
+  await fs.writeFile(path.join(root, 'claims.json'), `${JSON.stringify({ version: 1, revision, analyzerVersion: ANALYZER_VERSION, scope: { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] }, files: [{ sourceId: 'tests/owner.test.ts', contentSha256: sha(ownerTestSource), declarationIds: ['test:owner-registration'], assertionIds: ['assert:owner-registration'], disposition: 'analyzed' }], declarations: [{ id: 'test:owner-registration', sourceId: 'tests/owner.test.ts', start: declarationStart, end: declarationStart + declarationExpression.length, spanSha256: sha(declarationExpression), title: 'registration', dynamic: false }], assertions: [{ id: 'assert:owner-registration', sourceId: 'tests/owner.test.ts', start, end: start + expression.length, spanSha256: sha(expression), dynamic: false }], claims: [{ id: 'owner-registration-source-assertion', originalClaim: 'Owner snapshot tool is registered', equivalenceRationale: 'The required registered-as predicate covers source membership in the same direction.', assertionIds: ['assert:owner-registration'], parityClaimIds: ['owner-get-snapshot-is-registered'], productionSourceIds: ['src/owner.ts'] }] }, null, 2)}\n`);
   return root;
 }
 
