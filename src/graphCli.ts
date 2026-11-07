@@ -19,6 +19,9 @@ const testClaimReportPath = arg('--test-claim-report-path');
 const producerCommit = arg('--producer-commit');
 const scipIndexPath = arg('--scip-index');
 const scipProjectPrefix = arg('--scip-project-prefix');
+const scipLegacyEncodingRaw = arg('--scip-legacy-position-encoding');
+const scipLegacyEncoding = scipLegacyEncodingRaw === 'utf8' || scipLegacyEncodingRaw === 'utf16' || scipLegacyEncodingRaw === 'utf32'
+  ? scipLegacyEncodingRaw : undefined;
 
 async function main(): Promise<void> {
   if (parityContractFlag && !parityContractPath) throw new Error('--parity-contract requires a path');
@@ -28,6 +31,8 @@ async function main(): Promise<void> {
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
   if (scipProjectPrefix && command !== 'scip-evidence') throw new Error('--scip-project-prefix is supported only for scip-evidence');
+  if (process.argv.includes('--scip-legacy-position-encoding') && !scipLegacyEncoding) throw new Error('--scip-legacy-position-encoding requires utf8, utf16 or utf32');
+  if (scipLegacyEncoding && command !== 'scip-evidence') throw new Error('--scip-legacy-position-encoding is supported only for scip-evidence');
   if (command === 'analyze') {
     const parityContract = parityContractPath ? await readLocalParityContract(root, parityContractPath) : undefined;
     const testClaimCatalog = testClaimCatalogPath ? await readLocalTestClaimCatalog(root, testClaimCatalogPath) : undefined;
@@ -41,6 +46,7 @@ async function main(): Promise<void> {
     const projection = await projectLocalScipEvidence({
       root, indexPath: scipIndexPath, graph: canonical,
       ...(scipProjectPrefix === undefined ? {} : { projectPrefix: scipProjectPrefix }),
+      ...(scipLegacyEncoding === undefined ? {} : { legacyPositionEncoding: scipLegacyEncoding }),
     });
     console.log(JSON.stringify({
       mode: 'ephemeral-scip-evidence',
@@ -76,7 +82,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     if (result.current !== true) process.exitCode = 1;
   } else {
-    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH]');
+    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32]');
     process.exitCode = 2;
   }
 }

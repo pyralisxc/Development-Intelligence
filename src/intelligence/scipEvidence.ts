@@ -33,6 +33,8 @@ export interface ScipEvidenceProjection {
     documents: number;
     occurrences: number;
     projectPrefix: string;
+    legacyPositionEncoding: 'utf8' | 'utf16' | 'utf32' | null;
+    assumedPositionEncodingDocuments: number;
   };
   counts: {
     sourceDocumentsMatched: number;
@@ -50,6 +52,7 @@ export interface ScipEvidenceProjection {
     independentlyCompilerProvenTechnicalEdgesAreResolved: true;
     remainingUnverifiedPositiveReferencesStayCandidates: true;
     externallySuppliedIndexNotAttested: true;
+    assumedLegacyPositionEncodingIsNotIndependentProof: true;
     negativeCoverageNotEstablished: true;
     canonicalAuthorityUnaffected: true;
     runtimeExecutionNotProven: true;
@@ -179,6 +182,8 @@ export async function projectLocalScipEvidence(input: {
   indexPath: string;
   graph: IntelligenceGraph;
   projectPrefix?: string;
+  /** Explicit, non-authoritative fallback ONLY for SCIP documents with unspecified offset encoding. */
+  legacyPositionEncoding?: 'utf8' | 'utf16' | 'utf32';
 }): Promise<ScipEvidenceProjection> {
   const root = await fs.realpath(path.resolve(input.root));
   const changed = (await runChecked('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'])).stdout.trim();
@@ -186,6 +191,9 @@ export async function projectLocalScipEvidence(input: {
   const sha = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
   if (sha !== input.graph.repositoryRevision) throw new Error('SCIP evidence graph must match the exact checked-out Git revision');
   const prefix = projectPrefix(input.projectPrefix);
+  const legacy = input.legacyPositionEncoding ?? null;
+  const encodings = { utf8: 1, utf16: 2, utf32: 3 } as const;
+  if (legacy !== null && !(legacy in encodings)) throw new Error('SCIP legacy position encoding must be utf8, utf16 or utf32');
   if (prefix && !input.graph.coverage?.files.some(item => item.path.startsWith(prefix + '/'))) {
     throw new Error('SCIP project prefix has no tracked source files in the inspected graph');
   }
@@ -196,6 +204,7 @@ export async function projectLocalScipEvidence(input: {
   const actual = new Map<string, SourceDocument>();
   const seenDocuments = new Set<string>();
   let skipped = 0;
+  let assumedPositionEncodingDocuments = 0;
   for (const doc of parsed.documents) {
     // Validate the producer's relative paths before adding any explicit prefix.
     // A mapped document never gains authority solely by existing in the index.
@@ -203,7 +212,10 @@ export async function projectLocalScipEvidence(input: {
     const mappedPath = prefix ? prefix + '/' + doc.path : doc.path;
     if (seenDocuments.has(mappedPath)) throw new Error('SCIP index repeats the same canonical document path');
     seenDocuments.add(mappedPath);
-    const mapped = prefix ? { ...doc, path: mappedPath } : doc;
+    const assumed = doc.positionEncoding === 0 && legacy !== null;
+    if (assumed) assumedPositionEncodingDocuments += 1;
+    const mapped = { ...doc, path: mappedPath,
+      positionEncoding: assumed ? encodings[legacy!] : doc.positionEncoding };
     const file = await trackedDocument(root, mapped, input.graph);
     if (file) actual.set(mappedPath, file);
     else skipped += 1;
@@ -318,12 +330,13 @@ export async function projectLocalScipEvidence(input: {
     graph: {
       ...input.graph,
       graphId: 'scip-overlay-' + createHash('sha256')
-        .update(JSON.stringify([input.graph.graphId, sha, indexHash, prefix, SCIP_EVIDENCE_STRATEGY]))
+        .update(JSON.stringify([input.graph.graphId, sha, indexHash, prefix, legacy, SCIP_EVIDENCE_STRATEGY]))
         .digest('hex').slice(0, 24),
       edges: [...input.graph.edges, ...added],
     },
     index: { sha256: indexHash, producer: parsed.producer, documents: parsed.documents.length,
-      occurrences: parsed.occurrenceCount, projectPrefix: prefix },
+      occurrences: parsed.occurrenceCount, projectPrefix: prefix,
+      legacyPositionEncoding: legacy, assumedPositionEncodingDocuments },
     counts: {
       sourceDocumentsMatched: actual.size,
       sourceDocumentsSkipped: skipped,
@@ -340,6 +353,7 @@ export async function projectLocalScipEvidence(input: {
       independentlyCompilerProvenTechnicalEdgesAreResolved: true,
       remainingUnverifiedPositiveReferencesStayCandidates: true,
       externallySuppliedIndexNotAttested: true,
+      assumedLegacyPositionEncodingIsNotIndependentProof: true,
       negativeCoverageNotEstablished: true,
       canonicalAuthorityUnaffected: true,
       runtimeExecutionNotProven: true,
