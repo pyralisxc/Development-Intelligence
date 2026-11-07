@@ -446,6 +446,11 @@ test('canonical scan rebuilds current semantic truth without writing prior-revie
     assert.equal(before.currentTruth.policy.historicalAcceptanceNeverInput, true);
     assert.equal(before.currentTruth.policy.noSemanticLedgerReadOrWrite, true);
     assert.ok(before.currentTruth.counts.supportedInterpretations > 0);
+    const bounded = await semanticReviewSurface({ project: fixture.project, limit: 1 }) as any;
+    assert.equal(bounded.currentTruth.population.requestedLimit, 1);
+    assert.ok(bounded.currentTruth.interpretations.length <= 1);
+    assert.ok(bounded.derivedMeanings.length <= 1);
+    assert.equal(bounded.currentTruth.population.totalInterpretations, before.currentTruth.interpretations.length);
     const candidateId = before.candidates.find((item: any) => item.reviewAssessment?.factuality === 'supported')?.id;
     assert.ok(candidateId, 'source itself must qualify an interpretation');
 

@@ -654,7 +654,28 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
   // Source understanding is constructed exclusively from the selected graph.
   // The optional review ledger below is explicit governance metadata, not an
   // input to the current semantic truth projection.
-  const currentTruth = deriveCurrentSemanticTruth(graph);
+  const completeCurrentTruth = deriveCurrentSemanticTruth(graph);
+  const currentTruth = {
+    ...completeCurrentTruth,
+    provenTechnicalScopes: completeCurrentTruth.provenTechnicalScopes.slice(0, limit),
+    declaredConcepts: completeCurrentTruth.declaredConcepts.slice(0, limit),
+    interpretations: completeCurrentTruth.interpretations.slice(0, limit),
+    exclusions: {
+      ...completeCurrentTruth.exclusions,
+      excludedCandidateScopes: {
+        ...completeCurrentTruth.exclusions.excludedCandidateScopes,
+        items: completeCurrentTruth.exclusions.excludedCandidateScopes.items.slice(0, limit),
+      },
+    },
+    population: {
+      requestedLimit: limit,
+      totalProvenTechnicalScopes: completeCurrentTruth.counts.provenTechnicalScopes,
+      totalSourceDeclaredConcepts: completeCurrentTruth.counts.sourceDeclaredConcepts,
+      totalInterpretations: completeCurrentTruth.interpretations.length,
+      interpretationTruncated: completeCurrentTruth.interpretations.length > limit,
+      fullRecovery: 'Repeat semantic_review_surface on the same graph with limit=1000 for the bounded full census.',
+    },
+  };
   const defaultRevision = await resolveProjectRevision(input.project);
   const canonical = defaultRevision.sha === graph.repositoryRevision ? await repositoryGraphs(input.project) : null;
   const enrollmentState = semanticPromotionEnrollmentState(authority.ledger);
@@ -741,7 +762,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
     currentTruth,
     // Every review read describes the same current candidate census as other
     // graph queries, irrespective of old persisted dispositions.
-    derivedMeanings: fullBootstrap.candidates
+    derivedMeanings: bootstrap.candidates
       .filter(candidate => effectiveDerivedAuditByCandidate.get(candidate.id)?.factuality.status === 'supported')
       .map(candidate => ({
         candidateId: candidate.id,
