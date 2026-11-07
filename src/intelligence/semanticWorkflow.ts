@@ -37,7 +37,7 @@ import { getProjectConfig } from '../config/registry.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { assessAutonomousSemanticProof, AUTONOMOUS_SEMANTIC_PROOF_RULE } from './semanticAutonomousAcceptance.js';
 import { buildSemanticPromotionGate, type SemanticPromotionEnrollmentState } from './semanticPromotion.js';
-import { assessSemanticCurrentEvidence } from './semanticEvidenceRealization.js';
+import { deriveCurrentSemanticTruth } from './semanticCurrentTruth.js';
 
 export type SemanticReviewCommand =
   | {
@@ -651,9 +651,10 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
   const reviews = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision);
   const reviewsByCandidate = new Map(reviews.map(review => [review.candidateId, review]));
   const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
-  const acceptedRealizations = latestAcceptedMeanings(authority.ledger).map(meaning =>
-    assessSemanticCurrentEvidence(graph, meaning, fullBootstrap.candidates, effectiveDerivedAuditByCandidate));
-  const realizationByMeaningId = new Map(acceptedRealizations.map(item => [item.meaningId, item]));
+  // Source understanding is constructed exclusively from the selected graph.
+  // The optional review ledger below is explicit governance metadata, not an
+  // input to the current semantic truth projection.
+  const currentTruth = deriveCurrentSemanticTruth(graph);
   const defaultRevision = await resolveProjectRevision(input.project);
   const canonical = defaultRevision.sha === graph.repositoryRevision ? await repositoryGraphs(input.project) : null;
   const enrollmentState = semanticPromotionEnrollmentState(authority.ledger);
@@ -698,9 +699,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
     candidates: bootstrap.candidates.map(candidate => ({
       ...candidate,
       review: reviewsByCandidate.get(candidate.id) ?? null,
-      currentEvidence: reviewsByCandidate.get(candidate.id)?.accepted
-        ? realizationByMeaningId.get(reviewsByCandidate.get(candidate.id)!.meaningId) ?? null
-        : null,
+      currentEvidence: currentTruth.interpretations.find(item => item.candidateId === candidate.id) ?? null,
       continuity: semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings),
       reviewAssessment: semanticReviewAssessment(candidate, auditByCandidate.get(candidate.id)),
       autonomousAssessment: autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id) ?? null, reviewsByCandidate.get(candidate.id) ?? priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision).review, semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings), priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision).ambiguous),
@@ -739,33 +738,35 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       candidateUniverseEligible: fullBootstrap.capacity.eligibleCandidateCount,
       candidateUniverseExhausted: fullBootstrap.capacity.exhausted,
     },
-    acceptedRealizations,
-    derivedMeanings: (authority.ledger?.derivedMeanings ?? []).filter(item => {
-      if (item.revision !== graph.repositoryRevision) return false;
-      const candidate = fullBootstrap.candidates.find(value => value.id === item.candidateId);
-      if (!candidate) return false;
-      const prior = priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision);
-      const continuity = semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings);
-      const assessment = autonomousSemanticAssessment(candidate, effectiveDerivedAuditByCandidate.get(candidate.id) ?? null,
-        reviewsByCandidate.get(candidate.id) ?? prior.review, continuity, prior.ambiguous);
-      return assessment.automaticallyMaintained;
-    }),
+    currentTruth,
+    // Every review read describes the same current candidate census as other
+    // graph queries, irrespective of old persisted dispositions.
+    derivedMeanings: fullBootstrap.candidates
+      .filter(candidate => effectiveDerivedAuditByCandidate.get(candidate.id)?.factuality.status === 'supported')
+      .map(candidate => ({
+        candidateId: candidate.id,
+        revision: graph.repositoryRevision,
+        meaningId: 'current-scope:' + candidate.scope,
+        evidenceIds: [...candidate.provenance.evidenceIds],
+        sourceIds: [...new Set(candidate.evidencePacket.representativeNodes
+          .map(node => node.locator.split(':')[0] ?? node.locator))],
+        disposition: 'evidence-qualified' as const,
+      })),
     authority: {
       ...authoritySummary(authority),
       currentEvidence: {
-        acceptedRecordCount: acceptedRealizations.length,
-        sourceSupportedCount: acceptedRealizations.filter(item => item.sourceStatus === 'supported').length,
-        sourceUnprovenCount: acceptedRealizations.filter(item => item.sourceStatus !== 'supported').length,
-        strengthenedCount: acceptedRealizations.filter(item => item.trend === 'strengthened').length,
-        weakenedCount: acceptedRealizations.filter(item => item.trend === 'weakened' || item.trend === 'unsupported').length,
-        currentMachineTechnicalProofCount: acceptedRealizations.filter(item => item.currentlyProvenTechnicalScope === true).length,
-        historicalAcceptanceAlwaysPreserved: true,
-        derivedFromCurrentGraphNotSeparateAuthority: true,
+        source: 'selected-graph',
+        technicalScopesProven: currentTruth.counts.provenTechnicalScopes,
+        supportedInterpretations: currentTruth.counts.supportedInterpretations,
+        sourceDeclarations: currentTruth.counts.sourceDeclaredConcepts,
+        historicReviewLedgerNotAnInput: true,
+        reconstructedOnDemand: true,
       },
     },
     policy: {
       stage: 'T2-review-surface',
-      candidatesRemainNonAuthoritativeUntilReviewed: true,
+      sourceInterpretationsUsableWithoutReview: true,
+      candidateDescriptionsDoNotProveProductIntent: true,
       acceptanceImpliesVerification: false,
       writesRequireExplicitActorAndReviewAction: true,
       mcpSurfaceReadOnly: true,
@@ -776,7 +777,8 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       aiProposalProviderNeutral: true,
       aiProposalRequiresOwnerImport: true,
       modelOutputAcceptedAutomatically: false,
-      sourceProvenTechnicalScopeAutomaticallyAccepted: true,
+      sourceProvenTechnicalScopesReconstructedFromGraph: true,
+      priorAcceptedSemanticsNotCurrentSourceTruth: true,
       lexicalCapabilityInterpretationAutomaticallyAccepted: false,
       promotionAuditItemized: true,
       promotionAuditDesiredOutcomeInferred: false,
