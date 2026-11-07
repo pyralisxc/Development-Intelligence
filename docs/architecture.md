@@ -175,7 +175,21 @@ If an ephemeral `snapshot-…` graph expires, callers recreate it; DI does not c
 
 ## Code intelligence
 
-Generic TypeScript/JavaScript analysis currently provides:
+Generic An optional local SCIP source sensor (the `scip-evidence` command) can
+consume a bounded precomputed SCIP protobuf Index over an exact clean Git
+checkout. It correlates definition/reference occurrences and source encodings
+with existing tracked DI declaration/file nodes. An externally supplied index
+is **not an attested compiler run or source-completeness proof**: its new
+`references-symbol` relationships remain explicit **candidate** evidence,
+not runtime call proof, semantic acceptance, canonical W publication or a
+replacement parity guarantee. The projected graph is disposable and identified
+by the exact Git SHA plus the index SHA-256; normal MCP and scan_graph reads
+remain unchanged. Unsupported/unsafe ranges and unavailable source documents
+are excluded with counts, not reported as absence. Generate SCIP with an
+appropriate project-aware indexer in isolated controlled compute; supplying an
+index never executes the indexer, build scripts or a language server.
+
+TypeScript/JavaScript analysis currently provides:
 
 - stable language-aware symbol identities;
 - file/symbol containment;
