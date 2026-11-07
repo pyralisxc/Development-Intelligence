@@ -65,6 +65,12 @@ jobs:
           assert.ok(receipt.counts.sourceDocumentsMatched > 0, 'SCIP document-to-tracked-source reconciliation failed');
           assert.ok(receipt.counts.definitionsMatched > 0, 'SCIP source declarations did not reconcile');
           assert.ok(receipt.counts.resolvedEdges > 0, 'no independent TypeScript compiler-corroborated SCIP edge');
+          const overlap = receipt.compilerOverlap;
+          assert.equal(overlap.baseline, 'canonical-typescript-checker');
+          assert.ok(overlap.scipCompilerVerifiedSites > 0);
+          assert.equal(overlap.scipCompilerVerifiedSites,
+            overlap.alreadyInCanonicalCompilerLensSites + overlap.notInCanonicalCompilerLensSites);
+          assert.equal(overlap.notObservedIsNotProofOfNovelMeaning, true);
           console.log(JSON.stringify({
             revision: receipt.revision,
             producer: receipt.index.producer,
@@ -74,6 +80,7 @@ jobs:
             resolvedEdges: receipt.counts.resolvedEdges,
             candidateEdges: receipt.counts.candidateEdges,
             compilerVerification: receipt.counts.compilerVerification,
+            nativeCompilerProofOverlap: overlap,
             stored: receipt.policy.stored,
           }));
           JS
