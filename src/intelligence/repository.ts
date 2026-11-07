@@ -12,7 +12,7 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
-import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
+import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS, TYPESCRIPT_COMPILER_MAX_FILES } from './typescriptCompilerLens.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
 export const ANALYZER_VERSION = '2.19.0-large-typescript-compiler-lens';
@@ -2294,7 +2294,7 @@ export async function advanceRepositoryGraph(input: {
     const allTypescript = new Map<string, string>();
     const trackedCode = tracked.filter(file => CODE_EXTENSIONS.has(path.extname(file.path).toLowerCase())
       && file.mode !== '120000' && file.mode !== '160000');
-    if (trackedCode.length <= 600) {
+    if (trackedCode.length <= TYPESCRIPT_COMPILER_MAX_FILES) {
       for (const file of trackedCode) {
         const absolute = path.join(input.root, file.path);
         try {
@@ -2311,8 +2311,8 @@ export async function advanceRepositoryGraph(input: {
       root: input.root, sourceTexts: allTypescript, nodes, fileNodes, options: loadCompilerOptions(input.root),
     });
     edges.push(...compiler.edges);
-    const warning = trackedCode.length > 600
-      ? 'Optional TypeScript compiler symbol evidence bounded-out: tracked JS/TS source exceeds the 600-file precision limit. Syntax/source graph remains available; compiler-level negative or exhaustive conclusions are not established.'
+    const warning = trackedCode.length > TYPESCRIPT_COMPILER_MAX_FILES
+      ? `Optional TypeScript compiler symbol evidence bounded-out: tracked JS/TS source exceeds the ${TYPESCRIPT_COMPILER_MAX_FILES}-file precision limit. Syntax/source graph remains available; compiler-level negative or exhaustive conclusions are not established.`
       : compilerPrecisionWarning(compiler);
     if (warning) warnings.push(warning);
   }

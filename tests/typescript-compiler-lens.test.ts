@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { buildLocalGraph } from '../src/intelligence/local.js';
+import { advanceRepositoryGraph } from '../src/intelligence/repository.js';
 import { compilerTypeScriptReferences, compilerPrecisionWarning } from '../src/intelligence/typescriptCompilerLens.js';
 import { runChecked } from '../src/util/process.js';
 
@@ -83,6 +84,30 @@ test('compiler retains exact TypeChecker truth beyond the old 600-source ceiling
     assert.ok(proven[0]!.evidence.some(locator => locator.startsWith('consumer.ts:2:')));
     assert.equal(graph.edges.some(edge => edge.strategy === 'typescript-checker-symbol.v1'
       && edge.kind === 'calls'), false, 'static binding is not runtime execution');
+
+    // A new exact Git revision must produce the SAME compiler facts whether DI
+    // advances its canonical graph incrementally or reconstructs a cold W.
+    await fs.writeFile(path.join(root, 'consumer.ts'),
+      "import { helper } from './types.js';\\nexport const value = helper(7);\\n".replaceAll('\\n', '\n'));
+    await runChecked('git', ['-C', root, 'add', 'consumer.ts']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=fixture@example.com',
+      '-c', 'user.name=Fixture', 'commit', '-m', 'advance compiler source']);
+    const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+    const incremental = await advanceRepositoryGraph({
+      previous: graph, project: 'typescript-large-lens',
+      repository: root, root, revision,
+      changedFiles: [{ status: 'M', path: 'consumer.ts' }], role: 'W',
+    });
+    assert.equal(incremental.strategy, 'incremental', incremental.reason ?? 'expected real incremental path');
+    assert.ok(incremental.graph);
+    const cold = await buildLocalGraph(root, 'typescript-large-lens', 'W');
+    const compilerFacts = (edges: typeof graph.edges) => edges.filter(edge =>
+      edge.strategy === 'typescript-checker-symbol.v1' && edge.kind === 'references-symbol')
+      .map(edge => ({ id: edge.id, status: edge.status, from: edge.from,
+        to: edge.to, evidence: edge.evidence })).sort((a,b) => a.id.localeCompare(b.id));
+    assert.ok(compilerFacts(cold.edges).length > 0, 'fresh revision retains actual compiler facts');
+    assert.deepEqual(compilerFacts(incremental.graph!.edges), compilerFacts(cold.edges),
+      'incremental and full graph must agree on source-proven TypeChecker facts');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
