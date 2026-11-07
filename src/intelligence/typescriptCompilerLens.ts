@@ -23,6 +23,12 @@ export interface CompilerBindingResult {
   reason: string | null;
 }
 
+/** Disclose optional frontend precision gaps without mislabeling syntax as absent. */
+export function compilerPrecisionWarning(result: CompilerBindingResult): string | null {
+  if (result.state === 'not-applicable' || (result.state === 'completed' && !result.reason)) return null;
+  return `Optional TypeScript compiler symbol evidence ${result.state}: ${result.reason ?? 'compiler precision unavailable'}. Syntax/source graph remains available; compiler-level negative or exhaustive conclusions are not established.`;
+}
+
 interface NamedLocation { file: string; name: string; line: number }
 
 function relativeFile(root: string, name: string): string | null {

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { buildLocalGraph } from '../src/intelligence/local.js';
+import { compilerTypeScriptReferences, compilerPrecisionWarning } from '../src/intelligence/typescriptCompilerLens.js';
 import { runChecked } from '../src/util/process.js';
 
 test('TypeScript compiler enriches exact cross-file method identity but never infers dynamic calls', async () => {
@@ -51,4 +52,16 @@ export function dynamic(value: any) { return value.run(); }
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('compiler-level precision gaps are explicitly disclosed without inventing negative evidence', () => {
+  const content = new Map(Array.from({ length: 601 }, (_, i) => [`file${i}.ts`, 'export const value = 1;']));
+  const result = compilerTypeScriptReferences({
+    root: '/root/unused', sourceTexts: content, nodes: [], fileNodes: new Map(), options: {},
+  });
+  assert.equal(result.state, 'bounded-out');
+  assert.deepEqual(result.edges, []);
+  assert.match(compilerPrecisionWarning(result) ?? '', /bounded-out/);
+  assert.match(compilerPrecisionWarning(result) ?? '', /negative or exhaustive conclusions are not established/);
+  assert.equal(compilerPrecisionWarning({ ...result, state: 'completed', reason: null }), null);
 });

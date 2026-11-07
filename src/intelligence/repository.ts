@@ -12,7 +12,7 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
-import { compilerTypeScriptReferences, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
+import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
 export const ANALYZER_VERSION = '2.17.0-compiler-symbol-lens';
@@ -2265,6 +2265,10 @@ export async function advanceRepositoryGraph(input: {
       root: input.root, sourceTexts: allTypescript, nodes, fileNodes, options: loadCompilerOptions(input.root),
     });
     edges.push(...compiler.edges);
+    const warning = trackedCode.length > 600
+      ? 'Optional TypeScript compiler symbol evidence bounded-out: tracked JS/TS source exceeds the 600-file precision limit. Syntax/source graph remains available; compiler-level negative or exhaustive conclusions are not established.'
+      : compilerPrecisionWarning(compiler);
+    if (warning) warnings.push(warning);
   }
 
   nodes.push(...ensureSemanticTargets(nodes, edges));
@@ -2460,6 +2464,11 @@ export async function buildRepositoryGraph(input: {
   });
   nodes.push(...compiler.nodes);
   edges.push(...compiler.edges);
+  const compilerWarning = compilerPrecisionWarning(compiler);
+  if (compilerWarning) {
+    warnings.push(compilerWarning);
+    repositorySource.warnings = [...warnings];
+  }
   addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
   nodes.push(...ensureSemanticTargets(nodes, edges));
   const merged = mergeNodes(nodes);
