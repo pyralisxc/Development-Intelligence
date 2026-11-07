@@ -11,6 +11,7 @@ import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
+import { assessSemanticCurrentEvidence } from './semanticEvidenceRealization.js';
 import { graphRecordWeight } from './capacity.js';
 import { repositoryAudit } from './repositoryAudit.js';
 import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from './interfaceRuntimeObservation.js';
@@ -1343,7 +1344,7 @@ async function repositorySemanticUnderstanding(
 ): Promise<Record<string, unknown>> {
   const authority = await loadSemanticAuthority(project);
   const accepted = latestAcceptedMeanings(authority.ledger);
-  const acceptedItems = accepted.map(meaning => ({
+  let acceptedItems = accepted.map(meaning => ({
     meaningId: meaning.meaningId,
     name: meaning.proposal.name,
     description: meaning.proposal.description,
@@ -1396,6 +1397,24 @@ async function repositorySemanticUnderstanding(
     : bootstrapSemanticCandidates(graph, { limit: candidateLimit });
   const audit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
   const auditById = new Map(audit.items.map(item => [item.candidateId, item]));
+  // Accepted meaning is durable history, while realization belongs to the
+  // exact inspected graph. Recheck the full candidate universe so a bounded
+  // projection cannot misclassify an omitted accepted meaning as unsupported.
+  const acceptedCensus = accepted.length
+    ? allCandidates ?? (bootstrap.capacity.exhausted ? bootstrap : bootstrapSemanticCandidates(graph, { limit: 1000 }))
+    : bootstrap;
+  const acceptedAudit = acceptedCensus === bootstrap
+    ? audit
+    : auditSemanticCandidates(graph, acceptedCensus, { limit: acceptedCensus.candidates.length });
+  const acceptedAuditById = new Map(acceptedAudit.items.map(item => [item.candidateId, item]));
+  const acceptedRealizations = accepted.map(meaning =>
+    assessSemanticCurrentEvidence(graph, meaning, acceptedCensus.candidates, acceptedAuditById));
+  acceptedItems = acceptedItems.map((item, index) => ({
+    ...item, currentEvidence: acceptedRealizations[index] ?? null,
+  }));
+  const currentSourceSupportedCount = acceptedRealizations.filter(item => item.sourceStatus === 'supported').length;
+  const currentMachineTechnicalProofCount = acceptedRealizations.filter(item => item.currentlyProvenTechnicalScope === true).length;
+  const sourceUnprovenCount = accepted.length - currentSourceSupportedCount;
   const derivedItems = bootstrap.candidates
     .map(candidate => {
       const assessment = auditById.get(candidate.id);
@@ -1458,7 +1477,10 @@ async function repositorySemanticUnderstanding(
     const capabilitySentence = capabilities.length
       ? ` Connected accepted capabilities include ${semanticNameList(capabilities, 6)}.`
       : '';
-    summary = `${lead}${capabilitySentence} ${accepted.length} accepted meaning${accepted.length === 1 ? '' : 's'} are recorded; ${verifiedCount} have separate evidence verification.`;
+    summary = `${lead}${capabilitySentence} ${accepted.length} accepted meaning${accepted.length === 1 ? '' : 's'} are recorded; ${verifiedCount} have separate evidence verification.`
+      + (sourceUnprovenCount
+        ? ` ${sourceUnprovenCount} accepted record(s) lack currently proven source realization; historical acceptance does not establish current technical truth.`
+        : ' Current source realization is supported for the recorded meanings.');
   } else if (primarySource === 'derived-candidates') {
     summary = `Evidence-derived semantic candidates for ${project} currently identify ${semanticNameList(primaryItems.map(item => String(item.name)), 6)}. These are source-backed proposals, not accepted product intent; deeper query modes expose supporting layers and uncertainty without upgrading their authority.`;
   } else if (primarySource === 'observed-semantic-graph') {
@@ -1503,7 +1525,11 @@ async function repositorySemanticUnderstanding(
       durable: authority.durable,
       acceptedCount: acceptedItems.length,
       verifiedCount,
+      currentSourceSupportedCount,
+      currentSourceUnprovenCount: sourceUnprovenCount,
+      currentMachineTechnicalProofCount,
       acceptanceImpliesVerification: false,
+      acceptedIdentityIsNotCurrentCodeProof: true,
     },
     ...(primarySource === 'accepted-authority' ? { meanings: acceptedItems.slice(0, limit) } : {}),
     ...(primarySource === 'derived-candidates' ? { candidates: primaryItems.slice(0, limit) } : {}),
