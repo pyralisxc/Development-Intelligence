@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadRegistry } from '../src/config/registry.js';
 import { listTechnicalSources, queryTechnicalSource } from '../src/intelligence/technicalSources.js';
+import { sanitizeExternalPayload } from '../src/intelligence/externalSanitization.js';
 import { clearGraphCache, scanGraph } from '../src/intelligence/service.js';
 import { runChecked } from '../src/util/process.js';
 
@@ -126,13 +127,90 @@ test('external technical evidence normalizes deployment and database sources wit
     assert.ok(database.evidence.relationships.some((item: any) => item.kind === 'contains'));
     assert.ok(database.evidence.correlations.some((item: any) => item.kind === 'matches-entity'));
     assert.equal(database.evidence.coverage.status, 'complete');
-    assert.deepEqual(database.data.schemas[0].tables, [{ name: 'users' }], 'raw provider payload remains available alongside normalized evidence');
+    assert.deepEqual(database.data.schemas[0].tables, [{ name: 'users' }], 'safe schema metadata remains inspectable');
+    assert.equal(deployment.evidence.sanitization.policy, 'sanitized-v1');
+    assert.equal(database.evidence.sanitization.policy, 'sanitized-v1');
   } finally {
     clearGraphCache('ExternalEvidence');
     globalThis.fetch = originalFetch;
     if (previousRegistry === undefined) delete process.env.DEVINT_PROJECTS_JSON;
     else process.env.DEVINT_PROJECTS_JSON = previousRegistry;
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('external evidence recursively redacts secrets and personal identifiers before mapping', () => {
+  const secret = 'sk-proj-EXAMPLE_SECRET_1234567890';
+  const input = {
+    id: 'dep-safe', gitSource: { sha: 'a'.repeat(40), ref: 'preview' }, status: 'READY',
+    url: 'https://deployment.example.test/path?token=hidden&email=test@example.com',
+    metadata: {
+      authorization: 'Bearer ' + secret, email: 'private@example.com',
+      ip_address: '203.0.113.45', nested: {
+        service_role: secret, request_body: { password: secret },
+        message: 'contact private@example.com',
+      },
+    },
+    event: 'Bearer ' + secret + ' for private@example.com',
+    rows: [{ password: secret, owner: 'private@example.com' }],
+  };
+  const out = sanitizeExternalPayload(input);
+  const rendered = JSON.stringify(out.value);
+  assert.equal(out.redaction.policy, 'sanitized-v1');
+  assert.ok(out.redaction.redactedFields >= 4);
+  assert.ok(out.redaction.redactedValues >= 2);
+  for (const forbidden of [secret, 'private@example.com', '203.0.113.45', 'token=hidden'])
+    assert.equal(rendered.includes(forbidden), false, 'sensitive payload must never leave the adapter');
+  assert.ok(rendered.includes('dep-safe'));
+  assert.ok(rendered.includes('a'.repeat(40)), 'exact technical revision survives');
+  assert.deepEqual(out.value, sanitizeExternalPayload(input).value, 'same input must sanitize deterministically');
+});
+
+test('query_source returns sanitized data and graph evidence, never raw provider rows or query credentials', async () => {
+  const originalFetch = globalThis.fetch;
+  const previousRegistry = process.env.DEVINT_PROJECTS_JSON;
+  const secret = 'sk-proj-REALISTIC_TEST_SECRET_1234567890';
+  try {
+    process.env.DEVINT_PROJECTS_JSON = JSON.stringify({
+      RedactionProof: {
+        repository: 'https://github.com/example/repo.git', defaultRef: 'refs/heads/main',
+        allowedRefs: ['refs/heads/main'], credential: { type: 'none' },
+        technicalSources: [{
+          id: 'external', type: 'read-only-http', adapter: 'generic-json',
+          endpoint: 'https://provider.example.test/schema?api_key=private-value',
+          capabilities: ['query'],
+        }],
+      },
+    });
+    globalThis.fetch = async (_input: any, init?: any) => {
+      assert.equal(init?.method, 'GET');
+      assert.equal(init?.redirect, 'error');
+      return new Response(JSON.stringify({
+        revision: 'b'.repeat(40), secret_key: secret,
+        rows: [{ email: 'someone@example.com', access_token: secret }],
+        headers: { authorization: 'Bearer ' + secret },
+        misc: 'contact someone@example.com',
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const sources = await listTechnicalSources('RedactionProof');
+    assert.equal(sources[1]?.endpoint, 'https://provider.example.test',
+      'discovery must not expose configured endpoint credential query');
+    const result = await queryTechnicalSource({
+      project: 'RedactionProof', sourceId: 'external', query: 'metadata',
+    });
+    const serialized = JSON.stringify(result);
+    for (const forbidden of [secret, 'someone@example.com', 'private-value']) {
+      assert.equal(serialized.includes(forbidden), false, 'secret and PII absent from all output planes');
+    }
+    assert.ok(serialized.includes('b'.repeat(40)), 'source revision remains visible');
+    assert.equal((result.evidence as any).sanitization.policy, 'sanitized-v1');
+    assert.ok((result.evidence as any).sanitization.redactedFields > 0);
+    assert.equal((result.evidence as any).policy, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousRegistry === undefined) delete process.env.DEVINT_PROJECTS_JSON;
+    else process.env.DEVINT_PROJECTS_JSON = previousRegistry;
   }
 });
 
