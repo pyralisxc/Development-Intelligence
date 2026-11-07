@@ -88,7 +88,7 @@ test('compiler retains exact TypeChecker truth beyond the old 600-source ceiling
     // A new exact Git revision must produce the SAME compiler facts whether DI
     // advances its canonical graph incrementally or reconstructs a cold W.
     await fs.writeFile(path.join(root, 'consumer.ts'),
-      "import { helper } from './types.js';\\nexport const value = helper(7);\\n".replaceAll('\\n', '\n'));
+      "import { helper } from './types.js';\nexport const value = helper(7);\n");
     await runChecked('git', ['-C', root, 'add', 'consumer.ts']);
     await runChecked('git', ['-C', root, '-c', 'user.email=fixture@example.com',
       '-c', 'user.name=Fixture', 'commit', '-m', 'advance compiler source']);
