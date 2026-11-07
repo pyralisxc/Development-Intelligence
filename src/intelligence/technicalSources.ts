@@ -2,6 +2,7 @@ import { getProjectConfig } from '../config/registry.js';
 import { projectAccessSecret } from '../config/projectAccess.js';
 import { stableHash } from '../util/hash.js';
 import { graphContext } from './service.js';
+import { sanitizeExternalPayload, publicTechnicalEndpoint } from './externalSanitization.js';
 import type {
   GraphNode,
   TechnicalEvidenceCorrelation,
@@ -359,7 +360,7 @@ async function correlate(project: string, source: TechnicalSourceConfig, observa
       status: {
         attempted: true,
         available: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: 'Graph correlation unavailable',
       },
     };
   }
@@ -373,7 +374,9 @@ function snapshotState(source: TechnicalSourceConfig, response: Response, data: 
     ? 'unknown'
     : ageMs <= source.freshnessMs ? 'fresh' : 'stale';
   const revision = sourceRevision(data);
-  const snapshotId = response.headers.get('etag')
+  const etag = response.headers.get('etag');
+  const safeEtag = etag ? sanitizeExternalPayload(etag).value as string : null;
+  const snapshotId = safeEtag
     ?? revision
     ?? textField(data, 'snapshotId', 'snapshot', 'id')
     ?? null;
@@ -395,7 +398,7 @@ export async function listTechnicalSources(project: string): Promise<Array<Recor
     type: source.type,
     adapter: source.adapter ?? 'generic-json',
     capabilities: source.capabilities,
-    endpoint: source.endpoint,
+    endpoint: publicTechnicalEndpoint(source.endpoint),
     providerId: source.providerId ?? null,
     freshnessMs: source.freshnessMs ?? null,
     configured: true,
@@ -459,31 +462,34 @@ export async function queryTechnicalSource(input: {
       signal: controller.signal,
     });
     const body = await readBounded(response);
-    const contentType = response.headers.get('content-type') ?? '';
+    const contentType = (sanitizeExternalPayload(response.headers.get('content-type') ?? '').value as string);
     let data: unknown = body;
     if (contentType.includes('application/json')) {
       try { data = body ? JSON.parse(body) : null; } catch { data = body; }
     }
 
+    // Redact provider content BEFORE normalization, evidence-ID construction or correlation.
+    const { value: safeData, redaction } = sanitizeExternalPayload(data);
     const observedAt = new Date().toISOString();
     const adapter = source.adapter ?? 'generic-json';
     const normalized = adapter === 'deployment-state'
-      ? deploymentEvidence(source, data, observedAt)
+      ? deploymentEvidence(source, safeData, observedAt)
       : adapter === 'database-schema'
-        ? databaseEvidence(source, data, observedAt)
-        : genericEvidence(source, data, observedAt);
+        ? databaseEvidence(source, safeData, observedAt)
+        : genericEvidence(source, safeData, observedAt);
     const correlation = await correlate(input.project, source, normalized.observations);
     const envelope: TechnicalEvidenceEnvelope = {
+      sanitization: redaction,
       source: {
         id: source.id,
         label: source.label ?? source.id,
         type: source.type,
         adapter,
         capability,
-        endpoint: source.endpoint,
+        endpoint: publicTechnicalEndpoint(source.endpoint),
         ...(source.providerId ? { providerId: source.providerId } : {}),
       },
-      snapshot: snapshotState(source, response, data, observedAt),
+      snapshot: snapshotState(source, response, safeData, observedAt),
       availability: { available: response.ok, httpStatus: response.status },
       coverage: response.ok
         ? {
@@ -502,7 +508,7 @@ export async function queryTechnicalSource(input: {
       relationships: normalized.relationships,
       correlations: correlation.correlations,
       correlationStatus: correlation.status,
-      raw: data,
+      raw: safeData,
     };
 
     return {
@@ -512,7 +518,7 @@ export async function queryTechnicalSource(input: {
       status: response.status,
       ok: response.ok,
       contentType,
-      data,
+      data: safeData,
       evidence: envelope,
       policy: {
         readOnly: true,
