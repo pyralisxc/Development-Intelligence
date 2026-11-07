@@ -38,7 +38,9 @@ async function fixture() {
     await fs.writeFile(file, JSON.stringify(makeCanonicalGraphRecord({ project: 'Example', repository, revision, working: graph(marker), accepted: null, currentness })));
     files.push(file);
     bindings.push({ accountId: `account-${marker}`, bindingId: `binding-${marker}`, bindingVersion: 1, authorityId: `authority-${marker}`, internalProject: 'Example',
-      config: { repository, defaultRef: 'refs/heads/main', allowedRefs: ['refs/heads/main'], revisionPolicy: 'repository-history', credential: { type: 'none' }, runtimeOrigins: ['https://runtime-fixture.invalid'] }, secretValues: {}, canonical: { kind: 'file', root: canonical } });
+      config: { repository, defaultRef: 'refs/heads/main', allowedRefs: ['refs/heads/main'], revisionPolicy: 'repository-history', credential: { type: 'none' }, runtimeOrigins: ['https://runtime-fixture.invalid'], technicalSources: [{ id: 'deploy',
+        type: 'read-only-http', adapter: 'deployment-state',
+        endpoint: 'https://provider-fixture.invalid/current', capabilities: ['query'] }] }, secretValues: {}, canonical: { kind: 'file', root: canonical } });
   }
   return { root, revision, repository, graphId, bindings, files };
 }
@@ -72,7 +74,18 @@ test('actual graph caches and cold graphId reads stay inside exact adopted autho
 test('foreign runtime snapshots and diagnostic clearing cannot cross bindings', async () => {
   const f = await fixture(); const a = f.bindings[0]!, b = f.bindings[1]!;
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: any) => { assert.equal(new URL(String(input)).hostname, 'runtime-fixture.invalid'); return new Response('{"fixture":true}', { headers: { 'content-type': 'application/json' } }); }) as typeof fetch;
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const hostname = new URL(String(input)).hostname;
+    assert.equal(init?.method, 'GET');
+    if (hostname === 'provider-fixture.invalid') {
+      return new Response(JSON.stringify({
+        id: 'test-ready-deployment', state: 'READY', url: 'https://runtime-fixture.invalid',
+        gitSource: { sha: f.revision, ref: 'main' }, updatedAt: new Date().toISOString(),
+      }), { headers: { 'content-type': 'application/json' } });
+    }
+    assert.equal(hostname, 'runtime-fixture.invalid');
+    return new Response('{"fixture":true}', { headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
   const run = <T>(binding: ProjectAccessBinding, fn: () => Promise<T>) => withProjectAccess(binding, async () => true, fn);
   try {
     const snapshot = await run(a, async () => await scanGraph('Example', { ref: `commit:${f.revision}`, urls: ['https://runtime-fixture.invalid/state'] }));
