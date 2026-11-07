@@ -68,6 +68,24 @@ function nearestAncestorKind(node: SgNode, kinds: string[]): string | null {
   return null;
 }
 
+/**
+ * Python module bindings are source-declared names, not inferred runtime values.
+ * Only a single identifier assignment directly in module scope creates the
+ * unique declaration used for a local "from module import NAME" binding.
+ * Conditional, function/class-local, destructuring, chained and annotation-only
+ * forms are not promoted by this conservative source parser.
+ */
+function pythonModuleBinding(node: SgNode): string | null {
+  if (String(node.kind()) !== 'assignment') return null;
+  const parent = node.parent();
+  const container = String(parent?.kind()) === 'expression_statement' ? parent?.parent() : parent;
+  if (String(container?.kind()) !== 'module') return null;
+  const left = node.field('left');
+  const right = node.field('right');
+  if (!left || String(left.kind()) !== 'identifier' || !right || String(right.kind()) === 'assignment') return null;
+  return left.text().trim() || null;
+}
+
 function declarationFor(language: Language, node: SgNode): Declaration | null {
   const syntaxKind = String(node.kind());
   const name = nameFromField(node);
@@ -114,6 +132,10 @@ function declarationFor(language: Language, node: SgNode): Declaration | null {
     return null;
   }
 
+  if (syntaxKind === 'assignment') {
+    const binding = pythonModuleBinding(node);
+    return binding ? { kind: 'declaration', name: binding, opensScope: false, callable: false } : null;
+  }
   if (syntaxKind === 'class_definition' && name) return { kind: 'class', name, opensScope: true, callable: false };
   if (syntaxKind === 'function_definition' && name) {
     const ownerKind = nearestAncestorKind(node, ['class_definition', 'function_definition']);
