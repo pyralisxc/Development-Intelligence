@@ -329,3 +329,19 @@ test('actual producer-style unspecified SCIP offsets need explicit compatibility
     assert.match(invalid.stderr, /requires utf8, utf16 or utf32/u);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+test('SCIP legacy-offset compatibility never promotes forged same-name relationships', async () => {
+  const { root, graph } = await fixture(true);
+  try {
+    await writeIndex(root, scip({ encoding: 0, definitionEncoding: 0, definitionFile: 'src/other.ts' }));
+    const forged = await projectLocalScipEvidence({
+      root, graph, indexPath: 'scip-cache/index.scip', legacyPositionEncoding: 'utf16',
+    });
+    assert.equal(forged.index.assumedPositionEncodingDocuments, 2);
+    assert.equal(forged.counts.candidateEdges, 1);
+    assert.equal(forged.counts.resolvedEdges, 0);
+    assert.equal(forged.counts.compilerCorroboratedOccurrences, 0);
+    assert.ok(forged.graph.edges.some(edge => edge.strategy === SCIP_EVIDENCE_STRATEGY
+      && edge.status === 'candidate' && edge.to?.includes('other.ts')));
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
