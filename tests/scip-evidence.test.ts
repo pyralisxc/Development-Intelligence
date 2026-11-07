@@ -68,12 +68,13 @@ function scip(options: {
   ]);
 }
 
-async function fixture(extra = false): Promise<{ root: string; graph: Awaited<ReturnType<typeof buildLocalGraph>> }> {
+async function fixture(extra = false, subproject = ''): Promise<{ root: string; graph: Awaited<ReturnType<typeof buildLocalGraph>> }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-scip-fixture-'));
-  await fs.mkdir(path.join(root, 'src'), { recursive: true });
-  await fs.writeFile(path.join(root, 'src', 'api.ts'), api);
-  await fs.writeFile(path.join(root, 'src', 'consumer.ts'), consumer);
-  if (extra) await fs.writeFile(path.join(root, 'src', 'other.ts'), api);
+  const sourceRoot = path.join(root, subproject, 'src');
+  await fs.mkdir(sourceRoot, { recursive: true });
+  await fs.writeFile(path.join(sourceRoot, 'api.ts'), api);
+  await fs.writeFile(path.join(sourceRoot, 'consumer.ts'), consumer);
+  if (extra) await fs.writeFile(path.join(sourceRoot, 'other.ts'), api);
   await runChecked('git', ['init', '--initial-branch=main', root]);
   await runChecked('git', ['-C', root, 'add', '.']);
   await runChecked('git', ['-C', root, '-c', 'user.email=di@example.com', '-c', 'user.name=DI Fixture', 'commit', '-m', 'fixture']);
@@ -212,5 +213,74 @@ test('SCIP occurrence offsets preserve UTF-8, UTF-16 and UTF-32 compiler cross-c
       assert.equal(corroborated.counts.resolvedEdges, 1, 'source proof should be encoding-neutral for supported offsets');
       assert.equal(corroborated.counts.compilerCorroboratedOccurrences, 1);
     }
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('a project-rooted SCIP index is mapped only through an explicit canonical subproject prefix', async () => {
+  const prefix = 'packages/studio';
+  const { root, graph } = await fixture(false, prefix);
+  try {
+    await writeIndex(root, scip());
+    const direct = await projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip', graph });
+    assert.equal(direct.counts.sourceDocumentsMatched, 0);
+    assert.equal(direct.counts.sourceDocumentsSkipped, 2);
+    assert.equal(direct.counts.resolvedEdges, 0);
+
+    const scoped = await projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip',
+      graph, projectPrefix: prefix });
+    assert.equal(scoped.index.projectPrefix, prefix);
+    assert.equal(scoped.counts.sourceDocumentsMatched, 2);
+    assert.equal(scoped.counts.resolvedEdges, 1);
+    assert.equal(scoped.counts.compilerCorroboratedOccurrences, 1);
+    const edge = scoped.graph.edges.find(item => item.strategy === SCIP_EVIDENCE_STRATEGY);
+    assert.equal(edge?.from, 'file:packages/studio/src/consumer.ts');
+    assert.match(edge?.to ?? '', /packages\/studio\/src\/api\.ts#function:handler/u);
+    assert.notEqual(scoped.graph.graphId, direct.graph.graphId,
+      'different index project roots must never share a graph identity');
+    assert.deepEqual((await projectLocalScipEvidence({
+      root, indexPath: 'scip-cache/index.scip', graph, projectPrefix: prefix,
+    })).graph.edges.filter(item => item.strategy === SCIP_EVIDENCE_STRATEGY),
+    scoped.graph.edges.filter(item => item.strategy === SCIP_EVIDENCE_STRATEGY));
+
+    const wrongButTracked = await projectLocalScipEvidence({
+      root, indexPath: 'scip-cache/index.scip', graph, projectPrefix: 'packages',
+    });
+    assert.equal(wrongButTracked.counts.sourceDocumentsSkipped, 2);
+    assert.equal(wrongButTracked.counts.resolvedEdges, 0);
+    assert.notEqual(wrongButTracked.graph.graphId, scoped.graph.graphId);
+
+    const cli = await run(process.execPath, [
+      path.resolve('dist/src/graphCli.js'), 'scip-evidence',
+      '--repo-path', root, '--project', 'scip-scoped',
+      '--scip-index', 'scip-cache/index.scip', '--scip-project-prefix', prefix,
+    ]);
+    assert.equal(cli.code, 0, cli.stderr);
+    const output = JSON.parse(cli.stdout);
+    assert.equal(output.index.projectPrefix, prefix);
+    assert.equal(output.counts.resolvedEdges, 1);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('SCIP project roots are not inferred from untrusted metadata or escaping paths', async () => {
+  const prefix = 'packages/studio';
+  const { root, graph } = await fixture(false, prefix);
+  try {
+    await writeIndex(root, scip());
+    for (const malformed of ['../packages/studio', '/packages/studio', 'packages//studio',
+      'packages/./studio', 'packages\\studio', 'C:/packages/studio']) {
+      await assert.rejects(
+        projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip', graph,
+          projectPrefix: malformed }),
+        /project prefix must be a canonical repository-relative path/u,
+        malformed,
+      );
+    }
+    await assert.rejects(projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip',
+      graph, projectPrefix: 'not-a-tracked-package' }),
+    /project prefix has no tracked source files/u);
+    await writeIndex(root, scip({ file: '../escape.ts' }));
+    await assert.rejects(projectLocalScipEvidence({
+      root, indexPath: 'scip-cache/index.scip', graph, projectPrefix: prefix,
+    }), /document path is not canonical or would escape/u);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

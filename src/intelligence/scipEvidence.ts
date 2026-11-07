@@ -32,6 +32,7 @@ export interface ScipEvidenceProjection {
     producer: { name: string; version: string };
     documents: number;
     occurrences: number;
+    projectPrefix: string;
   };
   counts: {
     sourceDocumentsMatched: number;
@@ -60,6 +61,18 @@ function safeRelative(value: string): boolean {
   if (!value || value.length > 2048 || value.startsWith('/') || value.includes('\\') || value.includes('\0')
     || /^[A-Za-z]:/u.test(value)) return false;
   return value.split('/').every(segment => segment && segment !== '.' && segment !== '..');
+}
+
+/**
+ * A SCIP Index is rooted at a single build project, which may be inside the
+ * repository. Never infer this prefix from untrusted index metadata: map the
+ * producer's document paths only when the caller explicitly pins the actual
+ * project subdirectory of the exact inspected checkout.
+ */
+function projectPrefix(value: string | undefined): string {
+  if (value === undefined || value === '.') return '';
+  if (!safeRelative(value)) throw new Error('SCIP project prefix must be a canonical repository-relative path');
+  return value;
 }
 
 function within(root: string, target: string): boolean {
@@ -165,22 +178,34 @@ export async function projectLocalScipEvidence(input: {
   root: string;
   indexPath: string;
   graph: IntelligenceGraph;
+  projectPrefix?: string;
 }): Promise<ScipEvidenceProjection> {
   const root = await fs.realpath(path.resolve(input.root));
   const changed = (await runChecked('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'])).stdout.trim();
   if (changed) throw new Error('SCIP evidence requires tracked source identical to the exact Git HEAD');
   const sha = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
   if (sha !== input.graph.repositoryRevision) throw new Error('SCIP evidence graph must match the exact checked-out Git revision');
+  const prefix = projectPrefix(input.projectPrefix);
+  if (prefix && !input.graph.coverage?.files.some(item => item.path.startsWith(prefix + '/'))) {
+    throw new Error('SCIP project prefix has no tracked source files in the inspected graph');
+  }
   const bytes = await readUntrackedIndex(root, input.indexPath);
   const parsed = decodeScipIndex(bytes);
   const indexHash = createHash('sha256').update(bytes).digest('hex');
 
   const actual = new Map<string, SourceDocument>();
+  const seenDocuments = new Set<string>();
   let skipped = 0;
   for (const doc of parsed.documents) {
-    if (actual.has(doc.path)) throw new Error('SCIP index repeats the same canonical document path');
-    const file = await trackedDocument(root, doc, input.graph);
-    if (file) actual.set(doc.path, file);
+    // Validate the producer's relative paths before adding any explicit prefix.
+    // A mapped document never gains authority solely by existing in the index.
+    if (!safeRelative(doc.path)) throw new Error('SCIP document path is not canonical or would escape the repository');
+    const mappedPath = prefix ? prefix + '/' + doc.path : doc.path;
+    if (seenDocuments.has(mappedPath)) throw new Error('SCIP index repeats the same canonical document path');
+    seenDocuments.add(mappedPath);
+    const mapped = prefix ? { ...doc, path: mappedPath } : doc;
+    const file = await trackedDocument(root, mapped, input.graph);
+    if (file) actual.set(mappedPath, file);
     else skipped += 1;
   }
 
@@ -293,11 +318,12 @@ export async function projectLocalScipEvidence(input: {
     graph: {
       ...input.graph,
       graphId: 'scip-overlay-' + createHash('sha256')
-        .update(JSON.stringify([input.graph.graphId, sha, indexHash, SCIP_EVIDENCE_STRATEGY]))
+        .update(JSON.stringify([input.graph.graphId, sha, indexHash, prefix, SCIP_EVIDENCE_STRATEGY]))
         .digest('hex').slice(0, 24),
       edges: [...input.graph.edges, ...added],
     },
-    index: { sha256: indexHash, producer: parsed.producer, documents: parsed.documents.length, occurrences: parsed.occurrenceCount },
+    index: { sha256: indexHash, producer: parsed.producer, documents: parsed.documents.length,
+      occurrences: parsed.occurrenceCount, projectPrefix: prefix },
     counts: {
       sourceDocumentsMatched: actual.size,
       sourceDocumentsSkipped: skipped,
