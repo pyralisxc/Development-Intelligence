@@ -41,6 +41,7 @@ export interface TechnicalEvidenceCorrelation {
 }
 
 export interface TechnicalEvidenceEnvelope {
+  sanitization: import('./intelligence/externalSanitization.js').RedactionSummary;
   source: {
     id: string;
     label: string;
