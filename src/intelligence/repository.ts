@@ -2144,6 +2144,13 @@ export async function advanceRepositoryGraph(input: {
 
   for (const relative of frontier.paths) {
     const ext = path.extname(relative).toLowerCase();
+    // Compiler signatures are project-wide. An incremental partial TS program
+    // cannot safely preserve old cross-file binding proof when any code or
+    // compiler configuration source changes. Prefer the exact full rebuild.
+    if (CODE_EXTENSIONS.has(ext) || /(^|\/)(?:tsconfig(?:\.[^/]*)?\.json|jsconfig(?:\.[^/]*)?\.json|package\.json)$/iu.test(relative)) {
+      return { graph: null, strategy: 'fallback', reason: 'TypeScript compiler binding requires a full source rebuild',
+        changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+    }
     if (POLYGLOT_EXTENSIONS.has(ext) || UNITY_SERIALIZED_EXTENSIONS.has(ext) || UNITY_JSON_EXTENSIONS.has(ext)) {
       return { graph: null, strategy: 'fallback', reason: `incremental frontier contains globally coupled ${ext || '(none)'} source`, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
     }
