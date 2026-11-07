@@ -149,9 +149,9 @@ Canonical persistence records exact revision identity and independent currentnes
 - schema support;
 - integrity state.
 
-Accepted semantic A can remain semantically current across implementation-only movement when topology remains equivalent; source/evidence/analyzer movement is reported independently. A current revision with a changed semantic delta requires current-revision review before promotion.
+Accepted semantic A is an explicit owner-controlled **release/governance artifact**, not a source of current code understanding. Ordinary analysis always derives current semantic evidence from the selected W graph, even when A exists, differs, or is unavailable. If a promotion gate is explicitly enforced, its review obligation is separate from the truth of the inspected source graph.
 
-Semantic review persistence is a current-authority working set, not a historical warehouse. Preview may temporarily hold base + candidate review/lineage records while deciding the next accepted state. Successful semantic promotion compacts those records to the latest active accepted meanings and removes transition event history/lineage scaffolding. Exact historical understanding comes from replaying the requested Git revision and, when needed, comparing immutable revisions ephemerally.
+Legacy semantic review persistence may temporarily retain explicit approvals, baseline/lineage decisions and compatibility data until their clients and release controls are reconciled. It is not a machine memory of implementation meaning and is never consumed as proof for ordinary current semantic questions. Exact historical understanding comes from replaying the requested Git revision with the relevant analyzer, comparing immutable graphs only when explicitly requested.
 
 The deterministic `.development-intelligence/` manifest/shard format remains an internal self-seal and legacy migration/compatibility format. Its content-integrity checks are still tested, but inspected repositories must not use it as a parallel machine semantic authority.
 
