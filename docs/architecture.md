@@ -179,10 +179,15 @@ Generic An optional local SCIP source sensor (the `scip-evidence` command) can
 consume a bounded precomputed SCIP protobuf Index over an exact clean Git
 checkout. It correlates definition/reference occurrences and source encodings
 with existing tracked DI declaration/file nodes. An externally supplied index
-is **not an attested compiler run or source-completeness proof**: its new
-`references-symbol` relationships remain explicit **candidate** evidence,
-not runtime call proof, semantic acceptance, canonical W publication or a
-replacement parity guarantee. The projected graph is disposable and identified
+is **not an attested compiler run or source-completeness proof**. Every
+matching relationship remains a **candidate** unless DI independently
+re-checks its exact callsite and destination against a fresh TypeScript
+TypeChecker over the unchanged Git checkout. Only such source-proven static
+bindings are marked **resolved structural facts** in the returned DI graph
+projection. Remaining relationships stay candidate, never negative/absence
+proof. Compiler resolution still does not assert runtime execution,
+semantic product acceptance, canonical W publication or a replacement parity
+guarantee. The projected graph is disposable and identified
 by the exact Git SHA plus the index SHA-256; normal MCP and scan_graph reads
 remain unchanged. Unsupported/unsafe ranges and unavailable source documents
 are excluded with counts, not reported as absence. Generate SCIP with an

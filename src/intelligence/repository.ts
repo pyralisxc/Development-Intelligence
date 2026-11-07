@@ -155,7 +155,7 @@ function repositoryPath(root: string, absolute: string): string | null {
   return relative && !relative.startsWith('../') ? relative : null;
 }
 
-function loadCompilerOptions(root: string): ts.CompilerOptions {
+export function loadCompilerOptions(root: string): ts.CompilerOptions {
   const fallback: ts.CompilerOptions = {
     allowJs: true,
     jsx: ts.JsxEmit.Preserve,

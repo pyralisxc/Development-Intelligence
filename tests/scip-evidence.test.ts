@@ -52,6 +52,7 @@ function scip(options: {
   file?: string;
   variant?: 'typed' | 'legacy';
   otherDefinition?: boolean;
+  definitionFile?: string;
   encoding?: number;
 } = {}): Buffer {
   const name = 'handler';
@@ -61,7 +62,7 @@ function scip(options: {
   const reference = occurrence(options.refLine ?? 1, start, start + name.length, 0, options.variant);
   return Buffer.concat([
     header(),
-    message(2, document('src/api.ts', [definition])),
+    message(2, document(options.definitionFile ?? 'src/api.ts', [definition])),
     ...(options.otherDefinition ? [message(2, document('src/other.ts', [definition]))] : []),
     message(2, document(options.file ?? 'src/consumer.ts', [reference], options.encoding)),
   ]);
@@ -93,18 +94,25 @@ test('SCIP binary occurrence evidence joins existing DI symbols without acquirin
     const edges = first.graph.edges.filter(item => item.strategy === SCIP_EVIDENCE_STRATEGY);
     assert.equal(first.counts.sourceDocumentsMatched, 2);
     assert.equal(first.counts.definitionsMatched, 1);
-    assert.equal(first.counts.candidateEdges, 1);
+    assert.equal(first.counts.candidateEdges, 0);
+    assert.equal(first.counts.resolvedEdges, 1);
+    assert.equal(first.counts.compilerCorroboratedOccurrences, 1);
+    assert.equal(first.counts.compilerVerification, 'completed');
     assert.equal(first.counts.referencedSymbolsMatched, 1);
     assert.equal(edges.length, 1);
     assert.equal(edges[0]?.kind, 'references-symbol');
-    assert.equal(edges[0]?.status, 'candidate', 'caller-supplied index is never accepted as a verified compiler observation');
-    assert.equal(edges[0]?.confidence, null);
+    assert.equal(edges[0]?.status, 'resolved', 'independent source TypeChecker proof is a resolved technical fact');
+    assert.equal(edges[0]?.confidence, 1);
+    assert.match(edges[0]?.evidence.join('\n') ?? '', /Independent TypeScript TypeChecker/);
     assert.equal(edges[0]?.from, 'file:src/consumer.ts');
     assert.match(edges[0]?.to ?? '', /src\/api\.ts#function:handler/u);
     assert.match(edges[0]?.evidence.join('\n') ?? '', /SCIP index [a-f0-9]{64}/u);
     assert.equal(first.index.producer.name, 'scip-fixture');
     assert.equal(first.policy.canonicalAuthorityUnaffected, true);
     assert.equal(first.policy.negativeCoverageNotEstablished, true);
+    assert.equal(first.policy.independentlyCompilerProvenTechnicalEdgesAreResolved, true);
+    assert.equal(first.policy.externallySuppliedIndexNotAttested, true);
+    assert.equal(first.policy.runtimeExecutionNotProven, true);
     assert.notEqual(first.graph.graphId, graph.graphId);
     assert.equal(graph.edges.some(item => item.strategy === SCIP_EVIDENCE_STRATEGY), false);
     assert.deepEqual(edges, second.graph.edges.filter(item => item.strategy === SCIP_EVIDENCE_STRATEGY));
@@ -118,7 +126,8 @@ test('SCIP binary occurrence evidence joins existing DI symbols without acquirin
     assert.equal(executed.code, 0, executed.stderr);
     const receipt = JSON.parse(executed.stdout);
     assert.equal(receipt.mode, 'ephemeral-scip-evidence');
-    assert.equal(receipt.counts.candidateEdges, 1);
+    assert.equal(receipt.counts.candidateEdges, 0);
+    assert.equal(receipt.counts.resolvedEdges, 1);
     assert.equal(receipt.policy.stored, false);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -144,12 +153,26 @@ test('SCIP refuses invented symbol certainty, duplicate definitions and unsuppor
     await writeIndex(root, scip({ otherDefinition: true }));
     const duplicated = await projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip', graph });
     assert.equal(duplicated.counts.candidateEdges, 0);
+    assert.equal(duplicated.counts.resolvedEdges, 0);
     assert.equal(duplicated.counts.ambiguousDefinitions, 1);
+
+    // A forged SCIP symbol can name a real source definition that is not the
+    // one TypeScript actually binds at this callsite. Its source match is
+    // inspectable, but must never become resolved graph truth.
+    await writeIndex(root, scip({ definitionFile: 'src/other.ts' }));
+    const forged = await projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip', graph });
+    assert.equal(forged.counts.candidateEdges, 1);
+    assert.equal(forged.counts.resolvedEdges, 0);
+    assert.equal(forged.counts.compilerCorroboratedOccurrences, 0);
+    const candidate = forged.graph.edges.find(item => item.strategy === SCIP_EVIDENCE_STRATEGY);
+    assert.equal(candidate?.status, 'candidate');
+    assert.match(candidate?.to ?? '', /other\.ts/u);
 
     await writeIndex(root, scip({ encoding: 0 }));
     const unsupported = await projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip', graph });
     assert.equal(unsupported.counts.sourceDocumentsSkipped, 1);
     assert.equal(unsupported.counts.candidateEdges, 0);
+    assert.equal(unsupported.counts.resolvedEdges, 0);
     assert.equal(unsupported.policy.negativeCoverageNotEstablished, true);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -177,5 +200,17 @@ test('SCIP indexes never traverse paths or upgrade malformed, dirty, or stale ev
       projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip', graph }),
       /tracked source identical/u,
     );
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('SCIP occurrence offsets preserve UTF-8, UTF-16 and UTF-32 compiler cross-checks', async () => {
+  const { root, graph } = await fixture();
+  try {
+    for (const encoding of [1, 2, 3]) {
+      await writeIndex(root, scip({ encoding }));
+      const corroborated = await projectLocalScipEvidence({ root, indexPath: 'scip-cache/index.scip', graph });
+      assert.equal(corroborated.counts.resolvedEdges, 1, 'source proof should be encoding-neutral for supported offsets');
+      assert.equal(corroborated.counts.compilerCorroboratedOccurrences, 1);
+    }
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

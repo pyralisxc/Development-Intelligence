@@ -5,14 +5,17 @@ import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { resolution } from './model.js';
 import { decodeScipIndex, type ScipDocument, type ScipOccurrence } from './scipWire.js';
 import { runChecked } from '../util/process.js';
+import { compilerTypeScriptReferences, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
+import { loadCompilerOptions } from './repository.js';
 
 /**
  * SCIP evidence is an opt-in source sensor. A caller-supplied index cannot
  * certify its own producer, exact revision, compiler configuration, or full
- * source coverage. Positive matching references remain CANDIDATES until a
- * separate controlled indexer run establishes that provenance.
+ * source coverage. Independently corroborated static TypeScript bindings are
+ * admitted as RESOLVED technical code facts; other references stay CANDIDATE.
+ * This never infers runtime execution or accepted product meaning.
  */
-export const SCIP_EVIDENCE_STRATEGY = 'scip-source-correlated.v1';
+export const SCIP_EVIDENCE_STRATEGY = 'scip-source-correlated.v2';
 const MAX_INDEX_BYTES = 32 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 1_000_000;
 const MAX_EDGES = 100_000;
@@ -20,7 +23,7 @@ const DECLARATION_KINDS = new Set(['function', 'method', 'class', 'constructor',
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
 interface ScipDefinition { target: GraphNode; file: string; line: number }
-interface SourceDocument { file: string; lines: string[]; index: ScipDocument }
+interface SourceDocument { file: string; text: string; lines: string[]; index: ScipDocument }
 
 export interface ScipEvidenceProjection {
   graph: IntelligenceGraph;
@@ -36,11 +39,15 @@ export interface ScipEvidenceProjection {
     definitionsMatched: number;
     referencedSymbolsMatched: number;
     candidateEdges: number;
+    resolvedEdges: number;
+    compilerCorroboratedOccurrences: number;
+    compilerVerification: 'completed' | 'not-applicable' | 'bounded-out' | 'unavailable';
     ambiguousDefinitions: number;
     unresolvedOrUnsafeOccurrences: number;
   };
   policy: {
-    sourceBackedPositiveCandidatesOnly: true;
+    independentlyCompilerProvenTechnicalEdgesAreResolved: true;
+    remainingUnverifiedPositiveReferencesStayCandidates: true;
     externallySuppliedIndexNotAttested: true;
     negativeCoverageNotEstablished: true;
     canonicalAuthorityUnaffected: true;
@@ -98,6 +105,29 @@ function sourceSlice(source: SourceDocument, occurrence: ScipOccurrence): string
   return null;
 }
 
+/**
+ * SCIP ranges use a document-specific position encoding, while the TypeScript
+ * compiler returns UTF-16 source offsets. Convert exactly, failing closed when
+ * the byte position bisects an encoded character.
+ */
+function utf16Start(source: SourceDocument, occurrence: ScipOccurrence): number | null {
+  const range = occurrence.range;
+  if (!range || range.line >= source.lines.length) return null;
+  const line = source.lines[range.line]!;
+  if (source.index.positionEncoding === 2) return range.start <= line.length ? range.start : null;
+  if (source.index.positionEncoding === 3) {
+    const characters = [...line];
+    return range.start <= characters.length ? characters.slice(0, range.start).join('').length : null;
+  }
+  if (source.index.positionEncoding === 1) {
+    const bytes = Buffer.from(line, 'utf8');
+    if (range.start > bytes.length) return null;
+    try { return utf8Decoder.decode(bytes.subarray(0, range.start)).length; }
+    catch { return null; }
+  }
+  return null;
+}
+
 async function trackedDocument(root: string, doc: ScipDocument, graph: IntelligenceGraph): Promise<SourceDocument | null> {
   if (!safeRelative(doc.path)) throw new Error('SCIP document path is not canonical or would escape the repository');
   if (![1, 2, 3].includes(doc.positionEncoding)) return null;
@@ -113,7 +143,7 @@ async function trackedDocument(root: string, doc: ScipDocument, graph: Intellige
     const buffer = await fs.readFile(physical);
     const contents = utf8Decoder.decode(buffer);
     if (contents.includes('\0')) return null;
-    return { file: doc.path, lines: contents.split(/\r?\n|\r/u), index: doc };
+    return { file: doc.path, text: contents, lines: contents.split(/\r?\n|\r/u), index: doc };
   } catch { return null; }
 }
 
@@ -185,7 +215,33 @@ export async function projectLocalScipEvidence(input: {
     }
   }
 
+  // SCIP symbol strings are caller-controlled. Cross-verify a source callsite
+  // and target against a fresh TypeScript TypeChecker over this exact checkout
+  // before representing the relationship as resolved evidence.
+  const typeScriptSources = new Map([...actual.values()]
+    .filter(value => /\.(?:[cm]?[jt]s|tsx|jsx)$/iu.test(value.file))
+    .map(value => [value.file, value.text]));
+  const nativeFiles = new Map(input.graph.nodes
+    .filter(node => node.kind === 'file' && node.sourceId.startsWith('repo:'))
+    .map(node => [node.sourceId.slice(5), node]));
+  const compiler = compilerTypeScriptReferences({
+    root, sourceTexts: typeScriptSources, nodes: input.graph.nodes, fileNodes: nativeFiles,
+    options: loadCompilerOptions(root),
+  });
+  const compilerSiteProof = new Set<string>();
+  for (const edge of compiler.edges) {
+    if (edge.strategy !== TYPESCRIPT_COMPILER_LENS || edge.kind !== 'references-symbol'
+      || edge.status !== 'resolved' || !edge.from || !edge.to) continue;
+    for (const locator of edge.evidence) {
+      if (locator.startsWith('repo:')) continue;
+      if (/^[^\n]+:\d+:\d+$/u.test(locator)) {
+        compilerSiteProof.add([edge.from, edge.to, locator].join('\0'));
+      }
+    }
+  }
+
   const byId = new Map<string, GraphEdge>();
+  let corroborated = 0;
   let referencedSymbolsMatched = 0;
   let ambiguous = 0;
   for (const file of actual.values()) {
@@ -200,15 +256,26 @@ export async function projectLocalScipEvidence(input: {
       const target = matches[0]!;
       if (target.file === file.file) continue;
       const from = 'file:' + file.file;
+      const unicodePosition = utf16Start(file, occurrence);
       const locator = file.file + ':' + (occurrence.range.line + 1) + ':' + (occurrence.range.start + 1);
+      const compilerLocator = unicodePosition === null ? null
+        : file.file + ':' + (occurrence.range.line + 1) + ':' + (unicodePosition + 1);
+      const independentProof = compilerLocator !== null
+        && compilerSiteProof.has([from, target.target.id, compilerLocator].join('\0'));
+      if (independentProof) corroborated += 1;
       const sourceEvidence = [
         locator,
         target.file + ':' + target.line,
         'SCIP index ' + indexHash + ' (' + parsed.producer.name + ' ' + parsed.producer.version + '); caller-supplied, not independently attested',
+        ...(independentProof ? [
+          'Independent TypeScript TypeChecker (' + TYPESCRIPT_COMPILER_LENS + ') proved this exact source callsite and target; compile-time binding only',
+        ] : []),
       ];
       const edge = resolution({
         from, to: target.target.id, kind: 'references-symbol',
-        strategy: SCIP_EVIDENCE_STRATEGY, confidence: null, status: 'candidate',
+        strategy: SCIP_EVIDENCE_STRATEGY,
+        confidence: independentProof ? 1 : null,
+        status: independentProof ? 'resolved' : 'candidate',
         evidence: sourceEvidence, layer: 'structural', checkpoint: false,
       });
       const prior = byId.get(edge.id);
@@ -225,7 +292,9 @@ export async function projectLocalScipEvidence(input: {
   return {
     graph: {
       ...input.graph,
-      graphId: 'scip-overlay-' + sha.slice(0, 12) + '-' + indexHash.slice(0, 12),
+      graphId: 'scip-overlay-' + createHash('sha256')
+        .update(JSON.stringify([input.graph.graphId, sha, indexHash, SCIP_EVIDENCE_STRATEGY]))
+        .digest('hex').slice(0, 24),
       edges: [...input.graph.edges, ...added],
     },
     index: { sha256: indexHash, producer: parsed.producer, documents: parsed.documents.length, occurrences: parsed.occurrenceCount },
@@ -234,12 +303,16 @@ export async function projectLocalScipEvidence(input: {
       sourceDocumentsSkipped: skipped,
       definitionsMatched,
       referencedSymbolsMatched,
-      candidateEdges: added.length,
+      candidateEdges: added.filter(edge => edge.status === 'candidate').length,
+      resolvedEdges: added.filter(edge => edge.status === 'resolved').length,
+      compilerCorroboratedOccurrences: corroborated,
+      compilerVerification: compiler.state,
       ambiguousDefinitions: ambiguous,
       unresolvedOrUnsafeOccurrences: rejectedOccurrences,
     },
     policy: {
-      sourceBackedPositiveCandidatesOnly: true,
+      independentlyCompilerProvenTechnicalEdgesAreResolved: true,
+      remainingUnverifiedPositiveReferencesStayCandidates: true,
       externallySuppliedIndexNotAttested: true,
       negativeCoverageNotEstablished: true,
       canonicalAuthorityUnaffected: true,
