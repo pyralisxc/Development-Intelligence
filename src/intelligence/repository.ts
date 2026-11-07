@@ -12,9 +12,10 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
+import { compilerTypeScriptReferences } from './typescriptCompilerLens.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.16.0-fresh-array-callback-provenance';
+export const ANALYZER_VERSION = '2.17.0-compiler-symbol-lens';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -2233,6 +2234,11 @@ export async function advanceRepositoryGraph(input: {
     const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, edges, fileNodes);
     nodes.push(...crossFile.nodes);
     edges.push(...crossFile.edges);
+    const compiler = compilerTypeScriptReferences({
+      root: input.root, sourceTexts, nodes, fileNodes, options: loadCompilerOptions(input.root),
+    });
+    nodes.push(...compiler.nodes);
+    edges.push(...compiler.edges);
     addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
   }
 
@@ -2424,6 +2430,11 @@ export async function buildRepositoryGraph(input: {
   const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, edges, fileNodes);
   nodes.push(...crossFile.nodes);
   edges.push(...crossFile.edges);
+  const compiler = compilerTypeScriptReferences({
+    root: input.root, sourceTexts, nodes, fileNodes, options: loadCompilerOptions(input.root),
+  });
+  nodes.push(...compiler.nodes);
+  edges.push(...compiler.edges);
   addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
   nodes.push(...ensureSemanticTargets(nodes, edges));
   const merged = mergeNodes(nodes);

@@ -183,6 +183,7 @@ Generic TypeScript/JavaScript analysis currently provides:
 - re-exports;
 - import-to-definition resolution;
 - provable cross-file calls;
+- a bounded TypeScript compiler-signature lens that links uniquely matched cross-file call sites to their existing DI declarations as compile-time `resolves_to` evidence, without asserting runtime dispatch;
 - UI/HTTP/navigation/MCP representation evidence;
 - source search and exact-revision snippets.
 
