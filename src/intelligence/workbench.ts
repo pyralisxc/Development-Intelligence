@@ -6,7 +6,7 @@ import { getCodeSnippet, searchCode } from './code.js';
 import { currentGraph } from './service.js';
 import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLens, searchGraph, traceGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
-import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer } from './sourceReferenceQuestion.js';
+import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
@@ -2673,6 +2673,25 @@ export async function queryWorkbench(input: {
           query: result.symbol, scope: result.sourcePath, ambiguous: result.reason.startsWith('ambiguous') },
       },
       answer: sourceReferenceAnswer(result),
+      answerClassification: result.status === 'supported' ? 'established-bounded' : 'evidence-only',
+      result: { ...result, graphId: graph.graphId, revision: graph.repositoryRevision,
+        analyzerVersion: graph.analyzerVersion },
+    };
+  }
+  const outboundQuestion = !input.sourceId ? parseFileOutboundQuestion(text) : null;
+  if (outboundQuestion) {
+    const graph = await currentGraph(input.project, input.ref, input.graphId);
+    const result = fileOutboundProjection(graph, outboundQuestion, input.scope);
+    return {
+      intent: 'file-outbound',
+      subject: result.sourceNodeId ? { id: result.sourceNodeId, name: result.sourcePath, kind: 'file' } : null,
+      routing: {
+        tool: 'canonical-graph-relationships', direction: 'outbound', projection: 'file-callees',
+        questionPlan: { ...plan, lane: 'trace', proofMode: 'evidence', subjectStrategy: 'entity-or-query' },
+        targetResolution: { strategy: 'exact-source-file', mode: 'file', query: result.sourcePath,
+          scope: result.sourcePath, ambiguous: result.reason === 'ambiguous-source' },
+      },
+      answer: fileOutboundAnswer(result),
       answerClassification: result.status === 'supported' ? 'established-bounded' : 'evidence-only',
       result: { ...result, graphId: graph.graphId, revision: graph.repositoryRevision,
         analyzerVersion: graph.analyzerVersion },

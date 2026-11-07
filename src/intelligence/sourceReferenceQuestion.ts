@@ -124,6 +124,165 @@ export function sourceReferenceProjection(
   };
 }
 
+
+
+/**
+ * File-level outgoing-call questions share the same exact-source/canonical-graph
+ * evidence path as named source-reference questions. The file—not a lexical
+ * fragment such as "functions src/http.ts"—is the subject.
+ */
+export interface FileOutboundQuestion { paths: string[] }
+export interface FileOutboundTarget {
+  id: string;
+  name: string;
+  kind: string;
+  declaration: string;
+  callsites: string[];
+  edgeIds: string[];
+  compilerVerified: boolean;
+}
+export interface FileOutboundProjection {
+  sourcePath: string | null;
+  sourceNodeId: string | null;
+  direction: 'outbound';
+  status: 'supported' | 'unproven';
+  reason: 'resolved-outbound' | 'ambiguous-source' | 'out-of-scope' |
+    'source-unavailable' | 'no-resolved-outbound';
+  totalTargets: number;
+  totalRelationships: number;
+  returnedTargets: number;
+  truncated: boolean;
+  targets: FileOutboundTarget[];
+  edges: GraphEdge[];
+  unlocatedRelationships: number;
+  unprovenRelationships: number;
+  coverage: { sourceStatus: string | null; unavailable: boolean; absenceProven: false };
+}
+
+/** Only a bounded, explicit file-as-caller question. Never guess the caller. */
+export function parseFileOutboundQuestion(text: string): FileOutboundQuestion | null {
+  const paths = [...new Set([...text.matchAll(FILE_PATH)].map(match => match[0]))].sort();
+  if (!paths.length) return null;
+  let shape = text.trim();
+  for (const path of paths) shape = shape.split(path).join('__FILE__');
+  const question = shape.replace(/\s+/gu, ' ').trim();
+  const directed = /^(?:which|what)\s+(?:(?:functions?|methods?|callees?)\s+)?(?:does|do)\s+(?:(?:the|this)\s+)?(?:(?:file|module)\s+)?__FILE__(?:\s+(?:and|or)\s+(?:(?:the|this)\s+)?(?:(?:file|module)\s+)?__FILE__)*\s+(?:directly\s+)?(?:call|invoke|reference)\s*\??$/iu;
+  const listed = /^(?:show|list|find)\s+(?:(?:me|all|the)\s+)?(?:outbound\s+)?(?:calls?|callees?|functions?|methods?)\s+(?:from|in)\s+(?:(?:the|this)\s+)?(?:(?:file|module)\s+)?__FILE__\s*\??$/iu;
+  return directed.test(question) || listed.test(question) ? { paths } : null;
+}
+
+function exactSourceCallsite(path: string, edge: GraphEdge): string | null {
+  return (edge.evidence ?? []).find(item => item.startsWith(path + ':')
+    && /^\d+(?::\d+)?$/u.test(item.slice(path.length + 1))) ?? null;
+}
+
+/**
+ * Enumerate only proven static outbound callable relationships with an exact
+ * caller source span and a tracked target declaration. Import statements,
+ * candidate/unknown edges, and nearby names are never promoted to calls.
+ * A direct TypeChecker edge proves a static signature, not runtime dispatch.
+ */
+export function fileOutboundProjection(
+  graph: IntelligenceGraph,
+  parsed: FileOutboundQuestion,
+  scope?: string,
+  limit = 20,
+): FileOutboundProjection {
+  const path = parsed.paths.length === 1 ? parsed.paths[0]! : null;
+  const context = graphQueryContext(graph);
+  const file = path ? context.node('file:' + path) : undefined;
+  const sourceNodeId = file?.kind === 'file' ? file.id : null;
+  const status = sourceStatus(graph, path);
+  const coverage = { sourceStatus: status, unavailable: status !== 'complete', absenceProven: false as const };
+  const empty = (reason: FileOutboundProjection['reason']): FileOutboundProjection => ({
+    sourcePath: path, sourceNodeId, direction: 'outbound',
+    status: 'unproven', reason, totalTargets: 0, totalRelationships: 0, returnedTargets: 0,
+    truncated: false, targets: [], edges: [], unlocatedRelationships: 0,
+    unprovenRelationships: 0, coverage,
+  });
+  if (!path) return empty('ambiguous-source');
+  if (!scopeAllows(scope, path)) return empty('out-of-scope');
+  if (!sourceNodeId || status !== 'complete') return empty('source-unavailable');
+
+  const sources = new Set([
+    sourceNodeId,
+    ...(context.nodesBySource.get('repo:' + path) ?? []).map(node => node.id),
+  ]);
+  const groups = new Map<string, { id: string; name: string; kind: string; declaration: string; edges: GraphEdge[] }>();
+  let unlocatedRelationships = 0;
+  let unprovenRelationships = 0;
+  for (const source of sources) for (const edge of context.outgoing(source)) {
+    const allowable = (edge.kind === 'references-symbol' && source === sourceNodeId)
+      || (edge.kind === 'calls' && source !== sourceNodeId);
+    if (!allowable) continue;
+    if (edge.status !== 'resolved' || !edge.to) { unprovenRelationships += 1; continue; }
+    const target = context.node(edge.to);
+    if (!target || !['function', 'method', 'constructor'].includes(target.kind)
+      || !target.id.startsWith('symbol:')) continue;
+    const callsite = exactSourceCallsite(path, edge);
+    if (!callsite || !/:\d+(?::\d+)?$/u.test(target.locator)) {
+      unlocatedRelationships += 1;
+      continue;
+    }
+    const group = groups.get(target.id) ?? {
+      id: target.id, name: target.name ?? target.id, kind: target.kind,
+      declaration: target.locator, edges: [],
+    };
+    if (!group.edges.some(item => item.id === edge.id)) group.edges.push(edge);
+    groups.set(target.id, group);
+  }
+
+  const ordered = [...groups.values()].sort((a, b) =>
+    a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  if (!ordered.length) return { ...empty('no-resolved-outbound'), unlocatedRelationships, unprovenRelationships };
+  const maxTargets = Math.max(1, Math.min(20, Math.trunc(limit) || 20));
+  const shown = ordered.slice(0, maxTargets);
+  const edges = shown.flatMap(target => target.edges.slice().sort((a, b) => a.id.localeCompare(b.id)).slice(0, 3));
+  const targets: FileOutboundTarget[] = shown.map(target => {
+    const boundedEdges = target.edges.slice().sort((a, b) => a.id.localeCompare(b.id)).slice(0, 3);
+    return {
+      id: target.id, name: target.name, kind: target.kind, declaration: target.declaration,
+      callsites: [...new Set(boundedEdges.map(edge => exactSourceCallsite(path, edge)).filter(
+        (site): site is string => Boolean(site)))].sort(),
+      edgeIds: boundedEdges.map(edge => edge.id),
+      compilerVerified: boundedEdges.some(edge => edge.kind === 'references-symbol'
+        && edge.strategy === 'typescript-checker-symbol.v1'),
+    };
+  });
+  const totalRelationships = ordered.reduce((total, group) => total + group.edges.length, 0);
+  return {
+    sourcePath: path, sourceNodeId, direction: 'outbound', status: 'supported',
+    reason: 'resolved-outbound', totalTargets: ordered.length, totalRelationships,
+    returnedTargets: targets.length, truncated: shown.length < ordered.length || edges.length < totalRelationships,
+    targets, edges, unlocatedRelationships, unprovenRelationships, coverage,
+  };
+}
+
+export function fileOutboundAnswer(projection: FileOutboundProjection): string {
+  if (projection.status !== 'supported') {
+    const reason = projection.reason === 'ambiguous-source'
+      ? 'Multiple source files were specified; select exactly one caller.'
+      : projection.reason === 'out-of-scope'
+        ? 'The requested caller file is outside the selected scope.'
+        : projection.reason === 'source-unavailable'
+          ? 'The exact source file is missing or not completely analyzed.'
+          : 'No source-span-backed resolved outbound callable relationship was observed for this file.';
+    return reason + ' This is not proof of an absence of runtime calls.';
+  }
+  const summary = projection.targets.slice(0, 8).map(target =>
+    target.name + ' (' + (target.callsites[0] ?? projection.sourcePath) + ' → ' + target.declaration
+    + (target.compilerVerified ? ', TypeChecker' : ', static source') + ')').join('; ');
+  const omitted = projection.totalTargets > 8
+    ? ' Additional targets are available in the bounded result.' : '';
+  const partial = projection.truncated ? ' Result is truncated; not an exhaustive callee inventory.' : '';
+  const unknown = projection.unlocatedRelationships || projection.unprovenRelationships
+    ? ' ' + (projection.unlocatedRelationships + projection.unprovenRelationships)
+      + ' additional call/reference observation(s) lack admissible proof.' : '';
+  return projection.totalTargets + ' source-resolved outbound callable target(s) observed for '
+    + projection.sourcePath + ': ' + summary + '.' + omitted + partial + unknown
+    + ' Static source references do not establish runtime invocation.';
+}
+
 export function sourceReferenceAnswer(projection: SourceReferenceProjection): string {
   if (projection.status !== 'supported') {
     const detail = projection.reason === 'source-unavailable'

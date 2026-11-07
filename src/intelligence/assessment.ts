@@ -4,7 +4,7 @@ import { graphQueryContext } from './queryContext.js';
 import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
 import { projectOrientation } from './orientation.js';
-import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer } from './sourceReferenceQuestion.js';
+import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
 
 export type AssessmentStatus = 'supported' | 'contradicted' | 'unproven' | 'indeterminate';
 export type RealizationFacet = 'human' | 'agent' | 'transport' | 'implementation' | 'persistence' | 'provider';
@@ -400,6 +400,40 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
       sourceRelationship: projected,
       note: 'Exact source and symbol routing uses existing resolved graph relationships. '
         + 'Unobserved bindings remain unproven, never proof of absent runtime behavior.',
+    };
+  }
+  const outboundQuestion = requiredFacets.length ? null : parseFileOutboundQuestion(question);
+  if (outboundQuestion) {
+    const observed = fileOutboundProjection(graph, outboundQuestion);
+    const context = graphQueryContext(graph);
+    const ids = new Set([
+      ...(observed.sourceNodeId ? [observed.sourceNodeId] : []),
+      ...observed.targets.map(target => target.id),
+    ]);
+    const nodes = [...ids].map(id => context.node(id)).filter(
+      (node): node is GraphNode => Boolean(node));
+    const claimProof = proof(graph, 'file-outbound.' + observed.reason, nodes,
+      observed.edges, 'existence');
+    const resultClaim = claim({
+      type: 'relationship-resolved', status: observed.status,
+      statement: fileOutboundAnswer(observed),
+      subjectId: observed.sourceNodeId, proof: claimProof,
+    });
+    return {
+      project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
+      analyzerVersion: graph.analyzerVersion, question, mode: 'file-outbound',
+      interpretedSubject: observed.sourcePath,
+      ambiguous: observed.reason === 'ambiguous-source',
+      candidates: observed.targets.map(target => ({
+        id: target.id, name: target.name, kind: target.kind,
+      })),
+      answerStatus: observed.status, claims: [resultClaim],
+      realization: null, reach: null, findings: [],
+      findingSummary: summarizeFindings(graph, [], null),
+      hypotheses: [], orientation: null, coverage: graphCoverage(graph),
+      fileOutbound: observed,
+      note: 'Outbound callable targets are exact resolved static graph observations with source spans. '
+        + 'The bounded listing is not a runtime trace or evidence of absence.',
     };
   }
   const lower = question.toLowerCase();
