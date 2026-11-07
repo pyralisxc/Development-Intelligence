@@ -130,6 +130,14 @@ Git already stores the source required to rebuild structural intelligence. Persi
 
 Runtime observations never automatically become accepted semantics because they may not be reproducible from repository source.
 
+### Source-proven technical meaning (Preview)
+
+Canonical source scans can accept a **literal technical source scope** without waiting for human review when the versioned `intrinsic-technical-scope.v1` rule proves the scope from exact-revision evidence. The rule requires mechanically derived scope identity, multiple complete physical source files, substantial resolved structural relationships, an exhausted candidate census, matching factual provenance, and no conflict in the supporting identities. Lexical API, persistence, or motif signals select possible areas; they **never** prove functional capability or product intent.
+
+Machine-accepted records are review events with actor `intrinsic-derivation`, preserving the original candidate/evidence packet and a separately amended, narrowly worded **technical scope** claim. This is not an invented human acceptance. Weaker candidates remain source-derived/pending; explicit human corrections, rejections and ambiguous lineage override the automatic path. A human may directly reject or amend machine-accepted source-scope meaning, preserving its machine acceptance event in history while revoking its current acceptance; human-accepted product meaning retains the stricter explicit lineage/replacement rule. Requalification across revisions requires fresh complete proof, with stable meaning identity when it unambiguously survives.
+
+Both accepted technical meaning and remaining derived evidence are written with one optimistic-concurrency transaction to DI-owned canonical semantic persistence. This is **not** an enrollment change, semantic release approval, runtime verification, AI-proposal acceptance, or automatic promotion of accepted A into Main. The Preview-to-Main gate and owner release decision remain distinct.
+
 ## Canonical integrity and currentness
 
 Canonical persistence records exact revision identity and independent currentness dimensions:

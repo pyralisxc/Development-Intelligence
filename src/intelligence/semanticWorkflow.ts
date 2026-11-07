@@ -6,7 +6,7 @@ import {
   persistSemanticChangeVerification,
   persistSemanticPromotionEnrollment,
   persistSemanticReview,
-  persistDerivedSemanticMeanings,
+  persistQualifiedSemanticMeanings,
   persistSemanticReviews,
   semanticChangeVerificationsAtRevision,
   semanticPromotionEnrollmentState,
@@ -35,6 +35,7 @@ import { clearGraphCache, graphContext, repositoryGraphs } from './service.js';
 import { resolveProjectRevision } from '../source/git.js';
 import { getProjectConfig } from '../config/registry.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
+import { assessAutonomousSemanticProof, AUTONOMOUS_SEMANTIC_PROOF_RULE } from './semanticAutonomousAcceptance.js';
 import { buildSemanticPromotionGate, type SemanticPromotionEnrollmentState } from './semanticPromotion.js';
 
 export type SemanticReviewCommand =
@@ -752,6 +753,8 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       aiProposalProviderNeutral: true,
       aiProposalRequiresOwnerImport: true,
       modelOutputAcceptedAutomatically: false,
+      sourceProvenTechnicalScopeAutomaticallyAccepted: true,
+      lexicalCapabilityInterpretationAutomaticallyAccepted: false,
       promotionAuditItemized: true,
       promotionAuditDesiredOutcomeInferred: false,
       promotionGateVerificationCanBeDelegated: true,
@@ -784,11 +787,50 @@ export async function maintainDerivedSemanticsForGraph(project: string, graph: A
   const existing = new Map(semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision).map(item => [item.candidateId, item]));
   const priorAccepted = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
   const entries: NonNullable<SemanticAuthorityLedger['derivedMeanings']> = [];
+  const automaticReviews: SemanticMeaningReview[] = [];
+  const machineActor = { kind: 'intrinsic-derivation' as const, id: AUTONOMOUS_SEMANTIC_PROOF_RULE };
   for (const candidate of all.candidates) {
     const previous = priorExplicitDispositionEvidence(candidate, all.candidates, authority.ledger, graph.repositoryRevision);
     const continuity = semanticReviewContinuity(candidate, all.candidates, priorAccepted);
-    const assessment = autonomousSemanticAssessment(candidate, auditById.get(candidate.id) ?? null, existing.get(candidate.id) ?? previous.review, continuity, previous.ambiguous);
+    // A prior machine qualification can be re-proven; a human disposition cannot
+    // be displaced merely because the source later satisfies an automatic rule.
+    const priorControl = previous.review?.accepted && previous.review.acceptance?.actor.kind === 'intrinsic-derivation'
+      ? null : previous.review;
+    const assessment = autonomousSemanticAssessment(candidate, auditById.get(candidate.id) ?? null,
+      existing.get(candidate.id) ?? priorControl, continuity, previous.ambiguous);
     if (!assessment.automaticallyMaintained) continue;
+
+    const proof = assessAutonomousSemanticProof(graph, candidate, auditById.get(candidate.id) ?? null);
+    const inherited = continuity.state === 'inherited'
+      ? priorAccepted.find(item => item.meaningId === continuity.meaningId) : null;
+    const evolution = inherited ? evaluateSemanticEvolution(inherited, all.candidates, graph.repositoryRevision) : null;
+    const inheritedSafe = !inherited || (inherited.acceptance?.actor.kind === 'intrinsic-derivation'
+      && ['preserved', 'realization-changed'].includes(evolution?.status ?? ''));
+    if (proof.accepted && inheritedSafe) {
+      const current = initialSemanticReview(candidate, all.candidates, priorAccepted);
+      const at = new Date().toISOString();
+      // The bootstrap's capability kind and lexical API/storage categories are
+      // candidate heuristics. Machine acceptance records ONLY the source scope
+      // whose physical file membership and relationships were established.
+      const sourceOnly = applySemanticReviewAction(current, {
+        kind: 'amend',
+        actor: machineActor,
+        at,
+        proposal: {
+          name: candidate.scope,
+          kind: 'domain',
+          description: `Observed technical source scope ${candidate.scope}: ${proof.completeSourceFiles} completely analyzed files with resolved source relationships. This is not a verified product capability or runtime behavior.`,
+        },
+        rationale: `Machine source-scope grounding under ${proof.rule}; no inferred product purpose.`,
+      });
+      automaticReviews.push(applySemanticReviewAction(sourceOnly, {
+        kind: 'accept',
+        actor: machineActor,
+        at,
+        rationale: `Machine-accepted technical source scope only; ${proof.rule}. No inferred product purpose, runtime verification, or Main authorization.`,
+      }));
+      continue;
+    }
     entries.push({
       candidateId: candidate.id,
       revision: graph.repositoryRevision,
@@ -798,8 +840,9 @@ export async function maintainDerivedSemanticsForGraph(project: string, graph: A
       disposition: 'evidence-qualified',
     });
   }
-  const written = await persistDerivedSemanticMeanings(project, graph.repositoryRevision, entries, authority.etag);
-  return { state: written.state, revision: graph.repositoryRevision, candidateCount: entries.length, etag: written.etag };
+  const written = await persistQualifiedSemanticMeanings(project, graph.repositoryRevision, entries, automaticReviews, authority.etag);
+  return { state: written.state, revision: graph.repositoryRevision, candidateCount: entries.length,
+    automaticallyAcceptedCount: automaticReviews.length, etag: written.etag };
 }
 
 export async function maintainDerivedSemantics(input: SemanticReviewSurfaceInput) {
