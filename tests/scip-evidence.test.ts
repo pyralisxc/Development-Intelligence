@@ -99,6 +99,11 @@ test('SCIP binary occurrence evidence joins existing DI symbols without acquirin
     assert.equal(first.counts.candidateEdges, 0);
     assert.equal(first.counts.resolvedEdges, 1);
     assert.equal(first.counts.compilerCorroboratedOccurrences, 1);
+    assert.equal(first.compilerOverlap.scipCompilerVerifiedSites, 1);
+    assert.equal(first.compilerOverlap.alreadyInCanonicalCompilerLensSites, 1,
+      'SCIP proof of the fixture call was already present in native TypeChecker evidence');
+    assert.equal(first.compilerOverlap.notInCanonicalCompilerLensSites, 0);
+    assert.equal(first.compilerOverlap.notObservedIsNotProofOfNovelMeaning, true);
     assert.equal(first.counts.compilerVerification, 'completed');
     assert.equal(first.counts.referencedSymbolsMatched, 1);
     assert.equal(edges.length, 1);
@@ -130,6 +135,8 @@ test('SCIP binary occurrence evidence joins existing DI symbols without acquirin
     assert.equal(receipt.mode, 'ephemeral-scip-evidence');
     assert.equal(receipt.counts.candidateEdges, 0);
     assert.equal(receipt.counts.resolvedEdges, 1);
+    assert.equal(receipt.compilerOverlap.scipCompilerVerifiedSites, 1);
+    assert.equal(receipt.compilerOverlap.alreadyInCanonicalCompilerLensSites, 1);
     assert.equal(receipt.policy.stored, false);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -341,7 +348,37 @@ test('SCIP legacy-offset compatibility never promotes forged same-name relations
     assert.equal(forged.counts.candidateEdges, 1);
     assert.equal(forged.counts.resolvedEdges, 0);
     assert.equal(forged.counts.compilerCorroboratedOccurrences, 0);
+    assert.equal(forged.compilerOverlap.scipCompilerVerifiedSites, 0);
+    assert.equal(forged.compilerOverlap.alreadyInCanonicalCompilerLensSites, 0);
+    assert.equal(forged.compilerOverlap.notInCanonicalCompilerLensSites, 0);
     assert.ok(forged.graph.edges.some(edge => edge.strategy === SCIP_EVIDENCE_STRATEGY
       && edge.status === 'candidate' && edge.to?.includes('other.ts')));
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+
+test('SCIP overlap distinguishes missing native compiler evidence without inventing new meaning', async () => {
+  const { root, graph } = await fixture();
+  try {
+    await writeIndex(root, scip());
+    // A large or unsupported project can lack the optional canonical lens
+    // while a scoped, independently checked SCIP slice still proves one call.
+    // This is a comparison of observed evidence, not proof of novelty.
+    const noCanonicalCompilerLens = {
+      ...graph,
+      edges: graph.edges.filter(edge => edge.strategy !== 'typescript-checker-symbol.v1'),
+    };
+    const projection = await projectLocalScipEvidence({
+      root, graph: noCanonicalCompilerLens, indexPath: 'scip-cache/index.scip',
+    });
+    assert.equal(projection.counts.resolvedEdges, 1);
+    assert.equal(projection.compilerOverlap.canonicalCompilerVerifiedSites, 0);
+    assert.equal(projection.compilerOverlap.scipCompilerVerifiedSites, 1);
+    assert.equal(projection.compilerOverlap.alreadyInCanonicalCompilerLensSites, 0);
+    assert.equal(projection.compilerOverlap.notInCanonicalCompilerLensSites, 1);
+    assert.equal(projection.compilerOverlap.notObservedIsNotProofOfNovelMeaning, true);
+    assert.equal(projection.policy.canonicalAuthorityUnaffected, true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

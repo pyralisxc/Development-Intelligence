@@ -220,6 +220,14 @@ remain candidates. The disposable, read-only `SCIP real-producer acceptance`
 CI job executes the pinned real indexer and asserts source/definition/verified
 relationship reconciliation. Its pass does not create a signed indexer
 attestation, imply all SCIP projects are compatible, or publish canonical W.
+The opt-in local projection also reports how many unique independently
+compiler-confirmed SCIP source callsites are already proved by DI's existing
+canonical TypeScript checker evidence at the same revision. Comparison keys
+include caller file, line/column and exact declaration ID; repeated SCIP
+observations do not count as additional facts. A site *not observed* in the
+canonical checker evidence is not by itself proof of new functionality or an
+exhaustive compiler-coverage gap. These are reporting-only diagnostics, not new
+graph authority, a signed producer receipt, or automatic canonical ingestion.
 
 For example:
 ```sh

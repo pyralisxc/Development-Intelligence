@@ -56,6 +56,7 @@ async function main(): Promise<void> {
       canonicalGraphId: canonical.graphId,
       index: projection.index,
       counts: projection.counts,
+      compilerOverlap: projection.compilerOverlap,
       sampleEdges: projection.graph.edges.slice(canonical.edges.length, canonical.edges.length + 12),
       policy: projection.policy,
     }, null, 2));

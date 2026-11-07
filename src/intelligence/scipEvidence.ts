@@ -48,6 +48,15 @@ export interface ScipEvidenceProjection {
     ambiguousDefinitions: number;
     unresolvedOrUnsafeOccurrences: number;
   };
+  compilerOverlap: {
+    baseline: 'canonical-typescript-checker';
+    comparisonUnit: 'exact-caller-file-line-column-and-declaration';
+    canonicalCompilerVerifiedSites: number;
+    scipCompilerVerifiedSites: number;
+    alreadyInCanonicalCompilerLensSites: number;
+    notInCanonicalCompilerLensSites: number;
+    notObservedIsNotProofOfNovelMeaning: true;
+  };
   policy: {
     independentlyCompilerProvenTechnicalEdgesAreResolved: true;
     remainingUnverifiedPositiveReferencesStayCandidates: true;
@@ -277,6 +286,22 @@ export async function projectLocalScipEvidence(input: {
     }
   }
 
+  // Compare exact static callsite/target proof against the already present
+  // canonical TypeChecker lens. An overlapping SCIP edge is *corroboration*,
+  // not a newly discovered technical relationship or application meaning.
+  const canonicalCompilerSites = new Set<string>();
+  for (const edge of input.graph.edges) {
+    if (edge.strategy !== TYPESCRIPT_COMPILER_LENS || edge.kind !== 'references-symbol'
+      || edge.status !== 'resolved' || !edge.from || !edge.to) continue;
+    for (const locator of edge.evidence) {
+      if (!locator.startsWith('repo:') && /^[^\n]+:\d+:\d+$/u.test(locator)) {
+        canonicalCompilerSites.add([edge.from, edge.to, locator].join('\0'));
+      }
+    }
+  }
+  const scipVerifiedSites = new Set<string>();
+  const canonicalOverlappingSites = new Set<string>();
+
   const byId = new Map<string, GraphEdge>();
   let corroborated = 0;
   let referencedSymbolsMatched = 0;
@@ -297,9 +322,14 @@ export async function projectLocalScipEvidence(input: {
       const locator = file.file + ':' + (occurrence.range.line + 1) + ':' + (occurrence.range.start + 1);
       const compilerLocator = unicodePosition === null ? null
         : file.file + ':' + (occurrence.range.line + 1) + ':' + (unicodePosition + 1);
-      const independentProof = compilerLocator !== null
-        && compilerSiteProof.has([from, target.target.id, compilerLocator].join('\0'));
-      if (independentProof) corroborated += 1;
+      const provenSiteKey = compilerLocator === null ? null
+        : [from, target.target.id, compilerLocator].join('\0');
+      const independentProof = provenSiteKey !== null && compilerSiteProof.has(provenSiteKey);
+      if (independentProof && provenSiteKey !== null) {
+        corroborated += 1;
+        scipVerifiedSites.add(provenSiteKey);
+        if (canonicalCompilerSites.has(provenSiteKey)) canonicalOverlappingSites.add(provenSiteKey);
+      }
       const sourceEvidence = [
         locator,
         target.file + ':' + target.line,
@@ -348,6 +378,15 @@ export async function projectLocalScipEvidence(input: {
       compilerVerification: compiler.state,
       ambiguousDefinitions: ambiguous,
       unresolvedOrUnsafeOccurrences: rejectedOccurrences,
+    },
+    compilerOverlap: {
+      baseline: 'canonical-typescript-checker',
+      comparisonUnit: 'exact-caller-file-line-column-and-declaration',
+      canonicalCompilerVerifiedSites: canonicalCompilerSites.size,
+      scipCompilerVerifiedSites: scipVerifiedSites.size,
+      alreadyInCanonicalCompilerLensSites: canonicalOverlappingSites.size,
+      notInCanonicalCompilerLensSites: scipVerifiedSites.size - canonicalOverlappingSites.size,
+      notObservedIsNotProofOfNovelMeaning: true,
     },
     policy: {
       independentlyCompilerProvenTechnicalEdgesAreResolved: true,
