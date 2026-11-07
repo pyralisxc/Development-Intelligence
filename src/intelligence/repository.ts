@@ -12,7 +12,7 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
-import { compilerTypeScriptReferences } from './typescriptCompilerLens.js';
+import { compilerTypeScriptReferences, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
 export const ANALYZER_VERSION = '2.17.0-compiler-symbol-lens';
@@ -2142,15 +2142,11 @@ export async function advanceRepositoryGraph(input: {
   const frontier = incrementalFrontier(input.previous, sourceChanges, maxFrontier);
   if (frontier.reason) return { graph: null, strategy: 'fallback', reason: frontier.reason, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
 
+  const compilerSensitive = [...frontier.paths].some(relative =>
+    CODE_EXTENSIONS.has(path.extname(relative).toLowerCase())
+    || /(^|\/)(?:tsconfig(?:\.[^/]*)?\.json|jsconfig(?:\.[^/]*)?\.json|package\.json)$/iu.test(relative));
   for (const relative of frontier.paths) {
     const ext = path.extname(relative).toLowerCase();
-    // Compiler signatures are project-wide. An incremental partial TS program
-    // cannot safely preserve old cross-file binding proof when any code or
-    // compiler configuration source changes. Prefer the exact full rebuild.
-    if (CODE_EXTENSIONS.has(ext) || /(^|\/)(?:tsconfig(?:\.[^/]*)?\.json|jsconfig(?:\.[^/]*)?\.json|package\.json)$/iu.test(relative)) {
-      return { graph: null, strategy: 'fallback', reason: 'TypeScript compiler binding requires a full source rebuild',
-        changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
-    }
     if (POLYGLOT_EXTENSIONS.has(ext) || UNITY_SERIALIZED_EXTENSIONS.has(ext) || UNITY_JSON_EXTENSIONS.has(ext)) {
       return { graph: null, strategy: 'fallback', reason: `incremental frontier contains globally coupled ${ext || '(none)'} source`, changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
     }
@@ -2241,12 +2237,34 @@ export async function advanceRepositoryGraph(input: {
     const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, edges, fileNodes);
     nodes.push(...crossFile.nodes);
     edges.push(...crossFile.edges);
-    const compiler = compilerTypeScriptReferences({
-      root: input.root, sourceTexts, nodes, fileNodes, options: loadCompilerOptions(input.root),
-    });
-    nodes.push(...compiler.nodes);
-    edges.push(...compiler.edges);
     addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
+  }
+
+  if (compilerSensitive) {
+    // The TypeChecker observes the entire TS project, not only the changed
+    // frontier. Replace prior compiler-only proof and reconstruct its exact
+    // current relationships while retaining the ordinary incremental graph.
+    edges = edges.filter(edge => edge.strategy !== TYPESCRIPT_COMPILER_LENS);
+    const allTypescript = new Map<string, string>();
+    const trackedCode = tracked.filter(file => CODE_EXTENSIONS.has(path.extname(file.path).toLowerCase())
+      && file.mode !== '120000' && file.mode !== '160000');
+    if (trackedCode.length <= 600) {
+      for (const file of trackedCode) {
+        const absolute = path.join(input.root, file.path);
+        try {
+          const stat = await fs.lstat(absolute);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) continue;
+          allTypescript.set(file.path, await fs.readFile(absolute, 'utf8'));
+        } catch {
+          return { graph: null, strategy: 'fallback', reason: 'compiler source refresh could not read tracked input',
+            changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+        }
+      }
+    }
+    const compiler = compilerTypeScriptReferences({
+      root: input.root, sourceTexts: allTypescript, nodes, fileNodes, options: loadCompilerOptions(input.root),
+    });
+    edges.push(...compiler.edges);
   }
 
   nodes.push(...ensureSemanticTargets(nodes, edges));
