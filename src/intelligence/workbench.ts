@@ -8,6 +8,7 @@ import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLe
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
+import { semanticReviewSurface } from './semanticWorkflow.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { latestAcceptedMeanings, loadSemanticAuthority } from './semanticAuthorityStore.js';
 import { graphRecordWeight } from './capacity.js';
@@ -670,6 +671,144 @@ function implementationExplorationIntent(text: string): boolean {
 /** Comparative test-assurance questions need source claims, not an incidental
  * entity with a coincidentally named field. This routes evidence; it does not
  * assert semantic equivalence or replace runtime verification. */
+
+type SpecificSemanticQuestion = 'saved' | 'excluded' | 'candidate';
+function specificSemanticQuestion(text: string): SpecificSemanticQuestion | null {
+  const lower = text.toLowerCase();
+  // A repository orientation may enumerate all semantic candidates without
+  // requesting evidence about one candidate. Preserve the existing depth route.
+  if (/\b(?:what does (?:this|the) project do|project overview|repository overview)\b/u.test(lower)) return null;
+  const asks = /\b(?:which|what|list|show|how many|why)\b/u.test(lower);
+  if (asks && /\b(?:semantic|meanings?|candidates?)\b/u.test(lower)
+    && /\b(?:saved|stored|persisted|automatically derived|automatically maintained)\b/u.test(lower)) return 'saved';
+  if (asks && /\b(?:exclud\w*|omitt\w*|not eligible|not promoted)\b/u.test(lower)
+    && /\b(?:semantic|candidates?|meanings?|scopes?)\b/u.test(lower)) return 'excluded';
+  if (asks && /\bcandidate\b/u.test(lower)
+    && /\b(?:evidence|support|uncertain|uncertainty|why)\b/u.test(lower)) return 'candidate';
+  return null;
+}
+async function explainSpecificSemanticQuestion(project: string, graphId: string, text: string, kind: SpecificSemanticQuestion, callerScope?: string): Promise<Record<string, unknown>> {
+  // The source of truth is the existing revision-bound, read-only review
+  // surface. Return a proportional projection, not a second meaning model.
+  const surface = await semanticReviewSurface({ project, graphId, limit: 1000 });
+  const c = surface.candidates;
+  const derivedIds = new Set(surface.derivedMeanings.map(item => item.candidateId));
+  const accepted = c.filter(item => item.review?.accepted === true);
+  const machineAccepted = accepted.filter(item => item.review?.acceptance?.actor.kind === 'intrinsic-derivation');
+  const humanAccepted = accepted.filter(item => item.review?.acceptance?.actor.kind === 'human');
+  const base = {
+    revision: surface.revision, graphId: surface.graphId,
+    authority: { state: surface.authority.state, generation: surface.authority.generation,
+      recordCount: surface.authority.recordCount, enrollmentState: surface.authority.enrollmentState },
+    capacity: { eligible: surface.capacity.eligibleCandidateCount,
+      excluded: surface.capacity.rejectedScopeCount, exhausted: surface.capacity.exhausted,
+      exclusionsTruncated: surface.capacity.excludedScopes.truncated },
+    policy: { evidenceOnly: true, acceptedByDerivation: machineAccepted.length > 0,
+      automaticAcceptanceRestrictedToTechnicalScope: true, runtimeVerified: false },
+  };
+  if (kind === 'saved') {
+    const saved = c.filter(item => derivedIds.has(item.id)).map(item => ({
+      candidateId:item.id, name:item.proposal.name, scope:item.scope,
+      meaningId:surface.derivedMeanings.find(row => row.candidateId === item.id)?.meaningId ?? null,
+      explicitlyAccepted: item.review?.accepted === true,
+    }));
+    return { intent:'semantic-lifecycle', subject:null, routing:{tool:'semantic_review_surface',projection:'saved-inventory'},
+      answer: String(saved.length) + ' currently pending source-derived meaning(s), '
+        + String(machineAccepted.length) + ' machine-accepted technical source scope(s), and '
+        + String(humanAccepted.length) + ' human-accepted meaning(s). Machine acceptance proves technical source scope only, not product purpose or runtime execution.',
+      result:{ ...base, saved, counts:{derived:saved.length,accepted:accepted.length,
+        machineAccepted:machineAccepted.length,humanAccepted:humanAccepted.length,
+        otherAccepted:accepted.length-machineAccepted.length-humanAccepted.length,
+        reviewRecords:surface.authority.recordCount} } };
+  }
+  if (kind === 'excluded') {
+    // An explicit caller scope is authoritative input for selection, not a
+    // reason to infer product meaning. Do not discard it for question prose.
+    const path = callerScope?.trim() || explicitInvestigationScope(text);
+    const matches = surface.capacity.excludedScopes.items.filter(item => path && (
+      item.scope === path || item.representativeNodes.some(node => node.locator === path || node.locator.startsWith(path + ':'))));
+    if (matches.length !== 1) return {
+      intent:'semantic-audit',subject:path ? {query:path}:null,
+      routing:{tool:'semantic_review_surface',projection:'excluded-scope',resolved:false},
+      answer:'No single excluded scope resolved in the bounded census; this does not establish absence or eligibility.',
+      result:{...base,path,matches:matches.slice(0,5)},
+    };
+    const item = matches[0]!;
+    return { intent:'semantic-audit',subject:{query:item.scope},
+      routing:{tool:'semantic_review_surface',projection:'excluded-scope',resolved:true},
+      answer:'Scope ' + item.scope + ' is excluded for ' + item.reason + ': '
+        + String(item.fileCount) + ' file(s), ' + String(item.nodeCount) + ' nodes, '
+        + String(item.resolvedEdgeCount) + ' resolved edges; evidence families: '
+        + item.evidenceFamilies.join(', ') + '. Exclusion does not mean absent or incorrect source.',
+      result:{...base,exclusion:item,candidateAuthorityAssigned:false} };
+  }
+  const lower = text.toLowerCase();
+  const explicitCandidateIds = [...new Set((text.match(/semantic-candidate:[a-z0-9]+/giu) ?? []).map(id => id.toLowerCase()))];
+  // Structured caller scope is authoritative. Otherwise a literal candidate ID
+  // outranks an incidental prose file path (e.g. "unlike src/mcp.ts").
+  const requestedScope = callerScope?.trim() || (explicitCandidateIds.length ? null : explicitInvestigationScope(text));
+  // Exact identity takes precedence. A short candidate such as "Git" must
+  // not match incidental "GitHub", and ambiguities remain visible.
+  const normalized = (value: string) => value.toLocaleLowerCase('en-US');
+  const nameInQuestion = (value: string) => {
+    const phrase = normalized(value.trim());
+    if (!phrase) return false;
+    let at = lower.indexOf(phrase);
+    while (at !== -1) {
+      const before = at === 0 ? '' : lower[at - 1]!;
+      const afterIndex = at + phrase.length;
+      const after = afterIndex >= lower.length ? '' : lower[afterIndex]!;
+      const token = /[a-z0-9_]/u;
+      if ((!before || !token.test(before)) && (!after || !token.test(after))) return true;
+      at = lower.indexOf(phrase, at + 1);
+    }
+    return false;
+  };
+  const matches = requestedScope
+    ? c.filter(item => item.id === requestedScope || item.scope === requestedScope)
+    : explicitCandidateIds.length
+      ? c.filter(item => explicitCandidateIds.includes(item.id))
+      : c.filter(item => nameInQuestion(item.proposal.name));
+
+  if (matches.length !== 1) return {
+    intent:'semantic-audit',subject:null,
+    routing:{tool:'semantic_review_surface',projection:'candidate-evidence',resolved:false},
+    answer:matches.length ? 'Multiple candidate identities matched; provide an exact scope or candidate ID.'
+      : 'No candidate identity resolved from the requested name or scope.',
+    result:{...base,candidates:matches.slice(0,10).map(item => ({id:item.id,name:item.proposal.name,scope:item.scope}))},
+  };
+  const item = matches[0]!;
+  return {intent:'semantic-audit',subject:{query:item.proposal.name,candidateId:item.id,scope:item.scope},
+    routing:{tool:'semantic_review_surface',projection:'candidate-evidence',resolved:true},
+    answer:'Candidate ' + item.proposal.name + ': ' + String(item.support.fileCount) + ' source file(s), '
+      + String(item.support.nodeCount) + ' nodes, ' + String(item.support.resolvedEdgeCount)
+      + ' resolved edges; evidence families: ' + item.provenance.evidenceFamilies.join(', ')
+      + '. Audit factuality: ' + item.reviewAssessment.factuality
+      + '; candidate classification: ' + item.reviewAssessment.classification
+      + (item.review?.accepted === true && item.review.acceptance?.actor.kind === 'intrinsic-derivation'
+        ? '. Only its literal technical source scope is machine-accepted; its candidate functional meaning is not proven.'
+        : item.review?.accepted === true ? '. Acceptance is recorded separately from runtime verification.'
+          : '. This is source qualification, not runtime verification or accepted intent.'),
+    result:{ ...base,candidate:{
+      id:item.id,scope:item.scope,proposal:item.proposal,support:item.support,
+      evidenceFamilies:item.provenance.evidenceFamilies,
+      representativeNodes:item.evidencePacket.representativeNodes.slice(0,8),
+      representativeEdges:item.evidencePacket.representativeEdges.slice(0,8),
+      auditFactuality:item.reviewAssessment.factuality,
+      coreClassification:item.reviewAssessment.classification,
+      reviewAssessment:item.reviewAssessment,
+      autonomousState:item.autonomousAssessment.state,
+      derivedCurrent:derivedIds.has(item.id),
+      accepted:item.review?.accepted === true,
+      acceptanceActorKind:item.review?.acceptance?.actor.kind ?? null,
+      machineAcceptedTechnicalScope:item.review?.accepted === true
+        && item.review?.acceptance?.actor.kind === 'intrinsic-derivation',
+      humanAccepted:item.review?.accepted === true && item.review?.acceptance?.actor.kind === 'human',
+      explicitlyAccepted:item.review?.accepted === true && item.review?.acceptance?.actor.kind === 'human',
+    } },
+  };
+}
+
 function testAssuranceComparisonIntent(text: string): boolean {
   const lower = text.toLowerCase();
   // A test/assurance comparison may ask whether the graph can replace an
@@ -1139,6 +1278,7 @@ export function planInvestigationQuestion(input: {
     )
     && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
+  const specificSemantic = specificSemanticQuestion(text);
   const testAssuranceComparison = testAssuranceComparisonIntent(text);
   const implementationInventory = implementationInventoryIntent(text);
   const implementationMetaInquiry = implementationMetaInquiryIntent(text);
@@ -1146,6 +1286,7 @@ export function planInvestigationQuestion(input: {
 
   let lane: InvestigationQuestionLane;
   if (input.sourceId) lane = 'source-query';
+  else if (specificSemantic) lane = specificSemantic === 'saved' ? 'semantic-lifecycle' : 'semantic-audit';
   else if (testAssuranceComparison || implementationInventory || implementationMetaInquiry || deploymentPortabilityInquiry) lane = 'implementation-explanation';
   else if (interfaceIntent) lane = 'interface';
   else if (architectureSimplificationIntent || semanticLifecycleAuditIntent) lane = 'repository-audit';
@@ -2616,6 +2757,8 @@ export async function queryWorkbench(input: {
 
   const sourceFallback = await unsupportedPathSourceFallback(input, text);
   if (sourceFallback) return sourceFallback;
+  const specificSemantic = specificSemanticQuestion(text);
+  if (specificSemantic) return await explainSpecificSemanticQuestion(input.project, (await currentGraph(input.project,input.ref,input.graphId)).graphId, text, specificSemantic, input.scope);
 
   if (plan.lane === 'implementation-explanation') {
     const result = await implementationMechanismProjection({

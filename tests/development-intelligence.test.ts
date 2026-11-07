@@ -797,6 +797,9 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     { question: 'Can the graph replace the HTTP assertion comparing healthBody.mcp with toolContract()?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Are parity passed, status and counterexample assertions redundant?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'Would removing the tampered-report rejection test preserve its guarantee?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
+    { question: 'Which semantic meanings were automatically saved for this exact Preview revision, and how many were explicitly accepted?', lane: 'semantic-lifecycle', subjectStrategy: 'repository' },
+    { question: 'Why is src/mcp.ts excluded from the semantic candidate census? Show its source support and exclusion reason.', lane: 'semantic-audit', subjectStrategy: 'repository' },
+    { question: 'What source evidence supports the Packaging candidate, and what remains uncertain?', lane: 'semantic-audit', subjectStrategy: 'repository' },
     { question: 'Where is Panel implemented?', lane: 'code' },
     { question: 'What does Panel depend on?', lane: 'trace' },
     { question: 'Prove Panel is the only composition root.', lane: 'evidence', proofMode: 'claim' },
@@ -819,6 +822,85 @@ test('question planning separates lane, subject strategy, depth, and proof burde
     if ('semanticDepth' in expected) assert.equal(plan.semanticDepth, expected.semanticDepth, expected.question);
     if ('completeness' in expected) assert.equal(plan.completeness, expected.completeness, expected.question);
     assert.equal(plan.continuity, 'immediate-exact-pronoun-only');
+  }
+});
+
+test('saved meanings and missing semantic scope questions use revision-bound semantic evidence without inventing acceptance', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const saved = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Which semantic meanings were automatically saved for this exact revision, and how many were explicitly accepted?',
+    }) as any;
+    assert.equal(saved.intent, 'semantic-lifecycle');
+    assert.equal(saved.routing.tool, 'semantic_review_surface');
+    const directReview = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    const directAccepted = directReview.candidates.filter((item: any) => item.review?.accepted === true);
+    const machineAccepted = directAccepted.filter((item: any) => item.review?.acceptance?.actor.kind === 'intrinsic-derivation');
+    assert.equal(saved.result.counts.accepted, directAccepted.length);
+    assert.equal(saved.result.counts.machineAccepted, machineAccepted.length);
+    assert.equal(saved.result.counts.humanAccepted, 0);
+    assert.equal(saved.result.counts.reviewRecords, directReview.authority.recordCount);
+    assert.equal(saved.result.policy.acceptedByDerivation, machineAccepted.length > 0);
+    assert.equal(saved.result.authority.enrollmentState, 'not-enrolled');
+    const scoped = await callTool('investigate', {
+      project: fixture.project,
+      scope: 'src/missing.ts',
+      question: 'Why is this excluded from semantic candidates?',
+    }) as any;
+    assert.equal(scoped.intent, 'semantic-audit');
+    assert.equal(scoped.routing.tool, 'semantic_review_surface');
+    assert.equal(scoped.routing.resolved, false);
+    assert.equal(scoped.result.path, 'src/missing.ts', 'structured scope must survive question planning');
+    const explicitMissingCandidate = await callTool('investigate', {
+      project: fixture.project,
+      scope: 'semantic-candidate:not-real',
+      question: 'What evidence supports this candidate?',
+    }) as any;
+    assert.equal(explicitMissingCandidate.routing.resolved, false);
+    assert.equal(explicitMissingCandidate.result.candidates.length, 0);
+    const missing = await callTool('investigate', {
+      project: fixture.project,
+      question: 'Why is src/missing.ts excluded from the semantic candidate census?',
+    }) as any;
+    assert.equal(missing.intent, 'semantic-audit');
+    assert.equal(missing.routing.tool, 'semantic_review_surface');
+    assert.equal(missing.routing.resolved, false);
+    const unknown = await callTool('investigate', {
+      project: fixture.project,
+      question: 'What source evidence supports the NonexistentCapability candidate?',
+    }) as any;
+    assert.equal(unknown.intent, 'semantic-audit');
+    assert.equal(unknown.routing.resolved, false);
+  } finally { await fs.rm(fixture.root,{recursive:true,force:true}); clearGraphCache(fixture.project); }
+});
+
+test('exact semantic candidate identity outranks an incidental comparison file in question prose', async () => {
+  const fixture = await makeFixture();
+  try {
+    clearGraphCache(fixture.project);
+    await scanGraph(fixture.project);
+    const direct = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    const candidate = direct.candidates[0];
+    assert.ok(candidate, 'fixture should provide at least one candidate');
+    const exact = await callTool('investigate', {
+      project: fixture.project,
+      question: `What source evidence supports candidate ${candidate.id}, unlike src/missing.ts?`,
+    }) as any;
+    assert.equal(exact.intent, 'semantic-audit');
+    assert.equal(exact.routing.resolved, true);
+    assert.equal(exact.result.candidate.id, candidate.id);
+    const scoped = await callTool('investigate', {
+      project: fixture.project,
+      scope: 'src/missing.ts',
+      question: `What source evidence supports candidate ${candidate.id}, unlike src/missing.ts?`,
+    }) as any;
+    assert.equal(scoped.routing.resolved, false, 'explicit structured scope must take priority');
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+    clearGraphCache(fixture.project);
   }
 });
 
