@@ -12,7 +12,6 @@ import { semanticReviewSurface } from './semanticWorkflow.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { loadSemanticAuthority } from './semanticAuthorityStore.js';
 import { deriveCurrentSemanticTruth } from './semanticCurrentTruth.js';
-import { assessSemanticCurrentEvidence } from './semanticEvidenceRealization.js';
 import { graphRecordWeight } from './capacity.js';
 import { repositoryAudit } from './repositoryAudit.js';
 import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from './interfaceRuntimeObservation.js';
