@@ -37,6 +37,7 @@ import { getProjectConfig } from '../config/registry.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
 import { assessAutonomousSemanticProof, AUTONOMOUS_SEMANTIC_PROOF_RULE } from './semanticAutonomousAcceptance.js';
 import { buildSemanticPromotionGate, type SemanticPromotionEnrollmentState } from './semanticPromotion.js';
+import { assessSemanticCurrentEvidence } from './semanticEvidenceRealization.js';
 
 export type SemanticReviewCommand =
   | {
@@ -640,13 +641,19 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
   const candidateAudit = auditSemanticCandidates(graph, bootstrap, { limit: bootstrap.candidates.length });
   const auditByCandidate = new Map(candidateAudit.items.map(item => [item.candidateId, item]));
   const authority = await loadSemanticAuthority(input.project);
-  const effectiveDerivedAudit = (authority.ledger?.derivedMeanings?.length ?? 0) > 0 && limit !== 1000
+  // Accepted semantics must be rechecked against the entire exact-revision
+  // source census even when the review page returns a small candidate prefix.
+  // Otherwise an omitted candidate could be mistaken for unsupported meaning.
+  const effectiveDerivedAudit = limit !== 1000
     ? auditSemanticCandidates(graph, fullBootstrap, { limit: fullBootstrap.candidates.length })
     : candidateAudit;
   const effectiveDerivedAuditByCandidate = new Map(effectiveDerivedAudit.items.map(item => [item.candidateId, item]));
   const reviews = semanticReviewsAtRevision(authority.ledger, graph.repositoryRevision);
   const reviewsByCandidate = new Map(reviews.map(review => [review.candidateId, review]));
   const acceptedMeanings = acceptedMeaningsForContinuity(authority.ledger, graph.repositoryRevision);
+  const acceptedRealizations = latestAcceptedMeanings(authority.ledger).map(meaning =>
+    assessSemanticCurrentEvidence(graph, meaning, fullBootstrap.candidates, effectiveDerivedAuditByCandidate));
+  const realizationByMeaningId = new Map(acceptedRealizations.map(item => [item.meaningId, item]));
   const defaultRevision = await resolveProjectRevision(input.project);
   const canonical = defaultRevision.sha === graph.repositoryRevision ? await repositoryGraphs(input.project) : null;
   const enrollmentState = semanticPromotionEnrollmentState(authority.ledger);
@@ -691,6 +698,9 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
     candidates: bootstrap.candidates.map(candidate => ({
       ...candidate,
       review: reviewsByCandidate.get(candidate.id) ?? null,
+      currentEvidence: reviewsByCandidate.get(candidate.id)?.accepted
+        ? realizationByMeaningId.get(reviewsByCandidate.get(candidate.id)!.meaningId) ?? null
+        : null,
       continuity: semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings),
       reviewAssessment: semanticReviewAssessment(candidate, auditByCandidate.get(candidate.id)),
       autonomousAssessment: autonomousSemanticAssessment(candidate, auditByCandidate.get(candidate.id) ?? null, reviewsByCandidate.get(candidate.id) ?? priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision).review, semanticReviewContinuity(candidate, fullBootstrap.candidates, acceptedMeanings), priorExplicitDispositionEvidence(candidate, fullBootstrap.candidates, authority.ledger, graph.repositoryRevision).ambiguous),
@@ -729,6 +739,7 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
       candidateUniverseEligible: fullBootstrap.capacity.eligibleCandidateCount,
       candidateUniverseExhausted: fullBootstrap.capacity.exhausted,
     },
+    acceptedRealizations,
     derivedMeanings: (authority.ledger?.derivedMeanings ?? []).filter(item => {
       if (item.revision !== graph.repositoryRevision) return false;
       const candidate = fullBootstrap.candidates.find(value => value.id === item.candidateId);
@@ -739,7 +750,19 @@ export async function semanticReviewSurface(input: SemanticReviewSurfaceInput) {
         reviewsByCandidate.get(candidate.id) ?? prior.review, continuity, prior.ambiguous);
       return assessment.automaticallyMaintained;
     }),
-    authority: authoritySummary(authority),
+    authority: {
+      ...authoritySummary(authority),
+      currentEvidence: {
+        acceptedRecordCount: acceptedRealizations.length,
+        sourceSupportedCount: acceptedRealizations.filter(item => item.sourceStatus === 'supported').length,
+        sourceUnprovenCount: acceptedRealizations.filter(item => item.sourceStatus !== 'supported').length,
+        strengthenedCount: acceptedRealizations.filter(item => item.trend === 'strengthened').length,
+        weakenedCount: acceptedRealizations.filter(item => item.trend === 'weakened' || item.trend === 'unsupported').length,
+        currentMachineTechnicalProofCount: acceptedRealizations.filter(item => item.currentlyProvenTechnicalScope === true).length,
+        historicalAcceptanceAlwaysPreserved: true,
+        derivedFromCurrentGraphNotSeparateAuthority: true,
+      },
+    },
     policy: {
       stage: 'T2-review-surface',
       candidatesRemainNonAuthoritativeUntilReviewed: true,
