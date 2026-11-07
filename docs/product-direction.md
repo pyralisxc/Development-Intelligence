@@ -41,7 +41,7 @@ Each inspected project remains autonomous:
 
 - Git/source owns implementation truth.
 - The project owns product intent and project-specific architecture rules.
-- Development Intelligence keeps the current accepted semantic authority needed to understand the project now; historical semantic interpretation is reconstructed from exact Git revisions when an audit asks for it rather than accumulated as a parallel archive.
+- Development Intelligence rebuilds semantic understanding from the exact selected source graph. Historical interpretation is reconstructed by inspecting that historical Git revision, never replayed as authority over today's code.
 - Development Intelligence owns its generic graph model, analyzers, evidence discipline, and query contracts.
 - Runtime observations, external analyzers, and technical sources may contribute evidence but never become hidden authorities.
 
@@ -54,7 +54,7 @@ Each inspected project remains autonomous:
 5. **Uncertainty stays visible.** Candidate, unresolved, unavailable, partial, and conflicting evidence are valid outcomes.
 6. **Clients share capability contracts.** MCP, the Workbench, AI Systems Control, and future clients must not drift into separate intelligence backends or duplicate DI semantics.
 7. **Projects keep their meaning.** Generic analysis may understand technologies and explicit source-adjacent declarations; it may not invent product intent or branch on project identity.
-8. **Current truth is durable; history is reconstructable.** DI canonical persistence owns the current accepted semantic authority, Git owns immutable source/history, and service caches, transition reviews, and checkouts are disposable once they no longer serve current truth.
+8. **Current truth is reconstructed; history is selected.** DI's present code and semantic understanding comes from the exact inspected graph; Git owns immutable history. Optional review/release records remain separate decisions, not an input to current technical truth. Caches, indexes and checkouts are disposable.
 9. **Observation is bounded.** Repository, runtime, and technical-source access is allowlisted, read-only, credential-safe, and explicit.
 10. **Complexity must earn permanence.** New persistence, providers, abstractions, team concepts, or workflow controls must improve trustworthy understanding enough to justify their carrying cost.
 11. **Exact questions have reproducible answers.** The same normalized query, scope, source revision, analyzer version, and relevant configuration must produce the same conclusion and evidence regardless of agent or date. A changed answer must be attributable to changed source/input or a versioned analyzer improvement. Determinism does not turn heuristics into facts: supported, inferred, candidate, and unknown conclusions remain explicitly distinct.

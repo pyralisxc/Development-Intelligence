@@ -426,42 +426,55 @@ test('portfolio semantic bootstrap selection accepts supported core and supporti
   assert.deepEqual(empty.unsupportedCandidateIds, []);
 });
 
-test('canonical graph publication maintains derived meaning while explicit rejection revokes effective qualification', async () => {
+test('canonical scan rebuilds current semantic truth without writing prior-review history', async () => {
   const fixture = await makeFixture();
   const priorDir = process.env.DEVINT_CANONICAL_GRAPH_DIR;
-  process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(fixture.root, 'derived-semantic-canonical');
+  process.env.DEVINT_CANONICAL_GRAPH_DIR = path.join(fixture.root, 'source-only-semantic-canonical');
   try {
     await fs.rm(path.join(fixture.source, '.development-intelligence'), { recursive: true, force: true });
-    const revision = await commit(fixture.source, 'derived semantic publication fixture');
+    const revision = await commit(fixture.source, 'source-only semantic scan');
     await runChecked('git', ['-C', fixture.source, 'push', 'origin', 'main']);
     clearGraphCache(fixture.project);
     const graph = await scanGraph(fixture.project);
     assert.equal(graph.repositoryRevision, revision);
-    const persisted = await loadSemanticAuthority(fixture.project);
-    assert.equal(persisted.state, 'hit');
-    const saved = persisted.ledger?.derivedMeanings ?? [];
-    assert.ok(saved.length > 0, 'successful canonical graph publication should maintain supported derived meanings');
-    assert.ok(saved.every(item => item.revision === revision && item.disposition === 'evidence-qualified'));
-    const candidateId = saved[0]!.candidateId;
-    const effectiveBefore = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
-    assert.ok(effectiveBefore.derivedMeanings.some((item: any) => item.candidateId === candidateId));
+    const original = await loadSemanticAuthority(fixture.project);
+    assert.equal(original.state, 'miss', 'canonical graph scan must not persist derived review history');
 
+    const before = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    assert.equal(before.currentTruth.revision, revision);
+    assert.equal(before.currentTruth.graphId, graph.graphId);
+    assert.equal(before.currentTruth.policy.historicalAcceptanceNeverInput, true);
+    assert.equal(before.currentTruth.policy.noSemanticLedgerReadOrWrite, true);
+    assert.ok(before.currentTruth.counts.supportedInterpretations > 0);
+    const bounded = await semanticReviewSurface({ project: fixture.project, limit: 1 }) as any;
+    assert.equal(bounded.currentTruth.population.requestedLimit, 1);
+    assert.ok(bounded.currentTruth.interpretations.length <= 1);
+    assert.ok(bounded.derivedMeanings.length <= 1);
+    assert.equal(bounded.currentTruth.population.totalInterpretations, before.currentTruth.interpretations.length);
+    const candidateId = before.candidates.find((item: any) => item.reviewAssessment?.factuality === 'supported')?.id;
+    assert.ok(candidateId, 'source itself must qualify an interpretation');
+
+    // A correction to the optional historical review interface must not
+    // overwrite or hide source evidence in the current graph.
     const rejected = await reviewSemanticMeaning({
-      project: fixture.project, candidateId, command: { kind: 'reject', rationale: 'Owner correction' },
+      project: fixture.project, candidateId, command: { kind: 'reject', rationale: 'Owner notes a misleading old name.' },
       actor: { kind: 'human', id: 'human:fixture-owner' }, at: '2026-11-01T20:00:00Z',
     });
     assert.equal(rejected.state, 'stored');
-    const effectiveAfter = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
-    assert.equal(effectiveAfter.derivedMeanings.some((item: any) => item.candidateId === candidateId), false);
-    const history = await loadSemanticAuthority(fixture.project);
-    assert.ok(history.ledger?.derivedMeanings?.some(item => item.candidateId === candidateId && item.revision === revision),
-      'explicit rejection must not silently erase original derived provenance');
-    assert.equal(history.ledger?.records.some(item => item.candidateId === candidateId && item.review.state === 'rejected'), true);
+    const after = await semanticReviewSurface({ project: fixture.project, limit: 1000 }) as any;
+    assert.deepEqual(after.currentTruth, before.currentTruth,
+      'a historical review cannot modify the code understanding of identical source');
+    assert.equal(after.candidates.find((item: any) => item.id === candidateId)?.review?.state, 'rejected');
+    const saved = await loadSemanticAuthority(fixture.project);
+    assert.equal(saved.state, 'hit');
+    assert.equal(saved.ledger?.records.length, 1);
+    await scanGraph(fixture.project);
+    const rescanned = await loadSemanticAuthority(fixture.project);
+    assert.equal(rescanned.etag, saved.etag, 'repeated source scans do not maintain or rewrite the review store');
   } finally {
     if (priorDir === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
     else process.env.DEVINT_CANONICAL_GRAPH_DIR = priorDir;
     await fs.rm(fixture.root, { recursive: true, force: true });
-    clearGraphCache(fixture.project);
   }
 });
 
@@ -549,11 +562,10 @@ test('zero-metadata semantic lifecycle persists accepted authority through enfor
       semanticDepth: 'expanded',
     }) as any;
     assert.equal(orientation.intent, 'orientation');
-    assert.equal(orientation.result.semanticUnderstanding.source, 'accepted-authority');
-    assert.ok(
-      orientation.result.semanticUnderstanding.meanings.some((meaning: any) => meaning.meaningId === accepted.meaningId),
-      'ordinary repository questions must prefer the durable accepted semantic meaning',
-    );
+    assert.match(orientation.result.semanticUnderstanding.source, /^(current-source-|structural-only)/u);
+    assert.equal(orientation.result.semanticUnderstanding.authority.previouslyAcceptedMeaningsNotConsulted, true);
+    assert.equal(JSON.stringify(orientation.result.semanticUnderstanding).includes(accepted.meaningId), false,
+      'historic accepted review identity must not affect the current source answer');
 
     const enrolled = await setSemanticPromotionEnrollment({
       project: fixture.project,
@@ -646,8 +658,9 @@ export function SemanticLifecycleFeature() {
       text: 'What does this project do?',
       semanticDepth: 'expanded',
     }) as any;
-    assert.equal(afterPromotion.result.semanticUnderstanding.source, 'accepted-authority');
-    assert.ok(afterPromotion.result.semanticUnderstanding.meanings.some((meaning: any) => meaning.meaningId === accepted.meaningId));
+    assert.match(afterPromotion.result.semanticUnderstanding.source, /^(current-source-|structural-only)/u);
+    assert.equal(afterPromotion.result.semanticUnderstanding.authority.previouslyAcceptedMeaningsNotConsulted, true);
+    assert.equal(JSON.stringify(afterPromotion.result.semanticUnderstanding).includes(accepted.meaningId), false);
 
     const readmePath = path.join(fixture.source, 'README.md');
     const readmeSource = await fs.readFile(readmePath, 'utf8');
@@ -667,8 +680,9 @@ export function SemanticLifecycleFeature() {
       text: 'What does this project do?',
       semanticDepth: 'expanded',
     }) as any;
-    assert.equal(nextOrientation.result.semanticUnderstanding.source, 'accepted-authority');
-    assert.ok(nextOrientation.result.semanticUnderstanding.meanings.some((meaning: any) => meaning.meaningId === accepted.meaningId));
+    assert.match(nextOrientation.result.semanticUnderstanding.source, /^(current-source-|structural-only)/u);
+    assert.equal(nextOrientation.result.semanticUnderstanding.authority.previouslyAcceptedMeaningsNotConsulted, true);
+    assert.equal(JSON.stringify(nextOrientation.result.semanticUnderstanding).includes(accepted.meaningId), false);
   } finally {
     clearGraphCache(fixture.project);
     if (previousCanonicalDir === undefined) delete process.env.DEVINT_CANONICAL_GRAPH_DIR;
@@ -781,6 +795,7 @@ test('question planning separates lane, subject strategy, depth, and proof burde
   const cases = [
     { question: 'How is the Workbench interface implemented in source?', lane: 'interface', subjectStrategy: 'scope-or-entity' },
     { question: 'Where in source is accepted semantic meaning persisted and evolved?', lane: 'semantic-lifecycle', subjectStrategy: 'repository' },
+    { question: 'What does this repository do? Compare current semantic understanding with prior acceptance records.', lane: 'orientation', subjectStrategy: 'scope-or-entity' },
     { question: 'Are there source-backed implementation gaps or contradictions in semantic review, authority, and promotion workflow?', lane: 'repository-audit', subjectStrategy: 'repository' },
     { question: 'How does the adaptive query planner choose between indexed and sharded reads, and what evidence exposes that choice?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
     { question: 'What interface and interaction projection capabilities already exist?', lane: 'implementation-explanation', subjectStrategy: 'source-keyword-evidence' },
@@ -1527,7 +1542,7 @@ test('scope orientation surfaces explainable local graph structure without an op
     assert.equal(projectQuestion.routing.semanticDepth, 'nucleus');
     assert.equal(projectQuestion.result.scope.kind, 'repository');
     assert.ok(projectQuestion.result.semanticUnderstanding);
-    assert.ok(['accepted-authority', 'observed-semantic-graph', 'derived-candidates', 'structural-only'].includes(projectQuestion.result.semanticUnderstanding.source));
+    assert.ok(['current-source-proven', 'current-source-declared', 'current-source-derived', 'structural-only'].includes(projectQuestion.result.semanticUnderstanding.source));
     assert.equal(projectQuestion.result.semanticUnderstanding.depth, 'nucleus');
     assert.equal(projectQuestion.answer, projectQuestion.result.semanticUnderstanding.summary);
     assert.equal(/^\d+ graph entities/u.test(projectQuestion.answer), false, 'general project questions should lead with semantic understanding rather than topology counts');
@@ -2133,7 +2148,10 @@ test('modern MCP HTTP contract and human Workbench remain available', async () =
     assert.equal(semantics.status, 200);
     const semanticsBody = await semantics.json() as any;
     assert.ok(Array.isArray(semanticsBody.candidates));
-    assert.equal(semanticsBody.policy.candidatesRemainNonAuthoritativeUntilReviewed, true);
+    assert.equal(semanticsBody.policy.sourceInterpretationsUsableWithoutReview, true);
+    assert.equal(semanticsBody.policy.candidateDescriptionsDoNotProveProductIntent, true);
+    assert.equal(semanticsBody.currentTruth.policy.historicalAcceptanceNeverInput, true);
+    assert.equal(semanticsBody.currentTruth.policy.noSemanticLedgerReadOrWrite, true);
     assert.equal(semanticsBody.policy.acceptanceImpliesVerification, false);
     assert.equal(semanticsBody.policy.ownerWriteSurfaceSeparate, true);
     assert.equal(semanticsBody.policy.aiProposalProviderNeutral, true);

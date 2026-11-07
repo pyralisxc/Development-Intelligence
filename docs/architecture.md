@@ -130,13 +130,13 @@ Git already stores the source required to rebuild structural intelligence. Persi
 
 Runtime observations never automatically become accepted semantics because they may not be reproducible from repository source.
 
-### Source-proven technical meaning (Preview)
+### Current semantic understanding (Preview)
 
-Canonical source scans can accept a **literal technical source scope** without waiting for human review when the versioned `intrinsic-technical-scope.v1` rule proves the scope from exact-revision evidence. The rule requires mechanically derived scope identity, multiple complete physical source files, substantial resolved structural relationships, an exhausted candidate census, matching factual provenance, and no conflict in the supporting identities. Lexical API, persistence, or motif signals select possible areas; they **never** prove functional capability or product intent.
+Ordinary DI source and semantic understanding is reconstructed from **one selected exact-revision graph**. The versioned `intrinsic-technical-scope.v1` rule establishes independently proven literal technical scopes directly; source-declared concepts and supported source interpretations form further layers of that same graph. Facts that are proven do not require historical acceptance records or a human review gate to be used. Lexical API, persistence, and motif signals may identify source-supported interpretations but do not prove desired product intent or runtime behavior.
 
-Machine-accepted records are review events with actor `intrinsic-derivation`, preserving the original candidate/evidence packet and a separately amended, narrowly worded **technical scope** claim. This is not an invented human acceptance. Weaker candidates remain source-derived/pending; explicit human corrections, rejections and ambiguous lineage override the automatic path. A human may directly reject or amend machine-accepted source-scope meaning, preserving its machine acceptance event in history while revoking its current acceptance; human-accepted product meaning retains the stricter explicit lineage/replacement rule. Requalification across revisions requires fresh complete proof, with stable meaning identity when it unambiguously survives.
+A changed source revision, compiler, analyzer, or coverage can add, weaken or eliminate technical meaning. DI does not retain or replay prior accepted descriptions as evidence for today's code. Canonical `scan_graph` no longer maintains a separate derived-semantic ledger; ordinary Workbench and project orientation project current meaning from the selected graph. Historical questions select their own Git revision and rerun the same derivation.
 
-Both accepted technical meaning and remaining derived evidence are written with one optimistic-concurrency transaction to DI-owned canonical semantic persistence. This is **not** an enrollment change, semantic release approval, runtime verification, AI-proposal acceptance, or automatic promotion of accepted A into Main. The Preview-to-Main gate and owner release decision remain distinct.
+The earlier semantic-review and promotion interfaces may still expose existing review records as **separate compatibility/governance metadata** while migration is tested. They do not determine current source truth, and this Preview change neither erases data nor alters an explicitly enforced Main approval gate. Removal of obsolete storage and controls follows provider/client parity validation, not hidden destructive cleanup.
 
 ## Canonical integrity and currentness
 
@@ -149,9 +149,9 @@ Canonical persistence records exact revision identity and independent currentnes
 - schema support;
 - integrity state.
 
-Accepted semantic A can remain semantically current across implementation-only movement when topology remains equivalent; source/evidence/analyzer movement is reported independently. A current revision with a changed semantic delta requires current-revision review before promotion.
+Accepted semantic A is an explicit owner-controlled **release/governance artifact**, not a source of current code understanding. Ordinary analysis always derives current semantic evidence from the selected W graph, even when A exists, differs, or is unavailable. If a promotion gate is explicitly enforced, its review obligation is separate from the truth of the inspected source graph.
 
-Semantic review persistence is a current-authority working set, not a historical warehouse. Preview may temporarily hold base + candidate review/lineage records while deciding the next accepted state. Successful semantic promotion compacts those records to the latest active accepted meanings and removes transition event history/lineage scaffolding. Exact historical understanding comes from replaying the requested Git revision and, when needed, comparing immutable revisions ephemerally.
+Legacy semantic review persistence may temporarily retain explicit approvals, baseline/lineage decisions and compatibility data until their clients and release controls are reconciled. It is not a machine memory of implementation meaning and is never consumed as proof for ordinary current semantic questions. Exact historical understanding comes from replaying the requested Git revision with the relevant analyzer, comparing immutable graphs only when explicitly requested.
 
 The deterministic `.development-intelligence/` manifest/shard format remains an internal self-seal and legacy migration/compatibility format. Its content-integrity checks are still tested, but inspected repositories must not use it as a parallel machine semantic authority.
 
