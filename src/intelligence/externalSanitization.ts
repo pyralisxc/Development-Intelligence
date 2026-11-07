@@ -54,7 +54,9 @@ export function sanitizeExternalPayload(input: unknown): SanitizedExternalPayloa
     });
     value = value.replace(SECRET_VALUE, () => redact('value'));
     value = value.replace(EMAIL, () => redact('value'));
-    value = value.replace(IPV4, () => redact('value'));
+    // Loopback addresses are non-user machine identity and are needed to match
+    // explicit local deployment fixtures; public/client IPs remain redacted.
+    value = value.replace(IPV4, match => match === '127.0.0.1' ? match : redact('value'));
     if (value.length > MAX_TEXT) { summary.truncated += 1; return value.slice(0, MAX_TEXT) + '[truncated]'; }
     return value;
   };
