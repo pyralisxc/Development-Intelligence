@@ -237,7 +237,12 @@ function databaseEvidence(source: TechnicalSourceConfig, data: unknown, observed
       kind: 'database-table',
       locator: id,
       name: qualified,
-      value: { schema: table.schema, name: table.name, qualifiedName: qualified, raw: table.raw },
+      value: { schema: table.schema, name: table.name, qualifiedName: qualified,
+        rlsEnabled: typeof record(table.raw)?.rls_enabled === 'boolean'
+          ? record(table.raw)!.rls_enabled : null,
+        primaryKeys: Array.isArray(record(table.raw)?.primary_keys)
+          ? record(table.raw)!.primary_keys : [],
+        raw: table.raw },
       observedAt,
       revision,
     }));
@@ -270,6 +275,50 @@ function databaseEvidence(source: TechnicalSourceConfig, data: unknown, observed
       kind: 'contains',
       evidence: [`schema ${routine.schema} contains routine ${routine.name}`],
     }));
+  }
+
+  const knownTables = new Set(items.tables.map(item => (item.schema + '.' + item.name).toLowerCase()));
+  const seenForeignKeys = new Set<string>();
+  for (const table of items.tables) {
+    const raw = record(table.raw);
+    if (!raw) continue;
+    const qualified = (table.schema + '.' + table.name).toLowerCase();
+    if (Array.isArray(raw.columns)) for (const columnValue of raw.columns) {
+      const column = record(columnValue);
+      const name = textField(column, 'name');
+      if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) continue;
+      const locator = 'database-column:' + qualified + '.' + name.toLowerCase();
+      observations.push(observation({
+        source, adapter: 'database-schema', kind: 'database-column',
+        locator, name: qualified + '.' + name,
+        value: { table: qualified, column: name,
+          dataType: textField(column, 'data_type', 'type', 'format'),
+          nullable: typeof column.nullable === 'boolean' ? column.nullable : null },
+        observedAt, revision,
+      }));
+      relationships.push(relationship({
+        sourceId: source.id, from: 'database-table:' + qualified, to: locator,
+        kind: 'contains', evidence: ['table ' + qualified + ' declares column ' + name],
+      }));
+    }
+    const foreignKeys = Array.isArray(raw.foreign_key_constraints)
+      ? raw.foreign_key_constraints : raw.foreignKeys;
+    if (Array.isArray(foreignKeys)) for (const itemValue of foreignKeys) {
+      const item = record(itemValue);
+      if (!item) continue;
+      const target = textField(item, 'target_table', 'targetTable')?.toLowerCase();
+      const from = textField(item, 'source_table', 'sourceTable')?.toLowerCase();
+      const constraint = textField(item, 'name');
+      if (!target || !from || from !== qualified || !constraint) continue;
+      const key = [from, target, constraint].join('\0');
+      if (seenForeignKeys.has(key)) continue;
+      seenForeignKeys.add(key);
+      relationships.push(relationship({
+        sourceId: source.id, from: 'database-table:' + from, to: 'database-table:' + target,
+        kind: 'foreign-key', status: knownTables.has(target) ? 'resolved' : 'candidate',
+        evidence: ['provider reported foreign key ' + constraint, 'source ' + from, 'target ' + target],
+      }));
+    }
   }
 
   return { observations, relationships, recognized: observations.length > 0 };
