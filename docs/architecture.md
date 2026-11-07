@@ -169,6 +169,8 @@ Canonical project/ref queries always address source-derived W. Canonical `repo-�
 
 If `scan_graph` is supplied runtime URLs, DI overlays bounded runtime evidence onto the same graph model and returns an explicit ephemeral `graphId`. Graph, source, parity, evidence, and Viewer tools may address that `graphId` directly.
 
+A runtime URL is not proof that the inspected Git ref is deployed. Before fetching it, DI now requires an operator-authorized deployment-state source to report exactly one ready/active deployment whose full immutable Git SHA matches the selected revision and whose deployed origin matches an allowlisted runtime origin. A live GET then contributes a bounded, ephemeral response/deployment observation link. Unknown, mismatched, stale-branch, ambiguous, or unconfigured deployments yield no runtime observation; arbitrary Git branches are not privileged or forbidden by name. The provider report proves a deployment/source correspondence, not that any specific source function executed. URL query/fragment credentials and cross-origin redirects are rejected; HTML scripts/form values and untrusted JSON row data are sanitized before graph projection.
+
 Runtime snapshots are disposable and do not become the implicit “latest graph.” A previous agent's runtime scan must never change another agent's ordinary project/ref result.
 
 If an ephemeral `snapshot-…` graph expires, callers recreate it; DI does not create a durable service database merely to preserve runtime observations.
