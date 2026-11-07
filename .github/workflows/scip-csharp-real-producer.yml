@@ -1,0 +1,122 @@
+name: Csharp real compiler-indexer acceptance
+
+on:
+  pull_request:
+    branches: [preview]
+    paths:
+      - '.github/workflows/scip-csharp-real-producer.yml'
+      - 'src/intelligence/scip*.ts'
+      - 'src/graphCli.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-roslyn-scip:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      npm_config_ignore_scripts: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build native DI source indexer
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run build:server
+      - name: Create tracked controlled Csharp compiler fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/di-csharp-scip-proof"
+          mkdir -p "$root"
+          cat > "$root/Fixture.csproj" <<'XML'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net8.0</TargetFramework>
+              <Nullable>enable</Nullable>
+              <ImplicitUsings>enable</ImplicitUsings>
+            </PropertyGroup>
+          </Project>
+          XML
+          cat > "$root/Api.cs" <<'CS'
+          namespace Demo.Core;
+          public static class MathOps {
+            public static int Twice(int number) => number * 2;
+            public static int Twice(string text) => text.Length * 2;
+          }
+          CS
+          cat > "$root/Consumer.cs" <<'CS'
+          using Demo.Core;
+          namespace Demo.App;
+          public static class Consumer {
+            public static int Run() => MathOps.Twice(3);
+          }
+          CS
+          git -C "$root" init --initial-branch=main
+          git -C "$root" add .
+          GIT_AUTHOR_DATE='2020-01-01T00:00:00+0000' \
+          GIT_COMMITTER_DATE='2020-01-01T00:00:00+0000' \
+            git -C "$root" -c user.name='DI Fixture' -c user.email='di-fixture@example.com' commit -m 'fixed source fixture'
+          echo "SCIP_CSHARP_ROOT=$root" >> "$GITHUB_ENV"
+      - name: Run pinned Roslyn SCIP producer on controlled compilation only
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet --version
+          dotnet tool install --tool-path "$RUNNER_TEMP/scip-dotnet-bin" scip-dotnet --version 0.2.16
+          dotnet restore "$SCIP_CSHARP_ROOT/Fixture.csproj" --ignore-failed-sources
+          dotnet build "$SCIP_CSHARP_ROOT/Fixture.csproj" --no-restore -c Release
+          (
+            cd "$SCIP_CSHARP_ROOT"
+            "$RUNNER_TEMP/scip-dotnet-bin/scip-dotnet" index
+            test -s index.scip
+            test "$(stat -c '%s' index.scip)" -le 33554432
+          )
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { decodeScipIndex } from './dist/src/intelligence/scipWire.js';
+          const index = decodeScipIndex(readFileSync(join(process.env.SCIP_CSHARP_ROOT, 'index.scip')));
+          if (index.documents.length < 2) throw new Error('Roslyn producer did not index both source files');
+          console.log(JSON.stringify({producer:index.producer,documents:index.documents.length,
+            occurrences:index.occurrenceCount,paths:index.documents.slice(0,6).map(x=>x.path),
+            sourceSha:process.env.GITHUB_SHA}));
+          JS
+      - name: Correlate real Csharp source facts into disposable DI graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          node dist/src/graphCli.js scip-evidence --repo-path "$SCIP_CSHARP_ROOT" \
+            --project CsharpCompilerFixture --scip-index index.scip \
+            --scip-legacy-position-encoding utf16 > csharp-scip-result.json
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const o = JSON.parse(readFileSync('csharp-scip-result.json', 'utf8'));
+          assert.equal(o.index.producer.name, 'scip-dotnet');
+          assert.ok(o.counts.sourceDocumentsMatched >= 2);
+          assert.ok(o.counts.definitionsMatched > 0);
+          assert.ok(o.counts.candidateEdges > 0, 'No Csharp reference correlated to source identity');
+          assert.equal(o.counts.resolvedEdges, 0, 'No independent Roslyn verification path yet');
+          assert.equal(o.policy.canonicalAuthorityUnaffected, true);
+          assert.equal(o.policy.runtimeExecutionNotProven, true);
+          assert.equal(o.policy.stored, false);
+          console.log(JSON.stringify({producer:o.index.producer,revision:o.revision,
+            digest:o.index.sha256,matchedDocuments:o.counts.sourceDocumentsMatched,
+            definitionsMatched:o.counts.definitionsMatched,
+            sourceLinkedCandidates:o.counts.candidateEdges,
+            independentlyVerified:o.counts.resolvedEdges,
+            compilerVerification:o.counts.compilerVerification,
+            stored:o.policy.stored}));
+          JS
