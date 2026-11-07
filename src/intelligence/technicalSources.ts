@@ -321,6 +321,30 @@ function databaseEvidence(source: TechnicalSourceConfig, data: unknown, observed
     }
   }
 
+  const metadata = record(data);
+  if (Array.isArray(metadata?.migrations)) for (const value of metadata.migrations) {
+    const item = record(value);
+    const version = typeof value === 'string' ? value : textField(item, 'version');
+    if (!version || !/^\d{6,20}$/u.test(version)) continue;
+    observations.push(observation({
+      source, adapter: 'database-schema', kind: 'database-migration',
+      locator: 'database-migration:' + version, name: version,
+      value: { version }, observedAt, revision,
+    }));
+  }
+
+  const functions = Array.isArray(metadata?.edgeFunctions) ? metadata.edgeFunctions : metadata?.edge_functions;
+  if (Array.isArray(functions)) for (const value of functions) {
+    const item = record(value);
+    const slug = textField(item, 'slug', 'name');
+    if (!slug || !/^[A-Za-z0-9_-]{1,128}$/u.test(slug)) continue;
+    observations.push(observation({
+      source, adapter: 'database-schema', kind: 'edge-function',
+      locator: 'edge-function:' + slug, name: slug,
+      value: { slug }, observedAt, revision,
+    }));
+  }
+
   return { observations, relationships, recognized: observations.length > 0 };
 }
 
@@ -383,6 +407,29 @@ async function correlate(project: string, source: TechnicalSourceConfig, observa
         evidence: [`external git revision ${gitSha} equals inspected repository revision`],
       });
 
+      if (item.kind === 'database-migration') {
+        const version = typeof value?.version === 'string' ? value.version : null;
+        const matches = version ? graph.nodes.filter(node =>
+          node.kind === 'file' && node.sourceId.startsWith('repo:supabase/migrations/')
+          && node.sourceId.slice('repo:supabase/migrations/'.length).startsWith(version + '_')
+          && node.sourceId.endsWith('.sql')) : [];
+        if (matches.length === 1) correlations.push({
+          externalId: item.id, repositoryTarget: matches[0]!.id,
+          kind: 'matches-entity', status: 'resolved',
+          evidence: ['provider migration version uniquely matches tracked SQL migration source'],
+        });
+      }
+      if (item.kind === 'edge-function') {
+        const slug = typeof value?.slug === 'string' ? value.slug : null;
+        const matches = slug ? graph.nodes.filter(node =>
+          node.kind === 'file'
+          && node.sourceId === 'repo:supabase/functions/' + slug + '/index.ts') : [];
+        if (matches.length === 1) correlations.push({
+          externalId: item.id, repositoryTarget: matches[0]!.id,
+          kind: 'matches-entity', status: 'resolved',
+          evidence: ['provider function slug uniquely matches tracked edge-function entrypoint'],
+        });
+      }
       if (item.kind === 'database-table') {
         const qualified = typeof value?.qualifiedName === 'string' ? value.qualifiedName.toLowerCase() : null;
         const short = typeof value?.name === 'string' ? value.name.toLowerCase() : null;
