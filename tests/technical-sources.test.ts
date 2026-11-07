@@ -19,6 +19,10 @@ test('external technical evidence normalizes deployment and database sources wit
   await fs.mkdir(path.join(root, 'src'));
   await fs.writeFile(path.join(root, 'src', 'provider.ts'), "import { waitUntil } from '@vercel/functions';\nexport const provider = waitUntil;\n");
   await fs.writeFile(path.join(root, 'schema.sql'), 'create table public.users (id bigint primary key);\n');
+  await fs.mkdir(path.join(root, 'supabase', 'migrations'), { recursive: true });
+  await fs.mkdir(path.join(root, 'supabase', 'functions', 'cleanup'), { recursive: true });
+  await fs.writeFile(path.join(root, 'supabase', 'migrations', '202605220001_initial.sql'), '-- source migration identity\n');
+  await fs.writeFile(path.join(root, 'supabase', 'functions', 'cleanup', 'index.ts'), 'export const cleanup = true;\n');
   await runChecked('git', ['-C', root, 'add', '.']);
   await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
   const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
@@ -80,9 +84,18 @@ test('external technical evidence normalizes deployment and database sources wit
         observedAt: now,
         schemas: [{
           name: 'public',
-          tables: [{ name: 'users' }],
+          tables: [
+            { name: 'users', rls_enabled: true,
+              columns: [{ name: 'id', data_type: 'bigint' }, { name: 'group_id', data_type: 'uuid' }],
+              primary_keys: ['id'],
+              foreign_key_constraints: [{ name: 'users_group_fk', source_table: 'public.users',
+                source_columns: ['group_id'], target_table: 'public.groups', target_columns: ['id'] }] },
+            { name: 'groups', columns: [{ name: 'id', data_type: 'uuid' }] }
+          ],
           functions: [{ name: 'refresh_users' }]
-        }]
+        }],
+        migrations: [{ version: '202605220001' }],
+        edge_functions: [{ slug: 'cleanup' }]
       }), {
         status: 200,
         headers: { 'content-type': 'application/json' }
@@ -128,6 +141,21 @@ test('external technical evidence normalizes deployment and database sources wit
     assert.ok(database.evidence.correlations.some((item: any) => item.kind === 'matches-entity'));
     assert.equal(database.evidence.coverage.status, 'complete');
     assert.equal(database.data.schemas[0].tables[0]?.name, 'users', 'safe schema metadata remains inspectable without unsafe prototypes');
+    assert.ok(database.evidence.observations.some((x: any) =>
+      x.kind === 'database-table' && x.name === 'public.users' && x.value.rlsEnabled === true));
+    assert.ok(database.evidence.observations.some((x: any) =>
+      x.kind === 'database-column' && x.name === 'public.users.id' && x.value.dataType === 'bigint'));
+    assert.ok(database.evidence.relationships.some((x: any) =>
+      x.kind === 'foreign-key' && x.status === 'resolved'
+      && x.from === 'database-table:public.users' && x.to === 'database-table:public.groups'));
+    assert.ok(database.evidence.observations.some((x: any) =>
+      x.kind === 'database-migration' && x.value.version === '202605220001'));
+    assert.ok(database.evidence.observations.some((x: any) =>
+      x.kind === 'edge-function' && x.name === 'cleanup'));
+    assert.ok(database.evidence.correlations.some((x: any) =>
+      x.kind === 'matches-entity' && x.repositoryTarget === 'file:supabase/migrations/202605220001_initial.sql'));
+    assert.ok(database.evidence.correlations.some((x: any) =>
+      x.kind === 'matches-entity' && x.repositoryTarget === 'file:supabase/functions/cleanup/index.ts'));
     assert.equal(deployment.evidence.sanitization.policy, 'sanitized-v1');
     assert.equal(database.evidence.sanitization.policy, 'sanitized-v1');
   } finally {
