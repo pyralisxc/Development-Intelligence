@@ -15,7 +15,7 @@ import { resolveFrameworkSpine } from './frameworkSpine.js';
 import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.17.0-compiler-symbol-lens';
+export const ANALYZER_VERSION = '2.18.0-python-binding-fidelity';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -460,6 +460,7 @@ function resolvePolyglotModules(input: {
   const moduleFiles = new Map<string, Set<string>>();
   const symbolsByQualifiedName = new Map<string, GraphNode[]>();
   const symbolsByFile = new Map<string, Map<string, GraphNode[]>>();
+  const pythonImportBindingsByFile = new Map<string, Set<string>>();
   const moduleNodes = new Map<string, GraphNode>();
   const declarationNodes: GraphNode[] = [];
 
@@ -471,8 +472,15 @@ function resolvePolyglotModules(input: {
   };
 
   for (const node of input.nodes) {
-    if (!node.sourceId.startsWith('repo:') || !polyglotSymbolValue(node.value)) continue;
+    if (!node.sourceId.startsWith('repo:')) continue;
     const file = node.sourceId.slice('repo:'.length);
+    if (node.kind === 'import-binding' && node.name
+      && polyglotImportValue(node.value) && node.value.language === 'python') {
+      const entries = pythonImportBindingsByFile.get(file) ?? new Set<string>();
+      entries.add(node.name);
+      pythonImportBindingsByFile.set(file, entries);
+    }
+    if (!polyglotSymbolValue(node.value)) continue;
     const value = node.value;
     if ((node.kind === 'namespace' || node.kind === 'package') && value.qualifiedName) {
       addModuleFile(value.language, value.qualifiedName, file);
@@ -569,6 +577,7 @@ function resolvePolyglotModules(input: {
     let moduleName = value.module;
     let targetFiles: string[] = [];
     let exactCandidates: GraphNode[] = [];
+    let pythonSubmoduleFile: string | null = null;
 
     if (value.language === 'python') {
       const resolvedModule = value.relative ? relativePythonModule(fromFile, value.module) : value.module;
@@ -578,6 +587,27 @@ function resolvePolyglotModules(input: {
       }
       if (value.imported !== '*') {
         exactCandidates = targetFiles.flatMap(file => symbolsByFile.get(file)?.get(value.imported) ?? []);
+      }
+      // "from package import submodule": the immediate package must have a
+      // unique checked-in __init__.py, and the named child must map to one
+      // exact checked-in Python module. An explicit package declaration/import
+      // of the name or __getattr__ can change binding meaning; do not guess.
+      if (value.mode === 'symbol' && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value.imported)
+        && exactCandidates.length === 0 && targetFiles.length === 1) {
+        const packageFile = targetFiles[0]!;
+        if (packageFile.endsWith('/__init__.py')
+          && !(symbolsByFile.get(packageFile)?.get('__getattr__')?.length)
+          && !(pythonImportBindingsByFile.get(packageFile)?.has(value.imported))) {
+          const directory = path.posix.dirname(packageFile);
+          const namedModule = moduleName + '.' + value.imported;
+          const moduleSourceFiles = [...(moduleFiles.get('python:' + namedModule) ?? [])].sort();
+          if (moduleSourceFiles.length === 1 && [
+            path.posix.join(directory, value.imported + '.py'),
+            path.posix.join(directory, value.imported, '__init__.py'),
+          ].includes(moduleSourceFiles[0]!)) {
+            pythonSubmoduleFile = moduleSourceFiles[0]!;
+          }
+        }
       }
     } else if (value.language === 'java') {
       if (value.mode === 'static') {
@@ -617,6 +647,8 @@ function resolvePolyglotModules(input: {
     }
 
     const module = moduleNode(value.language, moduleName);
+    const pythonSubmodule = pythonSubmoduleFile
+      ? moduleNode('python', moduleName + '.' + value.imported) : null;
     for (const [source, kind] of [[from.id, 'imports'], [binding.id, 'targets-module']] as const) input.edges.push(resolution({
       from: source,
       to: module.id,
@@ -631,9 +663,11 @@ function resolvePolyglotModules(input: {
 
     const directTargetFiles = exactCandidates.length === 1 && exactCandidates[0]!.sourceId.startsWith('repo:')
       ? [exactCandidates[0]!.sourceId.slice('repo:'.length)]
-      : value.imported === '*' && targetFiles.length === 1
-        ? targetFiles
-        : [];
+      : pythonSubmoduleFile && pythonSubmodule
+        ? [pythonSubmoduleFile]
+        : value.imported === '*' && targetFiles.length === 1
+          ? targetFiles
+          : [];
     for (const file of directTargetFiles) {
       const target = input.fileNodes.get(file);
       if (!target || target.id === from.id) continue;
@@ -658,6 +692,18 @@ function resolvePolyglotModules(input: {
       confidence: 1,
       status: 'resolved',
       evidence: [binding.locator],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+    else if (pythonSubmodule && pythonSubmoduleFile) input.edges.push(resolution({
+      from: binding.id,
+      to: pythonSubmodule.id,
+      kind: 'resolves_to',
+      strategy: 'module-resolution',
+      confidence: 1,
+      status: 'resolved',
+      evidence: [binding.locator, pythonSubmoduleFile,
+        'Tracked unique Python package submodule; static import path only, not runtime execution'],
       layer: 'structural',
       checkpoint: false,
     }));

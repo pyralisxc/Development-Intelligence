@@ -172,6 +172,77 @@ if True:
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+
+test('Python package submodule imports bind exact tracked modules without shadowing or guessing', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-python-submodule-'));
+  await runChecked('git', ['init', '--initial-branch=main', root]);
+  try {
+    for (const folder of ['demo/sub', 'demo/dupe', 'dynamic', 'tests']) {
+      await fs.mkdir(path.join(root, folder), { recursive: true });
+    }
+    await fs.writeFile(path.join(root, 'demo', '__init__.py'),
+      'SAME_NAME = 42\nfrom . import delegated\n');
+    await fs.writeFile(path.join(root, 'demo', 'audit.py'), 'def run():\n    pass\n');
+    await fs.writeFile(path.join(root, 'demo', 'SAME_NAME.py'), 'def run():\n    pass\n');
+    await fs.writeFile(path.join(root, 'demo', 'delegated.py'), 'def run():\n    pass\n');
+    await fs.writeFile(path.join(root, 'demo', 'sub', '__init__.py'), '');
+    await fs.writeFile(path.join(root, 'demo', 'dupe.py'), 'def main():\n    pass\n');
+    await fs.writeFile(path.join(root, 'demo', 'dupe', '__init__.py'), '');
+    await fs.writeFile(path.join(root, 'demo', 'consumer.py'), 'from . import audit\n');
+    await fs.writeFile(path.join(root, 'dynamic', '__init__.py'),
+      'def __getattr__(name):\n    return 1\n');
+    await fs.writeFile(path.join(root, 'dynamic', 'plugin.py'), 'def run():\n    pass\n');
+    await fs.writeFile(path.join(root, 'tests', 'test_import.py'),
+      'from demo import audit, sub, SAME_NAME, delegated, dupe, missing\nfrom dynamic import plugin\n');
+    await runChecked('git', ['-C', root, 'add', '.']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test',
+      'commit', '-m', 'fixture']);
+    const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+    const graph = await buildRepositoryGraph({ project: 'PythonSubmoduleFixture', repository: root, revision, root, role: 'W' });
+    assert.equal(graph.coverage?.failedFiles, 0);
+    assert.equal(graph.coverage?.partialFiles, 0);
+
+    const binding = (file: string, name: string) => graph.nodes.find(node =>
+      node.kind === 'import-binding' && node.name === name && node.sourceId === 'repo:' + file);
+    for (const { file, name, targetFile } of [
+      { file: 'tests/test_import.py', name: 'audit', targetFile: 'demo/audit.py' },
+      { file: 'tests/test_import.py', name: 'sub', targetFile: 'demo/sub/__init__.py' },
+      { file: 'demo/consumer.py', name: 'audit', targetFile: 'demo/audit.py' },
+    ]) {
+      const sourceBinding = binding(file, name);
+      assert.ok(sourceBinding, name);
+      const targetModule = 'module:python:demo.' + name;
+      assert.ok(graph.edges.some(e => e.from === sourceBinding.id && e.to === targetModule
+        && e.kind === 'resolves_to' && e.status === 'resolved'), name + ' must resolve to the unique source module');
+      assert.ok(graph.edges.some(e => e.from === 'file:' + file && e.to === 'file:' + targetFile
+        && e.kind === 'imports-file' && e.status === 'resolved'));
+    }
+
+    const assigned = binding('tests/test_import.py', 'SAME_NAME');
+    assert.ok(assigned);
+    assert.ok(graph.edges.some(e => e.from === assigned.id && e.kind === 'resolves_to'
+      && e.to?.includes('#declaration:SAME_NAME') && e.status === 'resolved'));
+    assert.equal(graph.edges.some(e => e.from === assigned.id && e.to === 'module:python:demo.SAME_NAME'
+      && e.kind === 'resolves_to' && e.status === 'resolved'), false,
+      'explicit package assignment wins over same-name sibling module');
+
+    for (const name of ['delegated', 'dupe', 'missing']) {
+      const candidate = binding('tests/test_import.py', name);
+      assert.ok(candidate, name);
+      assert.equal(graph.edges.some(e => e.from === candidate.id && e.kind === 'resolves_to'
+        && e.status === 'resolved'), false, name + ' needs stronger evidence');
+    }
+    const dynamic = binding('tests/test_import.py', 'plugin');
+    assert.ok(dynamic);
+    assert.equal(graph.edges.some(e => e.from === dynamic.id && e.kind === 'resolves_to'
+      && e.status === 'resolved'), false, 'dynamic package exports must not be silently resolved');
+    const again = await buildRepositoryGraph({ project: 'PythonSubmoduleFixture', repository: root, revision, root, role: 'W' });
+    assert.deepEqual(again.edges.filter(e => e.kind === 'resolves_to').map(e => e.id).sort(),
+      graph.edges.filter(e => e.kind === 'resolves_to').map(e => e.id).sort(),
+      'identical source and analyzer must preserve import proof identity');
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test('Go analysis preserves package, type, function, method, import, and containment identities', () => {
   const result = analyze('internal/web/router.go', `package web
 
