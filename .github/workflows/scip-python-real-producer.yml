@@ -1,0 +1,99 @@
+name: Python real compiler-indexer acceptance
+
+on:
+  pull_request:
+    branches: [preview]
+    paths:
+      - '.github/workflows/scip-python-real-producer.yml'
+      - 'src/intelligence/scip*.ts'
+      - 'src/graphCli.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-python-scip:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      npm_config_ignore_scripts: 'true'
+    steps:
+      - name: Check out DI exact candidate (no persisted credentials)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check out pinned public OpenBrowser source (no credentials)
+        uses: actions/checkout@v4
+        with:
+          repository: pyralisxc/DI-Benchmark-OpenBrowser
+          ref: f872e56683989fe1bcafa0b8be6d398623111046
+          path: benchmark/openbrowser
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned SCIP Python producer with no lifecycle scripts
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm install -g --no-audit --no-fund --ignore-scripts @sourcegraph/scip-python@0.6.8
+          npm run build:server
+      - name: Run real Pyright-derived indexer without application install or package introspection
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C benchmark/openbrowser status --porcelain --untracked-files=no
+          test "$(git -C benchmark/openbrowser rev-parse HEAD)" = "f872e56683989fe1bcafa0b8be6d398623111046"
+          printf '[]\n' > benchmark/openbrowser/.di-scip-environment.json
+          (
+            cd benchmark/openbrowser
+            scip-python index . --project-name=openbrowser-broker --environment=.di-scip-environment.json
+            test -s index.scip
+            test "$(stat -c '%s' index.scip)" -le 33554432
+          )
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { decodeScipIndex } from './dist/src/intelligence/scipWire.js';
+          const index = decodeScipIndex(readFileSync('benchmark/openbrowser/index.scip'));
+          const encodings = {};
+          for (const document of index.documents) encodings[document.positionEncoding] = (encodings[document.positionEncoding] ?? 0) + 1;
+          if (index.documents.length === 0) throw new Error('Real Pyright-derived SCIP producer emitted no documents');
+          console.log(JSON.stringify({producer:index.producer,documents:index.documents.length,
+            occurrences:index.occurrenceCount,positionEncodings:encodings,
+            paths:index.documents.slice(0,5).map(d=>d.path)}));
+          JS
+      - name: Reconcile Python producer evidence with native exact-revision DI graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          node dist/src/graphCli.js scip-evidence --repo-path "$GITHUB_WORKSPACE/benchmark/openbrowser" \
+            --project DI-Benchmark-OpenBrowser --scip-index index.scip \
+            --scip-legacy-position-encoding utf16 > python-scip-acceptance.json
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const receipt = JSON.parse(readFileSync('python-scip-acceptance.json','utf8'));
+          assert.equal(receipt.index.producer.name, 'scip-python');
+          assert.ok(receipt.index.documents > 0);
+          assert.ok(receipt.counts.sourceDocumentsMatched > 0,
+            'Real SCIP Python documents failed tracked source matching');
+          assert.equal(receipt.policy.canonicalAuthorityUnaffected,true);
+          assert.equal(receipt.policy.stored,false);
+          assert.equal(receipt.policy.runtimeExecutionNotProven,true);
+          assert.equal(receipt.policy.externallySuppliedIndexNotAttested,true);
+          console.log(JSON.stringify({revision:receipt.revision,producer:receipt.index.producer,
+            digest:receipt.index.sha256,documents:receipt.index.documents,
+            sourceDocumentsMatched:receipt.counts.sourceDocumentsMatched,
+            sourceDocumentsSkipped:receipt.counts.sourceDocumentsSkipped,
+            definitionsMatched:receipt.counts.definitionsMatched,
+            candidateEdges:receipt.counts.candidateEdges,
+            independentlyCompilerVerifiedEdges:receipt.counts.resolvedEdges,
+            compilerVerification:receipt.counts.compilerVerification,
+            acknowledgedUnknown:true,stored:receipt.policy.stored}));
+          JS
