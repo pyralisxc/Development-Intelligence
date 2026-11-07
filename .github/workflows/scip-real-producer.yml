@@ -1,0 +1,66 @@
+name: SCIP real-producer acceptance
+
+on:
+  pull_request:
+    branches: [preview]
+    paths:
+      - 'src/intelligence/scip*.ts'
+      - 'src/intelligence/typescriptCompilerLens.ts'
+      - 'src/graphCli.ts'
+      - '.github/workflows/scip-real-producer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-revision-scip:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      npm_config_ignore_scripts: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install DI and pinned upstream indexer without lifecycle scripts
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm install --global --no-audit --no-fund --ignore-scripts @sourcegraph/scip-typescript@0.6.1
+      - name: Build DI source-only CLI
+        run: npm run build:server
+      - name: Generate and reconcile actual SCIP on exact source revision
+        run: |
+          set -euo pipefail
+          echo "Exact Git revision: $(git rev-parse HEAD)"
+          scip-typescript index --no-global-caches
+          test -s index.scip
+          test "$(stat -c '%s' index.scip)" -le 33554432
+          node dist/src/graphCli.js scip-evidence --repo-path "$GITHUB_WORKSPACE" --project pyralisxc/Development-Intelligence --scip-index index.scip > scip-acceptance.json
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const receipt = JSON.parse(readFileSync('scip-acceptance.json', 'utf8'));
+          assert.equal(receipt.policy.stored, false);
+          assert.equal(receipt.policy.runtimeExecutionNotProven, true);
+          assert.ok(receipt.index.documents > 0, 'real SCIP producer emitted no documents');
+          assert.ok(receipt.counts.sourceDocumentsMatched > 0, 'SCIP document-to-tracked-source reconciliation failed');
+          assert.ok(receipt.counts.definitionsMatched > 0, 'SCIP source declarations did not reconcile');
+          assert.ok(receipt.counts.resolvedEdges > 0, 'no independent TypeScript compiler-corroborated SCIP edge');
+          console.log(JSON.stringify({
+            revision: receipt.revision,
+            producer: receipt.index.producer,
+            sha256: receipt.index.sha256,
+            documentCount: receipt.index.documents,
+            matchedDocuments: receipt.counts.sourceDocumentsMatched,
+            resolvedEdges: receipt.counts.resolvedEdges,
+            candidateEdges: receipt.counts.candidateEdges,
+            compilerVerification: receipt.counts.compilerVerification,
+            stored: receipt.policy.stored,
+          }));
+          JS
