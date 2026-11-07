@@ -97,6 +97,81 @@ def main() -> None:
   assert.ok(result.resolutions.some(edge => edge.from === run.id && edge.to === normalize.id && edge.kind === 'contains'));
 });
 
+test('Python module-level assignment identity is exact and does not include conditional/local names', () => {
+  const source = `BROKER_PORT = int("8767")
+BROWSER_POOL_DIR: str = "/tmp/pool"
+NO_VALUE: int
+BROKEN_CHAIN = OTHER = 1
+DESTRUCTURED, OTHER_NAME = (1, 2)
+def local():
+    LOCAL_ONLY = 1
+class Worker:
+    CLASS_ONLY = 1
+if True:
+    CONDITIONAL = 1
+`;
+  const result = analyze('ax_browser_broker/config.py', source);
+  const moved = analyze('ax_browser_broker/config.py', '# doc\n\n' + source);
+  assert.equal(result.coverage?.status, 'complete');
+  for (const name of ['BROKER_PORT', 'BROWSER_POOL_DIR']) {
+    const item = symbol(result, 'declaration', name);
+    assert.ok(item, `module-level ${name} should have a native declaration identity`);
+    assert.equal((item!.value as any).language, 'python');
+    assert.equal((item!.value as any).qualifiedName, name);
+    assert.equal(item!.id, symbol(moved, 'declaration', name)?.id, 'line movement must not change identity');
+  }
+  for (const name of ['NO_VALUE', 'BROKEN_CHAIN', 'OTHER', 'DESTRUCTURED', 'OTHER_NAME', 'LOCAL_ONLY', 'CLASS_ONLY', 'CONDITIONAL']) {
+    assert.equal(symbol(result, 'declaration', name), undefined, `${name} is not a directly guaranteed module binding`);
+  }
+});
+
+test('Python local imports resolve exact module assignments and retain ambiguous/conditional names as unknown', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-python-module-binding-'));
+  await runChecked('git', ['init', '--initial-branch=main', root]);
+  try {
+    await fs.mkdir(path.join(root, 'demo'), { recursive: true });
+    await fs.writeFile(path.join(root, 'demo', '__init__.py'), '');
+    await fs.writeFile(path.join(root, 'demo', 'config.py'), `BROKER_PORT = 8767
+BROWSER_POOL_DIR: str = "/tmp/pool"
+DUPLICATE = 1
+DUPLICATE = 2
+ANNOTATION_ONLY: int
+def hidden():
+    LOCAL_ONLY = 1
+class Holder:
+    CLASS_ONLY = 1
+if True:
+    CONDITIONAL = 1
+`);
+    await fs.writeFile(path.join(root, 'demo', 'consumer.py'),
+      'from .config import BROKER_PORT, BROWSER_POOL_DIR, DUPLICATE, ANNOTATION_ONLY, LOCAL_ONLY, CLASS_ONLY, CONDITIONAL\n');
+    await runChecked('git', ['-C', root, 'add', '.']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture']);
+    const revision = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+    const graph = await buildRepositoryGraph({ project: 'PythonModuleBindingFixture', repository: root, revision, root, role: 'W' });
+    assert.equal(graph.coverage?.completeFiles, 3);
+
+    for (const name of ['BROKER_PORT', 'BROWSER_POOL_DIR']) {
+      const binding = graph.nodes.find(node => node.kind === 'import-binding' && node.name === name
+        && node.sourceId === 'repo:demo/consumer.py');
+      const target = graph.nodes.find(node => node.kind === 'declaration' && node.name === name
+        && node.sourceId === 'repo:demo/config.py');
+      assert.ok(binding && target, `${name} must be in the exact tracked source`);
+      assert.ok(graph.edges.some(edge => edge.from === binding.id && edge.to === target.id
+        && edge.kind === 'resolves_to' && edge.status === 'resolved'), `${name} must resolve through native source evidence`);
+      assert.ok(graph.edges.some(edge => edge.from === 'file:demo/consumer.py'
+        && edge.to === 'file:demo/config.py' && edge.kind === 'imports-file' && edge.status === 'resolved'));
+    }
+    for (const name of ['DUPLICATE', 'ANNOTATION_ONLY', 'LOCAL_ONLY', 'CLASS_ONLY', 'CONDITIONAL']) {
+      const binding = graph.nodes.find(node => node.kind === 'import-binding' && node.name === name
+        && node.sourceId === 'repo:demo/consumer.py');
+      assert.ok(binding, name);
+      assert.equal(graph.edges.some(edge => edge.from === binding.id && edge.kind === 'resolves_to'
+        && edge.status === 'resolved'), false, name + ' must not gain source-proven import certainty');
+    }
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test('Go analysis preserves package, type, function, method, import, and containment identities', () => {
   const result = analyze('internal/web/router.go', `package web
 
