@@ -243,7 +243,8 @@ export function fileOutboundProjection(
     return {
       id: target.id, name: target.name, kind: target.kind, declaration: target.declaration,
       callsites: [...new Set(boundedEdges.map(edge => exactSourceCallsite(path, edge)).filter(
-        (site): site is string => Boolean(site)))].sort(),
+        (site): site is string => Boolean(site)))].sort((a, b) =>
+        b.split(':').length - a.split(':').length || a.localeCompare(b)),
       edgeIds: boundedEdges.map(edge => edge.id),
       compilerVerified: boundedEdges.some(edge => edge.kind === 'references-symbol'
         && edge.strategy === 'typescript-checker-symbol.v1'),

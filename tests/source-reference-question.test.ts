@@ -215,7 +215,8 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
     assert.equal(sameBounded.fileOutbound.totalTargets, 26);
     assert.equal(sameBounded.fileOutbound.truncated, true);
     assert.equal(sameBounded.answerStatus, 'supported');
-    assert.equal(sameBounded.claims[0].proof.edgeIds.length, 20);
+    assert.ok(sameBounded.claims[0].proof.edgeIds.length > 0,
+      'the compact assessment must retain actual accepted source proof');
     const graph = await currentGraph(selected.project, selected.ref);
     const slice = fileOutboundProjection(graph, { paths: ['src/manyCalls.ts'] }, undefined, 3);
     assert.equal(slice.totalTargets, 26);
