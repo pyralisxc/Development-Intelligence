@@ -68,13 +68,20 @@ jobs:
           cat > "$ROOT/package.json" <<'EOF'
           {"name":"di-oss-joern-fixture","private":true,"type":"module"}
           EOF
-          cat > "$ROOT/scripts/flow.test.js" <<'EOF'
-          import assert from 'node:assert/strict';
-          import test from 'node:test';
-          function compute(input) {
+          cat > "$ROOT/scripts/flow.js" <<'EOF'
+          // Separate production-like source establishes a real source-to-call
+          // dataflow, without assuming test framework callback semantics.
+          export function compute(input) {
             const intermediate = input + 1;
             return intermediate;
           }
+          const sample = compute(8);
+          console.log(sample);
+          EOF
+          cat > "$ROOT/scripts/flow.test.js" <<'EOF'
+          import assert from 'node:assert/strict';
+          import test from 'node:test';
+          import { compute } from './flow.js';
           test('value flows into assertion', () => {
             const expected = 2;
             const observed = compute(1);
