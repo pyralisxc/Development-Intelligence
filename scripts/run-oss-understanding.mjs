@@ -108,9 +108,9 @@ async function main() {
       }
       const output = path.join(scratch, 'joern-dataflow.json');
       const start = Date.now();
-      const processResult = await run(executable, ['data-flow', cpg,
+      const processResult = await run(executable, ['data-flow',
         '-o', output, '--file-filter', fileFilter, '--sink-filter', sinkFilter,
-        '--slice-depth', String(depth)],
+        '--slice-depth', String(depth), cpg],
       { cwd: root, timeoutMs: 600000 });
       measures.joernSliceMs = Date.now() - start;
       if (processResult.code !== 0) {
