@@ -77,6 +77,23 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     assert.equal(decoded.counts.sourceMatched, 1);
     assert.equal(decoded.identity.independentlyAttested, false);
 
+    // End-to-end self-hosted worker runs the real native test under one graph,
+    // without invoking a proprietary service or a second semantic store.
+    const worker = await run(process.execPath, [
+      path.resolve('scripts/run-oss-understanding.mjs'),
+      '--repo-path', root, '--project', 'node-events-fixture',
+      '--node-test-file', 'scripts/observable.test.mjs',
+    ], { timeoutMs: 45000 });
+    assert.equal(worker.code, 0, worker.stderr);
+    const receipt = JSON.parse(worker.stdout);
+    assert.equal(receipt.mode, 'operator-owned-open-source-understanding');
+    assert.equal(receipt.oneCanonicalGraph, true);
+    assert.equal(receipt.changedCanonicalAuthority, false);
+    assert.equal(receipt.nodeTests.exitCode, 0);
+    assert.equal(receipt.nodeTests.counts.sourceMatched, 1);
+    assert.equal(receipt.nodeTests.policy.reportIntegrityIsNotCIExecutionAttestation, true);
+    assert.equal(receipt.joern, null, 'unrequested heavy Joern is not invoked by default');
+
     const lines = (await fs.readFile(eventFile, 'utf8')).trim().split('\n');
     const altered = lines.map((line: string) => {
       const event = JSON.parse(line);

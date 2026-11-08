@@ -89,3 +89,12 @@ Upstream references:
 https://docs.joern.io/cpg-slicing/
 https://github.com/joernio/joern/blob/master/LICENSE
 https://nodejs.org/api/test.html
+
+## One-command local OSS worker
+
+The operator-owned script now runs both mature engines against one canonical DI graph in a single process; it does not contact DI's hosted MCP or create another graph database.
+After npm run build on a clean exact-source checkout, run:
+
+    node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-file-filter '.*test.*' --joern-sink-filter '.*assert.*' --node-test-file scripts/windows-preflight.test.mjs
+
+Both engines are optional individually, but an explicit --node-test-file is needed to run a real native test (the worker never guesses which tests to execute). Joern version and expected executable are operator-provided and require independent integrity review; local Joern subprocess success is observed, not proof of a specific binary's provenance. Test subprocess exit and TestStream events are directly observed by the worker, but report bytes remain unauthenticated outside that controlled execution and do not prove assertion-level values. Joern may return source-inaccurate flows; these remain candidate edges even when source spans are exact. All scratch artifacts are removed after the bounded receipt is produced.
