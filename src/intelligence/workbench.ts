@@ -7,6 +7,7 @@ import { currentGraph } from './service.js';
 import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLens, searchGraph, traceGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
+import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
@@ -2671,6 +2672,28 @@ export async function queryWorkbench(input: {
     ...(input.sourceId ? { sourceId: input.sourceId } : {}),
     ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
   });
+  const testQuestion = !input.sourceId ? parseTestSourceQuestion(text) : null;
+  if (testQuestion) {
+    const graph = await currentGraph(input.project, input.ref, input.graphId);
+    const observed = testSourceProjection(graph, testQuestion, input.scope);
+    return {
+      intent: 'test-source-links',
+      subject: observed.targetNodeId
+        ? { id: observed.targetNodeId, name: observed.symbol, kind: 'function' } : null,
+      routing: {
+        tool: 'canonical-graph-relationships', direction: 'inbound', projection: 'test-static-calls',
+        questionPlan: { ...plan, lane: 'trace', proofMode: 'evidence',
+          subjectStrategy: 'entity-or-query' },
+        targetResolution: { strategy: 'exact-callable-name', mode: 'test-source-links',
+          query: observed.symbol, scope: input.scope ?? null,
+          ambiguous: observed.reason === 'ambiguous-target' },
+      },
+      answer: testSourceAnswer(observed),
+      answerClassification: observed.status === 'supported' ? 'established-bounded' : 'evidence-only',
+      result: { ...observed, graphId: graph.graphId, revision: graph.repositoryRevision,
+        analyzerVersion: graph.analyzerVersion },
+    };
+  }
   const sourceReference = !input.sourceId ? parseSourceReferenceQuestion(text) : null;
   if (sourceReference) {
     const graph = await currentGraph(input.project, input.ref, input.graphId);

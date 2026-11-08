@@ -51,6 +51,17 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
       "import { duplicateName as left } from './left.js';\n"
       + "import { duplicateName as right } from './right.js';\n"
       + 'export function both() { return left() + right(); }\n');
+    await fs.mkdir(path.join(source, 'tests'), { recursive: true });
+    await fs.writeFile(path.join(source, 'tests', 'reference.test.ts'), [
+      "import test from 'node:test';",
+      "import assert from 'node:assert/strict';",
+      "import { provideAnswer } from '../src/impl.js';",
+      "test('referenced function', () => { assert.equal(provideAnswer(1), 2); });", '',
+    ].join('\n'));
+    await fs.writeFile(path.join(source, 'tests', 'importOnly.test.ts'), [
+      "import { unrelated } from '../src/adjacent.js';",
+      'void unrelated;', '',
+    ].join('\n'));
     await runChecked('git', ['-C', source, 'add', '.']);
     await runChecked('git', ['-C', source,
       '-c', 'user.email=di@example.invalid', '-c', 'user.name=DI Test',
@@ -106,6 +117,71 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
     assert.equal(direct.graphId, assessed.graphId);
     assert.equal(direct.revision, assessed.revision);
     assert.equal(investigated.result.analyzerVersion, assessed.analyzerVersion);
+
+    // A real held-out test call is already resolved by the compiler; ordinary
+    // questions should use the SAME graph edge without claiming runtime proof.
+    const testQuestion = 'Which tests cover provideAnswer?';
+    const testDirect = await callTool('trace_path', {
+      ...selected, node: 'symbol:src/impl.ts#function:provideAnswer',
+      direction: 'inbound', depth: 1,
+      relationshipKinds: ['references-symbol'], status: ['resolved'], limit: 100,
+    }) as any;
+    const compilerTestEdge = testDirect.edges.find((edge: any) =>
+      edge.from === 'file:tests/reference.test.ts'
+      && edge.to === 'symbol:src/impl.ts#function:provideAnswer'
+      && edge.strategy === 'typescript-checker-symbol.v1'
+      && edge.status === 'resolved');
+    assert.ok(compilerTestEdge, 'the real exact-source compiler must independently prove the test call');
+    const [testInvestigation, testAssessment] = await Promise.all([
+      callTool('investigate', { ...selected, question: testQuestion }),
+      callTool('query_intelligence', { ...selected, question: testQuestion }),
+    ]) as any[];
+    assert.equal(testInvestigation.intent, 'test-source-links');
+    assert.equal(testInvestigation.answerClassification, 'established-bounded');
+    assert.equal(testInvestigation.result.status, 'supported');
+    assert.equal(testInvestigation.result.totalTestFiles, 1);
+    assert.deepEqual(testInvestigation.result.tests.map((item: any) => item.path),
+      ['tests/reference.test.ts']);
+    assert.equal(testInvestigation.result.tests[0].compilerVerified, true);
+    assert.equal(testInvestigation.result.executionObserved, false);
+    assert.equal(testInvestigation.result.assertionBehaviorEstablished, false);
+    assert.match(testInvestigation.answer, /does not prove that the test ran/u);
+    assert.equal(testAssessment.mode, 'test-source-links');
+    assert.equal(testAssessment.answerStatus, 'supported');
+    assert.ok(testAssessment.claims[0].proof.edgeIds.includes(compilerTestEdge.id));
+    assert.equal(testDirect.graphId, testAssessment.graphId);
+    assert.equal(testAssessment.graphId, testInvestigation.result.graphId);
+
+    for (const [negative, expectedReason] of [
+      ['Which tests cover provideAnswerExtra?', 'no-resolved-test-call'],
+      ['Which tests cover unrelated?', 'no-resolved-test-call'],
+      ['Which tests cover absentFunctionXYZ?', 'missing-target'],
+      ['Which tests cover duplicateName?', 'ambiguous-target'],
+    ]) {
+      const [unknownInvestigation, unknownAssessment] = await Promise.all([
+        callTool('investigate', { ...selected, question: negative }),
+        callTool('query_intelligence', { ...selected, question: negative }),
+      ]) as any[];
+      assert.equal(unknownInvestigation.intent, 'test-source-links', negative);
+      assert.equal(unknownInvestigation.result.reason, expectedReason, negative);
+      assert.equal(unknownInvestigation.result.coverage.absenceProven, false, negative);
+      assert.equal(unknownAssessment.answerStatus, 'unproven', negative);
+      assert.deepEqual(unknownAssessment.claims[0].proof.edgeIds, [], negative);
+    }
+    const wrongTestScope = await callTool('investigate', {
+      ...selected, question: testQuestion, scope: 'src/http.ts',
+    }) as any;
+    assert.equal(wrongTestScope.result.reason, 'out-of-scope');
+    assert.equal(wrongTestScope.answerClassification, 'evidence-only');
+    const requiredFacet = await callTool('query_intelligence', {
+      ...selected, question: testQuestion, requiredFacets: ['provider'],
+    }) as any;
+    assert.notEqual(requiredFacet.mode, 'test-source-links');
+    const repeatedTest = await callTool('query_intelligence',
+      { ...selected, question: testQuestion }) as any;
+    assert.deepEqual(repeatedTest.claims.map((item: any) => item.id),
+      testAssessment.claims.map((item: any) => item.id),
+      'same source graph must give deterministic relationship proof identity');
 
     for (const [label, counterexample, expectedReason] of [
       ['missing target', 'Where in src/http.ts is provideAnswerMissing referenced?', 'no-resolved-reference'],

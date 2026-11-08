@@ -5,6 +5,7 @@ import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
 import { projectOrientation } from './orientation.js';
 import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
+import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
 
 export type AssessmentStatus = 'supported' | 'contradicted' | 'unproven' | 'indeterminate';
 export type RealizationFacet = 'human' | 'agent' | 'transport' | 'implementation' | 'persistence' | 'provider';
@@ -367,6 +368,39 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
 export function assessGraph(graph: IntelligenceGraph, question: string, requiredFacets: RealizationFacet[] = []): Record<string, unknown> {
   // Caller-owned realization facet expectations retain their existing assessment
   // path; source-reference proof alone cannot establish those facets.
+  const testQuestion = requiredFacets.length ? null : parseTestSourceQuestion(question);
+  if (testQuestion) {
+    const observed = testSourceProjection(graph, testQuestion);
+    const context = graphQueryContext(graph);
+    const target = observed.targetNodeId ? context.node(observed.targetNodeId) : undefined;
+    const nodes = [
+      ...(target ? [target] : []),
+      ...observed.tests.map(item => context.node('file:' + item.path)).filter(
+        (item): item is GraphNode => Boolean(item)),
+    ];
+    const proofBundle = proof(graph, 'test-source.' + observed.reason, nodes, observed.edges, 'existence');
+    const resultClaim = claim({
+      type: 'relationship-resolved', status: observed.status,
+      statement: testSourceAnswer(observed),
+      subjectId: observed.targetNodeId, proof: proofBundle,
+    });
+    return {
+      project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
+      analyzerVersion: graph.analyzerVersion, question, mode: 'test-source-links',
+      interpretedSubject: observed.symbol, ambiguous: observed.reason === 'ambiguous-target',
+      candidates: observed.targetCandidates.map(id => {
+        const item = context.node(id);
+        return { id, name: item?.name ?? id, kind: item?.kind ?? 'unknown' };
+      }),
+      answerStatus: observed.status, claims: [resultClaim],
+      realization: null, reach: null, findings: [],
+      findingSummary: summarizeFindings(graph, [], null),
+      hypotheses: [], orientation: null, coverage: graphCoverage(graph),
+      testSourceLinks: observed,
+      note: 'Source-linked test calls are exact static graph evidence only. '
+        + 'They do not prove execution, assertion outcomes, or equivalent behavioral protection.',
+    };
+  }
   const explicitReference = requiredFacets.length ? null : parseSourceReferenceQuestion(question);
   if (explicitReference) {
     const projected = sourceReferenceProjection(graph, explicitReference);
