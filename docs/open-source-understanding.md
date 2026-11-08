@@ -21,13 +21,19 @@ After installing/building the repository and pinning the Joern binary/version:
 
     npm ci --no-audit --no-fund
     npm run build
-    mkdir -p joern-local-evidence
-    joern-slice data-flow . --file-filter '.*test.*' --sink-filter '.*assert.*' --slice-depth 12 --out joern-local-evidence/assertion-slice.json
+    node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-language JAVASCRIPT --joern-file-filter '.*test.*' --joern-sink-filter '.*assert.*' --node-test-file scripts/windows-preflight.test.mjs
 
-Then pass the actual emitted JSON filename (Joern may append a mode suffix)
-to the native evidence projection:
+The worker first runs the matching Joern *parse* frontend to create a disposable
+CPG file, then the Joern data-flow slicer over that CPG. Joern v4.0.666's
+slicer cannot consume the source directory directly. Its JSON DataFlowSlice
+is independently checked against source and joined with the same native
+assertion and execution-report identities. The CPG and slice are disposable
+producer intermediates, not a second persisted DI graph authority.
 
-    node dist/src/graphCli.js joern-evidence --repo-path . --project Development-Intelligence --joern-slice-json joern-local-evidence/assertion-slice.json --joern-version 4.0.666
+For an already produced JSON slice from a separately attested source run,
+read it without invoking Joern again:
+
+    node dist/src/graphCli.js joern-evidence --repo-path . --project Development-Intelligence --joern-slice-json joern-local-evidence/dataflow-slice.json --joern-version 4.0.666
 
 That exact-source operation reconstructs canonical W, generates the existing
 native assertion inventory and produces an ephemeral graph overlay. A Joern
@@ -95,6 +101,6 @@ https://nodejs.org/api/test.html
 The operator-owned script now runs both mature engines against one canonical DI graph in a single process; it does not contact DI's hosted MCP or create another graph database.
 After npm run build on a clean exact-source checkout, run:
 
-    node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-file-filter '.*test.*' --joern-sink-filter '.*assert.*' --node-test-file scripts/windows-preflight.test.mjs
+    node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-language JAVASCRIPT --joern-file-filter '.*test.*' --joern-sink-filter '.*assert.*' --node-test-file scripts/windows-preflight.test.mjs
 
 Both engines are optional individually, but an explicit --node-test-file is needed to run a real native test (the worker never guesses which tests to execute). Joern version and expected executable are operator-provided and require independent integrity review; local Joern subprocess success is observed, not proof of a specific binary's provenance. Test subprocess exit and TestStream events are directly observed by the worker, but report bytes remain unauthenticated outside that controlled execution and do not prove assertion-level values. Joern may return source-inaccurate flows; these remain candidate edges even when source spans are exact. All scratch artifacts are removed after the bounded receipt is produced.
