@@ -1,0 +1,349 @@
+import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
+import type { TestClaimCatalog } from './testClaimInventory.js';
+import { observation, resolution } from './model.js';
+import { runChecked } from '../util/process.js';
+import { stableHash } from '../util/hash.js';
+
+/**
+ * Ephemeral, OSS-only Joern dataflow evidence over ONE already-built DI graph.
+ * Joern's DataFlowSlice contains source-located nodes plus directed DDG edges.
+ * Independently confirmed Git source spans are resolved *locations*, while
+ * Joern-reported flows remain candidates (may-flow, not runtime, not a value
+ * proof). No Joern CPG, report, or extra graph becomes durable authority.
+ */
+export const JOERN_DATAFLOW_STRATEGY = 'joern-slice-source-correlated.v1';
+const MAX_SLICE_BYTES = 16 * 1024 * 1024;
+const MAX_SLICE_NODES = 25000;
+const MAX_SLICE_EDGES = 75000;
+const MAX_SOURCE_FILES = 250;
+const MAX_SOURCE_FILE_BYTES = 1024 * 1024;
+const MAX_CODE_CHARS = 1024;
+
+type UnknownRecord = Record<string, unknown>;
+interface SliceNode {
+  id: number;
+  label: string;
+  code: string;
+  parentFile: string;
+  parentMethod: string;
+  lineNumber: number;
+  columnNumber: number | null;
+}
+interface SliceEdge { src: number; dst: number; label: string }
+interface LocalSource {
+  path: string;
+  lines: string[];
+  starts: number[];
+}
+export interface JoernEvidenceProjection {
+  graph: IntelligenceGraph;
+  producer: { name: 'joern-slice'; version: string; sliceSha256: string; independentlyAttested: false };
+  source: { revision: string; graphId: string; projectPrefix: string };
+  counts: {
+    sliceNodes: number;
+    sliceEdges: number;
+    sourceLocatedNodes: number;
+    sourceUnlocatedNodes: number;
+    sourceFilesChecked: number;
+    candidateFlowEdges: number;
+    unlocatedFlowEdges: number;
+    assertionSpanAnchors: number;
+  };
+  candidates: Array<{
+    from: string;
+    to: string;
+    label: string;
+    edgeId: string;
+  }>;
+  policy: {
+    sourceSpansAreExactGitVerified: true;
+    flowIsPotentialNotRuntime: true;
+    candidateFlowIsNotIndependentlyCorroborated: true;
+    generatedBySourceOnly: true;
+    missingFlowDoesNotProveAbsence: true;
+    actualAssertionOutcomeProven: false;
+    testReplacementProven: false;
+    canonicalAuthorityUnaffected: true;
+    stored: false;
+  };
+}
+
+function record(value: unknown, label: string): UnknownRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(label + ' must be a JSON object');
+  }
+  return value as UnknownRecord;
+}
+function requiredInt(value: unknown, label: string, min: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) {
+    throw new Error(label + ' must be a safe integer >= ' + min);
+  }
+  return value;
+}
+function boundedText(value: unknown, label: string, limit: number): string {
+  if (typeof value !== 'string' || value.length > limit || value.includes('\0')) {
+    throw new Error(label + ' must be bounded UTF-8 text');
+  }
+  return value;
+}
+function canonicalRelative(value: string): boolean {
+  return Boolean(value && value.length <= 2048 && !value.includes('\\')
+    && !value.includes('\0') && !value.startsWith('/')
+    && !/^[A-Za-z]:/u.test(value)
+    && value.split('/').every(part => Boolean(part) && part !== '.' && part !== '..'));
+}
+function inside(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return Boolean(relative && relative !== '..'
+    && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+}
+function lineStarts(text: string): { lines: string[]; starts: number[] } {
+  const lines = text.split(/\r\n|\n|\r/u);
+  const starts: number[] = [];
+  let start = 0;
+  for (const line of lines) {
+    starts.push(start);
+    start += line.length;
+    if (text.slice(start, start + 2) === '\r\n') start += 2;
+    else if (text[start] === '\r' || text[start] === '\n') start += 1;
+  }
+  return { lines, starts };
+}
+function normalizePath(root: string, parentFile: string, prefix: string): string | null {
+  let value: string;
+  if (path.isAbsolute(parentFile)) {
+    value = path.relative(root, parentFile).split(path.sep).join('/');
+  } else {
+    value = prefix ? prefix + '/' + parentFile : parentFile;
+  }
+  return canonicalRelative(value) ? value : null;
+}
+function parseNode(raw: unknown): SliceNode {
+  const item = record(raw, 'Joern slice node');
+  const lineNumber = requiredInt(item.lineNumber, 'Joern node.lineNumber', 1);
+  const columnNumber = item.columnNumber === null || item.columnNumber === undefined
+    ? null : requiredInt(item.columnNumber, 'Joern node.columnNumber', 1);
+  return {
+    id: requiredInt(item.id, 'Joern node.id', 0),
+    label: boundedText(item.label, 'Joern node.label', 100),
+    code: boundedText(item.code, 'Joern node.code', MAX_CODE_CHARS),
+    parentFile: boundedText(item.parentFile, 'Joern node.parentFile', 2048),
+    parentMethod: boundedText(item.parentMethod ?? '', 'Joern node.parentMethod', 1024),
+    lineNumber, columnNumber,
+  };
+}
+function parseEdge(raw: unknown): SliceEdge {
+  const item = record(raw, 'Joern slice edge');
+  return {
+    src: requiredInt(item.src, 'Joern edge.src', 0),
+    dst: requiredInt(item.dst, 'Joern edge.dst', 0),
+    label: boundedText(item.label, 'Joern edge.label', 100),
+  };
+}
+
+async function sourceFile(root: string, relative: string, graph: IntelligenceGraph): Promise<LocalSource | null> {
+  if (!canonicalRelative(relative)
+    || !graph.coverage?.files.some(file => file.path === relative && file.status === 'complete')
+    || !graph.nodes.some(node => node.id === 'file:' + relative && node.kind === 'file')) return null;
+  const location = path.resolve(root, relative);
+  if (!inside(root, location)) return null;
+  try {
+    const stat = await fs.lstat(location);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_SOURCE_FILE_BYTES) return null;
+    const real = await fs.realpath(location);
+    if (!inside(root, real)) return null;
+    // A consumer-supplied Joern slice must not become a source fact after the
+    // checkout has diverged from its selected immutable Git revision.
+    const [headBlob, localBlob] = await Promise.all([
+      runChecked('git', ['-C', root, 'rev-parse', 'HEAD:' + relative]),
+      runChecked('git', ['-C', root, 'hash-object', '--', relative]),
+    ]);
+    if (headBlob.stdout.trim() !== localBlob.stdout.trim()) return null;
+    const text = await fs.readFile(real, 'utf8');
+    if (text.includes('\0')) return null;
+    const { lines, starts } = lineStarts(text);
+    return { path: relative, lines, starts };
+  } catch { return null; }
+}
+
+function exactLocation(file: LocalSource, item: SliceNode): { locator: string; offset: number } | null {
+  const sourceLine = file.lines[item.lineNumber - 1];
+  const sourceStart = file.starts[item.lineNumber - 1];
+  const code = item.code.trim();
+  if (sourceLine === undefined || sourceStart === undefined || !code
+    || code.includes('\n') || code.includes('\r')) return null;
+  const location = item.columnNumber === null ? sourceLine.indexOf(code) : item.columnNumber - 1;
+  if (location < 0 || sourceLine.slice(location, location + code.length) !== code
+    || (item.columnNumber === null && sourceLine.lastIndexOf(code) !== location)) return null;
+  return { locator: file.path + ':' + item.lineNumber + ':' + (location + 1), offset: sourceStart + location };
+}
+
+/** Call with the same exact source checkout used to build graph, not a guessed ref. */
+export async function projectLocalJoernDataflow(input: {
+  root: string;
+  graph: IntelligenceGraph;
+  slicePath: string;
+  producerVersion: string;
+  projectPrefix?: string;
+  testCatalog?: TestClaimCatalog;
+}): Promise<JoernEvidenceProjection> {
+  const root = await fs.realpath(path.resolve(input.root));
+  const head = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+  if (head !== input.graph.repositoryRevision) {
+    throw new Error('Joern evidence requires the selected exact Git HEAD and graph revision to agree');
+  }
+  const prefix = input.projectPrefix ?? '';
+  if (prefix && !canonicalRelative(prefix)) throw new Error('Joern project prefix must be canonical and repository-relative');
+  const version = boundedText(input.producerVersion, 'Joern producer version', 100);
+  if (!version.trim()) throw new Error('Joern producer version is required; caller version is not attestation');
+  if (input.testCatalog && (input.testCatalog.revision !== head
+    || input.testCatalog.analyzerVersion !== input.graph.analyzerVersion)) {
+    throw new Error('Joern test assertion catalog must match the exact source revision and analyzer');
+  }
+
+  const location = path.resolve(root, input.slicePath);
+  if (!inside(root, location)) throw new Error('Joern slice path must be confined to the inspected checkout');
+  const stat = await fs.lstat(location);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > MAX_SLICE_BYTES) {
+    throw new Error('Joern slice must be a bounded, ordinary file');
+  }
+  const real = await fs.realpath(location);
+  if (!inside(root, real)) throw new Error('Joern slice physical path escapes the checkout');
+  const bytes = await fs.readFile(real);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const parsed = record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)), 'Joern DataFlowSlice');
+  if (!Array.isArray(parsed.nodes) || parsed.nodes.length > MAX_SLICE_NODES
+    || !Array.isArray(parsed.edges) || parsed.edges.length > MAX_SLICE_EDGES) {
+    throw new Error('Joern DataFlowSlice nodes/edges must be bounded arrays');
+  }
+  const sliceNodes = parsed.nodes.map(parseNode);
+  const sliceEdges = parsed.edges.map(parseEdge);
+  const ids = new Set<number>();
+  for (const item of sliceNodes) {
+    if (ids.has(item.id)) throw new Error('Joern DataFlowSlice contains duplicate node ids');
+    ids.add(item.id);
+  }
+
+  const fileCache = new Map<string, Promise<LocalSource | null>>();
+  const mapped = new Map<number, { node: GraphNode; path: string; offset: number; locator: string }>();
+  const addedNodes = new Map<string, GraphNode>();
+  const addedEdges = new Map<string, GraphEdge>();
+  const assertionPairs = new Set<string>();
+  const catalogAssertions = new Map<string, TestClaimCatalog['assertions']>();
+  for (const assertion of input.testCatalog?.assertions ?? []) {
+    const existing = catalogAssertions.get(assertion.sourceId) ?? [];
+    existing.push(assertion);
+    catalogAssertions.set(assertion.sourceId, existing);
+  }
+  let missing = 0;
+  for (const item of sliceNodes) {
+    const relative = normalizePath(root, item.parentFile, prefix);
+    if (!relative) { missing++; continue; }
+    if (!fileCache.has(relative)) {
+      if (fileCache.size >= MAX_SOURCE_FILES) throw new Error('Joern slice exceeds bounded source-file census');
+      fileCache.set(relative, sourceFile(root, relative, input.graph));
+    }
+    const file = await fileCache.get(relative)!;
+    const exact = file ? exactLocation(file, item) : null;
+    if (!exact) { missing++; continue; }
+    const id = 'joern-span:' + stableHash([head, relative, exact.locator, item.label, item.code.trim()]);
+    const node = observation({
+      id, sourceId: 'repo:' + relative, kind: 'source-located-dataflow-node',
+      locator: exact.locator, name: item.name ?? item.label, field: 'joern.slice-node',
+      value: { label: item.label, code: item.code.trim(), method: item.parentMethod,
+        sourceAnchorExact: true, JoernFlowProven: false },
+      layer: 'structural', checkpoint: false,
+    });
+    mapped.set(item.id, { node, path: relative, offset: exact.offset, locator: exact.locator });
+    addedNodes.set(id, node);
+    const contains = resolution({
+      from: 'file:' + relative, to: id, kind: 'contains',
+      strategy: 'exact-git-source-span.v1', confidence: 1, status: 'resolved',
+      evidence: [exact.locator, 'Source text and Git blob independently matched; does not corroborate Joern flow'],
+      layer: 'structural', checkpoint: false,
+    });
+    addedEdges.set(contains.id, contains);
+    for (const assertion of catalogAssertions.get(relative) ?? []) {
+      if (exact.offset < assertion.start || exact.offset >= assertion.end) continue;
+      const assertionNode = observation({
+        id: assertion.id, sourceId: 'repo:' + relative, kind: 'test-assertion',
+        locator: relative + ':' + assertion.start, field: 'assertion-span',
+        value: { spanSha256: assertion.spanSha256, dynamic: assertion.dynamic },
+        layer: 'structural', checkpoint: false,
+      });
+      addedNodes.set(assertion.id, assertionNode);
+      const membership = resolution({
+        from: id, to: assertion.id, kind: 'within-test-assertion',
+        strategy: 'exact-git-assertion-span.v1', confidence: 1, status: 'resolved',
+        evidence: [exact.locator, assertion.id, 'AST assertion source-span membership only'],
+        layer: 'structural', checkpoint: false,
+      });
+      addedEdges.set(membership.id, membership);
+      assertionPairs.add(assertion.id + '\0' + id);
+    }
+  }
+  let imported = 0;
+  let lost = 0;
+  const candidates: JoernEvidenceProjection['candidates'] = [];
+  for (const item of sliceEdges) {
+    const from = mapped.get(item.src);
+    const to = mapped.get(item.dst);
+    if (!from || !to) { lost++; continue; }
+    if (!['DDG', 'REACHING_DEF'].includes(item.label.toUpperCase())) { lost++; continue; }
+    const edge = resolution({
+      from: from.node.id, to: to.node.id,
+      kind: 'dataflow-reported', strategy: JOERN_DATAFLOW_STRATEGY,
+      identity: [head, from.node.id, to.node.id, item.label.toUpperCase(), JOERN_DATAFLOW_STRATEGY],
+      confidence: null, status: 'candidate',
+      evidence: [
+        from.locator, to.locator, 'Joern ' + version + ' slice ' + digest + ' reports possible ' + item.label,
+        'Producer report is caller-supplied/unattested; no runtime, path feasibility, or assertion equivalence proof',
+      ],
+      layer: 'structural', checkpoint: false,
+    });
+    if (!addedEdges.has(edge.id)) {
+      addedEdges.set(edge.id, edge);
+      imported++;
+      if (candidates.length < 20) candidates.push({
+        from: from.locator, to: to.locator, label: item.label, edgeId: edge.id,
+      });
+    }
+  }
+  const nodes = [...addedNodes.values()].sort((a,b) => a.id.localeCompare(b.id));
+  const edges = [...addedEdges.values()].sort((a,b) => a.id.localeCompare(b.id));
+  return {
+    graph: {
+      ...input.graph,
+      graphId: 'joern-overlay-' + stableHash([input.graph.graphId, digest, version, prefix]),
+      nodes: [...input.graph.nodes, ...nodes],
+      edges: [...input.graph.edges, ...edges],
+    },
+    producer: { name: 'joern-slice', version, sliceSha256: digest, independentlyAttested: false },
+    source: { revision: head, graphId: input.graph.graphId, projectPrefix: prefix },
+    counts: {
+      sliceNodes: sliceNodes.length,
+      sliceEdges: sliceEdges.length,
+      sourceLocatedNodes: mapped.size,
+      sourceUnlocatedNodes: missing,
+      sourceFilesChecked: fileCache.size,
+      candidateFlowEdges: imported,
+      unlocatedFlowEdges: lost,
+      assertionSpanAnchors: assertionPairs.size,
+    },
+    candidates,
+    policy: {
+      sourceSpansAreExactGitVerified: true,
+      flowIsPotentialNotRuntime: true,
+      candidateFlowIsNotIndependentlyCorroborated: true,
+      generatedBySourceOnly: true,
+      missingFlowDoesNotProveAbsence: true,
+      actualAssertionOutcomeProven: false,
+      testReplacementProven: false,
+      canonicalAuthorityUnaffected: true,
+      stored: false,
+    },
+  };
+}
