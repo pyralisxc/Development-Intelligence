@@ -234,7 +234,7 @@ test('Node loose and strict comparison providers survive native claim output, in
     await fs.writeFile(path.join(root, 'tests', 'example.test.ts'), source);
     const catalog = await generateTestClaimCatalog(root, graph(), { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] });
     const report = await buildTestClaimDecisionRecord(root, graph(), catalog, []) as any;
-    assert.equal(report.evaluatorVersion, '1.3.0');
+    assert.equal(report.evaluatorVersion, '1.4.0');
     assert.equal(report.counts.nativeObligations, 7);
     const byExpression = new Map(report.nativeObligations.map((obligation: any) => {
       const assertion = catalog.assertions.find(item => item.id === obligation.assertionId)!;
