@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 import type { IntelligenceGraph } from '../types.js';
 import type { TestClaimCatalog } from './testClaimInventory.js';
@@ -68,6 +69,29 @@ async function sourceCurrent(root: string, sourcePath: string): Promise<boolean>
     return expected.stdout.trim() === actual.stdout.trim();
   } catch { return false; }
 }
+async function exactTestTitles(root: string, sourcePath: string,
+  catalog: TestClaimCatalog): Promise<Array<{ id: string; name: string }>> {
+  const source = await fs.readFile(path.resolve(root, sourcePath), 'utf8');
+  const kind = /\.tsx$/iu.test(sourcePath) ? ts.ScriptKind.TSX
+    : /\.jsx$/iu.test(sourcePath) ? ts.ScriptKind.JSX
+      : /\.[cm]?js$/iu.test(sourcePath) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
+  const ast = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, kind);
+  const bySpan = new Map(catalog.declarations.filter(item => item.sourceId === sourcePath
+    && !item.dynamic).map(item => [item.start + ':' + item.end, item.id]));
+  const matches: Array<{ id: string; name: string }> = [];
+  const walk = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const id = bySpan.get(node.getStart(ast) + ':' + node.getEnd());
+      const title = node.arguments[0];
+      if (id && title && (ts.isStringLiteral(title) || ts.isNoSubstitutionTemplateLiteral(title))) {
+        matches.push({ id, name: title.text });
+      }
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(ast);
+  return matches;
+}
 function eventSourcePath(root: string, supplied: string): { path: string; mapping: 'direct-git-source' | 'compiler-output-name-only' } | null {
   const location = supplied.startsWith('file:')
     ? (() => { try { return fileURLToPath(supplied); } catch { return ''; } })()
@@ -116,6 +140,7 @@ export async function projectNodeTestEvents(input: {
   const lines = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim().split(/\r?\n/u);
   if (lines.length > MAX_EVENTS) throw new Error('Node test report exceeds bounded event population');
   const sourceCache = new Map<string, Promise<boolean>>();
+  const sourceTitles = new Map<string, Promise<Array<{ id: string; name: string }>>>();
   const tests: NodeTestEvidenceProjection['tests'] = [];
   let ambiguous = 0, unavailable = 0, summariesObserved = 0, pass = 0, fail = 0;
   for (const [index, line] of lines.entries()) {
@@ -133,8 +158,10 @@ export async function projectNodeTestEvents(input: {
     const location = eventSourcePath(root, file);
     if (!location) { unavailable++; continue; }
     const sourcePath = location.path;
-    const candidates = input.catalog.declarations.filter(item =>
-      item.sourceId === sourcePath && item.title === name && !item.dynamic);
+    if (!sourceTitles.has(sourcePath)) {
+      sourceTitles.set(sourcePath, exactTestTitles(root, sourcePath, input.catalog));
+    }
+    const candidates = (await sourceTitles.get(sourcePath)!).filter(item => item.name === name);
     if (!sourceCache.has(sourcePath)) {
       sourceCache.set(sourcePath, sourceCurrent(root, sourcePath));
     }

@@ -56,7 +56,7 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     assert.equal(first.tests[0]?.file, 'scripts/observable.test.mjs');
     assert.equal(first.tests[0]?.testName, 'observable result');
     assert.equal(first.tests[0]?.outcome, 'reported-pass');
-    assert.ok(first.tests[0]?.declarationId?.startsWith('test-declaration:'));
+    assert.ok(first.tests[0]?.declarationId?.startsWith('declaration:'));
     assert.equal(first.tests[0]?.evidenceStatus, 'source-associated-unattested');
     assert.equal(first.identity.independentlyAttested, false);
     assert.equal(first.policy.sourceAssociatedEventsProveAssertionResults, false);
