@@ -96,6 +96,7 @@ jobs:
             --joern-executable "$JOERN_SLICE" \
             --joern-version "$JOERN_VERSION" \
             --joern-language JAVASCRIPT \
+            --joern-debug-producer \
             --joern-depth 12 \
             --node-test-file scripts/flow.test.js \
             > "$RUNNER_TEMP/joern-producer-receipt.json"
