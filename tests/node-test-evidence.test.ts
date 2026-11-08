@@ -3,6 +3,7 @@ import test from 'node:test';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { buildLocalGraph } from '../src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../src/intelligence/testClaimInventory.js';
 import { projectNodeTestEvents } from '../src/intelligence/nodeTestEvidence.js';
@@ -33,7 +34,7 @@ async function fixture() {
 test('real Node TestStream reporter maps an exact Git test declaration without asserting coverage', async () => {
   const { root, graph, catalog } = await fixture();
   try {
-    const reporter = path.resolve('scripts/node-test-events-reporter.mjs');
+    const reporter = pathToFileURL(path.resolve('scripts/node-test-events-reporter.mjs')).href;
     const eventFile = path.join(root, 'observations', 'node.jsonl');
     const result = await run(process.execPath, [
       '--test',

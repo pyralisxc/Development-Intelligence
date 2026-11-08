@@ -2,7 +2,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../dist/src/intelligence/testClaimInventory.js';
 import { projectLocalJoernDataflow } from '../dist/src/intelligence/joernDataflow.js';
@@ -115,7 +115,7 @@ async function main() {
       const uniqueTargets = [...new Set(requestedTestFiles)];
       if (uniqueTargets.length > 40) throw new Error('Native test run supports max 40 exact sources');
       const targets = await Promise.all(uniqueTargets.map(name => trustedTarget(root, name)));
-      const reporterPath = fileURLToPath(new URL('./node-test-events-reporter.mjs', import.meta.url));
+      const reporterPath = new URL('./node-test-events-reporter.mjs', import.meta.url).href;
       const start = Date.now();
       const executed = await run(process.execPath, [
         '--test', '--test-reporter=' + reporterPath, ...targets.map(item => item.full),
