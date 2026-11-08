@@ -2713,19 +2713,6 @@ export async function queryWorkbench(input: {
   const target = await resolveInvestigationTarget(input, text, plan);
   const result = await (async (): Promise<Record<string, unknown>> => {
 
-  // The existence of a nearby token in the graph cannot establish the
-  // requested subject or any causal behavior. Keep suggestions, but fail closed.
-  if (target.implicitOnly && plan.lane === 'entity') {
-    return {
-      intent: 'unproven',
-      subject: subjectDescriptor(null, target.query, false, target.candidates),
-      routing: { tool: 'none', reason: 'subject-not-exactly-identified' },
-      answer: 'The question does not identify a unique code subject. Nearby names are suggestions, not proof of the requested behavior or relationship.',
-      answerClassification: 'evidence-only',
-      result: { outcome: 'unproven-subject', reason: 'incidental-lexical-match',
-        candidates: target.candidates.map(node => ({ id: node.id, name: node.name, kind: node.kind })) },
-    };
-  }
   if (target.exactUnresolved) {
     return {
       intent: 'unresolved',
@@ -2745,6 +2732,21 @@ export async function queryWorkbench(input: {
   if (sourceFallback) return sourceFallback;
   const specificSemantic = specificSemanticQuestion(text);
   if (specificSemantic) return await explainSpecificSemanticQuestion(input.project, (await currentGraph(input.project,input.ref,input.graphId)).graphId, text, specificSemantic, input.scope);
+
+  // Exact source/path routing is authoritative ahead of incidental name suggestions.
+  // The existence of a nearby token in the graph cannot establish the
+  // requested subject or any causal behavior. Keep suggestions, but fail closed.
+  if (target.implicitOnly && plan.lane === 'entity') {
+    return {
+      intent: 'unproven',
+      subject: subjectDescriptor(null, target.query, false, target.candidates),
+      routing: { tool: 'none', reason: 'subject-not-exactly-identified' },
+      answer: 'The question does not identify a unique code subject. Nearby names are suggestions, not proof of the requested behavior or relationship.',
+      answerClassification: 'evidence-only',
+      result: { outcome: 'unproven-subject', reason: 'incidental-lexical-match',
+        candidates: target.candidates.map(node => ({ id: node.id, name: node.name, kind: node.kind })) },
+    };
+  }
 
   if (plan.lane === 'implementation-explanation') {
     const result = await implementationMechanismProjection({
