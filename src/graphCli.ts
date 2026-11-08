@@ -3,6 +3,7 @@ import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 import { buildLocalGraph } from './intelligence/local.js';
 import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
 import { projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
+import { projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
 import { generateTestClaimCatalog } from './intelligence/testClaimInventory.js';
 
 const command = process.argv[2];
@@ -21,6 +22,9 @@ const testClaimReportPath = arg('--test-claim-report-path');
 const producerCommit = arg('--producer-commit');
 const scipIndexPath = arg('--scip-index');
 const joernSlicePath = arg('--joern-slice-json');
+const nodeEventsPath = arg('--node-test-events-jsonl');
+const nodeProducerVersion = arg('--node-version');
+const nodeRunId = arg('--node-run-id');
 const joernProducerVersion = arg('--joern-version');
 const joernProjectPrefix = arg('--joern-project-prefix');
 const scipProjectPrefix = arg('--scip-project-prefix');
@@ -36,6 +40,7 @@ async function main(): Promise<void> {
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
   if ((joernSlicePath || joernProducerVersion || joernProjectPrefix) && command !== 'joern-evidence') throw new Error('Joern evidence flags require joern-evidence command');
+  if ((nodeEventsPath || nodeProducerVersion || nodeRunId) && command !== 'node-test-evidence') throw new Error('Node test evidence flags require node-test-evidence command');
   if (scipProjectPrefix && command !== 'scip-evidence') throw new Error('--scip-project-prefix is supported only for scip-evidence');
   if (process.argv.includes('--scip-legacy-position-encoding') && !scipLegacyEncoding) throw new Error('--scip-legacy-position-encoding requires utf8, utf16 or utf32');
   if (scipLegacyEncoding && command !== 'scip-evidence') throw new Error('--scip-legacy-position-encoding is supported only for scip-evidence');
@@ -93,6 +98,24 @@ async function main(): Promise<void> {
       candidates: overlay.candidates,
       policy: overlay.policy,
     }, null, 2));
+  } else if (command === 'node-test-evidence') {
+    if (!nodeEventsPath || !nodeProducerVersion) {
+      throw new Error('node-test-evidence requires --node-test-events-jsonl and --node-version');
+    }
+    const canonical = await buildLocalGraph(root, project);
+    const catalog = await generateTestClaimCatalog(root, canonical, {
+      sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
+      sourceSuffixes: ['.test.ts', '.test.mjs', '.test.tsx', '.spec.ts', '.spec.tsx'],
+    });
+    const observed = await projectNodeTestEvents({
+      root, graph: canonical, catalog, eventPath: nodeEventsPath,
+      nodeVersion: nodeProducerVersion,
+      ...(nodeRunId ? { runId: nodeRunId } : {}),
+    });
+    console.log(JSON.stringify({
+      mode: 'ephemeral-node-test-event-evidence',
+      ...observed,
+    }, null, 2));
   } else if (command === 'catalog') {
     const sourcePrefixes = args('--source-prefix');
     const sourceSuffixes = args('--source-suffix');
@@ -116,7 +139,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     if (result.current !== true) process.exitCode = 1;
   } else {
-    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence|joern-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32] [--joern-slice-json FILE] [--joern-version VERSION] [--joern-project-prefix PATH]');
+    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence|joern-evidence|node-test-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32] [--joern-slice-json FILE] [--joern-version VERSION] [--joern-project-prefix PATH] [--node-test-events-jsonl FILE] [--node-version VERSION] [--node-run-id RUN_ID]');
     process.exitCode = 2;
   }
 }
