@@ -111,16 +111,22 @@ async function main() {
       const processResult = await run(executable, ['data-flow',
         '-o', output, '--file-filter', fileFilter, '--sink-filter', sinkFilter,
         '--slice-depth', String(depth), cpg],
-      { cwd: root, timeoutMs: 600000 });
+      { cwd: scratch, timeoutMs: 600000 });
       measures.joernSliceMs = Date.now() - start;
       if (processResult.code !== 0) {
         const diagnostic = (processResult.stderr || processResult.stdout).trim();
         throw new Error('Pinned Joern slicer failed (no graph evidence admitted): '
           + diagnostic.slice(0, 900));
       }
-      const names = (await fs.readdir(scratch)).filter(name =>
-        name.startsWith('joern-dataflow') && name.endsWith('.json'));
-      if (names.length !== 1) throw new Error('Joern must emit exactly one bounded JSON slice');
+      const produced = await fs.readdir(scratch);
+      // Joern versions suffix --out differently; only a unique JSON written
+      // into our isolated scratch directory can be admitted as evidence.
+      const names = produced.filter(name => name.endsWith('.json')
+        && name !== 'joern-cpg.bin');
+      if (names.length !== 1) {
+        throw new Error('Joern must emit exactly one bounded JSON dataflow slice; files='
+          + produced.sort().slice(0, 12).join(',').slice(0, 350));
+      }
       const projected = await projectLocalJoernDataflow({
         root, graph, slicePath: path.relative(root, path.join(scratch, names[0])),
         producerVersion: requestedVersion, testCatalog: catalog,
