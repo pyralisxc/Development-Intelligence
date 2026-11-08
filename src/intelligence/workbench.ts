@@ -2431,6 +2431,7 @@ interface InvestigationTargetResolution {
   ambiguous: boolean;
   candidates: GraphNode[];
   exactUnresolved?: boolean;
+  implicitOnly?: boolean;
 }
 
 function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
@@ -2465,7 +2466,7 @@ async function resolveInvestigationSubject(
   input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
   text: string,
   markers: RegExp[],
-): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[]; exactUnresolved?: boolean }> {
+): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[]; exactUnresolved?: boolean; implicitOnly?: boolean }> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const scoped = input.scope ? scopeNodeIds(graph, input.scope) : null;
   const scopeIds = scoped && (scoped.kind === 'file' || scoped.kind === 'path' || scoped.kind === 'entity') ? scoped.ids : null;
@@ -2508,7 +2509,7 @@ async function resolveInvestigationSubject(
       return { query: cleaned, node: null, ambiguous: false, candidates: direct.slice(0, 10), exactUnresolved: true };
     }
     const suitable = direct.filter(node => compatibleEntityRole(node, role));
-    if (suitable.length === 1) return { query: cleaned, node: suitable[0]!, ambiguous: false, candidates: suitable };
+    if (suitable.length === 1) return { query: cleaned, node: null, ambiguous: false, candidates: suitable, implicitOnly: true };
   }
 
   const haystack = normalizedMention(text);
@@ -2529,12 +2530,13 @@ async function resolveInvestigationSubject(
       || a.node.id.localeCompare(b.node.id));
 
   if (!mentions.length) return { query: cleaned || null, node: null, ambiguous: false, candidates: [] };
-  const best = mentions[0]!;
-  const tied = mentions.filter(item => item.score === best.score);
-  const semanticBest = tied.filter(item => item.node.layer === 'semantic');
-  if (semanticBest.length === 1) return { query: cleaned || displayName(semanticBest[0]!.node), node: semanticBest[0]!.node, ambiguous: false, candidates: tied.map(item => item.node) };
-  if (tied.length === 1) return { query: cleaned || displayName(best.node), node: best.node, ambiguous: false, candidates: [best.node] };
-  return { query: cleaned || null, node: null, ambiguous: true, candidates: tied.map(item => item.node) };
+  // A substring mentioned in a question is a navigation suggestion, not an
+  // identity proof. Only the exact ID/name branch above may resolve the subject.
+  // Otherwise generic nouns inside failure/relationship questions could become
+  // falsely asserted implementation owners.
+  const bestScore = mentions[0]!.score;
+  const suggestions = mentions.filter(item => item.score === bestScore).slice(0, 10).map(item => item.node);
+  return { query: cleaned || null, node: null, ambiguous: false, candidates: suggestions, implicitOnly: true };
 }
 
 async function resolveInvestigationTarget(
@@ -2608,6 +2610,7 @@ async function resolveInvestigationTarget(
     ambiguous: resolved.ambiguous,
     candidates: resolved.candidates,
     ...(resolved.exactUnresolved ? { exactUnresolved: true } : {}),
+    ...(resolved.implicitOnly ? { implicitOnly: true } : {}),
   };
 }
 
@@ -2619,6 +2622,7 @@ function targetResolutionForRouting(target: InvestigationTargetResolution): Reco
     scope: target.scope,
     ambiguous: target.ambiguous,
     exactUnresolved: target.exactUnresolved === true,
+    implicitOnly: target.implicitOnly === true,
     node: target.node
       ? {
           id: target.node.id,
@@ -2700,6 +2704,19 @@ export async function queryWorkbench(input: {
   const target = await resolveInvestigationTarget(input, text, plan);
   const result = await (async (): Promise<Record<string, unknown>> => {
 
+  // The existence of a nearby token in the graph cannot establish the
+  // requested subject or any causal behavior. Keep suggestions, but fail closed.
+  if (target.implicitOnly && (plan.lane === 'entity' || plan.lane === 'trace')) {
+    return {
+      intent: 'unproven',
+      subject: subjectDescriptor(null, target.query, false, target.candidates),
+      routing: { tool: 'none', reason: 'subject-not-exactly-identified' },
+      answer: 'The question does not identify a unique code subject. Nearby names are suggestions, not proof of the requested behavior or relationship.',
+      answerClassification: 'evidence-only',
+      result: { outcome: 'unproven-subject', reason: 'incidental-lexical-match',
+        candidates: target.candidates.map(node => ({ id: node.id, name: node.name, kind: node.kind })) },
+    };
+  }
   if (target.exactUnresolved) {
     return {
       intent: 'unresolved',

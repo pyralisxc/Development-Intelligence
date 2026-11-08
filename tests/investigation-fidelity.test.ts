@@ -32,6 +32,8 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     await fs.writeFile(path.join(source, 'src', 'many-callers.ts'),
       "import { target } from './workbench.js';\n"
       + Array.from({ length: 112 }, (_, index) => `export function generatedCaller${index}() { return target(); }\n`).join(''));
+    await fs.writeFile(path.join(source, 'src', 'service.ts'),
+      'export function service() { return 1; }\n');
     await fs.writeFile(path.join(source, 'src', 'duplicate-one.ts'),
       'export function duplicateName() { return 1; }\n');
     await fs.writeFile(path.join(source, 'src', 'duplicate-two.ts'),
@@ -53,6 +55,20 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     const implementation = await queryWorkbench({ ...input, text: 'Where is target implemented?' }) as any;
     assert.equal(implementation.subject.kind, 'function');
     assert.match(implementation.subject.id, /src\/workbench\.ts#function:target/u);
+    const scenario = await callTool('investigate', {
+      ...input, question: 'What happens when an external service rollback fails?',
+    }) as any;
+    assert.equal(scenario.intent, 'unproven');
+    assert.equal(scenario.result.outcome, 'unproven-subject');
+    assert.equal(scenario.routing.reason, 'subject-not-exactly-identified');
+    assert.equal(scenario.routing.targetResolution.node, null);
+    assert.match(scenario.answer, /not proof/u);
+    const otherScenario = await callTool('investigate', {
+      ...input, question: 'Why does the service database fail?',
+    }) as any;
+    assert.notEqual(otherScenario.intent, 'inspect', 'incidental nouns are not exact technical subjects');
+    const exactService = await callTool('investigate', { ...input, question: 'What is service?' }) as any;
+    assert.equal(exactService.intent, 'inspect', 'an explicitly named symbol remains resolvable');
     const neutral = await queryWorkbench({ ...input, text: 'What is target?' }) as any;
     assert.equal(neutral.intent, 'inspect');
     assert.equal(typeof neutral.subject.id, 'string');
