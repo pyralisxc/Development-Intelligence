@@ -130,8 +130,16 @@ async function main() {
       const names = produced.filter(name => name.endsWith('.json')
         && name !== 'joern-cpg.bin');
       if (names.length !== 1) {
-        throw new Error('Joern must emit exactly one bounded JSON dataflow slice; files='
-          + produced.sort().slice(0, 12).join(',').slice(0, 350));
+        // Diagnostics are opt-in because frontend logs may contain private
+        // source paths. The fixture CI explicitly enables them only on synthetic
+        // source; source code is never sent to a remote analysis service.
+        const debug = process.argv.includes('--joern-debug-producer')
+          ? ('; parser=' + (parsed.stdout + '\n' + parsed.stderr).trim().slice(-600)
+            + '; slicer=' + (processResult.stdout + '\n' + processResult.stderr).trim().slice(-600))
+          : '';
+        throw new Error('Joern must emit exactly one bounded JSON dataflow slice; cpgBytes='
+          + cpgFile.size + '; files='
+          + produced.sort().slice(0, 12).join(',').slice(0, 350) + debug);
       }
       const projected = await projectLocalJoernDataflow({
         root, graph, slicePath: path.relative(root, path.join(scratch, names[0])),
