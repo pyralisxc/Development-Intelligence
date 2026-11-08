@@ -55,7 +55,20 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     });
     assert.equal(first.counts.reportedPass, 1);
     assert.equal(first.counts.reportedFail, 0);
-    assert.equal(first.counts.sourceMatched, 1);
+    // Synthetic fixture only: if a platform reports a different native
+    // TestStream file identity, disclose the exact bounded mapping evidence
+    // instead of guessing a match or weakening the gate.
+    const testPassEvents = result.stdout.trim().split('\n')
+      .map((line: string) => JSON.parse(line))
+      .filter((event: any) => event.type === 'test:pass')
+      .map((event: any) => ({ name: event.data?.name, file: event.data?.file }));
+    assert.equal(first.counts.sourceMatched, 1, JSON.stringify({
+      reportedEvents: testPassEvents, observedTests: first.tests,
+      counts: first.counts,
+      declarations: catalog.declarations.map(item => ({
+        id: item.id, sourceId: item.sourceId, start: item.start, end: item.end,
+      })),
+    }).slice(0, 3000));
     assert.ok(first.counts.summariesObserved >= 1);
     assert.equal(first.tests[0]?.file, 'scripts/observable.test.mjs');
     assert.equal(first.tests[0]?.testName, 'observable result');
