@@ -65,7 +65,10 @@ jobs:
           set -euo pipefail
           ROOT="$RUNNER_TEMP/di-oss-joern-fixture"
           mkdir -p "$ROOT/scripts"
-          cat > "$ROOT/scripts/flow.test.mjs" <<'EOF'
+          cat > "$ROOT/package.json" <<'EOF'
+          {"name":"di-oss-joern-fixture","private":true,"type":"module"}
+          EOF
+          cat > "$ROOT/scripts/flow.test.js" <<'EOF'
           import assert from 'node:assert/strict';
           import test from 'node:test';
           function compute(input) {
@@ -79,7 +82,7 @@ jobs:
           });
           EOF
           git -C "$ROOT" init --initial-branch=main
-          git -C "$ROOT" add scripts
+          git -C "$ROOT" add scripts package.json
           git -C "$ROOT" -c user.email="di-fixture@example.invalid" -c user.name="DI Fixture" commit -m "exact source for OSS producer"
           echo "OSS_FIXTURE=$ROOT" >> "$GITHUB_ENV"
           git -C "$ROOT" rev-parse HEAD
@@ -94,7 +97,7 @@ jobs:
             --joern-version "$JOERN_VERSION" \
             --joern-language JAVASCRIPT \
             --joern-depth 12 \
-            --node-test-file scripts/flow.test.mjs \
+            --node-test-file scripts/flow.test.js \
             > "$RUNNER_TEMP/joern-producer-receipt.json"
           node --input-type=module - "$RUNNER_TEMP/joern-producer-receipt.json" <<'NODE'
           import assert from 'node:assert/strict';
