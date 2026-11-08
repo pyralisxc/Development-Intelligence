@@ -5,7 +5,18 @@ function graph(): IntelligenceGraph { return {schemaVersion:2,analyzerVersion:'i
 
 test('source-validated assertion can be equivalent while unrelated or forged mappings cannot', async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'di-claims-')); try { await fs.mkdir(path.join(root,'tests'));await fs.mkdir(path.join(root,'src'));await fs.writeFile(path.join(root,'src/owner.ts'),"registerTool('tool_a');\n"); const source=`import {readFileSync} from 'node:fs';\nimport {resolve} from 'node:path';\nimport {expect} from 'vitest';\nconst tools=readFileSync(resolve(process.cwd(),'src/owner.ts'),'utf8');\nexpect(tools).toContain("'tool_a'");\n`; await fs.writeFile(path.join(root,'tests/example.test.ts'),source); const expression=`expect(tools).toContain("'tool_a'")`; const start=source.indexOf(expression); const base={version:1,revision,analyzerVersion:'inventory-test',scope:{sourcePrefixes:['tests/'],sourceSuffixes:['.test.ts']},files:[{sourceId:'tests/example.test.ts',contentSha256:sha(source),declarationIds:[],assertionIds:['a'],disposition:'analyzed'}],declarations:[],assertions:[{id:'a',sourceId:'tests/example.test.ts',start,end:start+expression.length,spanSha256:sha(expression),dynamic:false}]};
- const predicate={id:'proof-a',type:'reachability',from:{ids:['mcp:tool_a']},to:{kinds:['mcp-tool'],sourceIds:['repo:src/owner.ts']},requirement:'required',quantifier:'any',direction:'outbound',relationshipKinds:['registered-as'],maxDepth:1,scopeSourceIds:['src/owner.ts']}; const catalog=normalizeTestClaimCatalog({...base,claims:[{id:'claim-a',originalClaim:'tool a registered',equivalenceRationale:'same registration obligation',assertionIds:['a'],parityClaimIds:['proof-a'],productionSourceIds:['src/owner.ts']}]}); const parity=[{id:'proof-a',status:'satisfied',qualified:true,replacementEligible:true,blockers:[],predicate,matched:{subjects:['mcp:tool_a'],targets:['tool:tool_a']}}]; const record=await buildTestClaimDecisionRecord(root,graph(),catalog,parity) as any; assert.equal(record.evaluatorVersion,'1.3.0');assert.match(record.inputFingerprint,/^[0-9a-f]{64}$/u);assert.equal(record.claims[0].outcome,'partial-overlap');assert.equal(record.claims[0].staticReplacementEquivalent,false);assert.equal(record.claims[0].maintainedCompositeEquivalent,true); assert.equal(record.population.supportedDiscoveryComplete,true);assert.equal(record.population.wholeLanguageComplete,false);assert.equal(record.nativeObligations[0].currentObservationOverlap,true,JSON.stringify(record.nativeObligations[0]));assert.equal(record.nativeObligations[0].directionalReplacementProven,false);assert.equal(record.nativeObligations[0].graphInterpretation.status,'satisfied');const nativeOnly=await buildTestClaimDecisionRecord(root,graph(),normalizeTestClaimCatalog({...base,claims:[]}),[]) as any;assert.equal(nativeOnly.claims.length,0);assert.equal(nativeOnly.nativeObligations[0].maintainedComposite.satisfied,true);
+ const predicate={id:'proof-a',type:'reachability',from:{ids:['mcp:tool_a']},to:{kinds:['mcp-tool'],sourceIds:['repo:src/owner.ts']},requirement:'required',quantifier:'any',direction:'outbound',relationshipKinds:['registered-as'],maxDepth:1,scopeSourceIds:['src/owner.ts']}; const catalog=normalizeTestClaimCatalog({...base,claims:[{id:'claim-a',originalClaim:'tool a registered',equivalenceRationale:'same registration obligation',assertionIds:['a'],parityClaimIds:['proof-a'],productionSourceIds:['src/owner.ts']}]}); const parity=[{id:'proof-a',status:'satisfied',qualified:true,replacementEligible:true,blockers:[],predicate,matched:{subjects:['mcp:tool_a'],targets:['tool:tool_a']}}]; const record=await buildTestClaimDecisionRecord(root,graph(),catalog,parity) as any; assert.equal(record.evaluatorVersion,'1.4.0');assert.match(record.inputFingerprint,/^[0-9a-f]{64}$/u);assert.equal(record.claims[0].outcome,'partial-overlap');assert.equal(record.claims[0].staticReplacementEquivalent,false);assert.equal(record.claims[0].maintainedCompositeEquivalent,true); assert.equal(record.population.supportedDiscoveryComplete,true);assert.equal(record.population.wholeLanguageComplete,false);assert.equal(record.counts.assertionsMappedToClaims,1);assert.equal(record.counts.assertionsUnmappedToClaims,0);assert.equal(record.nativeObligations[0].currentObservationOverlap,true,JSON.stringify(record.nativeObligations[0]));assert.equal(record.nativeObligations[0].directionalReplacementProven,false);assert.equal(record.nativeObligations[0].graphInterpretation.status,'satisfied');const nativeOnly=await buildTestClaimDecisionRecord(root,graph(),normalizeTestClaimCatalog({...base,claims:[]}),[]) as any;assert.equal(nativeOnly.claims.length,0);assert.equal(nativeOnly.nativeObligations[0].maintainedComposite.satisfied,true);
+ assert.equal(nativeOnly.nativeObligations[0].distinctProtection,null,'a source-only assertion cannot prove unique protection');
+ assert.equal(nativeOnly.nativeObligations[0].distinctProtectionStatus,'unproven');
+ assert.equal(nativeOnly.nativeObligations[0].sourceSemanticsEstablished,true);
+ assert.equal(nativeOnly.nativeObligations[0].requiresExecutionEvidence,false);
+ assert.equal(nativeOnly.counts.nativeDistinctProtection,0);
+ assert.equal(nativeOnly.counts.nativeDistinctProtectionUnproven,1);
+ assert.equal(nativeOnly.counts.assertionsSourceSemanticsEstablished,1);
+ assert.equal(nativeOnly.counts.assertionsMappedToClaims,0);
+ assert.equal(nativeOnly.counts.assertionsUnmappedToClaims,1);
+ assert.equal(nativeOnly.counts.assertionsUnclassified,1);
+ assert.equal(nativeOnly.counts.unclassified,0,'claim-outcome counts and unmapped assertion counts must differ');
  const unrelated=normalizeTestClaimCatalog({...base,claims:[{id:'wrong',originalClaim:'tool a registered',equivalenceRationale:'forged mapping',assertionIds:['a'],parityClaimIds:['proof-b'],productionSourceIds:['src/owner.ts']}]}); const wrong=await buildTestClaimDecisionRecord(root,graph(),unrelated,[{...parity[0],id:'proof-b',predicate:{...predicate,id:'proof-b',from:{ids:['mcp:tool_b']}}}]) as any; assert.equal(wrong.claims[0].outcome,'unproven-equivalence'); assert.equal(wrong.claims[0].staticReplacementEquivalent,false);
  const forged=normalizeTestClaimCatalog({...base,assertions:[{...base.assertions[0],sourceId:'tests/missing.test.ts'}],claims:[{id:'forged',originalClaim:'tool a',equivalenceRationale:'forged source',assertionIds:['a'],parityClaimIds:['proof-a'],productionSourceIds:['src/owner.ts']}]}); const bad=await buildTestClaimDecisionRecord(root,graph(),forged,parity) as any; assert.equal(bad.claims[0].outcome,'unclassified');
  } finally {await fs.rm(root,{recursive:true,force:true});}
@@ -224,7 +235,7 @@ test('Node loose and strict comparison providers survive native claim output, in
     await fs.writeFile(path.join(root, 'tests', 'example.test.ts'), source);
     const catalog = await generateTestClaimCatalog(root, graph(), { sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'] });
     const report = await buildTestClaimDecisionRecord(root, graph(), catalog, []) as any;
-    assert.equal(report.evaluatorVersion, '1.3.0');
+    assert.equal(report.evaluatorVersion, '1.4.0');
     assert.equal(report.counts.nativeObligations, 7);
     const byExpression = new Map(report.nativeObligations.map((obligation: any) => {
       const assertion = catalog.assertions.find(item => item.id === obligation.assertionId)!;
@@ -246,6 +257,57 @@ test('Node loose and strict comparison providers survive native claim output, in
       assert.equal(observation.executionObserved, false, expression);
     }
     assert.equal(report.population.supportedDiscoveryComplete, true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('native assertion truth separates discovery, unknown source semantics, execution, and unique protection', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-claim-truth-'));
+  try {
+    await fs.mkdir(path.join(root, 'tests'));
+    await fs.mkdir(path.join(root, 'src'));
+    await fs.writeFile(path.join(root, 'src', 'owner.ts'), 'export const operation = 1;\n');
+    const source = [
+      "import assert from 'node:assert/strict';",
+      "import test from 'node:test';",
+      "test('runtime and exception contracts', () => {",
+      '  assert.equal(1, 1);',
+      '  assert.throws(() => { throw new Error("blocked"); }, /blocked/);',
+      '});', '',
+    ].join('\n');
+    await fs.writeFile(path.join(root, 'tests', 'example.test.ts'), source);
+    const graphFixture = graph();
+    const catalog = await generateTestClaimCatalog(root, graphFixture, {
+      sourcePrefixes: ['tests/'], sourceSuffixes: ['.test.ts'],
+    });
+    const first = await buildTestClaimDecisionRecord(root, graphFixture, catalog, []) as any;
+    const second = await buildTestClaimDecisionRecord(root, graphFixture, catalog, []) as any;
+    assert.deepEqual(first.counts, second.counts, 'identical inputs yield identical revision-bound counts');
+    assert.equal(first.evaluatorVersion, '1.4.0');
+    assert.equal(first.counts.files, 1);
+    assert.equal(first.counts.assertions, 2);
+    assert.equal(first.counts.nativeObligations, 2);
+    assert.equal(first.counts.assertionsMappedToClaims, 0);
+    assert.equal(first.counts.assertionsUnmappedToClaims, 2);
+    assert.equal(first.counts.assertionsSourceSemanticsEstablished, 0);
+    assert.equal(first.counts.assertionsSourceSemanticsUnknown, 2);
+    assert.equal(first.counts.assertionsUnclassified, 2);
+    assert.equal(first.counts.unclassified, 0, 'this count refers only to mapped claims');
+    assert.equal(first.unclassified.length, 2);
+    assert.equal(first.counts.nativeDistinctProtection, 0);
+    assert.equal(first.counts.nativeDistinctProtectionUnproven, 2);
+    assert.equal(first.counts.nativeRequiresExecutionEvidence, 2);
+    assert.equal(first.counts.nativeExecutionObserved, 0);
+    assert.equal(first.counts.nativeIndependentlyProvenReplacement, 0);
+    assert.deepEqual(first.nativeObligations.map((item: any) => item.observationKind).sort(),
+      ['error-behavior', 'runtime-value']);
+    assert.ok(first.nativeObligations.every((item: any) =>
+      item.distinctProtection === null && item.distinctProtectionStatus === 'unproven'
+      && item.replacementIndependentlyProven === false && item.executionObserved === false
+      && item.requiresExecutionEvidence === true));
+    assert.equal(first.policy.recommendsDeletion, false);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

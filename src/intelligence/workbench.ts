@@ -2431,6 +2431,7 @@ interface InvestigationTargetResolution {
   ambiguous: boolean;
   candidates: GraphNode[];
   exactUnresolved?: boolean;
+  implicitOnly?: boolean;
 }
 
 function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
@@ -2465,7 +2466,8 @@ async function resolveInvestigationSubject(
   input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
   text: string,
   markers: RegExp[],
-): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[]; exactUnresolved?: boolean }> {
+  requireExactIdentity = false,
+): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[]; exactUnresolved?: boolean; implicitOnly?: boolean }> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const scoped = input.scope ? scopeNodeIds(graph, input.scope) : null;
   const scopeIds = scoped && (scoped.kind === 'file' || scoped.kind === 'path' || scoped.kind === 'entity') ? scoped.ids : null;
@@ -2508,7 +2510,9 @@ async function resolveInvestigationSubject(
       return { query: cleaned, node: null, ambiguous: false, candidates: direct.slice(0, 10), exactUnresolved: true };
     }
     const suitable = direct.filter(node => compatibleEntityRole(node, role));
-    if (suitable.length === 1) return { query: cleaned, node: suitable[0]!, ambiguous: false, candidates: suitable };
+    if (suitable.length === 1) return requireExactIdentity
+      ? { query: cleaned, node: null, ambiguous: false, candidates: suitable, implicitOnly: true }
+      : { query: cleaned, node: suitable[0]!, ambiguous: false, candidates: suitable };
   }
 
   const haystack = normalizedMention(text);
@@ -2529,8 +2533,15 @@ async function resolveInvestigationSubject(
       || a.node.id.localeCompare(b.node.id));
 
   if (!mentions.length) return { query: cleaned || null, node: null, ambiguous: false, candidates: [] };
+  // The generic entity lane cannot promote incidental question vocabulary
+  // into an exact subject. Other lanes (code, evidence, trace, interface) have
+  // their own evidentiary semantics and retain their established navigation.
   const best = mentions[0]!;
   const tied = mentions.filter(item => item.score === best.score);
+  if (requireExactIdentity) return {
+    query: cleaned || null, node: null, ambiguous: false,
+    candidates: tied.slice(0, 10).map(item => item.node), implicitOnly: true,
+  };
   const semanticBest = tied.filter(item => item.node.layer === 'semantic');
   if (semanticBest.length === 1) return { query: cleaned || displayName(semanticBest[0]!.node), node: semanticBest[0]!.node, ambiguous: false, candidates: tied.map(item => item.node) };
   if (tied.length === 1) return { query: cleaned || displayName(best.node), node: best.node, ambiguous: false, candidates: [best.node] };
@@ -2568,7 +2579,7 @@ async function resolveInvestigationTarget(
       : /\b(this page|this file|this module|this feature|this area)\b/iu.test(text);
     if (scopeRequired) return { ...base, mode: 'scope-required', query: null };
 
-    const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
+    const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane), plan.lane === 'entity');
     if (resolved.node) {
       return {
         strategy: plan.subjectStrategy,
@@ -2598,7 +2609,7 @@ async function resolveInvestigationTarget(
     return { ...base, mode: 'repository', query: resolved.query };
   }
 
-  const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
+  const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane), plan.lane === 'entity');
   return {
     strategy: plan.subjectStrategy,
     mode: resolved.node ? 'entity' : 'query',
@@ -2608,6 +2619,7 @@ async function resolveInvestigationTarget(
     ambiguous: resolved.ambiguous,
     candidates: resolved.candidates,
     ...(resolved.exactUnresolved ? { exactUnresolved: true } : {}),
+    ...(resolved.implicitOnly ? { implicitOnly: true } : {}),
   };
 }
 
@@ -2619,6 +2631,7 @@ function targetResolutionForRouting(target: InvestigationTargetResolution): Reco
     scope: target.scope,
     ambiguous: target.ambiguous,
     exactUnresolved: target.exactUnresolved === true,
+    implicitOnly: target.implicitOnly === true,
     node: target.node
       ? {
           id: target.node.id,
@@ -2719,6 +2732,21 @@ export async function queryWorkbench(input: {
   if (sourceFallback) return sourceFallback;
   const specificSemantic = specificSemanticQuestion(text);
   if (specificSemantic) return await explainSpecificSemanticQuestion(input.project, (await currentGraph(input.project,input.ref,input.graphId)).graphId, text, specificSemantic, input.scope);
+
+  // Exact source/path routing is authoritative ahead of incidental name suggestions.
+  // The existence of a nearby token in the graph cannot establish the
+  // requested subject or any causal behavior. Keep suggestions, but fail closed.
+  if (target.implicitOnly && plan.lane === 'entity') {
+    return {
+      intent: 'unproven',
+      subject: subjectDescriptor(null, target.query, false, target.candidates),
+      routing: { tool: 'none', reason: 'subject-not-exactly-identified' },
+      answer: 'The question does not identify a unique code subject. Nearby names are suggestions, not proof of the requested behavior or relationship.',
+      answerClassification: 'evidence-only',
+      result: { outcome: 'unproven-subject', reason: 'incidental-lexical-match',
+        candidates: target.candidates.map(node => ({ id: node.id, name: node.name, kind: node.kind })) },
+    };
+  }
 
   if (plan.lane === 'implementation-explanation') {
     const result = await implementationMechanismProjection({
