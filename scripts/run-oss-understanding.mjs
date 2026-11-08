@@ -53,6 +53,10 @@ async function main() {
   const project = flag('--project') || path.basename(root);
   const joern = flag('--joern-executable');
   const requestedVersion = flag('--joern-version');
+  const requestedLanguage = flag('--joern-language');
+  if (requestedLanguage && !/^[A-Z_]{2,30}$/u.test(requestedLanguage)) {
+    throw new Error('Joern language must be a bounded frontend identity');
+  }
   const requestedTestFiles = flags('--node-test-file');
   if (!joern && !requestedTestFiles.length) {
     throw new Error('Supply a local --joern-executable and/or explicit --node-test-file');
@@ -82,16 +86,37 @@ async function main() {
         throw new Error('Joern depth must be from 1 to 20');
       }
       const executable = await fs.realpath(path.resolve(joern));
+      // Pinned Joern v4 slicer accepts a CPG binary, not raw Git directories.
+      // Build the temporary CPG with the matching open-source frontend first.
+      const parserInput = flag('--joern-parse-executable')
+        || path.join(path.dirname(executable), 'joern-parse');
+      const parser = await fs.realpath(path.resolve(parserInput));
+      const cpg = path.join(scratch, 'joern-cpg.bin');
+      const parseStarted = Date.now();
+      const parsed = await run(parser, [
+        root, '--output', cpg,
+        ...(requestedLanguage ? ['--language', requestedLanguage] : []),
+      ], { cwd: root, timeoutMs: 600000 });
+      measures.joernParseMs = Date.now() - parseStarted;
+      if (parsed.code !== 0) {
+        const diagnostic = (parsed.stderr || parsed.stdout).trim();
+        throw new Error('Pinned Joern source frontend failed: ' + diagnostic.slice(0, 700));
+      }
+      const cpgFile = await fs.lstat(cpg);
+      if (!cpgFile.isFile() || cpgFile.size === 0) {
+        throw new Error('Joern source frontend produced no ordinary CPG binary');
+      }
       const output = path.join(scratch, 'joern-dataflow.json');
       const start = Date.now();
-      const processResult = await run(executable, ['data-flow', root,
+      const processResult = await run(executable, ['data-flow', cpg,
         '-o', output, '--file-filter', fileFilter, '--sink-filter', sinkFilter,
         '--slice-depth', String(depth)],
       { cwd: root, timeoutMs: 600000 });
-      measures.joernMs = Date.now() - start;
+      measures.joernSliceMs = Date.now() - start;
       if (processResult.code !== 0) {
-        throw new Error('Pinned Joern process failed (no graph evidence admitted); '
-          + processResult.stderr.slice(-450));
+        const diagnostic = (processResult.stderr || processResult.stdout).trim();
+        throw new Error('Pinned Joern slicer failed (no graph evidence admitted): '
+          + diagnostic.slice(0, 900));
       }
       const names = (await fs.readdir(scratch)).filter(name =>
         name.startsWith('joern-dataflow') && name.endsWith('.json'));
@@ -108,6 +133,8 @@ async function main() {
         candidates: projected.candidates,
         policy: projected.policy,
         executedPinnedBinaryLocally: true,
+        parsedSourceToEphemeralCpg: true,
+        parsedSourceWithLanguage: requestedLanguage ?? 'auto-detected',
         fileFilter, sinkFilter, depth,
       };
     }
