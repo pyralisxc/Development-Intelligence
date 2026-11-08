@@ -116,5 +116,20 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     assert.equal(forged.counts.sourceMatched, 0);
     assert.equal(forged.counts.unavailable >= 1, true);
     assert.equal(forged.policy.noneOrMissingDoesNotProveNoExecution, true);
+
+    // A traversal-looking reporter filename must be rejected without trying
+    // to load or parse an arbitrary on-disk file outside the checkout.
+    const escaped = lines.map((line: string) => {
+      const event = JSON.parse(line);
+      if (event.type === 'test:pass') event.data.file = 'scripts/../../outside.test.mjs';
+      return JSON.stringify(event);
+    });
+    await fs.writeFile(eventFile, escaped.join('\n') + '\n');
+    const invalid = await projectNodeTestEvents({
+      root, graph, catalog, eventPath: 'observations/node.jsonl',
+      nodeVersion: process.version,
+    });
+    assert.equal(invalid.counts.sourceMatched, 0);
+    assert.ok(invalid.counts.unavailable >= 1);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

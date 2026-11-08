@@ -62,6 +62,8 @@ async function sourceCurrent(root: string, sourcePath: string): Promise<boolean>
     if (!confined(root, full)) return false;
     const stat = await fs.lstat(full);
     if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    const real = await fs.realpath(full);
+    if (!confined(root, real)) return false;
     const [expected, actual] = await Promise.all([
       runChecked('git', ['-C', root, 'rev-parse', 'HEAD:' + sourcePath]),
       runChecked('git', ['-C', root, 'hash-object', '--', sourcePath]),
@@ -100,7 +102,8 @@ function eventSourcePath(root: string, supplied: string): { path: string; mappin
   const relative = (path.isAbsolute(location) ? path.relative(root, location) : location)
     .split(path.sep).join('/');
   if (relative === '..' || relative.startsWith('../') || relative.startsWith('/')
-    || relative.includes('\0') || relative.includes('\\')) return null;
+    || relative.includes('\0') || relative.includes('\\')
+    || relative.split('/').some(part => !part || part === '.' || part === '..')) return null;
   if (/^(?:tests|scripts|packaging)\/.*\.(?:test|spec)\.(?:[cm]?js|tsx?)$/iu.test(relative)) {
     return { path: relative, mapping: 'direct-git-source' };
   }
@@ -158,18 +161,21 @@ export async function projectNodeTestEvents(input: {
     const location = eventSourcePath(root, file);
     if (!location) { unavailable++; continue; }
     const sourcePath = location.path;
-    if (!sourceTitles.has(sourcePath)) {
-      sourceTitles.set(sourcePath, exactTestTitles(root, sourcePath, input.catalog));
-    }
-    const candidates = (await sourceTitles.get(sourcePath)!).filter(item => item.name === name);
-    if (!sourceCache.has(sourcePath)) {
-      sourceCache.set(sourcePath, sourceCurrent(root, sourcePath));
-    }
-    const current = await sourceCache.get(sourcePath)!;
+    // Untrusted reporter filenames must never trigger a source read before
+    // coverage, path and exact-Git validation. Compiled output is name-only.
     const complete = input.graph.coverage?.files.some(item =>
       item.path === sourcePath && item.status === 'complete') ?? false;
-    const uniquelyLocated = candidates.length === 1 && current && complete
-      && location.mapping === 'direct-git-source';
+    if (!sourceCache.has(sourcePath) && complete && location.mapping === 'direct-git-source') {
+      sourceCache.set(sourcePath, sourceCurrent(root, sourcePath));
+    }
+    const current = complete && location.mapping === 'direct-git-source'
+      && (await sourceCache.get(sourcePath) ?? false);
+    if (current && !sourceTitles.has(sourcePath)) {
+      sourceTitles.set(sourcePath, exactTestTitles(root, sourcePath, input.catalog));
+    }
+    const candidates = current
+      ? (await sourceTitles.get(sourcePath)!).filter(item => item.name === name) : [];
+    const uniquelyLocated = candidates.length === 1 && current;
     if (candidates.length > 1) ambiguous++;
     else if (!uniquelyLocated) unavailable++;
     tests.push({
