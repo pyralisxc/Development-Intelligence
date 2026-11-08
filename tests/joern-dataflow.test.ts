@@ -64,6 +64,25 @@ test('Joern dataflow joins exact Git source and assertion spans without claiming
     const b = await projectLocalJoernDataflow(input);
     assert.equal(a.counts.sourceLocatedNodes, 3);
     assert.equal(a.counts.sourceUnlocatedNodes, 0);
+    // The pinned real Joern JS frontend uses zero-based column offsets.
+    // Both conventions must locate the SAME source text, not guess.
+    const zeroColumnSlice = {
+      nodes: sampleFlow.nodes.map(item => ({
+        ...item, columnNumber: item.columnNumber - 1,
+      })),
+      edges: sampleFlow.edges,
+    };
+    const zeroPath = await put(root, zeroColumnSlice, 'zero-column.json');
+    const zeroProjection = await projectLocalJoernDataflow({
+      ...input, slicePath: zeroPath,
+    });
+    assert.equal(zeroProjection.counts.sourceLocatedNodes, 3);
+    assert.equal(zeroProjection.counts.candidateFlowEdges, 1);
+    assert.deepEqual(
+      zeroProjection.graph.nodes.slice(graph.nodes.length).map(item => item.locator).sort(),
+      a.graph.nodes.slice(graph.nodes.length).map(item => item.locator).sort(),
+      'same exact source anchors must survive either Joern column convention',
+    );
     assert.equal(a.counts.candidateFlowEdges, 1);
     assert.equal(a.counts.unlocatedFlowEdges, 1);
     assert.ok(a.counts.assertionSpanAnchors >= 2);

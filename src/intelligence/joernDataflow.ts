@@ -126,7 +126,7 @@ function parseNode(raw: unknown): SliceNode {
   const lineNumber = item.lineNumber === null || item.lineNumber === undefined
     ? null : requiredInt(item.lineNumber, 'Joern node.lineNumber', 1);
   const columnNumber = item.columnNumber === null || item.columnNumber === undefined
-    ? null : requiredInt(item.columnNumber, 'Joern node.columnNumber', 1);
+    ? null : requiredInt(item.columnNumber, 'Joern node.columnNumber', 0);
   return {
     id: requiredInt(item.id, 'Joern node.id', 0),
     label: boundedText(item.label, 'Joern node.label', 100),
@@ -177,9 +177,16 @@ function exactLocation(file: LocalSource, item: SliceNode): { locator: string; o
   const code = item.code.trim();
   if (sourceLine === undefined || sourceStart === undefined || !code
     || code.includes('\n') || code.includes('\r')) return null;
-  const location = item.columnNumber === null ? sourceLine.indexOf(code) : item.columnNumber - 1;
-  if (location < 0 || sourceLine.slice(location, location + code.length) !== code
-    || (item.columnNumber === null && sourceLine.lastIndexOf(code) !== location)) return null;
+  // Joern frontends differ in zero- vs one-indexed columns. No convention
+  // is asserted without exact source-text agreement. Refuse an ambiguous
+  // position when both conventions match different source occurrences.
+  const positions = item.columnNumber === null
+    ? [sourceLine.indexOf(code)] : [item.columnNumber, item.columnNumber - 1];
+  const matching = [...new Set(positions)].filter(pos => pos >= 0
+    && sourceLine.slice(pos, pos + code.length) === code);
+  if (matching.length !== 1
+    || (item.columnNumber === null && sourceLine.lastIndexOf(code) !== matching[0])) return null;
+  const location = matching[0]!;
   return { locator: file.path + ':' + item.lineNumber + ':' + (location + 1), offset: sourceStart + location };
 }
 
