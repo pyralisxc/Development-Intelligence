@@ -77,10 +77,14 @@ async function main() {
   const measures = {};
   try {
     if (joern) {
-      const fileFilter = limit(flag('--joern-file-filter') || '.*test.*',
-        'Joern file filter', 160);
-      const sinkFilter = limit(flag('--joern-sink-filter') || '.*assert.*',
-        'Joern sink filter', 160);
+      // Joern data-flow starts at call arguments. Its sink regex matches
+      // their code (e.g. "observed"), NOT necessarily the call name
+      // (e.g. "assert.equal"). On a disposable small fixture the unfiltered
+      // producer is the truthful baseline; a caller may opt into filters.
+      const fileFilter = flag('--joern-file-filter')
+        ? limit(flag('--joern-file-filter'), 'Joern file filter', 160) : null;
+      const sinkFilter = flag('--joern-sink-filter')
+        ? limit(flag('--joern-sink-filter'), 'Joern sink filter', 160) : null;
       const depth = Number(flag('--joern-depth') || '12');
       if (!Number.isInteger(depth) || depth < 1 || depth > 20) {
         throw new Error('Joern depth must be from 1 to 20');
@@ -109,7 +113,9 @@ async function main() {
       const output = path.join(scratch, 'joern-dataflow.json');
       const start = Date.now();
       const processResult = await run(executable, ['data-flow',
-        '-o', output, '--file-filter', fileFilter, '--sink-filter', sinkFilter,
+        '-o', output,
+        ...(fileFilter ? ['--file-filter', fileFilter] : []),
+        ...(sinkFilter ? ['--sink-filter', sinkFilter] : []),
         '--slice-depth', String(depth), cpg],
       { cwd: scratch, timeoutMs: 600000 });
       measures.joernSliceMs = Date.now() - start;
