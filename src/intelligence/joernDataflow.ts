@@ -252,7 +252,7 @@ export async function projectLocalJoernDataflow(input: {
     const id = 'joern-span:' + stableHash([head, relative, exact.locator, item.label, item.code.trim()]);
     const node = observation({
       id, sourceId: 'repo:' + relative, kind: 'source-located-dataflow-node',
-      locator: exact.locator, name: item.name ?? item.label, field: 'joern.slice-node',
+      locator: exact.locator, name: item.label, field: 'joern.slice-node',
       value: { label: item.label, code: item.code.trim(), method: item.parentMethod,
         sourceAnchorExact: true, JoernFlowProven: false },
       layer: 'structural', checkpoint: false,

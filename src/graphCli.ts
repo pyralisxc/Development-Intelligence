@@ -2,6 +2,8 @@ import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, read
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 import { buildLocalGraph } from './intelligence/local.js';
 import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
+import { projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
+import { generateTestClaimCatalog } from './intelligence/testClaimInventory.js';
 
 const command = process.argv[2];
 const arg = (name: string): string | undefined => {
@@ -18,6 +20,9 @@ const testClaimCatalogPath = arg('--test-claim-catalog');
 const testClaimReportPath = arg('--test-claim-report-path');
 const producerCommit = arg('--producer-commit');
 const scipIndexPath = arg('--scip-index');
+const joernSlicePath = arg('--joern-slice-json');
+const joernProducerVersion = arg('--joern-version');
+const joernProjectPrefix = arg('--joern-project-prefix');
 const scipProjectPrefix = arg('--scip-project-prefix');
 const scipLegacyEncodingRaw = arg('--scip-legacy-position-encoding');
 const scipLegacyEncoding = scipLegacyEncodingRaw === 'utf8' || scipLegacyEncodingRaw === 'utf16' || scipLegacyEncodingRaw === 'utf32'
@@ -30,6 +35,7 @@ async function main(): Promise<void> {
   if (testClaimCatalogFlag && command !== 'analyze') throw new Error('--test-claim-catalog is supported only for analyze');
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
+  if ((joernSlicePath || joernProducerVersion || joernProjectPrefix) && command !== 'joern-evidence') throw new Error('Joern evidence flags require joern-evidence command');
   if (scipProjectPrefix && command !== 'scip-evidence') throw new Error('--scip-project-prefix is supported only for scip-evidence');
   if (process.argv.includes('--scip-legacy-position-encoding') && !scipLegacyEncoding) throw new Error('--scip-legacy-position-encoding requires utf8, utf16 or utf32');
   if (scipLegacyEncoding && command !== 'scip-evidence') throw new Error('--scip-legacy-position-encoding is supported only for scip-evidence');
@@ -60,6 +66,33 @@ async function main(): Promise<void> {
       sampleEdges: projection.graph.edges.slice(canonical.edges.length, canonical.edges.length + 12),
       policy: projection.policy,
     }, null, 2));
+  } else if (command === 'joern-evidence') {
+    if (!joernSlicePath || !joernProducerVersion) {
+      throw new Error('joern-evidence requires --joern-slice-json and --joern-version');
+    }
+    const canonical = await buildLocalGraph(root, project);
+    const catalog = await generateTestClaimCatalog(root, canonical, {
+      sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
+      sourceSuffixes: ['.test.ts', '.test.mjs', '.test.tsx', '.spec.ts', '.spec.tsx'],
+    });
+    const overlay = await projectLocalJoernDataflow({
+      root, graph: canonical, slicePath: joernSlicePath,
+      producerVersion: joernProducerVersion,
+      ...(joernProjectPrefix ? { projectPrefix: joernProjectPrefix } : {}),
+      testCatalog: catalog,
+    });
+    console.log(JSON.stringify({
+      mode: 'ephemeral-oss-dataflow-evidence',
+      project: canonical.project,
+      revision: canonical.repositoryRevision,
+      canonicalGraphId: canonical.graphId,
+      graphId: overlay.graph.graphId,
+      producer: overlay.producer,
+      source: overlay.source,
+      counts: overlay.counts,
+      candidates: overlay.candidates,
+      policy: overlay.policy,
+    }, null, 2));
   } else if (command === 'catalog') {
     const sourcePrefixes = args('--source-prefix');
     const sourceSuffixes = args('--source-suffix');
@@ -83,7 +116,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     if (result.current !== true) process.exitCode = 1;
   } else {
-    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32]');
+    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence|joern-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32] [--joern-slice-json FILE] [--joern-version VERSION] [--joern-project-prefix PATH]');
     process.exitCode = 2;
   }
 }
