@@ -92,6 +92,7 @@ jobs:
             --project di-oss-real-producer \
             --joern-executable "$JOERN_SLICE" \
             --joern-version "$JOERN_VERSION" \
+            --joern-language JAVASCRIPT \
             --joern-file-filter '.*flow\.test\.mjs' \
             --joern-sink-filter '.*assert.*' \
             --joern-depth 12 \
@@ -106,6 +107,7 @@ jobs:
           assert.equal(receipt.noAutomaticTestDeletion, true);
           assert.equal(receipt.joern.producer.version, '4.0.666');
           assert.equal(receipt.joern.executedPinnedBinaryLocally, true);
+          assert.equal(receipt.joern.parsedSourceToEphemeralCpg, true);
           assert.ok(receipt.joern.counts.sliceNodes > 0, 'actual Joern must emit source nodes');
           assert.ok(receipt.joern.counts.sliceEdges > 0, 'actual Joern must emit dataflow edges');
           assert.ok(receipt.joern.counts.sourceLocatedNodes > 0, 'Joern nodes must map to exact Git spans');
