@@ -2466,6 +2466,7 @@ async function resolveInvestigationSubject(
   input: { project: string; ref?: string | undefined; graphId?: string | undefined; scope?: string | undefined },
   text: string,
   markers: RegExp[],
+  requireExactIdentity = false,
 ): Promise<{ query: string | null; node: GraphNode | null; ambiguous: boolean; candidates: GraphNode[]; exactUnresolved?: boolean; implicitOnly?: boolean }> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const scoped = input.scope ? scopeNodeIds(graph, input.scope) : null;
@@ -2509,7 +2510,9 @@ async function resolveInvestigationSubject(
       return { query: cleaned, node: null, ambiguous: false, candidates: direct.slice(0, 10), exactUnresolved: true };
     }
     const suitable = direct.filter(node => compatibleEntityRole(node, role));
-    if (suitable.length === 1) return { query: cleaned, node: null, ambiguous: false, candidates: suitable, implicitOnly: true };
+    if (suitable.length === 1) return requireExactIdentity
+      ? { query: cleaned, node: null, ambiguous: false, candidates: suitable, implicitOnly: true }
+      : { query: cleaned, node: suitable[0]!, ambiguous: false, candidates: suitable };
   }
 
   const haystack = normalizedMention(text);
@@ -2530,13 +2533,19 @@ async function resolveInvestigationSubject(
       || a.node.id.localeCompare(b.node.id));
 
   if (!mentions.length) return { query: cleaned || null, node: null, ambiguous: false, candidates: [] };
-  // A substring mentioned in a question is a navigation suggestion, not an
-  // identity proof. Only the exact ID/name branch above may resolve the subject.
-  // Otherwise generic nouns inside failure/relationship questions could become
-  // falsely asserted implementation owners.
-  const bestScore = mentions[0]!.score;
-  const suggestions = mentions.filter(item => item.score === bestScore).slice(0, 10).map(item => item.node);
-  return { query: cleaned || null, node: null, ambiguous: false, candidates: suggestions, implicitOnly: true };
+  // The generic entity lane cannot promote incidental question vocabulary
+  // into an exact subject. Other lanes (code, evidence, trace, interface) have
+  // their own evidentiary semantics and retain their established navigation.
+  const best = mentions[0]!;
+  const tied = mentions.filter(item => item.score === best.score);
+  if (requireExactIdentity) return {
+    query: cleaned || null, node: null, ambiguous: false,
+    candidates: tied.slice(0, 10).map(item => item.node), implicitOnly: true,
+  };
+  const semanticBest = tied.filter(item => item.node.layer === 'semantic');
+  if (semanticBest.length === 1) return { query: cleaned || displayName(semanticBest[0]!.node), node: semanticBest[0]!.node, ambiguous: false, candidates: tied.map(item => item.node) };
+  if (tied.length === 1) return { query: cleaned || displayName(best.node), node: best.node, ambiguous: false, candidates: [best.node] };
+  return { query: cleaned || null, node: null, ambiguous: true, candidates: tied.map(item => item.node) };
 }
 
 async function resolveInvestigationTarget(
@@ -2570,7 +2579,7 @@ async function resolveInvestigationTarget(
       : /\b(this page|this file|this module|this feature|this area)\b/iu.test(text);
     if (scopeRequired) return { ...base, mode: 'scope-required', query: null };
 
-    const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
+    const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane), plan.lane === 'entity');
     if (resolved.node) {
       return {
         strategy: plan.subjectStrategy,
@@ -2600,7 +2609,7 @@ async function resolveInvestigationTarget(
     return { ...base, mode: 'repository', query: resolved.query };
   }
 
-  const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane));
+  const resolved = await resolveInvestigationSubject(input, text, subjectMarkersForLane(plan.lane), plan.lane === 'entity');
   return {
     strategy: plan.subjectStrategy,
     mode: resolved.node ? 'entity' : 'query',
@@ -2706,7 +2715,7 @@ export async function queryWorkbench(input: {
 
   // The existence of a nearby token in the graph cannot establish the
   // requested subject or any causal behavior. Keep suggestions, but fail closed.
-  if (target.implicitOnly && (plan.lane === 'entity' || plan.lane === 'trace')) {
+  if (target.implicitOnly && plan.lane === 'entity') {
     return {
       intent: 'unproven',
       subject: subjectDescriptor(null, target.query, false, target.candidates),
