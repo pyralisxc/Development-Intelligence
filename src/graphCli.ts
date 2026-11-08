@@ -79,7 +79,7 @@ async function main(): Promise<void> {
     const canonical = await buildLocalGraph(root, project);
     const catalog = await generateTestClaimCatalog(root, canonical, {
       sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
-      sourceSuffixes: ['.test.ts', '.test.mjs', '.test.tsx', '.spec.ts', '.spec.tsx'],
+      sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
     });
     const overlay = await projectLocalJoernDataflow({
       root, graph: canonical, slicePath: joernSlicePath,
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
     const canonical = await buildLocalGraph(root, project);
     const catalog = await generateTestClaimCatalog(root, canonical, {
       sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
-      sourceSuffixes: ['.test.ts', '.test.mjs', '.test.tsx', '.spec.ts', '.spec.tsx'],
+      sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
     });
     const observed = await projectNodeTestEvents({
       root, graph: canonical, catalog, eventPath: nodeEventsPath,

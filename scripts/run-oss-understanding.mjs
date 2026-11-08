@@ -33,8 +33,8 @@ function inside(root, absolute) {
 async function trustedTarget(root, name) {
   if (!name || name.startsWith('-')) throw new Error('Node test file must be an explicit tracked path');
   const full = path.resolve(root, name);
-  if (!inside(root, full) || !/\.test\.mjs$/u.test(full)) {
-    throw new Error('Only tracked direct .test.mjs source files can be executed by this worker');
+  if (!inside(root, full) || !/\.(?:test|spec)\.(?:mjs|js)$/u.test(full)) {
+    throw new Error('Only tracked direct .test.js/.test.mjs (or .spec) files can be executed by this worker');
   }
   const relative = path.relative(root, full).split(path.sep).join('/');
   const stat = await fs.lstat(full);
@@ -69,7 +69,7 @@ async function main() {
   const graph = await buildLocalGraph(root, project);
   const catalog = await generateTestClaimCatalog(root, graph, {
     sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
-    sourceSuffixes: ['.test.ts', '.test.mjs', '.test.tsx', '.spec.ts', '.spec.tsx'],
+    sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
   });
   const scratch = await fs.mkdtemp(path.join(root, '.di-oss-evidence-'));
   let joernResult = null, testResult = null, runExit = null;
