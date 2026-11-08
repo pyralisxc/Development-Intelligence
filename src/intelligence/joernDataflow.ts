@@ -29,7 +29,7 @@ interface SliceNode {
   code: string;
   parentFile: string;
   parentMethod: string;
-  lineNumber: number;
+  lineNumber: number | null;
   columnNumber: number | null;
 }
 interface SliceEdge { src: number; dst: number; label: string }
@@ -123,7 +123,8 @@ function normalizePath(root: string, parentFile: string, prefix: string): string
 }
 function parseNode(raw: unknown): SliceNode {
   const item = record(raw, 'Joern slice node');
-  const lineNumber = requiredInt(item.lineNumber, 'Joern node.lineNumber', 1);
+  const lineNumber = item.lineNumber === null || item.lineNumber === undefined
+    ? null : requiredInt(item.lineNumber, 'Joern node.lineNumber', 1);
   const columnNumber = item.columnNumber === null || item.columnNumber === undefined
     ? null : requiredInt(item.columnNumber, 'Joern node.columnNumber', 1);
   return {
@@ -170,6 +171,7 @@ async function sourceFile(root: string, relative: string, graph: IntelligenceGra
 }
 
 function exactLocation(file: LocalSource, item: SliceNode): { locator: string; offset: number } | null {
+  if (item.lineNumber === null) return null;
   const sourceLine = file.lines[item.lineNumber - 1];
   const sourceStart = file.starts[item.lineNumber - 1];
   const code = item.code.trim();
