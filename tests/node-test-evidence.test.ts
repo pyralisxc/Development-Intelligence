@@ -6,6 +6,7 @@ import path from 'node:path';
 import { buildLocalGraph } from '../src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../src/intelligence/testClaimInventory.js';
 import { projectNodeTestEvents } from '../src/intelligence/nodeTestEvidence.js';
+import { joinAssertionEvidence } from '../src/intelligence/assertionEvidenceRouting.js';
 import { runChecked, run } from '../src/util/process.js';
 
 async function fixture() {
@@ -63,6 +64,10 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     assert.equal(first.identity.independentlyAttested, false);
     assert.equal(first.policy.sourceAssociatedEventsProveAssertionResults, false);
     assert.equal(first.policy.canonicalAuthorityUnaffected, true);
+    const joined = joinAssertionEvidence({ graph, catalog, testEvents: first }) as any;
+    assert.equal(joined.counts.assertionsInsideReportedPassingTests, 1);
+    assert.equal(joined.counts.assertionsWhoseOwnRuntimeExecutionIsProven, 0);
+    assert.equal(joined.counts.independentlyProvenReplacements, 0);
     assert.deepEqual(first, repeated);
 
     const cli = await run(process.execPath, [
@@ -76,6 +81,7 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     assert.equal(decoded.mode, 'ephemeral-node-test-event-evidence');
     assert.equal(decoded.counts.sourceMatched, 1);
     assert.equal(decoded.identity.independentlyAttested, false);
+    assert.equal(decoded.assertionEvidence.counts.assertionsInsideReportedPassingTests, 1);
 
     // End-to-end self-hosted worker runs the real native test under one graph,
     // without invoking a proprietary service or a second semantic store.
@@ -92,6 +98,7 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     assert.equal(receipt.nodeTests.exitCode, 0);
     assert.equal(receipt.nodeTests.counts.sourceMatched, 1);
     assert.equal(receipt.nodeTests.policy.reportIntegrityIsNotCIExecutionAttestation, true);
+    assert.equal(receipt.assertionEvidence.counts.assertionsInsideReportedPassingTests, 1);
     assert.equal(receipt.joern, null, 'unrequested heavy Joern is not invoked by default');
 
     const lines = (await fs.readFile(eventFile, 'utf8')).trim().split('\n');

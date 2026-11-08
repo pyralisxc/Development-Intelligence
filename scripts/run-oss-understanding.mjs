@@ -7,6 +7,7 @@ import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../dist/src/intelligence/testClaimInventory.js';
 import { projectLocalJoernDataflow } from '../dist/src/intelligence/joernDataflow.js';
 import { projectNodeTestEvents } from '../dist/src/intelligence/nodeTestEvidence.js';
+import { joinAssertionEvidence } from '../dist/src/intelligence/assertionEvidenceRouting.js';
 import { run, runChecked } from '../dist/src/util/process.js';
 
 /**
@@ -68,6 +69,7 @@ async function main() {
   });
   const scratch = await fs.mkdtemp(path.join(root, '.di-oss-evidence-'));
   let joernResult = null, testResult = null, runExit = null;
+  let joernProjection = null, nodeProjection = null;
   const measures = {};
   try {
     if (joern) {
@@ -98,6 +100,7 @@ async function main() {
         root, graph, slicePath: path.relative(root, path.join(scratch, names[0])),
         producerVersion: requestedVersion, testCatalog: catalog,
       });
+      joernProjection = projected;
       joernResult = {
         producer: projected.producer,
         overlayGraphId: projected.graph.graphId,
@@ -125,6 +128,7 @@ async function main() {
         root, graph, catalog, eventPath: path.relative(root, reportPath),
         nodeVersion: process.version, runId: 'operator-owned-local-execution',
       });
+      nodeProjection = associated;
       runExit = executed.code;
       testResult = {
         exitCode: executed.code, exactSourceFiles: targets.map(item => item.relative),
@@ -142,6 +146,8 @@ async function main() {
       project: graph.project, exactRevision: graph.repositoryRevision,
       canonicalGraphId: graph.graphId, analyzerVersion: graph.analyzerVersion,
       joern: joernResult, nodeTests: testResult, measures,
+      assertionEvidence: joinAssertionEvidence({ graph, catalog,
+        joern: joernProjection, testEvents: nodeProjection }),
       oneCanonicalGraph: true, changedCanonicalAuthority: false,
       noAutomaticTestDeletion: true,
     };

@@ -4,6 +4,7 @@ import { buildLocalGraph } from './intelligence/local.js';
 import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
 import { projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
 import { projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
+import { joinAssertionEvidence } from './intelligence/assertionEvidenceRouting.js';
 import { generateTestClaimCatalog } from './intelligence/testClaimInventory.js';
 
 const command = process.argv[2];
@@ -96,6 +97,7 @@ async function main(): Promise<void> {
       source: overlay.source,
       counts: overlay.counts,
       candidates: overlay.candidates,
+      assertionEvidence: joinAssertionEvidence({ graph: canonical, catalog, joern: overlay }),
       policy: overlay.policy,
     }, null, 2));
   } else if (command === 'node-test-evidence') {
@@ -115,6 +117,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({
       mode: 'ephemeral-node-test-event-evidence',
       ...observed,
+      assertionEvidence: joinAssertionEvidence({ graph: canonical, catalog, testEvents: observed }),
     }, null, 2));
   } else if (command === 'catalog') {
     const sourcePrefixes = args('--source-prefix');

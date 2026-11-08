@@ -6,6 +6,7 @@ import path from 'node:path';
 import { buildLocalGraph } from '../src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../src/intelligence/testClaimInventory.js';
 import { projectLocalJoernDataflow, JOERN_DATAFLOW_STRATEGY } from '../src/intelligence/joernDataflow.js';
+import { joinAssertionEvidence } from '../src/intelligence/assertionEvidenceRouting.js';
 import { runChecked, run } from '../src/util/process.js';
 
 const sampleSource = [
@@ -76,6 +77,11 @@ test('Joern dataflow joins exact Git source and assertion spans without claiming
     assert.equal(a.policy.canonicalAuthorityUnaffected, true);
     assert.equal(a.policy.actualAssertionOutcomeProven, false);
     assert.equal(a.policy.testReplacementProven, false);
+    const joined = joinAssertionEvidence({ graph, catalog, joern: a }) as any;
+    assert.ok(joined.counts.assertionsWithJoernSourceAnchors >= 1);
+    assert.ok(joined.counts.assertionsWithPossibleFlowAnchors >= 1);
+    assert.equal(joined.counts.assertionsWithExpectedValueProven, 0);
+    assert.equal(joined.counts.independentlyProvenReplacements, 0);
     assert.equal(a.producer.independentlyAttested, false);
     assert.notEqual(a.graph.graphId, graph.graphId);
     assert.equal(graph.edges.some(edge => edge.strategy === JOERN_DATAFLOW_STRATEGY), false);
@@ -92,6 +98,7 @@ test('Joern dataflow joins exact Git source and assertion spans without claiming
     assert.equal(receipt.mode, 'ephemeral-oss-dataflow-evidence');
     assert.equal(receipt.counts.candidateFlowEdges, 1);
     assert.equal(receipt.counts.assertionSpanAnchors >= 2, true);
+    assert.ok(receipt.assertionEvidence.counts.assertionsWithPossibleFlowAnchors >= 1);
     assert.equal(receipt.policy.stored, false);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
