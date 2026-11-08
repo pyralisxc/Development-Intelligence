@@ -93,8 +93,6 @@ jobs:
             --joern-executable "$JOERN_SLICE" \
             --joern-version "$JOERN_VERSION" \
             --joern-language JAVASCRIPT \
-            --joern-file-filter '.*flow\.test\.mjs' \
-            --joern-sink-filter '.*assert.*' \
             --joern-depth 12 \
             --node-test-file scripts/flow.test.mjs \
             > "$RUNNER_TEMP/joern-producer-receipt.json"
