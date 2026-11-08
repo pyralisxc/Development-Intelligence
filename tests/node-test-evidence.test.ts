@@ -37,10 +37,12 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     const result = await run(process.execPath, [
       '--test',
       '--test-reporter=' + reporter,
-      '--test-reporter-destination=' + eventFile,
       path.join(root, 'scripts', 'observable.test.mjs'),
     ], { cwd: root, timeoutMs: 30000 });
     assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /"type":"test:pass"/u,
+      'real TestStream must produce a pass event, not an empty reporter file');
+    await fs.writeFile(eventFile, result.stdout);
     const first = await projectNodeTestEvents({
       root, graph, catalog, eventPath: 'observations/node.jsonl',
       nodeVersion: process.version, runId: 'local-fixture',
