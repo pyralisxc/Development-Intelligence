@@ -76,7 +76,7 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     assert.equal(decoded.identity.independentlyAttested, false);
 
     const lines = (await fs.readFile(eventFile, 'utf8')).trim().split('\n');
-    const altered = lines.map(line => {
+    const altered = lines.map((line: string) => {
       const event = JSON.parse(line);
       if (event.type === 'test:pass') event.data.file = '../untracked.test.mjs';
       return JSON.stringify(event);
