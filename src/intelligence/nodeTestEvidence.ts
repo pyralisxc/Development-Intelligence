@@ -103,7 +103,7 @@ function eventSourcePath(root: string, supplied: string): { path: string; mappin
     .split(path.sep).join('/');
   if (relative === '..' || relative.startsWith('../') || relative.startsWith('/')
     || relative.includes('\0') || relative.includes('\\')
-    || relative.split('/').some(part => !part || part === '.' || part === '..')) return null;
+    || relative.split('/').some((part: string) => !part || part === '.' || part === '..')) return null;
   if (/^(?:tests|scripts|packaging)\/.*\.(?:test|spec)\.(?:[cm]?js|tsx?)$/iu.test(relative)) {
     return { path: relative, mapping: 'direct-git-source' };
   }
