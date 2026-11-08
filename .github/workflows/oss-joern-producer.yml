@@ -1,0 +1,136 @@
+name: oss-joern-producer
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "src/intelligence/joernDataflow.ts"
+      - "src/intelligence/assertionEvidenceRouting.ts"
+      - "src/intelligence/nodeTestEvidence.ts"
+      - "scripts/run-oss-understanding.mjs"
+      - ".github/workflows/oss-joern-producer.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oss-joern-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-joern-local-oss:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JOERN_VERSION: "4.0.666"
+      JOERN_ZIP_SHA256: "be2c23393268e97a46eb8d5175a79ae77ecf023f8e27a718ecd279752c7eb123"
+      JOERN_ASSET: "joern-cli-linux-x86_64.zip"
+    steps:
+      - name: Check out exact selected source without persisted credentials
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Compile native DI evidence worker
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Download and verify pinned open-source Joern release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/joern"
+          curl --fail --location --show-error --silent --retry 3 \
+            "https://github.com/joernio/joern/releases/download/v$JOERN_VERSION/$JOERN_ASSET" \
+            -o "$RUNNER_TEMP/joern.zip"
+          printf '%s  %s\n' "$JOERN_ZIP_SHA256" "$RUNNER_TEMP/joern.zip" | sha256sum --check --
+          unzip -q "$RUNNER_TEMP/joern.zip" -d "$RUNNER_TEMP/joern"
+          JOERN_SLICE="$(find "$RUNNER_TEMP/joern" -maxdepth 5 -type f -name joern-slice -print -quit)"
+          test -n "$JOERN_SLICE"
+          chmod u+x "$JOERN_SLICE"
+          echo "JOERN_SLICE=$JOERN_SLICE" >> "$GITHUB_ENV"
+          du -sh "$RUNNER_TEMP/joern"
+          df -h .
+      - name: Construct tracked immutable disposable assertion fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/di-oss-joern-fixture"
+          mkdir -p "$ROOT/scripts"
+          cat > "$ROOT/scripts/flow.test.mjs" <<'EOF'
+          import assert from 'node:assert/strict';
+          import test from 'node:test';
+          function compute(input) {
+            const intermediate = input + 1;
+            return intermediate;
+          }
+          test('value flows into assertion', () => {
+            const expected = 2;
+            const observed = compute(1);
+            assert.equal(observed, expected);
+          });
+          EOF
+          git -C "$ROOT" init --initial-branch=main
+          git -C "$ROOT" add scripts
+          git -C "$ROOT" -c user.email="di-fixture@example.invalid" -c user.name="DI Fixture" commit -m "exact source for OSS producer"
+          echo "OSS_FIXTURE=$ROOT" >> "$GITHUB_ENV"
+          git -C "$ROOT" rev-parse HEAD
+      - name: Run real Joern and native Node TestStream through ONE DI graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/run-oss-understanding.mjs \
+            --repo-path "$OSS_FIXTURE" \
+            --project di-oss-real-producer \
+            --joern-executable "$JOERN_SLICE" \
+            --joern-version "$JOERN_VERSION" \
+            --joern-file-filter '.*flow\.test\.mjs' \
+            --joern-sink-filter '.*assert.*' \
+            --joern-depth 12 \
+            --node-test-file scripts/flow.test.mjs \
+            > "$RUNNER_TEMP/joern-producer-receipt.json"
+          node --input-type=module - "$RUNNER_TEMP/joern-producer-receipt.json" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const receipt = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.equal(receipt.oneCanonicalGraph, true);
+          assert.equal(receipt.changedCanonicalAuthority, false);
+          assert.equal(receipt.noAutomaticTestDeletion, true);
+          assert.equal(receipt.joern.producer.version, '4.0.666');
+          assert.equal(receipt.joern.executedPinnedBinaryLocally, true);
+          assert.ok(receipt.joern.counts.sliceNodes > 0, 'actual Joern must emit source nodes');
+          assert.ok(receipt.joern.counts.sliceEdges > 0, 'actual Joern must emit dataflow edges');
+          assert.ok(receipt.joern.counts.sourceLocatedNodes > 0, 'Joern nodes must map to exact Git spans');
+          assert.ok(receipt.joern.counts.candidateFlowEdges > 0, 'actual Joern must supply source-mapped flow');
+          assert.equal(receipt.joern.policy.flowIsPotentialNotRuntime, true);
+          assert.equal(receipt.nodeTests.exitCode, 0);
+          assert.ok(receipt.nodeTests.counts.sourceMatched >= 1);
+          assert.ok(receipt.assertionEvidence.counts.assertionsInsideReportedPassingTests >= 1);
+          assert.ok(receipt.assertionEvidence.counts.assertionsWithJoernSourceAnchors > 0);
+          assert.equal(receipt.assertionEvidence.counts.assertionsWithExpectedValueProven, 0);
+          assert.equal(receipt.assertionEvidence.counts.independentlyProvenReplacements, 0);
+          console.log(JSON.stringify({
+            revision: receipt.exactRevision,
+            graphId: receipt.canonicalGraphId,
+            joern: receipt.joern.counts,
+            nodeTests: receipt.nodeTests.counts,
+            assertionEvidence: receipt.assertionEvidence.counts,
+            measures: receipt.measures,
+          }));
+          NODE
+      - name: Preserve bounded synthetic acceptance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oss-joern-synthetic-proof
+          path: ${{ runner.temp }}/joern-producer-receipt.json
+          retention-days: 3
+          if-no-files-found: ignore
