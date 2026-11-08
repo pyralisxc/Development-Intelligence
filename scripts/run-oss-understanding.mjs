@@ -116,7 +116,7 @@ async function main() {
       const start = Date.now();
       const executed = await run(process.execPath, [
         '--test', '--test-reporter=' + reporterPath, ...targets.map(item => item.full),
-      ], { cwd: root, timeoutMs: 180000 });
+      ], { cwd: root, timeoutMs: 180000, env: { NODE_TEST_CONTEXT: undefined } });
       measures.nodeTestMs = Date.now() - start;
       const reportPath = path.join(scratch, 'node-test-events.jsonl');
       if (!executed.stdout.trim()) throw new Error('Node test runner emitted no structured events');

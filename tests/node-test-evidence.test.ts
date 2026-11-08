@@ -38,7 +38,7 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
       '--test',
       '--test-reporter=' + reporter,
       path.join(root, 'scripts', 'observable.test.mjs'),
-    ], { cwd: root, timeoutMs: 30000 });
+    ], { cwd: root, timeoutMs: 30000, env: { NODE_TEST_CONTEXT: undefined } });
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /"type":"test:pass"/u,
       'real TestStream must produce a pass event, not an empty reporter file');
