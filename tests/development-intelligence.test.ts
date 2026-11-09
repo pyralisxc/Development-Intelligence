@@ -1867,6 +1867,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'diff_graph',
     'analyze_impact',
     'verify_transition',
+    'assess_revision_evidence',
     'query_parity',
     'evaluate_parity',
     'get_test_claim_report',
@@ -1902,6 +1903,8 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
   assert.equal(byName.get('trace_portfolio')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('verify_transition')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('verify_transition')?.annotations?.openWorldHint, true);
+  assert.equal(byName.get('assess_revision_evidence')?.annotations?.readOnlyHint, true);
+  assert.equal(byName.get('assess_revision_evidence')?.annotations?.openWorldHint, true);
   assert.equal(byName.get('evaluate_parity')?.annotations?.readOnlyHint, true);
   assert.equal(byName.get('get_test_claim_report')?.annotations?.readOnlyHint, true);
   const contract = toolContract();
@@ -1945,7 +1948,7 @@ test('runtime identity only exposes exact deployment metadata and the MCP contra
     gitRef: 'work/production-check',
     environment: 'production',
   });
-  assert.equal(identity.mcp.toolCount, 35);
+  assert.equal(identity.mcp.toolCount, listTools().length);
   assert.equal(JSON.stringify(identity).includes('must-not-escape'), false);
 
   assert.deepEqual(runtimeIdentity({
