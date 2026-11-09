@@ -23,7 +23,8 @@ function validScope(value: string): boolean {
     && Boolean(value.trim()) && value === value.trim()
     && !value.startsWith('/') && !value.includes('\\') && !value.includes('\0')
     && PATH_SEGMENT.test(value)
-    && value.split('/').every(seg => Boolean(seg) && seg !== '.' && seg !== '..');
+    && (value.endsWith('/') ? value.slice(0,-1) : value)
+      .split('/').every(seg => Boolean(seg) && seg !== '.' && seg !== '..');
 }
 function distinct(values: readonly string[], kind: string): string[] {
   if (!values.length || values.length > 50 || values.some(x => !validScope(x))) {
