@@ -70,7 +70,10 @@ export function joinAssertionEvidence(input: {
 
   for (const assertion of catalog.assertions) {
     const owners = (declarations.get(assertion.sourceId) ?? []).filter(item =>
-      item.start <= assertion.start && assertion.end >= assertion.end && !item.dynamic);
+      // A test owns an assertion only when its actual AST span encloses
+      // both ends. Comparing assertion.end to itself incorrectly made every
+      // preceding sibling test appear to own later assertions.
+      item.start <= assertion.start && item.end >= assertion.end && !item.dynamic);
     const owner = owners.length === 1 ? owners[0]! : null;
     if (owner) mappedToTest++;
     else if (owners.length > 1) ambiguousOwner++;
