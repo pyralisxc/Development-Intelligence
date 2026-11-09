@@ -88,7 +88,8 @@ jobs:
             --joern-executable "$JOERN_SLICE" \
             --joern-version "$JOERN_VERSION" \
             --joern-language JAVASCRIPT \
-            --joern-depth 20 \
+            --joern-depth 12 \
+            --joern-heap-mb 5120 \
             --joern-timeout-ms 900000 \
             --joern-max-slice-bytes 67108864 \
             --joern-max-slice-nodes 150000 \
@@ -109,6 +110,7 @@ jobs:
           assert.equal(receipt.noAutomaticTestDeletion, true);
           assert.equal(receipt.joern.producer.version, '4.0.666');
           assert.equal(receipt.joern.executedPinnedBinaryLocally, true);
+          assert.equal(receipt.joern.configuredJoernHeapMiB, 5120);
           assert.equal(receipt.joern.parsedSourceToEphemeralCpg, true);
           assert.ok(receipt.joern.counts.sliceNodes > 0);
           assert.ok(receipt.joern.counts.sourceLocatedNodes > 0);
@@ -125,6 +127,7 @@ jobs:
             counts: receipt.joern.counts,
             coverage: receipt.joern.segmentCoverage,
             measures: receipt.measures,
+            configuredJoernHeapMiB: receipt.joern.configuredJoernHeapMiB,
             possibleFlowIsNotRuntimeProof: true,
             assertionValueOrReplacementNotEstablished: true,
           };
