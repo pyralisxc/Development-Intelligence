@@ -3,7 +3,7 @@ import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 import { buildLocalGraph } from './intelligence/local.js';
 import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
 import { projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
-import { pageNodeTestEvents, projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
+import { mergeNodeTestEventReports, pageNodeTestEvents, projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from './intelligence/assertionEvidenceRouting.js';
 import { generateTestClaimCatalog } from './intelligence/testClaimInventory.js';
 
@@ -23,7 +23,8 @@ const testClaimReportPath = arg('--test-claim-report-path');
 const producerCommit = arg('--producer-commit');
 const scipIndexPath = arg('--scip-index');
 const joernSlicePath = arg('--joern-slice-json');
-const nodeEventsPath = arg('--node-test-events-jsonl');
+const nodeEventsPaths = args('--node-test-events-jsonl');
+const nodeEventsPath = nodeEventsPaths[0];
 const nodeProducerVersion = arg('--node-version');
 const nodeRunId = arg('--node-run-id');
 const nodeEventOffset = arg('--node-events-offset');
@@ -115,11 +116,18 @@ async function main(): Promise<void> {
       sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
       sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
     });
-    const observed = await projectNodeTestEvents({
-      root, graph: canonical, catalog, eventPath: nodeEventsPath,
-      nodeVersion: nodeProducerVersion,
-      ...(nodeRunId ? { runId: nodeRunId } : {}),
-    });
+    // Every JSONL artifact is individually size/event bounded, source checked
+    // and SHA-256 identified. Multiple files recover a complete >single-run
+    // native population without inventing an unbounded hosted reader.
+    const reports = [];
+    for (const eventPath of nodeEventsPaths) {
+      reports.push(await projectNodeTestEvents({
+        root, graph: canonical, catalog, eventPath,
+        nodeVersion: nodeProducerVersion,
+        ...(nodeRunId ? { runId: nodeRunId } : {}),
+      }));
+    }
+    const observed = mergeNodeTestEventReports(reports);
     const offset = Number(nodeEventOffset ?? '0');
     const pageSize = Number(nodeEventPageSize ?? '100');
     if (offset > 0 && !nodeExpectedDigest) {
