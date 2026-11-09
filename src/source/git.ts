@@ -196,6 +196,75 @@ export interface RepositoryChangedFile {
   previousPath?: string;
 }
 
+
+/** GitHub compare uses merge-base...head, not necessarily exact A-to-B
+ * tree changes. Only accept its bounded fast path when the reported merge
+ * base IS the requested base commit; otherwise use native git diff.
+ */
+export function exactFastForwardGitHubChangedFiles(
+  baseSha: string, payload: unknown,
+): RepositoryChangedFile[] | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const body = payload as Record<string, unknown>;
+  const sha = (value: unknown): string | null =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      && typeof (value as { sha?: unknown }).sha === 'string'
+      ? (value as { sha: string }).sha.toLowerCase() : null;
+  if (!FULL_SHA.test(baseSha) || sha(body.base_commit) !== baseSha.toLowerCase()
+      || sha(body.merge_base_commit) !== baseSha.toLowerCase()) return null;
+  if (body.status !== 'ahead' && body.status !== 'identical') return null;
+  if (!Array.isArray(body.files) || body.files.length >= 300) return null;
+
+  const files: RepositoryChangedFile[] = [];
+  for (const item of body.files) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const row = item as Record<string, unknown>;
+    const current = row.filename;
+    const previous = row.previous_filename;
+    if (typeof current !== 'string' || !current || current.includes('\0')) return null;
+    if (row.status === 'renamed' || row.status === 'copied') {
+      if (typeof previous !== 'string' || !previous || previous.includes('\0')) return null;
+      files.push({
+        status: row.status === 'renamed' ? 'R' : 'C',
+        previousPath: previous, path: current,
+      });
+    } else {
+      const status = row.status === 'added' ? 'A' : row.status === 'removed' ? 'D'
+        : row.status === 'modified' || row.status === 'changed' ? 'M' : null;
+      if (!status) return null;
+      files.push({ status, path: current });
+    }
+  }
+  return files;
+}
+
+/** Decode native NUL-delimited paths, including tabs/newlines and renames.
+ * This never needs to interpret a quoted or presentation-escaped path.
+ */
+export function parseExactGitDiffNameStatus(output: string): RepositoryChangedFile[] {
+  if (!output) return [];
+  if (!output.endsWith('\0')) throw new Error('Exact Git diff returned a nonterminated name-status record');
+  const tokens = output.slice(0, -1).split('\0');
+  const files: RepositoryChangedFile[] = [];
+  for (let i = 0; i < tokens.length;) {
+    const status = tokens[i++]!;
+    const rename = /^[RC][0-9]+$/u.test(status);
+    if (!/^(?:A|D|M|T|U|X|B)$/u.test(status) && !rename) {
+      throw new Error('Exact Git diff returned an unsupported status: ' + status);
+    }
+    const previousOrPath = tokens[i++];
+    if (!previousOrPath) throw new Error('Exact Git diff omitted a changed source path');
+    if (rename) {
+      const path = tokens[i++];
+      if (!path) throw new Error('Exact Git diff omitted a rename/copy target path');
+      files.push({ status, previousPath: previousOrPath, path });
+    } else {
+      files.push({ status, path: previousOrPath });
+    }
+  }
+  return files;
+}
+
 export async function changedFilesBetweenRevisions(
   project: string,
   baseRef: string | undefined,
@@ -226,32 +295,10 @@ export async function changedFilesBetweenRevisions(
         },
       );
       if (response.ok) {
-        const payload = await response.json() as {
-          files?: Array<{ status?: string; filename?: string; previous_filename?: string }>;
-        };
-        const rows = Array.isArray(payload.files) ? payload.files : [];
-        // GitHub Compare caps the files collection. Fall back to exact git diff
-        // instead of silently accepting an incomplete A->B change set.
-        if (rows.length < 300) {
-          const files: RepositoryChangedFile[] = rows.map(file => {
-            const path = file.filename;
-            if (!path) throw new Error('GitHub compare returned a changed file without a filename');
-            switch (file.status) {
-              case 'added': return { status: 'A', path };
-              case 'removed': return { status: 'D', path };
-              case 'renamed': {
-                if (!file.previous_filename) throw new Error('GitHub compare returned a rename without previous_filename');
-                return { status: 'R100', previousPath: file.previous_filename, path };
-              }
-              case 'copied': {
-                if (!file.previous_filename) throw new Error('GitHub compare returned a copy without previous_filename');
-                return { status: 'C100', previousPath: file.previous_filename, path };
-              }
-              default: return { status: 'M', path };
-            }
-          });
-          return { base, head, files };
-        }
+        const exactFiles = exactFastForwardGitHubChangedFiles(base.sha, await response.json());
+        // Diverged, reversed, incomplete, or malformed compare results are not
+        // exact A-to-B deltas. Native git diff below remains authoritative.
+        if (exactFiles) return { base, head, files: exactFiles };
       }
     } catch {
       // Network/provider comparison is only an optimization. Exact git diff
@@ -270,18 +317,8 @@ export async function changedFilesBetweenRevisions(
     for (const sha of new Set([base.sha, head.sha])) {
       await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', sha], { env: auth.env, timeoutMs: 5 * 60_000 });
     }
-    const result = await runChecked('git', ['-C', root, 'diff', '--name-status', '-M', base.sha, head.sha, '--'], { timeoutMs: 2 * 60_000 });
-    const files = result.stdout.trim()
-      ? result.stdout.trim().split(/\r?\n/u).filter(Boolean).map(line => {
-        const [status = '', first = '', second] = line.split('\t');
-        if (!status || !first) throw new Error(`Malformed git diff name-status row: ${line}`);
-        if (/^[RC]/u.test(status)) {
-          if (!second) throw new Error(`Malformed git rename/copy row: ${line}`);
-          return { status, previousPath: first, path: second };
-        }
-        return { status, path: first };
-      })
-      : [];
+    const result = await runChecked('git', ['-C', root, 'diff', '--name-status', '-z', '-M', base.sha, head.sha, '--'], { timeoutMs: 2 * 60_000 });
+    const files = parseExactGitDiffNameStatus(result.stdout);
     return { base, head, files };
   } finally {
     await auth?.cleanup();
