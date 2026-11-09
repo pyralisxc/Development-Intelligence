@@ -465,7 +465,8 @@ export function mergeJoernDataflowEvidence(input: {
   const counts: JoernEvidenceProjection['counts'] = {
     sliceNodes: segments.reduce((sum, segment) => sum + segment.counts.sliceNodes, 0),
     sliceEdges: segments.reduce((sum, segment) => sum + segment.counts.sliceEdges, 0),
-    sourceLocatedNodes: nodeMap.size,
+    sourceLocatedNodes: [...nodeMap.values()].filter(node =>
+      node.kind === 'source-located-dataflow-node').length,
     sourceUnlocatedNodes: segments.reduce((sum, segment) => sum + segment.counts.sourceUnlocatedNodes, 0),
     sourceFilesChecked: segments.reduce((sum, segment) => sum + segment.counts.sourceFilesChecked, 0),
     candidateFlowEdges: [...edgeMap.values()].filter(edge =>
@@ -501,7 +502,7 @@ export function mergeJoernDataflowEvidence(input: {
       sourceArtifacts: segments.length,
       totalSegmentSourceNodes: segments.reduce((sum, segment) =>
         sum + segment.counts.sourceLocatedNodes, 0),
-      uniqueValidatedSourceNodes: nodeMap.size,
+      uniqueValidatedSourceNodes: counts.sourceLocatedNodes,
       uniqueCandidateFlowEdges: counts.candidateFlowEdges,
       duplicateCandidateEdges: duplicateEdges,
     },
