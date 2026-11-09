@@ -91,6 +91,15 @@ test('prior source obligations are independently re-proven; runtime passes are n
     assert.equal(same.database.liveDatabaseStateVerified, false);
     assert.equal(same.controlFlow.needsIndependentBehavioralRecheck, false);
     assert.equal(same.controlFlow.conditionsAndEffectsIndependentlyVerified, false);
+    assert.ok(same.controlFlow.selectedFunctionConditionCount >= 2);
+    assert.equal(same.controlFlow.selectedFunctionConditionChanged, 0);
+    assert.equal(same.controlFlow.selectedFunctionConditionUnproven, 0);
+    assert.equal(same.controlFlow.selectedFunctionConditionReobserved,
+      same.controlFlow.selectedFunctionConditionCount);
+    assert.ok(same.controlFlow.selectedFunctionConditions.every(
+      item => item.outcome === 'conditional-source-reobserved'
+        && item.runtimeExecutionEstablished === false
+        && item.priorTestPassCarriedForward === false));
 
     const migrated = await assessRevisionEvidence({ ...input, ref: 'commit:' + changed });
     assert.equal(migrated.source.sameTrackedGitTree, false);
@@ -101,6 +110,11 @@ test('prior source obligations are independently re-proven; runtime passes are n
     assert.equal(migrated.controlFlow.needsIndependentBehavioralRecheck, true);
     assert.ok(migrated.controlFlow.changedExecutableSourcePaths.includes('src/entry.ts'));
     assert.ok(migrated.nextChecks.some(x => x.kind === 'condition-effect'));
+    assert.ok(migrated.controlFlow.selectedFunctionConditions.some(
+      item => item.functionId === 'symbol:src/entry.ts#function:run'
+        && item.outcome === 'conditional-source-changed'
+        && item.guardsChanged === true));
+    assert.equal(migrated.controlFlow.selectedFunctionConditionChanged, 1);
     assert.ok(migrated.nextChecks.some(x => x.kind === 'database-state'));
     assert.equal(migrated.policy.staticSourceClaimDoesNotProveBehavior, true);
 
