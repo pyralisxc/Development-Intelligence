@@ -50,7 +50,7 @@ export function evaluateTestIndependentSourceContract(
 ): {
   identity: {
     project: string; revision: string; graphId: string;
-    analyzerVersion: string; contractSha256: string;
+    analyzerVersion: string | null; contractSha256: string;
   };
   mode: typeof TEST_INDEPENDENT_SOURCE_STRATEGY;
   counts: {
