@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../dist/src/intelligence/testClaimInventory.js';
-import { projectLocalJoernDataflow } from '../dist/src/intelligence/joernDataflow.js';
+import { mergeJoernDataflowEvidence, pageJoernDataflowEvidence, projectLocalJoernDataflow } from '../dist/src/intelligence/joernDataflow.js';
 import { mergeNodeTestEventReports, projectNodeTestEvents } from '../dist/src/intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from '../dist/src/intelligence/assertionEvidenceRouting.js';
 import { run, runChecked } from '../dist/src/util/process.js';
@@ -77,85 +77,143 @@ async function main() {
   const measures = {};
   try {
     if (joern) {
-      // Joern data-flow starts at call arguments. Its sink regex matches
-      // their code (e.g. "observed"), NOT necessarily the call name
-      // (e.g. "assert.equal"). On a disposable small fixture the unfiltered
-      // producer is the truthful baseline; a caller may opt into filters.
-      const fileFilter = flag('--joern-file-filter')
-        ? limit(flag('--joern-file-filter'), 'Joern file filter', 160) : null;
+      // Build the open-source CPG once, then use independently bounded
+      // source-filtered slices. One large JSON/input cap must not become
+      // the maximum evidence corpus that DI is capable of validating.
+      const requestedFilters = flags('--joern-file-filter').map(value =>
+        limit(value, 'Joern file filter', 160));
+      const fileFilters = requestedFilters.length ? [...new Set(requestedFilters)] : [null];
+      if (fileFilters.length > 64 || fileFilters.length !== (requestedFilters.length || 1)) {
+        throw new Error('Joern source shards require 1..64 unique source filters');
+      }
       const sinkFilter = flag('--joern-sink-filter')
         ? limit(flag('--joern-sink-filter'), 'Joern sink filter', 160) : null;
       const depth = Number(flag('--joern-depth') || '12');
-      if (!Number.isInteger(depth) || depth < 1 || depth > 20) {
-        throw new Error('Joern depth must be from 1 to 20');
+      const timeoutMs = Number(flag('--joern-timeout-ms') || '600000');
+      if (!Number.isSafeInteger(depth) || depth < 1 || depth > 100
+        || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 3600000) {
+        throw new Error('Joern depth 1..100 and subprocess timeout 1s..1h required');
+      }
+      const limitFlags = [
+        ['--joern-max-slice-bytes', 'maxSliceBytes'],
+        ['--joern-max-slice-nodes', 'maxSliceNodes'],
+        ['--joern-max-slice-edges', 'maxSliceEdges'],
+        ['--joern-max-source-files', 'maxSourceFiles'],
+        ['--joern-max-source-file-bytes', 'maxSourceFileBytes'],
+        ['--joern-max-code-chars', 'maxCodeChars'],
+      ];
+      const budget = {};
+      for (const [flagName, key] of limitFlags) {
+        const raw = flag(flagName);
+        if (raw !== undefined) budget[key] = Number(raw);
+      }
+      const requestedDir = flag('--joern-evidence-dir');
+      let outputDir = null;
+      if (requestedDir) {
+        if (path.isAbsolute(requestedDir) || requestedDir.includes('\\')
+          || requestedDir.split('/').some(seg => !seg || seg === '.' || seg === '..')) {
+          throw new Error('Joern artifact directory must be canonical and inside checkout');
+        }
+        const dest = path.resolve(root, requestedDir);
+        if (!inside(root, dest)) throw new Error('Joern artifact directory escapes checkout');
+        const parent = await fs.realpath(path.dirname(dest));
+        if (!inside(root, parent)) throw new Error('Joern artifact parent escapes checkout');
+        await fs.mkdir(dest, { mode: 0o700 });
+        outputDir = dest;
       }
       const executable = await fs.realpath(path.resolve(joern));
-      // Pinned Joern v4 slicer accepts a CPG binary, not raw Git directories.
-      // Build the temporary CPG with the matching open-source frontend first.
-      const parserInput = flag('--joern-parse-executable')
-        || path.join(path.dirname(executable), 'joern-parse');
-      const parser = await fs.realpath(path.resolve(parserInput));
+      const parser = await fs.realpath(path.resolve(flag('--joern-parse-executable')
+        || path.join(path.dirname(executable), 'joern-parse')));
       const cpg = path.join(scratch, 'joern-cpg.bin');
       const parseStarted = Date.now();
       const parsed = await run(parser, [
         root, '--output', cpg,
         ...(requestedLanguage ? ['--language', requestedLanguage] : []),
-      ], { cwd: root, timeoutMs: 600000 });
+      ], { cwd: root, timeoutMs });
       measures.joernParseMs = Date.now() - parseStarted;
       if (parsed.code !== 0) {
-        const diagnostic = (parsed.stderr || parsed.stdout).trim();
-        throw new Error('Pinned Joern source frontend failed: ' + diagnostic.slice(0, 700));
+        throw new Error('Pinned Joern source frontend failed: '
+          + (parsed.stderr || parsed.stdout).trim().slice(-700));
       }
       const cpgFile = await fs.lstat(cpg);
       if (!cpgFile.isFile() || cpgFile.size === 0) {
         throw new Error('Joern source frontend produced no ordinary CPG binary');
       }
-      const output = path.join(scratch, 'joern-dataflow.json');
-      const start = Date.now();
-      const processResult = await run(executable, ['data-flow',
-        '-o', output,
-        ...(fileFilter ? ['--file-filter', fileFilter] : []),
-        ...(sinkFilter ? ['--sink-filter', sinkFilter] : []),
-        '--slice-depth', String(depth), cpg],
-      { cwd: scratch, timeoutMs: 600000 });
-      measures.joernSliceMs = Date.now() - start;
-      if (processResult.code !== 0) {
-        const diagnostic = (processResult.stderr || processResult.stdout).trim();
-        throw new Error('Pinned Joern slicer failed (no graph evidence admitted): '
-          + diagnostic.slice(0, 900));
+      const segments = [];
+      const unknownSegments = [];
+      const outputs = [];
+      let cumulativeMs = 0;
+      for (const [index, fileFilter] of fileFilters.entries()) {
+        const ordinal = String(index).padStart(4, '0');
+        const folder = path.join(scratch, 'joern-source-segment-' + ordinal);
+        await fs.mkdir(folder);
+        const output = path.join(folder, 'dataflow.json');
+        const started = Date.now();
+        const executed = await run(executable, ['data-flow',
+          '-o', output,
+          ...(fileFilter ? ['--file-filter', fileFilter] : []),
+          ...(sinkFilter ? ['--sink-filter', sinkFilter] : []),
+          '--slice-depth', String(depth), cpg],
+        { cwd: folder, timeoutMs });
+        cumulativeMs += Date.now() - started;
+        if (executed.code !== 0) {
+          throw new Error('Pinned Joern segment ' + index + ' failed (no absence proof): '
+            + (executed.stderr || executed.stdout).trim().slice(-700));
+        }
+        const produced = await fs.readdir(folder);
+        const names = produced.filter(name => name.endsWith('.json'));
+        if (names.length === 0) {
+          // Upstream reports Empty slice, no file generated. Not a negative
+          // dataflow result for an arbitrary source/analysis scope.
+          unknownSegments.push({ index, fileFilter, state: 'no-dataflow-json',
+            missingOutputIsNotAbsenceProof: true });
+          continue;
+        }
+        if (names.length !== 1) {
+          throw new Error('Joern source segment ' + index + ' emitted ambiguous JSON artifacts');
+        }
+        const generated = path.join(folder, names[0]);
+        const projection = await projectLocalJoernDataflow({
+          root, graph, slicePath: path.relative(root, generated),
+          producerVersion: requestedVersion, testCatalog: catalog, budget,
+        });
+        segments.push(projection);
+        if (outputDir) {
+          const retained = 'joern-source-segment-' + ordinal + '.json';
+          await fs.copyFile(generated, path.join(outputDir, retained),
+            fs.constants.COPYFILE_EXCL);
+          outputs.push(path.relative(root, path.join(outputDir, retained))
+            .split(path.sep).join('/'));
+        }
       }
-      const produced = await fs.readdir(scratch);
-      // Joern versions suffix --out differently; only a unique JSON written
-      // into our isolated scratch directory can be admitted as evidence.
-      const names = produced.filter(name => name.endsWith('.json')
-        && name !== 'joern-cpg.bin');
-      if (names.length !== 1) {
-        // Diagnostics are opt-in because frontend logs may contain private
-        // source paths. The fixture CI explicitly enables them only on synthetic
-        // source; source code is never sent to a remote analysis service.
-        const debug = process.argv.includes('--joern-debug-producer')
-          ? ('; parser=' + (parsed.stdout + '\n' + parsed.stderr).trim().slice(-600)
-            + '; slicer=' + (processResult.stdout + '\n' + processResult.stderr).trim().slice(-600))
-          : '';
-        throw new Error('Joern must emit exactly one bounded JSON dataflow slice; cpgBytes='
-          + cpgFile.size + '; files='
-          + produced.sort().slice(0, 12).join(',').slice(0, 350) + debug);
+      measures.joernSliceMs = cumulativeMs;
+      if (!segments.length) {
+        throw new Error('Pinned Joern returned no source-backed dataflow JSON from '
+          + fileFilters.length + ' requested segments; no absence proof established');
       }
-      const projected = await projectLocalJoernDataflow({
-        root, graph, slicePath: path.relative(root, path.join(scratch, names[0])),
-        producerVersion: requestedVersion, testCatalog: catalog,
-      });
+      const projected = mergeJoernDataflowEvidence({ canonical: graph, segments });
       joernProjection = projected;
       joernResult = {
         producer: projected.producer,
         overlayGraphId: projected.graph.graphId,
         counts: projected.counts,
         candidates: projected.candidates,
+        candidatePresentation: pageJoernDataflowEvidence(projected, 0, 20).page,
+        segmentPopulation: projected.segmentPopulation ?? null,
+        segmentCoverage: {
+          requested: fileFilters.length, sourceValidated: segments.length,
+          omitted: unknownSegments.length,
+          completeForRequestedFilters: unknownSegments.length === 0,
+          unknownSegments,
+          persistedJsonPaths: outputs,
+          artifactPersistence: outputDir ? 'operator-requested-local-files' : 'scratch-deleted',
+        },
+        budget: projected.budget,
         policy: projected.policy,
         executedPinnedBinaryLocally: true,
         parsedSourceToEphemeralCpg: true,
         parsedSourceWithLanguage: requestedLanguage ?? 'auto-detected',
-        fileFilter, sinkFilter, depth,
+        fileFilters, sinkFilter, depth,
       };
     }
     if (requestedTestFiles.length) {
