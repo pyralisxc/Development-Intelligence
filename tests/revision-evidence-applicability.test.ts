@@ -6,7 +6,6 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { assessRevisionEvidence } from '../src/intelligence/revisionEvidenceApplicability.js';
 import { runChecked } from '../src/util/process.js';
-
 const contract = { version: 1, relationships: [{
   from: 'symbol:src/entry.ts#function:run',
   kind: 'calls',
@@ -123,4 +122,18 @@ test('prior source obligations are independently re-proven; runtime passes are n
     else process.env.DEVINT_PROJECTS_FILE = prior;
     await fs.rm(temp, { recursive: true, force: true });
   }
+});
+
+test('the shared read-only MCP contract exposes source-only revision evaluation without runtime attestation', async () => {
+  const descriptor = listTools().find(item => item.name === 'assess_revision_evidence');
+  assert.ok(descriptor);
+  assert.equal(descriptor.annotations?.readOnlyHint, true);
+  assert.ok(JSON.stringify(descriptor.inputSchema).includes('priorTestRun'));
+  await assert.rejects(callTool('assess_revision_evidence', {
+    project: 'EvidenceContinuity', baseRef: 'commit:' + 'a'.repeat(40),
+    ref: 'commit:' + 'b'.repeat(40),
+    contract: { version: 1, relationships: [] },
+    priorTestRun: { runId: 'synthetic', claimedSourceRevision: 'wrong',
+      reportedOutcome: 'pass' },
+  }), /priorTestRun|reportDigest|revision|SHA|pattern|valid/i);
 });

@@ -163,6 +163,8 @@ export async function assessRevisionEvidence(input: RevisionEvidenceInput) {
     priorTestRun: priorRun ? {
       runId: priorRun.runId,
       reportedOutcome: priorRun.reportedOutcome,
+      reportDigest: priorRun.reportDigest ?? null,
+      reportDigestAuthenticated: false,
       claimedSourceRevision: priorRun.claimedSourceRevision,
       matchesBaselineGitRevision: oldRunMatchesBase,
       provenanceStatus: 'caller-supplied-unattested-reference',
