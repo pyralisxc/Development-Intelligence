@@ -2,7 +2,7 @@ import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, read
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 import { buildLocalGraph } from './intelligence/local.js';
 import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
-import { projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
+import { mergeJoernDataflowEvidence, pageJoernDataflowEvidence, projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
 import { mergeNodeTestEventReports, pageNodeTestEvents, projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from './intelligence/assertionEvidenceRouting.js';
 import { generateTestClaimCatalog } from './intelligence/testClaimInventory.js';
@@ -22,7 +22,11 @@ const testClaimCatalogPath = arg('--test-claim-catalog');
 const testClaimReportPath = arg('--test-claim-report-path');
 const producerCommit = arg('--producer-commit');
 const scipIndexPath = arg('--scip-index');
-const joernSlicePath = arg('--joern-slice-json');
+const joernSlicePaths = args('--joern-slice-json');
+const joernSlicePath = joernSlicePaths[0];
+const joernEdgeOffset = arg('--joern-edge-offset');
+const joernEdgePageSize = arg('--joern-edge-page-size');
+const joernExpectedDigest = arg('--joern-edge-expected-sha256');
 const nodeEventsPaths = args('--node-test-events-jsonl');
 const nodeEventsPath = nodeEventsPaths[0];
 const nodeProducerVersion = arg('--node-version');
@@ -44,7 +48,7 @@ async function main(): Promise<void> {
   if (testClaimCatalogFlag && command !== 'analyze') throw new Error('--test-claim-catalog is supported only for analyze');
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
-  if ((joernSlicePath || joernProducerVersion || joernProjectPrefix) && command !== 'joern-evidence') throw new Error('Joern evidence flags require joern-evidence command');
+  if ((joernSlicePath || joernProducerVersion || joernProjectPrefix || joernEdgeOffset || joernEdgePageSize || joernExpectedDigest) && command !== 'joern-evidence') throw new Error('Joern evidence flags require joern-evidence command');
   if ((nodeEventsPath || nodeProducerVersion || nodeRunId || nodeEventOffset
     || nodeEventPageSize || nodeExpectedDigest) && command !== 'node-test-evidence') {
     throw new Error('Node test evidence flags require node-test-evidence command');
@@ -88,12 +92,25 @@ async function main(): Promise<void> {
       sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
       sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
     });
-    const overlay = await projectLocalJoernDataflow({
-      root, graph: canonical, slicePath: joernSlicePath,
-      producerVersion: joernProducerVersion,
-      ...(joernProjectPrefix ? { projectPrefix: joernProjectPrefix } : {}),
-      testCatalog: catalog,
-    });
+    const projections = [];
+    for (const slicePath of joernSlicePaths) {
+      projections.push(await projectLocalJoernDataflow({
+        root, graph: canonical, slicePath,
+        producerVersion: joernProducerVersion,
+        ...(joernProjectPrefix ? { projectPrefix: joernProjectPrefix } : {}),
+        testCatalog: catalog,
+      }));
+    }
+    const overlay = mergeJoernDataflowEvidence({ canonical, segments: projections });
+    const offset = Number(joernEdgeOffset ?? '0');
+    const pageSize = Number(joernEdgePageSize ?? '100');
+    if (offset > 0 && !joernExpectedDigest) {
+      throw new Error('Later Joern evidence pages require --joern-edge-expected-sha256');
+    }
+    if (joernExpectedDigest && joernExpectedDigest !== overlay.producer.sliceSha256) {
+      throw new Error('Joern evidence digest does not match requested page identity');
+    }
+    const page = pageJoernDataflowEvidence(overlay, offset, pageSize);
     console.log(JSON.stringify({
       mode: 'ephemeral-oss-dataflow-evidence',
       project: canonical.project,
@@ -103,7 +120,10 @@ async function main(): Promise<void> {
       producer: overlay.producer,
       source: overlay.source,
       counts: overlay.counts,
+      segmentPopulation: overlay.segmentPopulation ?? null,
+      budget: overlay.budget,
       candidates: overlay.candidates,
+      candidateEvidence: page,
       assertionEvidence: joinAssertionEvidence({ graph: canonical, catalog, joern: overlay }),
       policy: overlay.policy,
     }, null, 2));
@@ -167,7 +187,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     if (result.current !== true) process.exitCode = 1;
   } else {
-    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence|joern-evidence|node-test-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32] [--joern-slice-json FILE] [--joern-version VERSION] [--joern-project-prefix PATH] [--node-test-events-jsonl FILE] [--node-version VERSION] [--node-run-id RUN_ID]');
+    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence|joern-evidence|node-test-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32] [--joern-slice-json FILE ...] [--joern-edge-offset N] [--joern-edge-page-size N] [--joern-edge-expected-sha256 SHA256] [--joern-version VERSION] [--joern-project-prefix PATH] [--node-test-events-jsonl FILE] [--node-version VERSION] [--node-run-id RUN_ID]');
     process.exitCode = 2;
   }
 }
