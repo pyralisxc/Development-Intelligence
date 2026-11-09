@@ -45,6 +45,16 @@ test('source obligation proof is test-independent, mutation-sensitive, and never
     assert.equal(proven.policy.testSourceEvidenceUsed, false);
     assert.equal(proven.policy.assertionValueProven, false);
     assert.equal(proven.policy.testReplacementProven, false);
+
+    // Even if a consumer constructs a fake provider/semantic node with an
+    // otherwise usable ID, it is not eligible source-backed proof.
+    const semanticFixture = { ...graph, nodes: graph.nodes.map(item =>
+      item.id === 'symbol:src/logic.ts#function:safe'
+        ? { ...item, layer: 'semantic' as const } : item) };
+    const fromSavedMeaning = evaluateTestIndependentSourceContract(semanticFixture, required);
+    assert.equal(fromSavedMeaning.counts.sourceEstablished, 0);
+    assert.equal(fromSavedMeaning.counts.unresolved, 1);
+    assert.equal(fromSavedMeaning.policy.onlyCompleteSourceFilesAndResolvedCompilerOrModuleBindings, true);
     assert.ok(proven.counts.excludedTestNodes > 0);
     assert.equal(isWrittenTestSource('repo:src/intelligence/testClaimInventory.ts'), false);
     assert.equal(isWrittenTestSource('repo:tests/my-case.test.ts'), true);

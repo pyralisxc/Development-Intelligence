@@ -56,7 +56,8 @@ export function evaluateTestIndependentSourceContract(
   counts: {
     obligations: number; sourceEstablished: number;
     sourceCounterexamples: number; unresolved: number;
-    excludedTestNodes: number; excludedTestOrUnavailableEdges: number;
+    excludedTestNodes: number; omittedNonSourceNodes: number;
+    excludedTestOrUnavailableEdges: number;
     proofSourceNodes: number; proofSourceEdges: number;
   };
   decisions: Decision[];
@@ -65,6 +66,7 @@ export function evaluateTestIndependentSourceContract(
     testSourceEvidenceUsed: false; testResultUsed: false;
     staticRelationshipIsNotBehavioralProof: true;
     sourceAbsenceNeverTreatedAsProof: true;
+    onlyCompleteSourceFilesAndResolvedCompilerOrModuleBindings: true;
     executionObserved: false; assertionValueProven: false;
     testReplacementProven: false; canonicalAuthorityUnaffected: true;
     persistedInterpretation: false;
@@ -78,11 +80,24 @@ export function evaluateTestIndependentSourceContract(
   const excludedIds = new Set(graph.nodes.filter(node =>
     isWrittenTestSource(node.sourceId) || isWrittenTestSource(node.id)
     || /^test-(?:declaration|assertion)$/u.test(node.kind)).map(node => node.id));
-  const nodes = graph.nodes.filter(node => !excludedIds.has(node.id));
+  // A non-test node could still represent provider state, a saved meaning
+  // or a representation rather than inspected source. Only exact covered
+  // structural nodes can establish this particular source-proof contract.
+  const completeFiles = new Set((graph.coverage?.files ?? [])
+    .filter(item => item.status === 'complete').map(item => item.path));
+  const nodes = graph.nodes.filter(node =>
+    !excludedIds.has(node.id) && node.layer === 'structural'
+    && node.sourceId.startsWith('repo:')
+    && completeFiles.has(node.sourceId.slice('repo:'.length)));
   const allowedIds = new Set(nodes.map(node => node.id));
+  const resolvedSourceStrategies = new Set([
+    'typescript-checker-symbol.v1', 'module-resolution',
+  ]);
   const edges = graph.edges.filter(edge =>
     Boolean(edge.from && edge.to && allowedIds.has(edge.from) && allowedIds.has(edge.to))
-    && !(edge.evidence ?? []).some(isWrittenTestSource));
+    && edge.layer === 'structural'
+    && !(edge.evidence ?? []).some(isWrittenTestSource)
+    && (edge.status !== 'resolved' || resolvedSourceStrategies.has(edge.strategy)));
 
   // Existing parity proof must not use original repository-wide negative
   // coverage after tests and unknown source edges have been excluded.
@@ -140,6 +155,7 @@ export function evaluateTestIndependentSourceContract(
       sourceCounterexamples: decisions.filter(item => item.outcome === 'source-counterexample').length,
       unresolved: decisions.filter(item => item.outcome === 'unproven').length,
       excludedTestNodes: excludedIds.size,
+      omittedNonSourceNodes: graph.nodes.length - nodes.length - excludedIds.size,
       excludedTestOrUnavailableEdges: graph.edges.length - edges.length,
       proofSourceNodes: nodes.length, proofSourceEdges: edges.length,
     },
@@ -151,6 +167,7 @@ export function evaluateTestIndependentSourceContract(
       testResultUsed: false,
       staticRelationshipIsNotBehavioralProof: true,
       sourceAbsenceNeverTreatedAsProof: true,
+      onlyCompleteSourceFilesAndResolvedCompilerOrModuleBindings: true,
       executionObserved: false,
       assertionValueProven: false,
       testReplacementProven: false,
