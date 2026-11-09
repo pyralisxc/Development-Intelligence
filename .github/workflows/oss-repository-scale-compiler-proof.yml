@@ -82,6 +82,7 @@ jobs:
           DI_SHA="$(git rev-parse HEAD)"
           node --max-old-space-size=4096 scripts/benchmark-oss-compiler-capacity.mjs \
             --repo-path . --project Development-Intelligence --expected-sha "$DI_SHA" --min-sites 30 \
+            --compare-legacy --min-legacy-new-sites 0 \
             | tee di-repository-compiler-capacity.json
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
@@ -89,6 +90,8 @@ jobs:
           const r = JSON.parse(fs.readFileSync('di-repository-compiler-capacity.json', 'utf8'));
           assert.ok(r.uniqueSourceSites >= 30);
           assert.ok(r.sampledSourceSpanValidation > 0);
+          assert.equal(r.legacyBaseline.formerlyAvailableSitesLost, 0);
+          assert.equal(r.legacyBaseline.newUniqueSourceSites, r.uniqueSourceSites);
           assert.equal(r.compilerFactIsStaticNotRuntime, true);
           assert.equal(r.fullSuiteBehaviorProven, false);
           console.log(r);
@@ -129,13 +132,16 @@ jobs:
           node --max-old-space-size=4096 scripts/benchmark-oss-compiler-capacity.mjs \
             --repo-path benchmark/cardforge --project CardForge \
             --expected-sha bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084 \
-            --min-sites 300 | tee cardforge-source-compiler-capacity.json
+            --min-sites 300 --compare-legacy --min-legacy-new-sites 1000 | tee cardforge-source-compiler-capacity.json
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           const r = JSON.parse(fs.readFileSync('cardforge-source-compiler-capacity.json', 'utf8'));
           assert.ok(r.uniqueSourceSites >= 300);
           assert.ok(r.sampledSourceSpanValidation >= 16);
+          assert.equal(r.legacyBaseline.formerlyAvailableSitesLost, 0);
+          assert.ok(r.legacyBaseline.newlyAvailableCompilerSourceSites >= 1000,
+            'source-proven new capacity must be measurably useful at the same CardForge SHA');
           assert.equal(r.compilerFactIsStaticNotRuntime, true);
           assert.equal(r.fullSuiteBehaviorProven, false);
           console.log(r);
