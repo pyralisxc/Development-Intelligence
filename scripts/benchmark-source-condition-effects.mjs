@@ -100,7 +100,13 @@ try {
   assert.equal(intelligent.policy.sourceSyntaxNotRuntime, true);
 
   const original = sourceText;
-  const modified = original.replace(config.mutationBefore, config.mutationAfter);
+  const targetStart = named[0].getStart(parsed);
+  const targetEnd = named[0].getEnd();
+  const at = original.indexOf(config.mutationBefore, targetStart);
+  assert.ok(at >= targetStart && at < targetEnd,
+    'oracle mutation must belong to the exact selected callable, not a homonymous guard elsewhere');
+  const modified = original.slice(0, at) + config.mutationAfter
+    + original.slice(at + config.mutationBefore.length);
   assert.notEqual(modified, original, 'production guard mutation must affect actual source');
   const node = {
     id: first.result.identity.functionId, sourceId: 'repo:' + config.file,

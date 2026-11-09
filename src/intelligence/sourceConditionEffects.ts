@@ -111,9 +111,9 @@ function definitelyTerminates(node: ts.Statement): boolean {
   if (ts.isReturnStatement(node) || ts.isThrowStatement(node)) return true;
   if (ts.isBlock(node)) {
     const parts = [...node.statements];
-    return parts.length > 0 && parts.slice(0, -1).every(item =>
-      ts.isExpressionStatement(item) || ts.isVariableStatement(item))
-      && definitelyTerminates(parts[parts.length - 1]!);
+    // A terminating final statement prevents normal fallthrough even when
+    // earlier nested if statements may themselves return or throw.
+    return parts.length > 0 && definitelyTerminates(parts[parts.length - 1]!);
   }
   if (ts.isIfStatement(node)) return Boolean(node.elseStatement
     && definitelyTerminates(node.thenStatement)
