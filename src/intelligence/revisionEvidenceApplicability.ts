@@ -6,6 +6,8 @@ import {
 } from '../source/git.js';
 import { evaluateTestIndependentSourceContract } from './independentSourceVerification.js';
 import { graphContext } from './service.js';
+import { normalizeParityContract } from './parityContract.js';
+import { projectExactConditionSignatures } from './sourceConditionEffects.js';
 
 /**
  * Ephemeral comparison of independently evaluated SOURCE obligations across
@@ -91,6 +93,59 @@ export async function assessRevisionEvidence(input: RevisionEvidenceInput) {
     };
   });
 
+  // Extract source-only condition/effect fingerprints for exactly named
+  // caller-owned callable obligations, never for incidental lexical guesses.
+  // This is a projection of the same two exact Git graphs, not a historical
+  // semantic authority and not an execution-result replay.
+  const normalized = normalizeParityContract(input.contract);
+  const possibleIds = [...new Set([
+    ...(normalized.entities ?? []).map(item => item.id),
+    ...(normalized.relationships ?? []).flatMap(item => [item.from, item.to]),
+    ...(normalized.predicates ?? []).flatMap(item => [
+      ...(item.from.ids ?? []), ...(item.to.ids ?? []),
+    ]),
+  ])].filter(id => id.startsWith('symbol:')).sort();
+  const isCallable = (graph: typeof base.graph, id: string) => graph.nodes.some(
+    node => node.id === id && (node.kind === 'function' || node.kind === 'method')
+      && node.layer === 'structural');
+  const ids = possibleIds.filter(id => isCallable(base.graph, id) || isCallable(head.graph, id));
+  const [baseConditions, currentConditions] = await Promise.all([
+    projectExactConditionSignatures({ project: input.project, graph: base.graph, functionIds: ids }),
+    projectExactConditionSignatures({ project: input.project, graph: head.graph, functionIds: ids }),
+  ]);
+  const oldById = new Map(baseConditions.map(item => [item.functionId, item]));
+  const currentById = new Map(currentConditions.map(item => [item.functionId, item]));
+  const conditionComparisons = ids.map(id => {
+    const before = oldById.get(id);
+    const after = currentById.get(id);
+    const comparable = Boolean(before?.status === 'supported' && after?.status === 'supported'
+      && base.graph.analyzerVersion === head.graph.analyzerVersion);
+    const guardsChanged = comparable
+      ? JSON.stringify(before!.branchFingerprints) !== JSON.stringify(after!.branchFingerprints) : null;
+    const effectsChanged = comparable
+      ? JSON.stringify(before!.directEffectFingerprints) !== JSON.stringify(after!.directEffectFingerprints) : null;
+    const outcome = !comparable ? 'conditional-source-unproven'
+      : guardsChanged || effectsChanged ? 'conditional-source-changed'
+        : 'conditional-source-reobserved';
+    return {
+      functionId: id,
+      sourcePath: after?.sourcePath ?? before?.sourcePath ?? null,
+      priorStatus: before?.status ?? 'unproven',
+      currentStatus: after?.status ?? 'unproven',
+      priorBranchCount: before?.branchCount ?? 0,
+      currentBranchCount: after?.branchCount ?? 0,
+      priorDirectEffectCount: before?.directEffectCount ?? 0,
+      currentDirectEffectCount: after?.directEffectCount ?? 0,
+      guardsChanged, directEffectsChanged: effectsChanged,
+      outcome, syntaxOnly: true, runtimeExecutionEstablished: false,
+      transitiveClosureProven: false, priorTestPassCarriedForward: false,
+    };
+  });
+  const namedConditionChanges = conditionComparisons.filter(item =>
+    item.outcome === 'conditional-source-changed');
+  const unresolvedNamedConditions = conditionComparisons.filter(item =>
+    item.outcome === 'conditional-source-unproven');
+
   const changedFiles = changes.files;
   const migrationPaths = changedFiles
     .filter(row => /(?:^|\/)(?:migrations|schema)\/.*\.sql$/iu.test(row.path)
@@ -113,9 +168,17 @@ export async function assessRevisionEvidence(input: RevisionEvidenceInput) {
       kind: 'source-obligation',
       reason: 'Current exact source contains a counterexample or cannot independently establish the requested static obligation.',
     }] : []),
-    ...(changedExecutableSourcePaths.length ? [{
+    ...(namedConditionChanges.length ? [{
+      kind: 'condition-effect',
+      reason: 'Exact source predicates or direct effect paths changed for ' + namedConditionChanges.length
+        + ' caller-named function(s), even if static calls still resolve. Re-evaluate those branch conditions independently.',
+    }] : changedExecutableSourcePaths.length ? [{
       kind: 'condition-effect',
       reason: 'Executable source or dependency configuration changed. A static call still resolving does not prove that branch guards, effects, errors, or transitive behavior are preserved.',
+    }] : []),
+    ...(unresolvedNamedConditions.length ? [{
+      kind: 'source-condition-unknown',
+      reason: 'Some named function conditions could not be source-verified exhaustively. Never preserve their semantics from an old run or a static call.',
     }] : []),
     ...(migrationPaths.length ? [{
       kind: 'database-state',
@@ -149,9 +212,17 @@ export async function assessRevisionEvidence(input: RevisionEvidenceInput) {
     },
     controlFlow: {
       changedExecutableSourcePaths,
+      selectedFunctionConditions: conditionComparisons,
+      selectedFunctionConditionCount: conditionComparisons.length,
+      selectedFunctionConditionReobserved: conditionComparisons.filter(item =>
+        item.outcome === 'conditional-source-reobserved').length,
+      selectedFunctionConditionChanged: namedConditionChanges.length,
+      selectedFunctionConditionUnproven: unresolvedNamedConditions.length,
+      sourceConditionSignaturesComparedAtExactRevisions: true,
       conditionsAndEffectsIndependentlyVerified: false,
       transitiveDependencyClosureProven: false,
-      needsIndependentBehavioralRecheck: changedExecutableSourcePaths.length > 0,
+      needsIndependentBehavioralRecheck: changedExecutableSourcePaths.length > 0
+        || namedConditionChanges.length > 0 || unresolvedNamedConditions.length > 0,
     },
     database: {
       changedSqlOrMigrationPaths: migrationPaths,
@@ -179,6 +250,7 @@ export async function assessRevisionEvidence(input: RevisionEvidenceInput) {
       staticSourceClaimDoesNotProveBehavior: true,
       externalStateNeverInferredFromCommittedSql: true,
       priorTestPassNeverUpgradedToCurrentRuntimePass: true,
+      sourceConditionSignaturesNeverProveRuntimeBehavior: true,
       noSemanticHistoryStore: true,
       noAutomaticTestDeletion: true,
       doesNotApproveRelease: true,

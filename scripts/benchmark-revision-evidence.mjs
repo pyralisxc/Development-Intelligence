@@ -106,11 +106,23 @@ try {
   assert.ok(result.nextChecks.some(check => check.kind === 'runtime-execution'));
   assert.equal(result.controlFlow.conditionsAndEffectsIndependentlyVerified, false);
   assert.equal(result.controlFlow.transitiveDependencyClosureProven, false);
+  assert.ok(result.controlFlow.selectedFunctionConditionCount >= 1,
+    'caller-owned source obligations should select real function identities for guard comparison');
+  assert.equal(result.controlFlow.selectedFunctionConditionUnproven, 0);
+  assert.equal(result.policy.sourceConditionSignaturesNeverProveRuntimeBehavior, true);
+  assert.ok(result.controlFlow.selectedFunctionConditions.every(item =>
+    item.runtimeExecutionEstablished === false && item.priorTestPassCarriedForward === false));
   assert.equal(result.database.appliedMigrationStateVerified, false);
   assert.equal(result.database.liveDatabaseStateVerified, false);
   assert.equal(result.policy.noAutomaticTestDeletion, true);
   if (source === 'di') {
     assert.equal(result.source.trackedSourceChanges, 0);
+    assert.equal(result.controlFlow.selectedFunctionConditionChanged, 0);
+    assert.equal(result.controlFlow.selectedFunctionConditionReobserved,
+      result.controlFlow.selectedFunctionConditionCount);
+    assert.ok(result.controlFlow.selectedFunctionConditions.some(item =>
+      item.functionId.includes('authorizeOwnerWrite')
+      && item.outcome === 'conditional-source-reobserved'));
     assert.equal(result.controlFlow.needsIndependentBehavioralRecheck, false);
     assert.equal(result.database.changedSqlOrMigrationPaths.length, 0);
     assert.equal(result.nextChecks.some(check => check.kind === 'database-state'), false);
@@ -122,6 +134,16 @@ try {
     assert.ok(result.nextChecks.some(check => check.kind === 'database-state'));
     assert.ok(result.nextChecks.some(check => check.kind === 'condition-effect'));
     assert.equal(result.controlFlow.needsIndependentBehavioralRecheck, true);
+    assert.ok(result.controlFlow.selectedFunctionConditions.some(item =>
+      item.functionId.includes('cardforgeMiddleware')
+      && item.outcome === 'conditional-source-changed'
+      && item.guardsChanged === true),
+      'read-only CardForge branch mutation must remain visible despite a preserved proxy call');
+    assert.ok(result.controlFlow.selectedFunctionConditions.some(item =>
+      item.functionId.includes('symbol:src/proxy.ts#function:proxy')
+      && item.outcome === 'conditional-source-reobserved'),
+      'the caller function remains source-equivalent while the called guard changes');
+    assert.ok(result.controlFlow.selectedFunctionConditionChanged >= 1);
   }
   const receipt = {
     source, immutableBase: spec.base, immutableHead: spec.head,
@@ -134,6 +156,15 @@ try {
       outcome: item.outcome, witnessCount: item.currentResolvedWitnesses.length,
       testReplacementProven: item.provesBehavioralTestReplacement,
     })),
+    conditionalSource: {
+      selected: result.controlFlow.selectedFunctionConditionCount,
+      reobserved: result.controlFlow.selectedFunctionConditionReobserved,
+      changed: result.controlFlow.selectedFunctionConditionChanged,
+      unknown: result.controlFlow.selectedFunctionConditionUnproven,
+      statuses: result.controlFlow.selectedFunctionConditions.map(item =>
+        ({ functionId: item.functionId, outcome: item.outcome, guardsChanged: item.guardsChanged,
+          effectsChanged: item.directEffectsChanged, runtimeExecutionEstablished: false })),
+    },
     historicalRun: { status: result.priorTestRun.provenanceStatus,
       currentRuntimeExecutionProven: result.priorTestRun.currentRuntimeExecutionProven },
     outstandingChecks: result.nextChecks.map(item => item.kind),
