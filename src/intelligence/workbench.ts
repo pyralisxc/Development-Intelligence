@@ -8,6 +8,7 @@ import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLe
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
 import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
+import { querySourceConditionEffects, sourceConditionsAnswer } from './sourceConditionEffects.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
@@ -2672,6 +2673,24 @@ export async function queryWorkbench(input: {
     ...(input.sourceId ? { sourceId: input.sourceId } : {}),
     ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
   });
+  const conditionalSource = !input.sourceId ? await querySourceConditionEffects({
+    graph: await currentGraph(input.project, input.ref, input.graphId),
+    project: input.project, question: text, scope: input.scope,
+  }) : null;
+  if (conditionalSource) {
+    const status = conditionalSource.status === 'supported' ? 'established-source-syntax' : 'unproven';
+    const identity = conditionalSource.identity as { functionId?: string; functionName?: string } | undefined;
+    return {
+      intent: 'source-condition-effects',
+      subject: identity?.functionId ? { id: identity.functionId, name: identity.functionName, kind: 'function' } : null,
+      routing: { tool: 'exact-git-typescript-ast', direction: 'source-control-path',
+        projection: 'condition-and-direct-effect', questionPlan: { ...plan, lane: 'trace',
+          proofMode: 'evidence', subjectStrategy: 'entity-or-query' } },
+      answer: sourceConditionsAnswer(conditionalSource),
+      answerClassification: status,
+      result: conditionalSource,
+    };
+  }
   const testQuestion = !input.sourceId ? parseTestSourceQuestion(text) : null;
   if (testQuestion) {
     const graph = await currentGraph(input.project, input.ref, input.graphId);

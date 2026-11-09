@@ -6,6 +6,7 @@ import { currentGraph } from './service.js';
 import { projectOrientation } from './orientation.js';
 import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
 import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
+import { querySourceConditionEffects, sourceConditionsAnswer } from './sourceConditionEffects.js';
 
 export type AssessmentStatus = 'supported' | 'contradicted' | 'unproven' | 'indeterminate';
 export type RealizationFacet = 'human' | 'agent' | 'transport' | 'implementation' | 'persistence' | 'provider';
@@ -614,5 +615,22 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
 
 export async function queryIntelligence(input: { project: string; question: string; ref?: string; graphId?: string; requiredFacets?: RealizationFacet[] }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
+  if (!(input.requiredFacets?.length)) {
+    const conditionalSource = await querySourceConditionEffects({
+      graph, project: input.project, question: input.question,
+    });
+    if (conditionalSource) return {
+      project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
+      analyzerVersion: graph.analyzerVersion, question: input.question,
+      mode: 'source-condition-effects',
+      answerStatus: conditionalSource.status === 'supported' ? 'supported' : 'unproven',
+      answer: sourceConditionsAnswer(conditionalSource),
+      conditionEffects: conditionalSource,
+      // AST source observations are not authenticated execution/behavior claims.
+      claims: [], findings: [], realization: null,
+      policy: { sourceSyntaxNotRuntime: true, expectedValueNotProven: true,
+        testReplacementNotProven: true, graphAuthorityUnchanged: true },
+    };
+  }
   return assessGraph(graph, input.question, input.requiredFacets);
 }

@@ -134,7 +134,7 @@ function callableBodies(parsed: ts.SourceFile, name: string, line: number): ts.S
         while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init)) init = init.expression;
         if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
           if (ts.isBlock(init.body)) matches.push([...init.body.statements]);
-          else matches.push([ts.factory.createReturnStatement(init.body)]);
+          else return; // Expression-bodied arrows have no ordinary statement span.
         }
       }
     }
@@ -276,7 +276,7 @@ export async function querySourceConditionEffects(input: {
   return await withResolvedProjectCheckout(revision, async checkout => {
     const file = path.resolve(checkout.root, relative);
     const rel = path.relative(checkout.root, file);
-    if (rel !== relative || rel.startsWith('..') || path.isAbsolute(rel)) {
+    if (rel.split(path.sep).join('/') !== relative || rel.startsWith('..') || path.isAbsolute(rel)) {
       throw new Error('Condition source must stay inside exact Git checkout');
     }
     const stat = await fs.lstat(file);
