@@ -94,12 +94,27 @@ async function exactTestTitles(root: string, sourcePath: string,
   walk(ast);
   return matches;
 }
-function eventSourcePath(root: string, supplied: string): { path: string; mapping: 'direct-git-source' | 'compiler-output-name-only' } | null {
+async function eventSourcePath(root: string, supplied: string): Promise<{ path: string; mapping: 'direct-git-source' | 'compiler-output-name-only' } | null> {
   const location = supplied.startsWith('file:')
     ? (() => { try { return fileURLToPath(supplied); } catch { return ''; } })()
     : supplied;
-  if (!location) return null;
-  const relative = (path.isAbsolute(location) ? path.relative(root, location) : location)
+  if (!location || location.includes('\0')) return null;
+  // Native Windows TestStream can use short 8.3 source paths (RUNNER~1)
+  // where the Git checkout uses the full filesystem identity. Resolve only
+  // native source metadata before the same tracked-file and exact-blob check.
+  // Never read source or admit reporter claims outside the checkout.
+  const segments = location.replaceAll('\\', '/').split('/');
+  if (segments.includes('..') || segments.includes('.')) return null;
+  let sourceLocation = location;
+  if (path.isAbsolute(location)) {
+    try {
+      const stat = await fs.lstat(location);
+      if (!stat.isFile() || stat.isSymbolicLink()) return null;
+      sourceLocation = await fs.realpath(location);
+    } catch { return null; }
+  }
+  const relative = (path.isAbsolute(sourceLocation)
+    ? path.relative(root, sourceLocation) : sourceLocation)
     .split(path.sep).join('/');
   if (relative === '..' || relative.startsWith('../') || relative.startsWith('/')
     || relative.includes('\0') || relative.includes('\\')
@@ -158,7 +173,7 @@ export async function projectNodeTestEvents(input: {
     const file = safeText(raw.data.file);
     if (raw.type === 'test:pass') pass++; else fail++;
     if (!name || !file) { unavailable++; continue; }
-    const location = eventSourcePath(root, file);
+    const location = await eventSourcePath(root, file);
     if (!location) { unavailable++; continue; }
     const sourcePath = location.path;
     // Untrusted reporter filenames must never trigger a source read before

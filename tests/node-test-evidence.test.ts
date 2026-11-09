@@ -144,5 +144,23 @@ test('real Node TestStream reporter maps an exact Git test declaration without a
     });
     assert.equal(invalid.counts.sourceMatched, 0);
     assert.ok(invalid.counts.unavailable >= 1);
+
+    // Native file:// and absolute reporter paths must map to the same exact
+    // tracked declaration rather than merely matching the test title.
+    const urlEvents = lines.map((line: string) => {
+      const event = JSON.parse(line);
+      if (event.type === 'test:pass') {
+        event.data.file = pathToFileURL(
+          path.join(root, 'scripts', 'observable.test.mjs')).href;
+      }
+      return JSON.stringify(event);
+    });
+    await fs.writeFile(eventFile, urlEvents.join('\n') + '\n');
+    const urlResult = await projectNodeTestEvents({
+      root, graph, catalog, eventPath: 'observations/node.jsonl',
+      nodeVersion: process.version,
+    });
+    assert.equal(urlResult.counts.sourceMatched, 1);
+    assert.equal(urlResult.tests[0]?.declarationId, first.tests[0]?.declarationId);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
