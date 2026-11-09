@@ -18,7 +18,8 @@ const MAX_EVENTS = 20000;
 const MAX_TEXT = 4096;
 export interface NodeTestEvidenceProjection {
   identity: { project: string; revision: string; graphId: string; reportSha256: string;
-    nodeVersion: string; runId: string | null; independentlyAttested: false };
+    nodeVersion: string; runId: string | null; independentlyAttested: false;
+    batchReportSha256s?: string[] };
   counts: { testEvents: number; reportedPass: number; reportedFail: number;
     sourceMatched: number; ambiguous: number; unavailable: number; summariesObserved: number };
   tests: Array<{
@@ -259,5 +260,75 @@ export function pageNodeTestEvents(
       hasMore: offset + tests.length < total,
       reportSha256: report.identity.reportSha256,
     },
+  };
+}
+
+
+/**
+ * A deterministic, source-validated multi-report census over one canonical
+ * graph. Every report was independently bounded, exact-blob-checked and
+ * parsed through projectNodeTestEvents. A 40-file subprocess limit must not
+ * impose a 40-file ceiling on the complete test evidence population.
+ *
+ * Cross-report source duplication fails closed to prevent double-counting
+ * the same test as independently observed execution. Event payloads remain
+ * externally supplied/unattested unless accompanied by actual runner receipts.
+ */
+export function mergeNodeTestEventReports(
+  reports: NodeTestEvidenceProjection[],
+): NodeTestEvidenceProjection {
+  if (!reports.length || reports.length > 1000) {
+    throw new Error('Native Node event report batch must contain 1..1000 bounded reports');
+  }
+  if (reports.length === 1) return reports[0]!;
+  const ordered = [...reports].sort((a,b) =>
+    a.identity.reportSha256.localeCompare(b.identity.reportSha256));
+  const first = ordered[0]!;
+  const keys = ['project', 'revision', 'graphId', 'nodeVersion'] as const;
+  const digestSet = new Set<string>();
+  const fileOwner = new Map<string, string>();
+  for (const report of ordered) {
+    for (const key of keys) {
+      if (report.identity[key] !== first.identity[key]) {
+        throw new Error('Node event reports must share exact source, graph, project and producer version');
+      }
+    }
+    const digest = report.identity.reportSha256;
+    if (digestSet.has(digest) || !/^[a-f0-9]{64}$/u.test(digest)) {
+      throw new Error('Node event reports contain duplicate or invalid SHA-256 identities');
+    }
+    digestSet.add(digest);
+    const files = new Set(report.tests.map(item => item.file));
+    for (const file of files) {
+      const prior = fileOwner.get(file);
+      if (prior) throw new Error('Node event report batches overlap exact source file ' + file);
+      fileOwner.set(file, digest);
+    }
+  }
+  const tests = ordered.flatMap(report => report.tests).sort((a,b) =>
+    a.file.localeCompare(b.file) || a.testName.localeCompare(b.testName)
+    || a.eventId.localeCompare(b.eventId));
+  const eventIds = new Set(tests.map(item => item.eventId));
+  if (eventIds.size !== tests.length) {
+    throw new Error('Node event batch contains duplicate stable event identities');
+  }
+  const sha = createHash('sha256')
+    .update(JSON.stringify([...digestSet].sort())).digest('hex');
+  const countKeys = ['testEvents', 'reportedPass', 'reportedFail',
+    'sourceMatched', 'ambiguous', 'unavailable', 'summariesObserved'] as const;
+  const counts = { ...first.counts };
+  for (const key of countKeys) {
+    counts[key] = ordered.reduce((sum, report) => sum + report.counts[key], 0);
+  }
+  return {
+    identity: {
+      ...first.identity,
+      reportSha256: sha,
+      runId: ordered.every(report => report.identity.runId === first.identity.runId)
+        ? first.identity.runId : null,
+      batchReportSha256s: [...digestSet].sort(),
+      independentlyAttested: false,
+    },
+    counts, tests, policy: first.policy,
   };
 }
