@@ -54,7 +54,25 @@ test('a real >100-native-test suite joins ALL executed source tests before outpu
       root, graph, catalog, eventPath: 'observations/native.jsonl', nodeVersion: process.version,
     });
     assert.equal(first.counts.reportedPass, TOTAL_OBSERVED);
-    assert.equal(first.counts.sourceMatched, TOTAL_OBSERVED);
+    assert.equal(first.counts.sourceMatched, TOTAL_OBSERVED, JSON.stringify({
+      expected: TOTAL_OBSERVED,
+      catalog: {
+        declarations: catalog.declarations.length, assertions: catalog.assertions.length,
+        titles: catalog.declarations.slice(0, 4).map(item => ({
+          sourceId: item.sourceId, start: item.start, end: item.end,
+        })),
+      },
+      population: first.counts,
+      rows: first.tests.slice(0, 12).map(item => ({
+        name: item.testName, file: item.file,
+        status: item.evidenceStatus, declarationId: item.declarationId,
+      })),
+      reporter: executed.stdout.split('\\n').slice(0, 5).map(line => {
+        try { const event = JSON.parse(line); return {
+          type: event.type, name: event.data?.name, file: event.data?.file,
+        }; } catch { return null; }
+      }),
+    }).slice(0, 4000));
     assert.equal(first.tests.length, TOTAL_OBSERVED,
       'a display cap must NEVER truncate internal evidence used to judge assertions');
     const joined = joinAssertionEvidence({ graph, catalog, testEvents: first }) as any;
