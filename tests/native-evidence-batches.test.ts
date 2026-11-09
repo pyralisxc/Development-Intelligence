@@ -4,6 +4,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { run, runChecked } from '../src/util/process.js';
+import { buildLocalGraph } from '../src/intelligence/local.js';
+import { deriveNativeTestScope } from '../src/intelligence/nativeTestScope.js';
 
 test('bounded native runner batches recover all 43 executed tests, plus one unrun unknown', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-native-event-batch-'));
@@ -95,6 +97,74 @@ test('bounded native runner batches recover all 43 executed tests, plus one unru
     ]);
     assert.notEqual(tooLow.code, 0, 'resource cap must disclose inability, not a negative test verdict');
     assert.match(tooLow.stderr, /configured max-files/u);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('native test census can inspect nested sources and never claim other runner coverage', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-native-nested-scope-'));
+  try {
+    await fs.mkdir(path.join(root, 'packages', 'nested'), { recursive: true });
+    await fs.writeFile(path.join(root, 'packages/nested/actual.test.mjs'), [
+      "import test from 'node:test';",
+      "import assert from 'node:assert/strict';",
+      "test('nested native evidence', () => { assert.equal(2, 2); });",
+      '',
+    ].join('\n'));
+    await fs.writeFile(path.join(root, 'packages/nested/other.test.py'), 'assert 1 + 1 == 2\n');
+    await runChecked('git', ['init', '--initial-branch=main', root]);
+    await runChecked('git', ['-C', root, 'add', 'packages']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=fixture@example.invalid',
+      '-c', 'user.name=DI Fixture', 'commit', '-m', 'multi-runner source census']);
+    const graph = await buildLocalGraph(root, 'native-scope-oracle', 'W');
+    const defaultScope = deriveNativeTestScope(graph);
+    assert.equal(defaultScope.discovery.mode, 'default');
+    assert.equal(defaultScope.discovery.scopedFilenameCandidates, 0);
+    assert.equal(defaultScope.discovery.unselectedFilenameCandidates, 2);
+    const complete = deriveNativeTestScope(graph, { allSupported: true });
+    assert.equal(complete.discovery.filenameCandidates, 2);
+    assert.equal(complete.discovery.scopedFilenameCandidates, 1);
+    assert.equal(complete.discovery.unselectedFilenameCandidates, 1,
+      'Python test remains visible but requires its own native runner');
+    assert.equal(complete.discovery.negativeTestAbsenceProven, false);
+    assert.equal(complete.discovery.otherRunnerFrameworksCovered, false);
+    assert.ok(complete.scope.sourcePrefixes.includes('packages/'));
+    assert.throws(() => deriveNativeTestScope(graph, {
+      sourcePrefixes: ['../unsafe/'],
+    }), /canonical repository-relative/u);
+    assert.throws(() => deriveNativeTestScope(graph, {
+      sourcePrefixes: ['packages/'], allSupported: true,
+    }), /cannot silently combine/u);
+
+    const workerBase = [
+      path.resolve('scripts/run-oss-understanding.mjs'),
+      '--repo-path', root, '--project', 'native-scope-oracle',
+      '--node-test-file', 'packages/nested/actual.test.mjs',
+    ];
+    const scoped = await run(process.execPath, [...workerBase,
+      '--native-test-scope', 'all-supported'], { timeoutMs: 45000 });
+    assert.equal(scoped.code, 0, scoped.stderr);
+    const actual = JSON.parse(scoped.stdout);
+    assert.equal(actual.nodeTests.counts.sourceMatched, 1);
+    assert.equal(actual.assertionEvidence.counts.assertions, 1);
+    assert.equal(actual.assertionEvidence.counts.assertionsInsideReportedPassingTests, 1);
+    assert.equal(actual.nativeTestDiscovery.unselectedFilenameCandidates, 1);
+    const explicit = await run(process.execPath, [...workerBase,
+      '--native-test-prefix', 'packages/'], { timeoutMs: 45000 });
+    assert.equal(explicit.code, 0, explicit.stderr);
+    const explicitReceipt = JSON.parse(explicit.stdout);
+    assert.equal(explicitReceipt.nativeTestDiscovery.mode, 'explicit');
+    assert.equal(explicitReceipt.nodeTests.counts.sourceMatched, 1);
+
+    const defaultRun = await run(process.execPath, workerBase, { timeoutMs: 45000 });
+    assert.equal(defaultRun.code, 0, defaultRun.stderr);
+    const omitted = JSON.parse(defaultRun.stdout);
+    assert.equal(omitted.nodeTests.counts.sourceMatched, 0);
+    assert.equal(omitted.nativeTestDiscovery.unselectedFilenameCandidates, 2);
+    assert.equal(omitted.assertionEvidence.counts.assertions, 0);
+    assert.equal(omitted.nodeTests.policy.noneOrMissingDoesNotProveNoExecution, true);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
