@@ -89,6 +89,8 @@ test('prior source obligations are independently re-proven; runtime passes are n
     assert.equal(same.priorTestRun?.provenanceStatus, 'caller-supplied-unattested-reference');
     assert.equal(same.policy.sameTreeDoesNotProveSameRuntimeEnvironment, true);
     assert.equal(same.database.liveDatabaseStateVerified, false);
+    assert.equal(same.controlFlow.needsIndependentBehavioralRecheck, false);
+    assert.equal(same.controlFlow.conditionsAndEffectsIndependentlyVerified, false);
 
     const migrated = await assessRevisionEvidence({ ...input, ref: 'commit:' + changed });
     assert.equal(migrated.source.sameTrackedGitTree, false);
@@ -96,6 +98,9 @@ test('prior source obligations are independently re-proven; runtime passes are n
     assert.deepEqual(migrated.database.changedSqlOrMigrationPaths, ['migrations/002.sql']);
     assert.equal(migrated.source.obligations[0]?.outcome, 'source-fact-independently-reestablished');
     assert.equal(migrated.database.sourceChangeRequiresStateCheck, true);
+    assert.equal(migrated.controlFlow.needsIndependentBehavioralRecheck, true);
+    assert.ok(migrated.controlFlow.changedExecutableSourcePaths.includes('src/entry.ts'));
+    assert.ok(migrated.nextChecks.some(x => x.kind === 'condition-effect'));
     assert.ok(migrated.nextChecks.some(x => x.kind === 'database-state'));
     assert.equal(migrated.policy.staticSourceClaimDoesNotProveBehavior, true);
 

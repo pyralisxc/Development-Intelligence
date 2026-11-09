@@ -97,6 +97,10 @@ export async function assessRevisionEvidence(input: RevisionEvidenceInput) {
       || /(?:^|\/)supabase\/config\.toml$/iu.test(row.path)
       || /\.sql$/iu.test(row.path))
     .map(row => row.path).sort();
+  const changedExecutableSourcePaths = changedFiles.filter(row =>
+    /\.(?:[cm]?[jt]sx?|py|rs|go|cs|java|c|cc|cpp|h|hpp|sql)$/iu.test(row.path)
+    || /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|Cargo\.lock|pyproject\.toml|supabase\/config\.toml)$/iu.test(row.path))
+    .map(row => row.path).sort();
   const sourcePathDigest = createHash('sha256').update(JSON.stringify(changedFiles))
     .digest('hex');
   const priorRun = input.priorTestRun;
@@ -108,6 +112,10 @@ export async function assessRevisionEvidence(input: RevisionEvidenceInput) {
     ...(requiresSourceFollowup ? [{
       kind: 'source-obligation',
       reason: 'Current exact source contains a counterexample or cannot independently establish the requested static obligation.',
+    }] : []),
+    ...(changedExecutableSourcePaths.length ? [{
+      kind: 'condition-effect',
+      reason: 'Executable source or dependency configuration changed. A static call still resolving does not prove that branch guards, effects, errors, or transitive behavior are preserved.',
     }] : []),
     ...(migrationPaths.length ? [{
       kind: 'database-state',
@@ -138,6 +146,12 @@ export async function assessRevisionEvidence(input: RevisionEvidenceInput) {
       sourceProofWasIndependentlyReevaluatedAtHead: true,
       analyzerIdentitySame: base.graph.analyzerVersion === head.graph.analyzerVersion,
       obligations,
+    },
+    controlFlow: {
+      changedExecutableSourcePaths,
+      conditionsAndEffectsIndependentlyVerified: false,
+      transitiveDependencyClosureProven: false,
+      needsIndependentBehavioralRecheck: changedExecutableSourcePaths.length > 0,
     },
     database: {
       changedSqlOrMigrationPaths: migrationPaths,
