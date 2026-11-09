@@ -120,12 +120,16 @@ async function eventSourcePath(root: string, supplied: string): Promise<{ path: 
   if (relative === '..' || relative.startsWith('../') || relative.startsWith('/')
     || relative.includes('\0') || relative.includes('\\')
     || relative.split('/').some((part: string) => !part || part === '.' || part === '..')) return null;
-  if (/^(?:tests|scripts|packaging)\/.*\.(?:test|spec)\.(?:[cm]?js|tsx?)$/iu.test(relative)) {
-    return { path: relative, mapping: 'direct-git-source' };
-  }
   if (/^dist\/(?:tests|scripts)\/.+\.(?:test|spec)\.js$/iu.test(relative)) {
     return { path: relative.replace(/^dist\//u, '').replace(/\.js$/u, '.ts'),
       mapping: 'compiler-output-name-only' };
+  }
+  // Test naming conventions and exact Git/source validation, not a hardcoded
+  // list of three first-level directories, determine direct source identity.
+  // Nested package tests are valid when within the selected catalog scope;
+  // name similarity cannot substitute for the source/AST/Blob proof.
+  if (/^(?:[^/]+\/)*[^/]+\.(?:test|spec)\.(?:[cm]?js|tsx?)$/iu.test(relative)) {
+    return { path: relative, mapping: 'direct-git-source' };
   }
   return null;
 }

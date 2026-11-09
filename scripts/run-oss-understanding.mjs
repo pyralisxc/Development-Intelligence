@@ -166,8 +166,9 @@ async function main() {
         { cwd: folder, timeoutMs });
         cumulativeMs += Date.now() - started;
         if (executed.code !== 0) {
+          const diagnostic = (executed.stderr || executed.stdout).trim();
           throw new Error('Pinned Joern segment ' + index + ' failed (no absence proof): '
-            + (executed.stderr || executed.stdout).trim().slice(-700));
+            + diagnostic.slice(0, 450) + ' ... [tail] ' + diagnostic.slice(-700));
         }
         const produced = await fs.readdir(folder);
         const names = produced.filter(name => name.endsWith('.json'));
