@@ -28,7 +28,7 @@ test('merge-base GitHub compare is eligible only for exact fast-forward ancestry
   assert.deepEqual(exactFastForwardGitHubChangedFiles(A, fastForward), [
     { path: 'src/new.ts', status: 'A' },
     { path: 'migrations/002.sql', status: 'M' },
-    { path: 'src/renamed.ts', previousPath: 'src/old.ts', status: 'R100' },
+    { path: 'src/renamed.ts', previousPath: 'src/old.ts', status: 'R' },
   ]);
   assert.equal(exactFastForwardGitHubChangedFiles(A, {
     ...fastForward, merge_base_commit: { sha: C },

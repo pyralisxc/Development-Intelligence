@@ -225,7 +225,7 @@ export function exactFastForwardGitHubChangedFiles(
     if (row.status === 'renamed' || row.status === 'copied') {
       if (typeof previous !== 'string' || !previous || previous.includes('\0')) return null;
       files.push({
-        status: row.status === 'renamed' ? 'R100' : 'C100',
+        status: row.status === 'renamed' ? 'R' : 'C',
         previousPath: previous, path: current,
       });
     } else {
