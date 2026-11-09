@@ -27,10 +27,11 @@ function validScope(value: string): boolean {
       .split('/').every(seg => Boolean(seg) && seg !== '.' && seg !== '..');
 }
 function distinct(values: readonly string[], kind: string): string[] {
-  if (!values.length || values.length > 50 || values.some(x => !validScope(x))) {
+  const unique = [...new Set(values)];
+  if (!unique.length || unique.length > 50 || unique.some(x => !validScope(x))) {
     throw new Error('Native ' + kind + ' requires 1..50 canonical repository-relative selectors');
   }
-  return [...new Set(values)].sort();
+  return unique.sort();
 }
 function filenameCandidate(value: string): boolean {
   return /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/iu.test(value);
