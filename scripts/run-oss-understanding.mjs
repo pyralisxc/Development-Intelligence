@@ -6,7 +6,7 @@ import path from 'node:path';
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../dist/src/intelligence/testClaimInventory.js';
 import { projectLocalJoernDataflow } from '../dist/src/intelligence/joernDataflow.js';
-import { projectNodeTestEvents } from '../dist/src/intelligence/nodeTestEvidence.js';
+import { mergeNodeTestEventReports, projectNodeTestEvents } from '../dist/src/intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from '../dist/src/intelligence/assertionEvidenceRouting.js';
 import { run, runChecked } from '../dist/src/util/process.js';
 
@@ -159,34 +159,88 @@ async function main() {
       };
     }
     if (requestedTestFiles.length) {
-      const uniqueTargets = [...new Set(requestedTestFiles)];
-      if (uniqueTargets.length > 40) throw new Error('Native test run supports max 40 exact sources');
-      const targets = await Promise.all(uniqueTargets.map(name => trustedTarget(root, name)));
+      // Process explicit exact-Git file selections in independently bounded
+      // native subprocesses, NOT a one-shot 40-file ceiling. Joined event
+      // evidence is source-validated before presentation/paging.
+      const uniqueNames = [...new Set(requestedTestFiles)].sort();
+      const chunkSize = Number(flag('--node-batch-size') || '40');
+      const maxFiles = Number(flag('--node-max-files') || '5000');
+      if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || chunkSize > 40
+        || !Number.isSafeInteger(maxFiles) || maxFiles < 1 || maxFiles > 20000) {
+        throw new Error('Native test batch size 1..40 and total budget 1..20000 required');
+      }
+      if (uniqueNames.length > maxFiles) {
+        throw new Error('Exact native test selection exceeds the configured max-files '
+          + maxFiles + '; no negative result can be inferred');
+      }
+      const targets = await Promise.all(uniqueNames.map(name => trustedTarget(root, name)));
+      const requestedBundleDir = flag('--node-evidence-dir');
+      let outputDir = null;
+      if (requestedBundleDir) {
+        // Opt-in persistent evidence is locally scoped and untracked.
+        // Untrusted native report names are never used as output paths.
+        if (path.isAbsolute(requestedBundleDir) || requestedBundleDir.includes('\\')
+          || requestedBundleDir.split('/').some(seg => !seg || seg === '.' || seg === '..')) {
+          throw new Error('Native evidence directory must be canonical and inside the checkout');
+        }
+        const target = path.resolve(root, requestedBundleDir);
+        if (!inside(root, target)) throw new Error('Native evidence directory escapes checkout');
+        const parent = await fs.realpath(path.dirname(target));
+        if (!inside(root, parent)) throw new Error('Native evidence directory parent escapes checkout');
+        await fs.mkdir(target, { mode: 0o700 });
+        outputDir = target;
+      }
       const reporterPath = new URL('./node-test-events-reporter.mjs', import.meta.url).href;
-      const start = Date.now();
-      const executed = await run(process.execPath, [
-        '--test', '--test-reporter=' + reporterPath, ...targets.map(item => item.full),
-      ], { cwd: root, timeoutMs: 180000, env: { NODE_TEST_CONTEXT: undefined } });
-      measures.nodeTestMs = Date.now() - start;
-      const reportPath = path.join(scratch, 'node-test-events.jsonl');
-      if (!executed.stdout.trim()) throw new Error('Node test runner emitted no structured events');
-      await fs.writeFile(reportPath, executed.stdout);
-      const associated = await projectNodeTestEvents({
-        root, graph, catalog, eventPath: path.relative(root, reportPath),
-        nodeVersion: process.version, runId: 'operator-owned-local-execution',
-      });
-      nodeProjection = associated;
-      runExit = executed.code;
+      const parts = [];
+      const artifactPaths = [];
+      const starts = [];
+      const exits = [];
+      for (let start = 0; start < targets.length; start += chunkSize) {
+        const chunk = targets.slice(start, start + chunkSize);
+        const started = Date.now();
+        const executed = await run(process.execPath, [
+          '--test', '--test-reporter=' + reporterPath, ...chunk.map(item => item.full),
+        ], { cwd: root, timeoutMs: 180000, env: { NODE_TEST_CONTEXT: undefined } });
+        starts.push(Date.now() - started);
+        exits.push(executed.code);
+        if (!executed.stdout.trim()) {
+          throw new Error('Native test batch emitted no structured events; no negative execution proof');
+        }
+        const ordinal = String(parts.length).padStart(4, '0');
+        const name = 'node-test-events-' + ordinal + '.jsonl';
+        const reportPath = path.join(scratch, name);
+        await fs.writeFile(reportPath, executed.stdout);
+        const associated = await projectNodeTestEvents({
+          root, graph, catalog, eventPath: path.relative(root, reportPath),
+          nodeVersion: process.version, runId: 'operator-owned-local-execution',
+        });
+        parts.push(associated);
+        if (outputDir) {
+          await fs.writeFile(path.join(outputDir, name), executed.stdout, {
+            encoding: 'utf8', flag: 'wx', mode: 0o600,
+          });
+          artifactPaths.push(path.relative(root, path.join(outputDir, name)).split(path.sep).join('/'));
+        }
+      }
+      const joined = mergeNodeTestEventReports(parts);
+      nodeProjection = joined;
+      runExit = exits.every(code => code === 0) ? 0 : 1;
+      measures.nodeTestMs = starts.reduce((sum, ms) => sum + ms, 0);
       testResult = {
-        exitCode: executed.code, exactSourceFiles: targets.map(item => item.relative),
-        identity: associated.identity, counts: associated.counts,
-        tests: associated.tests.slice(0, 20),
+        exitCode: runExit,
+        exactSourceFiles: targets.map(item => item.relative),
+        identity: joined.identity, counts: joined.counts,
+        tests: joined.tests.slice(0, 20),
         eventPresentation: {
-          returned: Math.min(20, associated.tests.length), total: associated.tests.length,
-          hasMore: associated.tests.length > 20,
+          returned: Math.min(20, joined.tests.length), total: joined.tests.length,
+          hasMore: joined.tests.length > 20,
           completeInternalPopulationUsedForAssertionJoin: true,
+          batchCount: parts.length, batchFileLimit: chunkSize,
+          boundedInputReportSha256s: parts.map(part => part.identity.reportSha256),
+          recoverableReportFiles: artifactPaths,
+          artifactPersistence: outputDir ? 'operator-requested-local-files' : 'scratch-deleted',
         },
-        policy: associated.policy,
+        policy: joined.policy,
         executedLocally: true,
       };
     }
