@@ -391,3 +391,148 @@ export async function projectLocalJoernDataflow(input: {
     },
   };
 }
+
+
+/**
+ * Compose independently source-validated Joern partitions as ONE disposable
+ * DI overlay. The historical per-slice 250-file / 25k-node limits become
+ * bounded *per shard*, not a hard limit on the evidence population.
+ *
+ * This is a source/evidence union, NOT a second canonical graph or an
+ * assertion-level behavioral proof. Duplicate or conflicting producer
+ * identities are rejected before any status can be promoted.
+ */
+export function mergeJoernDataflowEvidence(input: {
+  canonical: IntelligenceGraph;
+  segments: JoernEvidenceProjection[];
+}): JoernEvidenceProjection {
+  const { canonical } = input;
+  const segments = [...input.segments].sort((a,b) =>
+    a.producer.sliceSha256.localeCompare(b.producer.sliceSha256));
+  if (segments.length < 1 || segments.length > 1000) {
+    throw new Error('Joern source partition union must contain 1..1000 independently bounded slices');
+  }
+  if (segments.length === 1) return segments[0]!;
+  const first = segments[0]!;
+  const ids = new Set<string>();
+  const nodeMap = new Map<string, GraphNode>();
+  const edgeMap = new Map<string, GraphEdge>();
+  const candidateMap = new Map<string, JoernEvidenceProjection['candidates'][number]>();
+  const sourceIds = new Set<string>();
+  let duplicateEdges = 0;
+  for (const segment of segments) {
+    if (segment.source.graphId !== canonical.graphId
+      || segment.source.revision !== canonical.repositoryRevision
+      || segment.graph.repositoryRevision !== canonical.repositoryRevision
+      || segment.producer.version !== first.producer.version
+      || segment.source.projectPrefix !== first.source.projectPrefix) {
+      throw new Error('Joern source shards must share one exact canonical graph, revision, prefix and producer');
+    }
+    if (segment.budget && first.budget
+      && JSON.stringify(segment.budget) !== JSON.stringify(first.budget)) {
+      throw new Error('Joern source shards must share the declared resource profile');
+    }
+    if (ids.has(segment.producer.sliceSha256)) {
+      throw new Error('Joern source shard digest is duplicated; coverage cannot be double-counted');
+    }
+    ids.add(segment.producer.sliceSha256);
+    for (const node of segment.graph.nodes.slice(canonical.nodes.length)) {
+      const earlier = nodeMap.get(node.id);
+      if (earlier && JSON.stringify(earlier) !== JSON.stringify(node)) {
+        throw new Error('Joern source shards contradict a stable exact source node identity');
+      }
+      nodeMap.set(node.id, node);
+      if (node.sourceId.startsWith('repo:')) sourceIds.add(node.sourceId);
+    }
+    for (const edge of segment.graph.edges.slice(canonical.edges.length)) {
+      const earlier = edgeMap.get(edge.id);
+      if (earlier) {
+        if (earlier.from !== edge.from || earlier.to !== edge.to
+          || earlier.kind !== edge.kind || earlier.status !== edge.status
+          || earlier.strategy !== edge.strategy) {
+          throw new Error('Joern source shards contradict stable evidence edge identity');
+        }
+        duplicateEdges += Number(edge.strategy === JOERN_DATAFLOW_STRATEGY);
+        earlier.evidence = [...new Set([...earlier.evidence, ...edge.evidence])].sort();
+      } else {
+        edgeMap.set(edge.id, { ...edge, evidence: [...edge.evidence] });
+      }
+    }
+    for (const candidate of segment.candidates) {
+      candidateMap.set(candidate.edgeId, candidate);
+    }
+  }
+  const counts: JoernEvidenceProjection['counts'] = {
+    sliceNodes: segments.reduce((sum, segment) => sum + segment.counts.sliceNodes, 0),
+    sliceEdges: segments.reduce((sum, segment) => sum + segment.counts.sliceEdges, 0),
+    sourceLocatedNodes: nodeMap.size,
+    sourceUnlocatedNodes: segments.reduce((sum, segment) => sum + segment.counts.sourceUnlocatedNodes, 0),
+    sourceFilesChecked: segments.reduce((sum, segment) => sum + segment.counts.sourceFilesChecked, 0),
+    candidateFlowEdges: [...edgeMap.values()].filter(edge =>
+      edge.kind === 'dataflow-reported' && edge.status === 'candidate').length,
+    unlocatedFlowEdges: segments.reduce((sum, segment) => sum + segment.counts.unlocatedFlowEdges, 0),
+    assertionSpanAnchors: [...edgeMap.values()].filter(edge =>
+      edge.kind === 'within-test-assertion' && edge.status === 'resolved').length,
+  };
+  const digestList = [...ids].sort();
+  const digest = createHash('sha256').update(JSON.stringify(digestList)).digest('hex');
+  const nodes = [...nodeMap.values()].sort((a,b) => a.id.localeCompare(b.id));
+  const edges = [...edgeMap.values()].sort((a,b) => a.id.localeCompare(b.id));
+  const merged: JoernEvidenceProjection = {
+    graph: {
+      ...canonical,
+      graphId: 'joern-overlay-batch-' + stableHash([
+        canonical.graphId, digest, first.producer.version, first.source.projectPrefix,
+        first.budget ?? DEFAULT_JOERN_SOURCE_BUDGET,
+      ]),
+      nodes: [...canonical.nodes, ...nodes],
+      edges: [...canonical.edges, ...edges],
+    },
+    producer: {
+      name: 'joern-slice', version: first.producer.version,
+      sliceSha256: digest, batchSliceSha256s: digestList,
+      independentlyAttested: false,
+    },
+    source: first.source,
+    counts,
+    candidates: [...candidateMap.values()].sort((a,b) =>
+      a.edgeId.localeCompare(b.edgeId)).slice(0, 20),
+    segmentPopulation: {
+      sourceArtifacts: segments.length,
+      totalSegmentSourceNodes: segments.reduce((sum, segment) =>
+        sum + segment.counts.sourceLocatedNodes, 0),
+      uniqueValidatedSourceNodes: nodeMap.size,
+      uniqueCandidateFlowEdges: counts.candidateFlowEdges,
+      duplicateCandidateEdges: duplicateEdges,
+    },
+    policy: first.policy,
+  };
+  if (first.budget) merged.budget = first.budget;
+  return merged;
+}
+
+/** Recover complete positive Joern candidate evidence, not only 20 samples. */
+export function pageJoernDataflowEvidence(
+  projection: JoernEvidenceProjection, offset = 0, pageSize = 100,
+): {
+  edges: GraphEdge[];
+  page: { offset: number; pageSize: number; returned: number; total: number;
+    hasMore: boolean; sliceSha256: string };
+} {
+  if (!Number.isSafeInteger(offset) || offset < 0
+    || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
+    throw new Error('Joern evidence page offset or page size is invalid');
+  }
+  const admissible = projection.graph.edges
+    .filter(edge => edge.strategy === JOERN_DATAFLOW_STRATEGY
+      && edge.status === 'candidate').sort((a,b) => a.id.localeCompare(b.id));
+  const edges = admissible.slice(offset, offset + pageSize);
+  return {
+    edges,
+    page: {
+      offset, pageSize, returned: edges.length, total: admissible.length,
+      hasMore: offset + edges.length < admissible.length,
+      sliceSha256: projection.producer.sliceSha256,
+    },
+  };
+}
