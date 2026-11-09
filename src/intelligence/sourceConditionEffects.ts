@@ -42,6 +42,7 @@ export interface SourceEffect {
   kind: 'return' | 'return-call' | 'throw' | 'call' | 'write' | 'initializer-call';
   sourceLine: number;
   expression: string;
+  expressionSha256: string;
   requiredConditions: SourceRequirement[];
   /** Syntax presence is established; runtime execution is not. */
   runtimeObserved: false;
@@ -177,6 +178,7 @@ export function projectSourceConditionEffects(input: {
   const recordEffect = (kind: SourceEffect['kind'], node: ts.Node, rendered: string, requires: SourceRequirement[]) => {
     if (effects.length >= MAX_EFFECTS) { boundedOut = true; return; }
     effects.push({ kind, sourceLine: lineOf(node), expression: rendered.slice(0, 180),
+      expressionSha256: digest(node.getText(parsed)),
       requiredConditions: [...requires], runtimeObserved: false });
   };
   const scan = (list: ts.Statement[], requirements: SourceRequirement[], depth: number): void => {
@@ -320,4 +322,104 @@ export function sourceConditionsAnswer(result: Record<string, unknown>): string 
     + '. This establishes structural path requirements, not whether the conditions are true, '
     + 'the effects executed, or the transitive behavior of calls.'
     + (coverage.completeForSupportedStatements ? '' : ' Some control-flow constructs or limits remain unmodeled.');
+}
+
+
+export interface ExactConditionSignature {
+  functionId: string;
+  status: 'supported' | 'unproven';
+  reason: string;
+  sourcePath: string | null;
+  sourceRevision: string | null;
+  sourceSha256: string | null;
+  branchFingerprints: string[];
+  directEffectFingerprints: string[];
+  branchCount: number;
+  directEffectCount: number;
+  /** A source-only comparison is never an execution or replacement verdict. */
+  sourceOnly: true;
+  runtimeObserved: false;
+}
+
+export async function projectExactConditionSignatures(input: {
+  project: string;
+  graph: IntelligenceGraph;
+  functionIds: string[];
+}): Promise<ExactConditionSignature[]> {
+  const ids = [...new Set(input.functionIds)].sort();
+  const empty = (id: string, reason: string, relative: string | null = null): ExactConditionSignature => ({
+    functionId: id, status: 'unproven', reason, sourcePath: relative,
+    sourceRevision: input.graph.repositoryRevision, sourceSha256: null,
+    branchFingerprints: [], directEffectFingerprints: [], branchCount: 0,
+    directEffectCount: 0, sourceOnly: true, runtimeObserved: false,
+  });
+  if (!ids.length) return [];
+  if (!input.graph.repositoryRevision) return ids.map(id => empty(id, 'no-immutable-source-revision'));
+  const revision = await resolveProjectRevision(input.project, 'commit:' + input.graph.repositoryRevision);
+  if (revision.sha !== input.graph.repositoryRevision) throw new Error('Condition signatures require exact canonical source identity');
+  const nodes = new Map(input.graph.nodes.filter(node => CALLABLE.has(node.kind) && node.layer === 'structural')
+    .map(node => [node.id, node]));
+  const coverage = new Map((input.graph.coverage?.files ?? []).map(item => [item.path, item.status]));
+  return await withResolvedProjectCheckout(revision, async checkout => {
+    const files = new Map<string, string | null>();
+    const results: ExactConditionSignature[] = [];
+    for (const id of ids) {
+      const symbol = nodes.get(id);
+      const relative = symbol ? canonicalPath(symbol) : null;
+      if (!symbol || !relative) { results.push(empty(id, 'callable-not-exactly-identified')); continue; }
+      if (!/\.(?:[cm]?[jt]sx?)$/iu.test(relative) || isWrittenTestSource(relative)) {
+        results.push(empty(id, 'not-supported-nontest-source', relative)); continue;
+      }
+      if (coverage.get(relative) !== 'complete') {
+        results.push(empty(id, 'source-coverage-not-complete', relative)); continue;
+      }
+      if (!files.has(relative)) {
+        const file = path.resolve(checkout.root, relative);
+        const rel = path.relative(checkout.root, file);
+        if (rel.split(path.sep).join('/') !== relative || rel.startsWith('..') || path.isAbsolute(rel)) {
+          files.set(relative, null);
+        } else {
+          try {
+            const stat = await fs.lstat(file);
+            const body = stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_FILE_BYTES
+              ? await fs.readFile(file, 'utf8') : null;
+            files.set(relative, body && !body.includes('\0') ? body : null);
+          } catch { files.set(relative, null); }
+        }
+      }
+      const source = files.get(relative);
+      if (!source) { results.push(empty(id, 'exact-source-unavailable', relative)); continue; }
+      const projected = projectSourceConditionEffects({
+        sourcePath: relative, source, symbol, graph: input.graph,
+      }) as Record<string, unknown>;
+      const rows = projected.branches as SourceCondition[] | undefined;
+      const effects = projected.effects as SourceEffect[] | undefined;
+      const state = projected.coverage as { boundedOut: boolean; presentationTruncated: boolean;
+        unknownConstructs: unknown[] } | undefined;
+      if (projected.status !== 'supported' || !rows || !effects || !state
+        || state.boundedOut || state.presentationTruncated || state.unknownConstructs.length) {
+        results.push(empty(id, 'conditional-source-not-completely-supported', relative));
+        continue;
+      }
+      const byId = new Map(rows.map(item => [item.id, item.predicateSha256]));
+      const branchFingerprints = rows.map(item => digest(JSON.stringify([
+        item.predicateSha256, item.trueBranchTerminates, item.falseBranchTerminates,
+      ])));
+      const directEffectFingerprints = effects.map(item => digest(JSON.stringify([
+        item.kind, item.expressionSha256,
+        item.requiredConditions.map(condition => [
+          byId.get(condition.conditionId) ?? 'unknown-condition',
+          condition.expectedTruth,
+        ]),
+      ])));
+      results.push({
+        functionId: id, status: 'supported', reason: 'exact-source-syntax',
+        sourcePath: relative, sourceRevision: input.graph.repositoryRevision,
+        sourceSha256: digest(source), branchFingerprints, directEffectFingerprints,
+        branchCount: rows.length, directEffectCount: effects.length,
+        sourceOnly: true, runtimeObserved: false,
+      });
+    }
+    return results;
+  });
 }
