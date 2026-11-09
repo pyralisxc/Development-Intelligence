@@ -12,9 +12,27 @@ const MAX_BRANCHES = 256;
 const MAX_EFFECTS = 512;
 const MAX_DEPTH = 24;
 const MAX_PREVIEW_ROWS = 80;
-const CONTROL_QUESTION = /\b(?:conditions?|branches?|guards?|when|if|effect|effects|what changes|what must|must be true|what happens|returns?|throws?|early return)\b/iu;
+const SOURCE_SUBJECT_SYNTAX: readonly RegExp[] = [
+  /\bunder what conditions does\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/iu,
+  /\bwhat conditions govern\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/iu,
+  /\bwhat (?:must|has to) be true (?:for|in)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/iu,
+  /\bwhat does\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+(?:do|return|throw|change)\b/iu,
+  /\bwhich branches?\s+(?:in|of)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/iu,
+  /\bwhen does\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+(?:return|throw|call|invoke|write|exit|run)\b/iu,
+  /\bwhat (?:happens|changes) when\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+(?:returns?|calls?|throws?|writes?|runs?)\b/iu,
+  /\b(?:conditions?|branches?|guards?|effects?)\s+(?:of|for|in)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/iu,
+];
 const CALLABLE = new Set(['function', 'method']);
-export function isConditionEffectQuestion(question: string): boolean { return CONTROL_QUESTION.test(question); }
+function explicitCallableSubject(question: string): string | null {
+  const names = [...new Set(SOURCE_SUBJECT_SYNTAX.flatMap(pattern => {
+    const match = pattern.exec(question);
+    return match?.[1] ? [match[1]] : [];
+  }))];
+  return names.length === 1 ? names[0]! : null;
+}
+export function isConditionEffectQuestion(question: string): boolean {
+  return explicitCallableSubject(question) !== null;
+}
 
 export interface SourceRequirement {
   conditionId: string;
@@ -45,30 +63,19 @@ function digest(value: string): string {
 function canonicalPath(node: GraphNode): string | null {
   return node.sourceId.startsWith('repo:') ? node.sourceId.slice(5) : null;
 }
-function exactWord(text: string, name: string): boolean {
-  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(name)) return false;
-  const escaped = name.replace(/[$]/gu, '\\$');
-  return new RegExp('(?<![\\w$])' + escaped + '(?![\\w$])', 'u').test(text);
-}
-function relevantFunction(graph: IntelligenceGraph, question: string, scope?: string): {
+function relevantFunction(graph: IntelligenceGraph, name: string, scope?: string): {
   node: GraphNode | null; reason: 'resolved' | 'missing-exact-callable' | 'ambiguous-exact-callable' | 'out-of-scope';
   candidates: GraphNode[];
 } {
   const cleanScope = scope?.trim().replace(/^(?:repo:|file:)/u, '').replace(/^\.\/+/u, '') ?? '';
   const candidates = graph.nodes.filter(node => CALLABLE.has(node.kind)
-    && node.layer === 'structural' && typeof node.name === 'string'
+    && node.layer === 'structural' && node.name === name
     && !isWrittenTestSource(node.sourceId)
-    && exactWord(question, node.name!)
     && (!cleanScope || canonicalPath(node) === cleanScope || canonicalPath(node)?.startsWith(cleanScope + '/')));
   const unique = [...new Map(candidates.map(node => [node.id, node])).values()];
   if (unique.length === 0) return { node: null, reason: cleanScope ? 'out-of-scope' : 'missing-exact-callable', candidates: [] };
-  // Resolve only an explicitly named subject after a preposition. If multiple
-  // exact callables were mentioned, never guess from an incidental name.
-  const directlyNamed = [...new Set([...question.matchAll(/\b(?:for|in|does|within|of)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/giu)]
-    .map(match => match[1]!).filter(name => unique.some(item => item.name === name)))];
-  const focused = directlyNamed.length === 1 ? unique.filter(node => node.name === directlyNamed[0]) : unique;
-  if (focused.length !== 1) return { node: null, reason: 'ambiguous-exact-callable', candidates: focused };
-  return { node: focused[0]!, reason: 'resolved', candidates: focused };
+  if (unique.length !== 1) return { node: null, reason: 'ambiguous-exact-callable', candidates: unique };
+  return { node: unique[0]!, reason: 'resolved', candidates: unique };
 }
 function scriptKind(source: string): ts.ScriptKind {
   if (/\.(?:tsx|jsx)$/iu.test(source)) return ts.ScriptKind.TSX;
@@ -257,8 +264,9 @@ export function projectSourceConditionEffects(input: {
 export async function querySourceConditionEffects(input: {
   graph: IntelligenceGraph; project: string; question: string; scope?: string;
 }): Promise<Record<string, unknown> | null> {
-  if (!CONTROL_QUESTION.test(input.question)) return null;
-  const selected = relevantFunction(input.graph, input.question, input.scope);
+  const requestedSymbol = explicitCallableSubject(input.question);
+  if (!requestedSymbol) return null;
+  const selected = relevantFunction(input.graph, requestedSymbol, input.scope);
   if (!selected.candidates.length && selected.reason === 'missing-exact-callable') return null;
   const base = { project: input.project, graphId: input.graph.graphId,
     revision: input.graph.repositoryRevision, requestedQuestion: input.question,
