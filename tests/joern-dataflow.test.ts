@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildLocalGraph } from '../src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../src/intelligence/testClaimInventory.js';
-import { projectLocalJoernDataflow, JOERN_DATAFLOW_STRATEGY } from '../src/intelligence/joernDataflow.js';
+import { DEFAULT_JOERN_SOURCE_BUDGET, mergeJoernDataflowEvidence, pageJoernDataflowEvidence, projectLocalJoernDataflow, JOERN_DATAFLOW_STRATEGY } from '../src/intelligence/joernDataflow.js';
 import { joinAssertionEvidence } from '../src/intelligence/assertionEvidenceRouting.js';
 import { runChecked, run } from '../src/util/process.js';
 
@@ -159,4 +159,114 @@ test('forged or changed source cannot become Joern proof, and unknown is not abs
       root, graph, slicePath: '../outside.json', producerVersion: '4.0.666',
     }), /confined/u);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+
+test('Joern corpus exceeds former 250-source ceiling through complete exact-source shards and recoverable pages', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'di-joern-sharded-corpus-'));
+  try {
+    const count = 256;
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.mkdir(path.join(root, 'joern-tmp'), { recursive: true });
+    const allPaths: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const relative = 'src/shard-' + String(i).padStart(4, '0') + '.ts';
+      allPaths.push(relative);
+      await fs.writeFile(path.join(root, relative), [
+        'export const value = ' + i + ';',
+        'export const projected = value;',
+        '',
+      ].join('\n'));
+    }
+    await runChecked('git', ['init', '--initial-branch=main', root]);
+    await runChecked('git', ['-C', root, 'add', 'src']);
+    await runChecked('git', ['-C', root, '-c', 'user.email=fixture@example.invalid',
+      '-c', 'user.name=DI Source Corpus', 'commit', '-m', '256 real source files']);
+    const graph = await buildLocalGraph(root, 'joern-corpus-capacity', 'W');
+    assert.equal(graph.coverage?.failedFiles, 0);
+    assert.ok(graph.coverage!.completeFiles >= count);
+    assert.ok(DEFAULT_JOERN_SOURCE_BUDGET.maxSourceFiles < count);
+    const createSlice = (paths: string[]) => ({
+      nodes: paths.flatMap((parentFile, index) => [
+        { id: index * 2 + 1, label: 'IDENTIFIER', code: 'value',
+          parentFile, parentMethod: 'source', lineNumber: 1, columnNumber: 13 },
+        { id: index * 2 + 2, label: 'IDENTIFIER', code: 'value',
+          parentFile, parentMethod: 'source', lineNumber: 2, columnNumber: 26 },
+      ]),
+      edges: paths.map((_, index) => ({
+        src: index * 2 + 1, dst: index * 2 + 2, label: 'REACHING_DEF',
+      })),
+    });
+    // Use byte-identical real TS source offsets for every shard: producer
+    // positions are no authority unless independently matched to Git.
+    const firstPath = await put(root, createSlice(allPaths.slice(0, 128)), 'first.json');
+    const secondPath = await put(root, createSlice(allPaths.slice(128)), 'second.json');
+    const base = { root, graph, producerVersion: '4.0.666' };
+    const a = await projectLocalJoernDataflow({ ...base, slicePath: firstPath });
+    const b = await projectLocalJoernDataflow({ ...base, slicePath: secondPath });
+    assert.equal(a.counts.sourceFilesChecked, 128);
+    assert.equal(b.counts.sourceFilesChecked, 128);
+    assert.equal(a.counts.candidateFlowEdges, 128,
+      JSON.stringify(a.counts));
+    assert.equal(b.counts.candidateFlowEdges, 128,
+      JSON.stringify(b.counts));
+    const joined = mergeJoernDataflowEvidence({ canonical: graph, segments: [b, a] });
+    const repeated = mergeJoernDataflowEvidence({ canonical: graph, segments: [a, b] });
+    assert.deepEqual(joined, repeated,
+      'out-of-order producer shards cannot alter revision-bound graph identity');
+    assert.equal(joined.segmentPopulation?.sourceArtifacts, 2);
+    assert.equal(joined.segmentPopulation?.uniqueValidatedSourceNodes, count * 2);
+    assert.equal(joined.counts.sourceLocatedNodes, count * 2);
+    assert.equal(joined.counts.candidateFlowEdges, count);
+    assert.equal(joined.segmentPopulation?.duplicateCandidateEdges, 0);
+    assert.equal(joined.producer.batchSliceSha256s?.length, 2);
+    assert.equal(joined.policy.actualAssertionOutcomeProven, false);
+    assert.equal(joined.policy.testReplacementProven, false);
+    assert.equal(graph.edges.some(edge => edge.strategy === JOERN_DATAFLOW_STRATEGY), false);
+    const pages = [0,100,200].map(offset => pageJoernDataflowEvidence(joined, offset, 100));
+    assert.deepEqual(pages.map(page => page.edges.length), [100,100,56]);
+    assert.ok(pages.every(page => page.page.sliceSha256 === joined.producer.sliceSha256));
+    assert.equal(pages[2]?.page.hasMore, false);
+    const identifiers = pages.flatMap(page => page.edges.map(edge => edge.id));
+    assert.equal(new Set(identifiers).size, count);
+    assert.throws(() => pageJoernDataflowEvidence(joined, -1, 100), /invalid/u);
+    assert.throws(() => pageJoernDataflowEvidence(joined, 0, 1001), /invalid/u);
+    assert.throws(() => mergeJoernDataflowEvidence({ canonical: graph, segments: [a,a] }), /duplicat/u);
+    assert.throws(() => mergeJoernDataflowEvidence({ canonical: {
+      ...graph, repositoryRevision: 'f'.repeat(40),
+    }, segments: [a,b] }), /one exact canonical graph/u);
+    await assert.rejects(projectLocalJoernDataflow({
+      ...base, slicePath: firstPath, budget: { maxSourceFiles: 64 },
+    }), /configured per-shard source-file budget/u);
+
+    const cli = [
+      path.resolve('dist/src/graphCli.js'), 'joern-evidence',
+      '--repo-path', root, '--project', 'joern-corpus-capacity',
+      '--joern-version', '4.0.666',
+      '--joern-slice-json', firstPath,
+      '--joern-slice-json', secondPath,
+    ];
+    const first = await run(process.execPath, [...cli, '--joern-edge-page-size', '100'],
+      { timeoutMs: 45000 });
+    assert.equal(first.code, 0, first.stderr);
+    const firstPage = JSON.parse(first.stdout);
+    assert.equal(firstPage.counts.candidateFlowEdges, count);
+    assert.equal(firstPage.candidateEvidence.page.total, count);
+    assert.equal(firstPage.candidateEvidence.edges.length, 100);
+    const recovered = await run(process.execPath, [
+      ...cli, '--joern-edge-page-size', '100', '--joern-edge-offset', '200',
+      '--joern-edge-expected-sha256', firstPage.producer.sliceSha256,
+    ], { timeoutMs: 45000 });
+    assert.equal(recovered.code, 0, recovered.stderr);
+    const lastPage = JSON.parse(recovered.stdout);
+    assert.equal(lastPage.candidateEvidence.edges.length, 56);
+    assert.equal(lastPage.counts.candidateFlowEdges, count);
+    assert.equal(lastPage.candidateEvidence.page.hasMore, false);
+    const wrong = await run(process.execPath, [...cli, '--joern-edge-offset', '100',
+      '--joern-edge-expected-sha256', '0'.repeat(64)], { timeoutMs: 45000 });
+    assert.notEqual(wrong.code, 0);
+    assert.match(wrong.stderr, /digest does not match/u);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
