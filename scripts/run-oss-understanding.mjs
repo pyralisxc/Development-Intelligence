@@ -99,9 +99,12 @@ async function main() {
         ? limit(flag('--joern-sink-filter'), 'Joern sink filter', 160) : null;
       const depth = Number(flag('--joern-depth') || '12');
       const timeoutMs = Number(flag('--joern-timeout-ms') || '600000');
+      const heapRaw = flag('--joern-heap-mb');
+      const heapMb = heapRaw === undefined ? null : Number(heapRaw);
       if (!Number.isSafeInteger(depth) || depth < 1 || depth > 100
-        || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 3600000) {
-        throw new Error('Joern depth 1..100 and subprocess timeout 1s..1h required');
+        || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 3600000
+        || (heapMb !== null && (!Number.isSafeInteger(heapMb) || heapMb < 256 || heapMb > 32768))) {
+        throw new Error('Joern depth 1..100, timeout 1s..1h and optional JVM heap 256..32768 MiB required');
       }
       const limitFlags = [
         ['--joern-max-slice-bytes', 'maxSliceBytes'],
@@ -158,8 +161,9 @@ async function main() {
         await fs.mkdir(folder);
         const output = path.join(folder, 'dataflow.json');
         const started = Date.now();
-        const executed = await run(executable, ['data-flow',
-          '-o', output,
+        const executed = await run(executable, [
+          ...(heapMb === null ? [] : ['-J-Xmx' + heapMb + 'm']),
+          'data-flow', '-o', output,
           ...(fileFilter ? ['--file-filter', fileFilter] : []),
           ...(sinkFilter ? ['--sink-filter', sinkFilter] : []),
           '--slice-depth', String(depth), cpg],
@@ -224,6 +228,7 @@ async function main() {
         parsedSourceToEphemeralCpg: true,
         parsedSourceWithLanguage: requestedLanguage ?? 'auto-detected',
         fileFilters, sinkFilter, depth,
+        configuredJoernHeapMiB: heapMb,
       };
     }
     if (requestedTestFiles.length) {
