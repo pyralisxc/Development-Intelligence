@@ -120,7 +120,7 @@ test('compiler-level precision gaps are explicitly disclosed without inventing n
     budget: { maxFiles: 1600 },
   });
   assert.equal(result.state, 'bounded-out');
-  assert.equal(result.coverage?.sourceBytes > 0, true);
+  assert.equal((result.coverage?.sourceBytes ?? 0) > 0, true);
   assert.equal(result.coverage?.visitedFiles, 0);
   assert.equal(result.coverage?.completeForEligibleSources, false);
   assert.match(result.reason ?? '', /1600 files/u);
