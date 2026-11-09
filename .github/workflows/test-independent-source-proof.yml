@@ -1,0 +1,148 @@
+name: test-independent-source-proof
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "src/intelligence/independentSourceVerification.ts"
+      - "scripts/verify-source-obligations.mjs"
+      - "tests/independent-source-verification.test.ts"
+      - ".github/workflows/test-independent-source-proof.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: independent-source-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  independent-real-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [di, cardforge]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Checkout pinned CardForge as read-only evidence
+        if: matrix.source == 'cardforge'
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084
+          path: benchmark/cardforge
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Independently check raw source syntax and DI contract proof
+        shell: bash
+        env:
+          SOURCE: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          ROOT="."
+          PROJECT="Development-Intelligence"
+          FROM="file:src/http.ts"
+          TO="symbol:src/auth.ts#function:authorizeOwnerWrite"
+          KIND="references-symbol"
+          FROM_FILE="src/http.ts"
+          TO_FILE="src/auth.ts"
+          CALLEE="authorizeOwnerWrite"
+          if [[ "$SOURCE" == "cardforge" ]]; then
+            ROOT="benchmark/cardforge"
+            PROJECT="CardForge"
+            FROM="symbol:src/proxy.ts#function:proxy"
+            TO="symbol:src/infrastructure/auth/middleware.ts#function:cardforgeMiddleware"
+            KIND="calls"
+            FROM_FILE="src/proxy.ts"
+            TO_FILE="src/infrastructure/auth/middleware.ts"
+            CALLEE="cardforgeMiddleware"
+          fi
+          SHA="$(git -C "$ROOT" rev-parse HEAD)"
+          if [[ "$SOURCE" == "cardforge" ]]; then
+            test "$SHA" = "bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084"
+          fi
+          export ROOT FROM TO KIND FROM_FILE TO_FILE CALLEE
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import ts from 'typescript';
+          const root = process.env.ROOT;
+          const source = ts.createSourceFile(process.env.FROM_FILE,
+            fs.readFileSync(path.join(root, process.env.FROM_FILE), 'utf8'),
+            ts.ScriptTarget.Latest, true);
+          const target = ts.createSourceFile(process.env.TO_FILE,
+            fs.readFileSync(path.join(root, process.env.TO_FILE), 'utf8'),
+            ts.ScriptTarget.Latest, true);
+          let hasCall = false, hasDeclaration = false;
+          const walk = (node, visit) => {
+            visit(node);
+            ts.forEachChild(node, child => walk(child, visit));
+          };
+          walk(source, node => {
+            if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+              && node.expression.text === process.env.CALLEE) hasCall = true;
+          });
+          walk(target, node => {
+            if ((ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node))
+              && node.name && ts.isIdentifier(node.name)
+              && node.name.text === process.env.CALLEE) hasDeclaration = true;
+          });
+          assert.equal(hasCall, true, 'separate AST oracle: real source call');
+          assert.equal(hasDeclaration, true, 'separate AST oracle: callable declaration');
+          const relationship = { from: process.env.FROM, to: process.env.TO, kind: process.env.KIND };
+          fs.writeFileSync(path.join(root, '.di-independent-contract.json'), JSON.stringify({
+            version: 1, relationships: [
+              { ...relationship, requirement: 'required' },
+              { ...relationship, requirement: 'forbidden' },
+              { from: relationship.from, to: 'symbol:src/nonexistent.ts#function:never',
+                kind: relationship.kind, requirement: 'forbidden' },
+            ],
+          }));
+          NODE
+          node --max-old-space-size=4096 scripts/verify-source-obligations.mjs \
+            --repo-path "$ROOT" --project "$PROJECT" \
+            --expected-sha "$SHA" --contract-file ".di-independent-contract.json" \
+            > "independent-source-$SOURCE.json"
+          node --input-type=module - "independent-source-$SOURCE.json" "$SHA" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const r = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.equal(r.identity.revision, process.argv[3]);
+          assert.equal(r.counts.obligations, 3);
+          assert.equal(r.counts.sourceEstablished, 1);
+          assert.equal(r.counts.sourceCounterexamples, 1);
+          assert.equal(r.counts.unresolved, 1);
+          assert.ok(r.decisions[0].witnessedResolvedEdgeIds.length > 0);
+          assert.equal(r.decisions[0].outcome, 'established-static-source');
+          assert.equal(r.decisions[1].outcome, 'source-counterexample');
+          assert.equal(r.decisions[2].outcome, 'unproven');
+          assert.ok(r.counts.excludedTestNodes > 0);
+          assert.equal(r.policy.testSourceEvidenceUsed, false);
+          assert.equal(r.policy.testResultUsed, false);
+          assert.equal(r.policy.sourceAbsenceNeverTreatedAsProof, true);
+          assert.equal(r.policy.staticRelationshipIsNotBehavioralProof, true);
+          assert.equal(r.policy.assertionValueProven, false);
+          assert.equal(r.policy.testReplacementProven, false);
+          assert.equal(r.policy.canonicalAuthorityUnaffected, true);
+          assert.ok(r.measures.elapsedMs > 0 && r.measures.rssBytes > 0);
+          console.log(JSON.stringify({ project:r.identity.project, revision:r.identity.revision,
+            graphId:r.identity.graphId, counts:r.counts, measures:r.measures }));
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: independent-source-${{ matrix.source }}
+          path: independent-source-${{ matrix.source }}.json
+          retention-days: 3
+          if-no-files-found: error
