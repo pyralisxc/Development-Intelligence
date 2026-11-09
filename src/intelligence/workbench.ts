@@ -8,7 +8,7 @@ import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLe
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
 import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
-import { querySourceConditionEffects, sourceConditionsAnswer } from './sourceConditionEffects.js';
+import { isConditionEffectQuestion, querySourceConditionEffects, sourceConditionsAnswer } from './sourceConditionEffects.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
@@ -2673,10 +2673,12 @@ export async function queryWorkbench(input: {
     ...(input.sourceId ? { sourceId: input.sourceId } : {}),
     ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
   });
-  const conditionalSource = !input.sourceId ? await querySourceConditionEffects({
-    graph: await currentGraph(input.project, input.ref, input.graphId),
-    project: input.project, question: text, scope: input.scope,
-  }) : null;
+  const conditionalSource = !input.sourceId && isConditionEffectQuestion(text)
+    ? await querySourceConditionEffects({
+        graph: await currentGraph(input.project, input.ref, input.graphId),
+        project: input.project, question: text,
+        ...(input.scope ? { scope: input.scope } : {}),
+      }) : null;
   if (conditionalSource) {
     const status = conditionalSource.status === 'supported' ? 'established-source-syntax' : 'unproven';
     const identity = conditionalSource.identity as { functionId?: string; functionName?: string } | undefined;

@@ -14,6 +14,7 @@ const MAX_DEPTH = 24;
 const MAX_PREVIEW_ROWS = 80;
 const CONTROL_QUESTION = /\b(?:conditions?|branches?|guards?|when|if|effect|effects|what changes|what must|must be true|what happens|returns?|throws?|early return)\b/iu;
 const CALLABLE = new Set(['function', 'method']);
+export function isConditionEffectQuestion(question: string): boolean { return CONTROL_QUESTION.test(question); }
 
 export interface SourceRequirement {
   conditionId: string;
