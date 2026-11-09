@@ -6,6 +6,7 @@ import { mergeJoernDataflowEvidence, pageJoernDataflowEvidence, projectLocalJoer
 import { mergeNodeTestEventReports, pageNodeTestEvents, projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from './intelligence/assertionEvidenceRouting.js';
 import { generateTestClaimCatalog } from './intelligence/testClaimInventory.js';
+import { deriveNativeTestScope } from './intelligence/nativeTestScope.js';
 
 const command = process.argv[2];
 const arg = (name: string): string | undefined => {
@@ -27,6 +28,9 @@ const joernSlicePath = joernSlicePaths[0];
 const joernEdgeOffset = arg('--joern-edge-offset');
 const joernEdgePageSize = arg('--joern-edge-page-size');
 const joernExpectedDigest = arg('--joern-edge-expected-sha256');
+const nativeTestSourcePrefixes = args('--native-test-prefix');
+const nativeTestSourceSuffixes = args('--native-test-suffix');
+const nativeTestScopeMode = arg('--native-test-scope');
 const nodeEventsPaths = args('--node-test-events-jsonl');
 const nodeEventsPath = nodeEventsPaths[0];
 const nodeProducerVersion = arg('--node-version');
@@ -48,6 +52,11 @@ async function main(): Promise<void> {
   if (testClaimCatalogFlag && command !== 'analyze') throw new Error('--test-claim-catalog is supported only for analyze');
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
+  if (nativeTestScopeMode && nativeTestScopeMode !== 'all-supported') throw new Error('Native test scope must be all-supported');
+  if ((nativeTestSourcePrefixes.length || nativeTestSourceSuffixes.length || nativeTestScopeMode)
+    && !['joern-evidence', 'node-test-evidence'].includes(command ?? '')) {
+    throw new Error('Native test source scope flags require Joern or Node evidence command');
+  }
   if ((joernSlicePath || joernProducerVersion || joernProjectPrefix || joernEdgeOffset || joernEdgePageSize || joernExpectedDigest) && command !== 'joern-evidence') throw new Error('Joern evidence flags require joern-evidence command');
   if ((nodeEventsPath || nodeProducerVersion || nodeRunId || nodeEventOffset
     || nodeEventPageSize || nodeExpectedDigest) && command !== 'node-test-evidence') {
@@ -88,10 +97,12 @@ async function main(): Promise<void> {
       throw new Error('joern-evidence requires --joern-slice-json and --joern-version');
     }
     const canonical = await buildLocalGraph(root, project);
-    const catalog = await generateTestClaimCatalog(root, canonical, {
-      sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
-      sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
+    const testScope = deriveNativeTestScope(canonical, {
+      ...(nativeTestScopeMode === 'all-supported' ? { allSupported: true } : {}),
+      ...(nativeTestSourcePrefixes.length ? { sourcePrefixes: nativeTestSourcePrefixes } : {}),
+      ...(nativeTestSourceSuffixes.length ? { sourceSuffixes: nativeTestSourceSuffixes } : {}),
     });
+    const catalog = await generateTestClaimCatalog(root, canonical, testScope.scope);
     const projections = [];
     for (const slicePath of joernSlicePaths) {
       projections.push(await projectLocalJoernDataflow({
@@ -121,6 +132,7 @@ async function main(): Promise<void> {
       source: overlay.source,
       counts: overlay.counts,
       segmentPopulation: overlay.segmentPopulation ?? null,
+      nativeTestDiscovery: testScope.discovery,
       budget: overlay.budget,
       candidates: overlay.candidates,
       candidateEvidence: page,
@@ -132,10 +144,12 @@ async function main(): Promise<void> {
       throw new Error('node-test-evidence requires --node-test-events-jsonl and --node-version');
     }
     const canonical = await buildLocalGraph(root, project);
-    const catalog = await generateTestClaimCatalog(root, canonical, {
-      sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
-      sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
+    const testScope = deriveNativeTestScope(canonical, {
+      ...(nativeTestScopeMode === 'all-supported' ? { allSupported: true } : {}),
+      ...(nativeTestSourcePrefixes.length ? { sourcePrefixes: nativeTestSourcePrefixes } : {}),
+      ...(nativeTestSourceSuffixes.length ? { sourceSuffixes: nativeTestSourceSuffixes } : {}),
     });
+    const catalog = await generateTestClaimCatalog(root, canonical, testScope.scope);
     // Every JSONL artifact is individually size/event bounded, source checked
     // and SHA-256 identified. Multiple files recover a complete >single-run
     // native population without inventing an unbounded hosted reader.
@@ -159,6 +173,7 @@ async function main(): Promise<void> {
     const presented = pageNodeTestEvents(observed, offset, pageSize);
     console.log(JSON.stringify({
       mode: 'ephemeral-node-test-event-evidence',
+      nativeTestDiscovery: testScope.discovery,
       ...observed,
       ...presented,
       // All assertions are joined BEFORE output presentation pagination.

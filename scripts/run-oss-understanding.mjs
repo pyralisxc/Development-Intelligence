@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { buildLocalGraph } from '../dist/src/intelligence/local.js';
 import { generateTestClaimCatalog } from '../dist/src/intelligence/testClaimInventory.js';
+import { deriveNativeTestScope } from '../dist/src/intelligence/nativeTestScope.js';
 import { mergeJoernDataflowEvidence, pageJoernDataflowEvidence, projectLocalJoernDataflow } from '../dist/src/intelligence/joernDataflow.js';
 import { mergeNodeTestEventReports, projectNodeTestEvents } from '../dist/src/intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from '../dist/src/intelligence/assertionEvidenceRouting.js';
@@ -67,10 +68,18 @@ async function main() {
   const status = await runChecked('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no']);
   if (status.stdout.trim()) throw new Error('Exact-source evidence worker requires a clean tracked checkout');
   const graph = await buildLocalGraph(root, project);
-  const catalog = await generateTestClaimCatalog(root, graph, {
-    sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
-    sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
+  const nativeTestMode = flag('--native-test-scope');
+  if (nativeTestMode && nativeTestMode !== 'all-supported') {
+    throw new Error('Native test scope must be all-supported');
+  }
+  const nativeTestPrefixes = flags('--native-test-prefix');
+  const nativeTestSuffixes = flags('--native-test-suffix');
+  const nativeScope = deriveNativeTestScope(graph, {
+    ...(nativeTestMode ? { allSupported: true } : {}),
+    ...(nativeTestPrefixes.length ? { sourcePrefixes: nativeTestPrefixes } : {}),
+    ...(nativeTestSuffixes.length ? { sourceSuffixes: nativeTestSuffixes } : {}),
   });
+  const catalog = await generateTestClaimCatalog(root, graph, nativeScope.scope);
   const scratch = await fs.mkdtemp(path.join(root, '.di-oss-evidence-'));
   let joernResult = null, testResult = null, runExit = null;
   let joernProjection = null, nodeProjection = null;
@@ -311,6 +320,7 @@ async function main() {
       project: graph.project, exactRevision: graph.repositoryRevision,
       canonicalGraphId: graph.graphId, analyzerVersion: graph.analyzerVersion,
       joern: joernResult, nodeTests: testResult, measures,
+      nativeTestDiscovery: nativeScope.discovery,
       assertionEvidence: joinAssertionEvidence({ graph, catalog,
         joern: joernProjection, testEvents: nodeProjection }),
       oneCanonicalGraph: true, changedCanonicalAuthority: false,
