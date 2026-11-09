@@ -180,7 +180,13 @@ async function main() {
       testResult = {
         exitCode: executed.code, exactSourceFiles: targets.map(item => item.relative),
         identity: associated.identity, counts: associated.counts,
-        tests: associated.tests.slice(0, 20), policy: associated.policy,
+        tests: associated.tests.slice(0, 20),
+        eventPresentation: {
+          returned: Math.min(20, associated.tests.length), total: associated.tests.length,
+          hasMore: associated.tests.length > 20,
+          completeInternalPopulationUsedForAssertionJoin: true,
+        },
+        policy: associated.policy,
         executedLocally: true,
       };
     }

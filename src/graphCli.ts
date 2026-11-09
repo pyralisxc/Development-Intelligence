@@ -3,7 +3,7 @@ import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 import { buildLocalGraph } from './intelligence/local.js';
 import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
 import { projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
-import { projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
+import { pageNodeTestEvents, projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from './intelligence/assertionEvidenceRouting.js';
 import { generateTestClaimCatalog } from './intelligence/testClaimInventory.js';
 
@@ -26,6 +26,9 @@ const joernSlicePath = arg('--joern-slice-json');
 const nodeEventsPath = arg('--node-test-events-jsonl');
 const nodeProducerVersion = arg('--node-version');
 const nodeRunId = arg('--node-run-id');
+const nodeEventOffset = arg('--node-events-offset');
+const nodeEventPageSize = arg('--node-events-page-size');
+const nodeExpectedDigest = arg('--node-events-expected-sha256');
 const joernProducerVersion = arg('--joern-version');
 const joernProjectPrefix = arg('--joern-project-prefix');
 const scipProjectPrefix = arg('--scip-project-prefix');
@@ -41,7 +44,10 @@ async function main(): Promise<void> {
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
   if ((joernSlicePath || joernProducerVersion || joernProjectPrefix) && command !== 'joern-evidence') throw new Error('Joern evidence flags require joern-evidence command');
-  if ((nodeEventsPath || nodeProducerVersion || nodeRunId) && command !== 'node-test-evidence') throw new Error('Node test evidence flags require node-test-evidence command');
+  if ((nodeEventsPath || nodeProducerVersion || nodeRunId || nodeEventOffset
+    || nodeEventPageSize || nodeExpectedDigest) && command !== 'node-test-evidence') {
+    throw new Error('Node test evidence flags require node-test-evidence command');
+  }
   if (scipProjectPrefix && command !== 'scip-evidence') throw new Error('--scip-project-prefix is supported only for scip-evidence');
   if (process.argv.includes('--scip-legacy-position-encoding') && !scipLegacyEncoding) throw new Error('--scip-legacy-position-encoding requires utf8, utf16 or utf32');
   if (scipLegacyEncoding && command !== 'scip-evidence') throw new Error('--scip-legacy-position-encoding is supported only for scip-evidence');
@@ -114,9 +120,20 @@ async function main(): Promise<void> {
       nodeVersion: nodeProducerVersion,
       ...(nodeRunId ? { runId: nodeRunId } : {}),
     });
+    const offset = Number(nodeEventOffset ?? '0');
+    const pageSize = Number(nodeEventPageSize ?? '100');
+    if (offset > 0 && !nodeExpectedDigest) {
+      throw new Error('Later Node test event pages require --node-events-expected-sha256');
+    }
+    if (nodeExpectedDigest && nodeExpectedDigest !== observed.identity.reportSha256) {
+      throw new Error('Node test event report SHA-256 does not match requested page identity');
+    }
+    const presented = pageNodeTestEvents(observed, offset, pageSize);
     console.log(JSON.stringify({
       mode: 'ephemeral-node-test-event-evidence',
       ...observed,
+      ...presented,
+      // All assertions are joined BEFORE output presentation pagination.
       assertionEvidence: joinAssertionEvidence({ graph: canonical, catalog, testEvents: observed }),
     }, null, 2));
   } else if (command === 'catalog') {

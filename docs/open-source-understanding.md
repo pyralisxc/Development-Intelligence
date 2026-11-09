@@ -104,3 +104,24 @@ After npm run build on a clean exact-source checkout, run:
     node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-language JAVASCRIPT --joern-file-filter '.*test.*' --joern-sink-filter '.*assert.*' --node-test-file scripts/windows-preflight.test.mjs
 
 Both engines are optional individually, but an explicit --node-test-file is needed to run a real native test (the worker never guesses which tests to execute). Joern version and expected executable are operator-provided and require independent integrity review; local Joern subprocess success is observed, not proof of a specific binary's provenance. Test subprocess exit and TestStream events are directly observed by the worker, but report bytes remain unauthenticated outside that controlled execution and do not prove assertion-level values. Joern may return source-inaccurate flows; these remain candidate edges even when source spans are exact. All scratch artifacts are removed after the bounded receipt is produced.
+
+
+## Capacity vs. presentation: complete native events
+
+Node's native TestStream event ledger is now kept **complete within its
+explicit bounded input size** before deriving assertion evidence. The prior
+100-event display cap no longer removes test results from the evidence
+join. The local `node-test-evidence` CLI pages the returned test rows
+(default 100, max 1,000), but its full-population counts and assertion
+join do not change across pages:
+
+    node dist/src/graphCli.js node-test-evidence --repo-path . --project Development-Intelligence --node-test-events-jsonl observations/node.jsonl --node-version "$(node --version)" --node-events-page-size 100
+    node dist/src/graphCli.js node-test-evidence --repo-path . --project Development-Intelligence --node-test-events-jsonl observations/node.jsonl --node-version "$(node --version)" --node-events-offset 100 --node-events-page-size 100 --node-events-expected-sha256 DIGEST_FROM_FIRST_PAGE
+
+A later page refuses a different report SHA-256. The local OSS worker still
+returns a compact set of 20 sample test rows but now discloses that this is
+only presentation; all uniquely source-bound test events contribute to
+assertion-level evidence. Empty/unmatched rows never become negative
+coverage, assertion execution, expected-value, or replacement proof.
+The input byte/event-size guards remain operational resource protections,
+not a restriction of the amount of evidence evaluated inside them.

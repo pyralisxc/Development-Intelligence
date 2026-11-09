@@ -215,7 +215,9 @@ export async function projectNodeTestEvents(input: {
       sourceMatched: tests.filter(item => item.evidenceStatus === 'source-associated-unattested').length,
       ambiguous, unavailable, summariesObserved,
     },
-    tests: tests.slice(0, 100),
+    // Keep the complete, bounded event population for assertion joins.
+    // Presentation/page size must never silently change technical truth.
+    tests,
     policy: {
       nodeTestStreamIsRuntimeReport: true,
       reportIntegrityIsNotCIExecutionAttestation: true,
@@ -224,6 +226,38 @@ export async function projectNodeTestEvents(input: {
       noneOrMissingDoesNotProveNoExecution: true,
       independentlyProvenReplacement: false,
       canonicalAuthorityUnaffected: true, stored: false,
+    },
+  };
+}
+
+
+/**
+ * Page a complete, exact-report native event projection for presentation only.
+ * Assertion evaluation always consumes the full unpaged event population.
+ * The stable report digest lets callers recover another page from the same
+ * immutable source and report bytes without a second test registry.
+ */
+export function pageNodeTestEvents(
+  report: NodeTestEvidenceProjection,
+  offset = 0, pageSize = 100,
+): { tests: NodeTestEvidenceProjection['tests']; page: {
+  offset: number; pageSize: number; returned: number; total: number;
+  hasMore: boolean; reportSha256: string;
+} } {
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new Error('Node event offset must be a non-negative safe integer');
+  }
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
+    throw new Error('Node event page size must be an integer from 1 to 1000');
+  }
+  const total = report.tests.length;
+  const tests = report.tests.slice(offset, offset + pageSize);
+  return {
+    tests,
+    page: {
+      offset, pageSize, returned: tests.length, total,
+      hasMore: offset + tests.length < total,
+      reportSha256: report.identity.reportSha256,
     },
   };
 }
