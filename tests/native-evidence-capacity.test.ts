@@ -77,7 +77,23 @@ test('a real >100-native-test suite joins ALL executed source tests before outpu
       'a display cap must NEVER truncate internal evidence used to judge assertions');
     const joined = joinAssertionEvidence({ graph, catalog, testEvents: first }) as any;
     assert.equal(joined.counts.assertions, TOTAL_OBSERVED + 1);
-    assert.equal(joined.counts.assertionsWithUniqueContainingTest, TOTAL_OBSERVED + 1);
+    const containment = catalog.assertions.map(assertion => ({
+      id: assertion.id, file: assertion.sourceId,
+      start: assertion.start, end: assertion.end,
+      owners: catalog.declarations.filter(declaration =>
+        declaration.sourceId === assertion.sourceId
+        && declaration.start <= assertion.start
+        && declaration.end >= assertion.end && !declaration.dynamic).length,
+    }));
+    const missingOwners = containment.filter(item => item.owners !== 1);
+    assert.equal(joined.counts.assertionsWithUniqueContainingTest, TOTAL_OBSERVED + 1,
+      JSON.stringify({
+        counts: joined.counts, declarationCount: catalog.declarations.length,
+        assertionCount: catalog.assertions.length,
+        missingCount: missingOwners.length, missing: missingOwners.slice(0, 12),
+        declarations: catalog.declarations.slice(0, 4),
+        assertions: catalog.assertions.slice(0, 4),
+      }).slice(0, 4800));
     assert.equal(joined.counts.assertionsInsideReportedPassingTests, TOTAL_OBSERVED);
     assert.equal(joined.counts.assertionsWhoseOwnRuntimeExecutionIsProven, 0);
     assert.equal(joined.counts.assertionsWithExpectedValueProven, 0);
