@@ -6,6 +6,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { assessRevisionEvidence } from '../src/intelligence/revisionEvidenceApplicability.js';
 import { runChecked } from '../src/util/process.js';
+import { callTool, listTools } from '../src/mcp.js';
 const contract = { version: 1, relationships: [{
   from: 'symbol:src/entry.ts#function:run',
   kind: 'calls',
