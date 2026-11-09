@@ -26,6 +26,9 @@ export interface TestSourceProjection {
   totalTestFiles: number;
   returnedTestFiles: number;
   totalRelationships: number;
+  returnedRelationships: number;
+  testFilesTruncated: boolean;
+  callsiteEdgesTruncated: boolean;
   truncated: boolean;
   tests: TestSourceFile[];
   edges: GraphEdge[];
@@ -84,7 +87,8 @@ export function testSourceProjection(
     targetDeclaration: target?.locator ?? null,
     status: 'unproven', reason,
     totalTestFiles: 0, returnedTestFiles: 0, totalRelationships: 0,
-    truncated: false, tests: [], edges: [],
+    returnedRelationships: 0, testFilesTruncated: false,
+    callsiteEdgesTruncated: false, truncated: false, tests: [], edges: [],
     coverage: {
       targetSourceStatus,
       completeForEligibleSources: Boolean(graph.coverage
@@ -122,7 +126,9 @@ export function testSourceProjection(
 
   const ordered = [...groups].sort(([left], [right]) => left.localeCompare(right));
   if (!ordered.length) return empty('no-resolved-test-call');
-  const maximum = Math.max(1, Math.min(20, Math.trunc(limit) || 20));
+  // Cap user-visible graph results, not the internal test-file census.
+  // Explicit exhaustive investigation may recover up to 200 real files.
+  const maximum = Math.max(1, Math.min(200, Math.trunc(limit) || 20));
   const shown = ordered.slice(0, maximum);
   const preferred = (edges: GraphEdge[]) => edges.slice().sort((a, b) =>
     Number(b.kind === 'references-symbol' && b.strategy === 'typescript-checker-symbol.v1')
@@ -145,7 +151,9 @@ export function testSourceProjection(
     ...empty('resolved-test-calls'),
     status: 'supported', reason: 'resolved-test-calls',
     totalTestFiles: ordered.length, returnedTestFiles: tests.length,
-    totalRelationships,
+    totalRelationships, returnedRelationships: edges.length,
+    testFilesTruncated: shown.length !== ordered.length,
+    callsiteEdgesTruncated: edges.length < totalRelationships,
     truncated: shown.length !== ordered.length || edges.length < totalRelationships,
     tests, edges,
   };
@@ -170,7 +178,16 @@ export function testSourceAnswer(result: TestSourceProjection): string {
   return result.totalTestFiles + ' test file(s) have resolved static source calls to '
     + result.symbol + ' (' + result.targetDeclaration + '): ' + listed + '.'
     + (result.totalTestFiles > 8 ? ' Additional test files are in the bounded result.' : '')
-    + (result.truncated ? ' Result is truncated; not an exhaustive test listing.' : '')
+    + (result.testFilesTruncated
+      ? ' ' + (result.totalTestFiles - result.returnedTestFiles)
+        + ' additional source-linked test file(s) are omitted from the bounded result; '
+        + 'use exhaustive depth to retrieve more.'
+      : ' All observed source-linked test files are included in the bounded result.')
+    + (result.callsiteEdgesTruncated
+      ? ' ' + (result.totalRelationships - result.returnedRelationships)
+        + ' additional source callsite relationship(s) are omitted from the compact evidence samples; '
+        + 'this does not mean test files are missing.'
+      : '')
     + ' A static call does not prove that the test ran, which assertion passed, '
     + 'the behavioral outcome, or whether another test independently replaces it.';
 }
