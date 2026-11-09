@@ -80,8 +80,54 @@ async function proof(root, project, threshold) {
   }
   assert.ok(all.size >= threshold,
     'expected at least ' + threshold + ' independently source-located compiler sites, got ' + all.size);
+  let legacyBaseline = null;
+  if (process.argv.includes('--compare-legacy')) {
+    const sources = graph.coverage.files.filter(file => file.status === 'complete'
+      && /\.(?:[cm]?[jt]s|tsx|jsx)$/iu.test(file.path));
+    const sourceTexts = new Map(await Promise.all(sources.map(async file =>
+      [file.path, await fs.readFile(path.join(root, file.path), 'utf8')])));
+    const fileNodes = new Map(graph.nodes.filter(node => node.kind === 'file'
+      && node.sourceId.startsWith('repo:'))
+      .map(node => [node.sourceId.slice('repo:'.length), node]));
+    const startedLegacy = performance.now();
+    const oldEvidence = compilerTypeScriptReferences({
+      root, sourceTexts, nodes: graph.nodes, fileNodes, options: loadCompilerOptions(root),
+      budget: { maxFiles: 1600, maxSourceBytes: 12 * 1024 * 1024, maxBindings: 3000 },
+    });
+    const legacyElapsedMs = performance.now() - startedLegacy;
+    const sites = edges => new Set(edges.filter(edge => edge.strategy === TYPESCRIPT_COMPILER_LENS
+      && edge.kind === 'references-symbol' && edge.status === 'resolved')
+      .flatMap(edge => edge.evidence.filter(value =>
+        /^[^\n]+:\d+:\d+$/u.test(value))));
+    const currentSites = sites(compilerEdges);
+    const oldSites = sites(oldEvidence.edges);
+    const novel = [...currentSites].filter(site => !oldSites.has(site));
+    const vanished = [...oldSites].filter(site => !currentSites.has(site));
+    assert.deepEqual(vanished, [],
+      'new compiler resource budget must never lose old exact-source static facts');
+    legacyBaseline = {
+      state: oldEvidence.state, reason: oldEvidence.reason,
+      oldResolvedBindings: oldEvidence.resolvedBindings,
+      oldUniqueSourceSites: oldSites.size,
+      newUniqueSourceSites: currentSites.size,
+      newlyAvailableCompilerSourceSites: novel.length,
+      formerlyAvailableSitesLost: vanished.length,
+      elapsedMs: Number(legacyElapsedMs.toFixed(2)),
+      rssBytesAfterComparison: process.memoryUsage().rss,
+      oldBudget: { maxFiles: 1600, maxSourceBytes: 12 * 1024 * 1024, maxBindings: 3000 },
+      sourceSiteProofOnlyNotBehavior: true,
+    };
+    const min = Number(arg('--min-legacy-new-sites') || '0');
+    if (!Number.isSafeInteger(min) || min < 0) {
+      throw new Error('min-legacy-new-sites must be a nonnegative integer');
+    }
+    assert.ok(novel.length >= min,
+      'new TypeChecker capacity must establish ' + min + ' previously excluded static source sites; observed '
+        + novel.length);
+  }
   const report = {
     mode, revision: rev, graphId: graph.graphId, analyzerVersion: graph.analyzerVersion,
+    ...(legacyBaseline ? { legacyBaseline } : {}),
     sourceFiles: graph.coverage.trackedFiles, eligibleFiles: graph.coverage.eligibleFiles,
     completeFiles: graph.coverage.completeFiles, unsupportedFiles: graph.coverage.unsupportedFiles,
     compilerEdges: compilerEdges.length, uniqueSourceSites: all.size,
