@@ -155,7 +155,7 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
     assert.equal(testInvestigation.result.totalTestFiles, 25);
     assert.equal(testInvestigation.result.returnedTestFiles, 20);
     assert.equal(testInvestigation.result.testFilesTruncated, true);
-    assert.equal(testInvestigation.result.callsiteEdgesTruncated, true);
+    assert.equal(testInvestigation.result.callsiteEvidenceTruncated, true);
     assert.equal(testInvestigation.result.tests[0]?.path, 'tests/reference.test.ts');
     assert.match(testInvestigation.answer, /additional source-linked test file\(s\) are omitted/u);
     const exhaustive = await callTool('investigate', {
@@ -166,11 +166,13 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
     assert.equal(exhaustive.result.returnedTestFiles, 25);
     assert.equal(exhaustive.result.testFilesTruncated, false,
       'exhaustive mode must not preserve the artificial 20-file ceiling');
-    assert.equal(exhaustive.result.callsiteEdgesTruncated, true,
+    assert.equal(exhaustive.result.callsiteEvidenceTruncated, true,
       'separate callsite presentation omission from test-file completeness');
     assert.equal(exhaustive.result.tests.length, 25);
     assert.equal(exhaustive.result.graphId, testInvestigation.result.graphId);
-    assert.match(exhaustive.answer, /source callsite relationship\(s\) are omitted/u);
+    assert.ok(exhaustive.result.totalCallsites > exhaustive.result.returnedCallsites,
+      'one compiler edge may hold many exact source callsite locations');
+    assert.match(exhaustive.answer, /source callsite\(s\) and .*relationship edge\(s\) are omitted/u);
     assert.doesNotMatch(exhaustive.answer, /not an exhaustive test listing/u);
     assert.equal(testInvestigation.result.tests[0].compilerVerified, true);
     assert.equal(testInvestigation.result.executionObserved, false);

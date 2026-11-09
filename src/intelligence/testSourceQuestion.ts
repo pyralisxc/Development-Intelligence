@@ -27,8 +27,10 @@ export interface TestSourceProjection {
   returnedTestFiles: number;
   totalRelationships: number;
   returnedRelationships: number;
+  totalCallsites: number;
+  returnedCallsites: number;
   testFilesTruncated: boolean;
-  callsiteEdgesTruncated: boolean;
+  callsiteEvidenceTruncated: boolean;
   truncated: boolean;
   tests: TestSourceFile[];
   edges: GraphEdge[];
@@ -64,9 +66,15 @@ function sourcePathOf(nodeSource: string): string | null {
   return nodeSource.startsWith('repo:') ? nodeSource.slice('repo:'.length) : null;
 }
 
+function callsites(path: string, evidence: readonly string[]): string[] {
+  // Compiler edges can aggregate MANY exact callsite locators into one
+  // resolved relationship. Count source spans, never infer that one edge
+  // represents only one call, and avoid duplicating the same source span.
+  return [...new Set(evidence.filter(item => item.startsWith(path + ':')
+    && /^\d+(?::\d+)?$/u.test(item.slice(path.length + 1))))].sort();
+}
 function callsite(path: string, evidence: readonly string[]): string | null {
-  return evidence.find(item => item.startsWith(path + ':')
-    && /^\d+(?::\d+)?$/u.test(item.slice(path.length + 1))) ?? null;
+  return callsites(path, evidence)[0] ?? null;
 }
 
 export function testSourceProjection(
@@ -87,8 +95,9 @@ export function testSourceProjection(
     targetDeclaration: target?.locator ?? null,
     status: 'unproven', reason,
     totalTestFiles: 0, returnedTestFiles: 0, totalRelationships: 0,
-    returnedRelationships: 0, testFilesTruncated: false,
-    callsiteEdgesTruncated: false, truncated: false, tests: [], edges: [],
+    returnedRelationships: 0, totalCallsites: 0, returnedCallsites: 0,
+    testFilesTruncated: false, callsiteEvidenceTruncated: false,
+    truncated: false, tests: [], edges: [],
     coverage: {
       targetSourceStatus,
       completeForEligibleSources: Boolean(graph.coverage
@@ -138,8 +147,8 @@ export function testSourceProjection(
     const selected = preferred(observed);
     return {
       path,
-      callsites: [...new Set(selected.map(edge => callsite(path, edge.evidence ?? []))
-        .filter((item): item is string => Boolean(item)))].sort(),
+      callsites: [...new Set(observed.flatMap(edge => callsites(path, edge.evidence ?? [])))]
+        .sort().slice(0, 3),
       edgeIds: selected.map(edge => edge.id),
       compilerVerified: selected.some(edge =>
         edge.kind === 'references-symbol' && edge.strategy === 'typescript-checker-symbol.v1'),
@@ -147,14 +156,19 @@ export function testSourceProjection(
   });
   const edges = shown.flatMap(([, observations]) => preferred(observations));
   const totalRelationships = ordered.reduce((sum, [, observed]) => sum + observed.length, 0);
+  const totalCallsites = ordered.reduce((sum, [path, observed]) =>
+    sum + new Set(observed.flatMap(edge => callsites(path, edge.evidence ?? []))).size, 0);
+  const returnedCallsites = tests.reduce((sum, item) => sum + item.callsites.length, 0);
+  const callsiteEvidenceTruncated = edges.length < totalRelationships
+    || returnedCallsites < totalCallsites;
   return {
     ...empty('resolved-test-calls'),
     status: 'supported', reason: 'resolved-test-calls',
     totalTestFiles: ordered.length, returnedTestFiles: tests.length,
     totalRelationships, returnedRelationships: edges.length,
-    testFilesTruncated: shown.length !== ordered.length,
-    callsiteEdgesTruncated: edges.length < totalRelationships,
-    truncated: shown.length !== ordered.length || edges.length < totalRelationships,
+    totalCallsites, returnedCallsites,
+    testFilesTruncated: shown.length !== ordered.length, callsiteEvidenceTruncated,
+    truncated: shown.length !== ordered.length || callsiteEvidenceTruncated,
     tests, edges,
   };
 }
@@ -183,9 +197,11 @@ export function testSourceAnswer(result: TestSourceProjection): string {
         + ' additional source-linked test file(s) are omitted from the bounded result; '
         + 'use exhaustive depth to retrieve more.'
       : ' All observed source-linked test files are included in the bounded result.')
-    + (result.callsiteEdgesTruncated
-      ? ' ' + (result.totalRelationships - result.returnedRelationships)
-        + ' additional source callsite relationship(s) are omitted from the compact evidence samples; '
+    + (result.callsiteEvidenceTruncated
+      ? ' ' + (result.totalCallsites - result.returnedCallsites)
+        + ' source callsite(s) and '
+        + (result.totalRelationships - result.returnedRelationships)
+        + ' relationship edge(s) are omitted from the compact evidence samples; '
         + 'this does not mean test files are missing.'
       : '')
     + ' A static call does not prove that the test ran, which assertion passed, '
