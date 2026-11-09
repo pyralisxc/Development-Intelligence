@@ -1,0 +1,72 @@
+name: real-revision-evidence-applicability
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "src/intelligence/revisionEvidenceApplicability.ts"
+      - "src/mcp.ts"
+      - "tests/revision-evidence-applicability.test.ts"
+      - "scripts/assess-revision-evidence.mjs"
+      - "scripts/benchmark-revision-evidence.mjs"
+      - ".github/workflows/real-revision-evidence-applicability.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: di-revision-evidence-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  independent-revision-evidence:
+    name: exact-real-evidence (${{ matrix.source }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [di, cardforge]
+    steps:
+      - name: Exact DI candidate without persisted credentials
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read-only pinned CardForge historical head
+        if: matrix.source == 'cardforge'
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: 0e86857cedfc14cf7c3d12ce4df00d20909c637c
+          fetch-depth: 0
+          path: benchmark/cardforge
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - name: Compile source-only DI proof engine
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Independently compare real immutable source and untrusted historical test reference
+        shell: bash
+        env:
+          SOURCE_KIND: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE_KIND" = di ]; then
+            git fetch --no-tags --depth=1 origin 63eaf0d2bbe5b88d99df190aceb1eb55d69ccbab
+            git fetch --no-tags --depth=1 origin 4ab33242c07fe8066061ab5b49b2e25dabb64c00
+          fi
+          node --max-old-space-size=4096 scripts/benchmark-revision-evidence.mjs \
+            --source "$SOURCE_KIND" | tee "revision-evidence-log-$SOURCE_KIND.json"
+      - name: Save a minimal identity-and-coverage receipt, not source contents
+        uses: actions/upload-artifact@v4
+        with:
+          name: revision-evidence-${{ matrix.source }}
+          path: revision-evidence-${{ matrix.source }}.json
+          retention-days: 3
+          if-no-files-found: error
