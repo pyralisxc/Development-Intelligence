@@ -93,8 +93,7 @@ export function selectCapturedReturnCall(input:{
   sourcePath:string; source:string; callable:string;
   bindings:Readonly<Record<string,Primitive>>;
 }):CapturedReturnSelection {
-  const src=ts.createSourceFile(input.sourcePath,input.source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS)
-    as ts.SourceFile & {parseDiagnostics?:readonly ts.Diagnostic[]};
+  const src=ts.createSourceFile(input.sourcePath,input.source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS) as ts.SourceFile & {parseDiagnostics?:readonly ts.Diagnostic[]};
   const base={
     callable:input.callable,sourcePath:input.sourcePath,sourceSha256:hash(input.source),
     proof:{
