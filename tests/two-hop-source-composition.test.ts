@@ -46,6 +46,7 @@ const input={
 test('DI owner-write to authorize none-mode conditional source chain',()=>{
  const result=composeTwoHopSourceEffects(input);
  assert.equal(result.status,'established-conditional-source-path');
+ if(result.status!=='established-conditional-source-path') throw new Error(result.reason);
  assert.equal(result.selectedCalleeReturnExpression,'false');
  assert.equal(result.requiredConditions.length,3);
  assert.equal(result.runtimeObserved,false);
