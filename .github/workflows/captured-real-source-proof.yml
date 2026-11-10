@@ -1,0 +1,66 @@
+name: captured-real-source-proof
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "src/intelligence/conditionalReturnSelector.ts"
+      - "src/intelligence/capturedSystemComparison.ts"
+      - "src/intelligence/capturedFactGraph.ts"
+      - "src/intelligence/exactCapturedSelection.ts"
+      - "scripts/benchmark-captured-real-source.mjs"
+      - ".github/workflows/captured-real-source-proof.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: di-captured-real-source-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-real-source:
+    name: pinned CardForge + DI conditional proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Read exact DI candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Read pinned old CardForge source only
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084
+          path: benchmark/cardforge-before
+          persist-credentials: false
+      - name: Read pinned newer CardForge source only
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: 0e86857cedfc14cf7c3d12ce4df00d20909c637c
+          path: benchmark/cardforge-after
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - name: Build exact DI source lens
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build:server
+      - name: Verify actual source and intentional proof boundaries
+        run: |
+          node scripts/benchmark-captured-real-source.mjs \
+            --old-cardforge benchmark/cardforge-before \
+            --new-cardforge benchmark/cardforge-after \
+            --di .
+      - name: Preserve bounded source-only measurement
+        uses: actions/upload-artifact@v4
+        with:
+          name: captured-real-source-evidence
+          path: captured-real-source-evidence.json
+          retention-days: 7
+          if-no-files-found: error
