@@ -46,6 +46,7 @@ test('only a verified assertion-specific failure can contradict matching establi
   const mismatch = { ...event, outcome:'fail' as const,
     observedEffect:'does-not-occur' as const, failureIsAssertionMismatch:true };
   assert.equal(compareCapturedExecution(cap,[fact],[mismatch]).counts.contradicted,1);
+  assert.equal(compareCapturedExecution(cap,[fact],[{...event,observedEffect:'does-not-occur'}]).counts.contradicted,1);
   assert.equal(compareCapturedExecution(cap,[fact],[{...mismatch,failureIsAssertionMismatch:false}]).counts.unverified,1);
 });
 test('partial proof, missing assertion, and wrong database binding cannot upgrade truth', () => {
@@ -79,4 +80,15 @@ test('bounded output discloses omitted comparison population', () => {
   assert.equal(a.total,2);
   assert.equal(a.returned,1);
   assert.equal(a.truncated,true);
+});
+
+test('same snapshot population recovers paginated comparison without changing proof', () => {
+  const events = [event,{...event,id:'another',outcome:'skip' as const}];
+  const first = compareCapturedExecution(cap,[fact],events,1);
+  const second = compareCapturedExecution(cap,[fact],events,1,first.nextOffset!,first.digest);
+  assert.equal(first.digest,second.digest);
+  assert.equal(first.returned+second.returned,first.total);
+  assert.notEqual(first.items[0]?.observationId,second.items[0]?.observationId);
+  assert.equal(second.nextOffset,null);
+  assert.throws(()=>compareCapturedExecution(cap,[fact],events,1,1,'0'.repeat(64)));
 });

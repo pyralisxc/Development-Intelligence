@@ -123,10 +123,15 @@ export function compareCapturedExecution(
   facts: readonly DerivedExecutionFact[],
   observations: readonly TestAssertionObservation[],
   limit = 100,
+  offset = 0,
+  expectedDigest?: string,
 ) {
   validCapture(capture);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
     throw new Error('Comparison page limit must be between 1 and 1000');
+  }
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 20000) {
+    throw new Error('Comparison offset must be a non-negative bounded integer');
   }
   if (facts.length > 10000 || observations.length > 20000) {
     throw new Error('Captured evidence population exceeds bounded comparison');
@@ -196,6 +201,9 @@ export function compareCapturedExecution(
       } else if (event.observedEffect === fact.effect && event.outcome === 'pass') {
         status = 'corroborated';
         reason = 'Matching authenticated assertion event under equivalent captured context';
+      } else if (event.outcome === 'pass' && event.observedEffect !== fact.effect) {
+        status = 'contradicted';
+        reason = 'Passing assertion observed the opposite effect under equivalent captured context';
       } else if (event.observedEffect !== fact.effect && event.outcome === 'fail'
         && event.failureIsAssertionMismatch) {
         status = 'contradicted';
@@ -231,12 +239,25 @@ export function compareCapturedExecution(
   const counts = Object.fromEntries(
     (['corroborated','contradicted','derived-only','observed-only','incomparable','unverified'] as const)
       .map(status => [status, items.filter(item => item.status === status).length]));
+  const digest = createHash('sha256').update(JSON.stringify({
+    capture: [capture.project, capture.revision, capture.treeSha, capture.graphId,
+      capture.database?.environmentId ?? null, capture.database?.catalogSha256 ?? null],
+    comparison: items.map(item => [item.factId, item.observationId, item.status, item.reason]),
+  })).digest('hex');
+  if (expectedDigest !== undefined && expectedDigest !== digest) {
+    throw new Error('Comparison pagination digest differs from first-page population');
+  }
   return {
     capture: { project: capture.project, revision: capture.revision,
       treeSha: capture.treeSha, graphId: capture.graphId },
     version: CAPTURED_EXECUTION_COMPARISON,
-    counts, total: items.length, returned: Math.min(items.length, limit),
-    truncated: items.length > limit, items: items.slice(0,limit),
+    digest,
+    counts, total: items.length,
+    offset,
+    returned: Math.max(0, Math.min(limit, items.length - offset)),
+    truncated: offset + limit < items.length,
+    nextOffset: offset + limit < items.length ? offset + limit : null,
+    items: items.slice(offset, offset + limit),
     policy: {
       inputsAreNotAuthenticatedByThisPureLens: true,
       factProofMustBeEstablishedUpstream: true,
