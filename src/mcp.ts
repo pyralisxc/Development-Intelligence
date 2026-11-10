@@ -12,6 +12,7 @@ import { evaluateParityContract } from './intelligence/parityContract.js';
 import { verifyTransition } from './intelligence/temporalVerification.js';
 import { assessRevisionEvidence, type PriorTestRunReference } from './intelligence/revisionEvidenceApplicability.js';
 import { deriveCapturedSourceSelection } from './intelligence/exactCapturedSelection.js';
+import { deriveCapturedBooleanGuard } from './intelligence/exactConditionalGuard.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import { inspectPortfolio, tracePortfolio, type PortfolioParticipantInput } from './intelligence/portfolio.js';
 import { semanticPromotionGateSurface, semanticReviewSurface } from './intelligence/semanticWorkflow.js';
@@ -492,6 +493,44 @@ export const tools: ToolDefinition[] = [
       });
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  { name: 'derive_captured_boolean_guard',
+    description: 'Establish one bounded two-hop TypeScript normal-path boolean return and exact TypeChecker-bound caller guard under hypothetical external values. Never observes live configuration, HTTP responses or downstream writes.',
+    inputSchema: objectSchema({
+      project: string, ref: string, rootId: string, calleeId: string,
+      routePath: string, guardLine: integer,
+      bindings: { type: 'object', maxProperties: 24, additionalProperties: {
+        oneOf: [{ type: 'string', maxLength: 64 }, { type: 'boolean' }, { type: 'null' }],
+      } },
+    }, ['project','ref','rootId','calleeId','routePath','guardLine','bindings']),
+    handler: async args => {
+      const raw = args.bindings;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+        || Object.keys(raw).length < 1 || Object.keys(raw).length > 24) {
+        throw new Error('Require 1-24 bounded hypothetical bindings');
+      }
+      const bindings: Record<string,string|boolean|null> = {};
+      for (const [key,value] of Object.entries(raw as Record<string,unknown>)) {
+        if (!/^[A-Za-z_$][A-Za-z0-9_.$()]*$/u.test(key)
+          || key.length > 128
+          || !(value === null || typeof value === 'boolean'
+            || (typeof value === 'string' && value.length <= 64))) {
+          throw new Error('Invalid bounded hypothetical binding');
+        }
+        if (typeof value === 'string'
+          && /(?:secret|token|password|credential|api.?key)/iu.test(key)) {
+          throw new Error('Sensitive bindings cannot contain raw string values');
+        }
+        bindings[key]=value as string|boolean|null;
+      }
+      return await deriveCapturedBooleanGuard({
+        project: s(args,'project'), ref: s(args,'ref'),
+        rootId: s(args,'rootId'), calleeId: s(args,'calleeId'),
+        routePath: s(args,'routePath'), guardLine: Number(args.guardLine),
+        bindings,
+      });
+    },
+    annotations: {readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:true},
   },
   { name: 'query_parity', description: 'Inspect semantic entities and their observed human/agent/API/provider representations over the selected canonical graph. Pass queries for up to 20 independent terms over one loaded graph. Only resolved relations populate confirmed representation lists; candidates and unresolved relations remain explicit.', inputSchema: objectSchema(queryProperties, ['project']), handler: async args => await parityLens({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), query: optString(args, 'query'), queries: Array.isArray(args.queries) ? args.queries as string[] : undefined, kinds: Array.isArray(args.kinds) ? args.kinds as string[] : undefined, sourceIds: Array.isArray(args.sourceIds) ? args.sourceIds as string[] : undefined, status: relationshipStatuses(args), limit: typeof args.limit === 'number' ? args.limit : undefined, offset: typeof args.offset === 'number' ? args.offset : undefined }) },
   { name: 'evaluate_parity', description: 'Evaluate a caller-owned ephemeral expectation contract (E) against canonical W or an explicit graph snapshot. Supports exact entities/relationships plus bounded quantified reachability predicates, and reports satisfied, missing, forbidden-present, unproven, or not-applicable obligations with static-proof replacement limits without modifying accepted graph truth.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, contract: parityContractSchema }, ['project', 'contract']), handler: async args => await evaluateParityContract({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), contract: args.contract }) },
