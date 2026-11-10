@@ -72,6 +72,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
         { kind: 'automated-by', to: 'mcp:get_code_snippet' },
         { kind: 'automated-by', to: 'mcp:get_evidence' },
         { kind: 'automated-by', to: 'mcp:derive_captured_source_selection' },
+        { kind: 'automated-by', to: 'mcp:derive_captured_boolean_guard' },
       ],
     },
   },
