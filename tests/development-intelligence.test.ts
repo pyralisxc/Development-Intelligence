@@ -1869,6 +1869,7 @@ test('public tool surface is the intrinsic DI and Workbench contract, not develo
     'verify_transition',
     'assess_revision_evidence',
     'derive_captured_source_selection',
+    'derive_captured_boolean_guard',
     'query_parity',
     'evaluate_parity',
     'get_test_claim_report',

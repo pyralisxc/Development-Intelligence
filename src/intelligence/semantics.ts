@@ -222,6 +222,7 @@ export const DEVELOPMENT_INTELLIGENCE_SEMANTICS = [
     'verify_transition',
     'assess_revision_evidence',
     'derive_captured_source_selection',
+    'derive_captured_boolean_guard',
     'query_parity',
     'evaluate_parity',
     'get_test_claim_report',
