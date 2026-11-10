@@ -53,6 +53,8 @@ test('partial proof, missing assertion, and wrong database binding cannot upgrad
   assert.equal(compareCapturedExecution(cap,[fact],[]).counts['derived-only'],1);
   assert.equal(compareCapturedExecution(cap,[],[event]).counts['observed-only'],1);
   assert.equal(compareCapturedExecution(cap,[],[{...event,provenance:'report-only'}]).counts.unverified,1);
+  assert.equal(compareCapturedExecution(cap,[],[{...event,revision:'d'.repeat(40)}]).counts.unverified,1);
+  assert.equal(compareCapturedExecution(cap,[],[{...event,graphId:'unrelated'}]).counts.unverified,1);
   assert.equal(compareCapturedExecution(cap,[{...fact,proof:'possible'}],[]).counts.unverified,1);
   assert.equal(compareCapturedExecution(cap,[{...fact,requiresDatabase:true}],[event]).counts.unverified,1);
 });

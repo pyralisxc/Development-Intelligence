@@ -211,7 +211,9 @@ export function compareCapturedExecution(
     }
   }
   for (const event of observations) if (!factIds.has(event.factId)) {
-    const attested = event.provenance === 'provider-verified'
+    const attested = event.revision === capture.revision
+      && event.graphId === capture.graphId
+      && event.provenance === 'provider-verified'
       && event.assertionIdentityVerified && event.observedEffect !== null
       && event.outcome !== 'unknown' && event.outcome !== 'skip'
       && (event.outcome !== 'fail' || event.failureIsAssertionMismatch);
