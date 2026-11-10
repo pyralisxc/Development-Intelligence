@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Captured-system evidence comparison over DI's existing canonical graph.
  *
