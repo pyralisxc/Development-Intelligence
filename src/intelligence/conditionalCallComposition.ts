@@ -128,6 +128,9 @@ export function evaluateCapturedBooleanChain(input: {
   if (!rootFn?.body || !calleeFn?.body || !root.name || !callee.name) {
     return unproven('callable-body-not-uniquely-located');
   }
+  if (rootFn.parameters.some(p => ts.isIdentifier(p.name) && p.name.text === callee.name)) {
+    return unproven('callee-shadowed-by-caller-parameter');
+  }
   const inputs = new Map(Object.entries(input.bindings));
   let visitCount = 0;
   type Outcome = { kind: 'return'; value: boolean } | { kind: 'continue' } | { kind: 'unknown'; reason: string };
@@ -177,6 +180,7 @@ export function evaluateCapturedBooleanChain(input: {
         const ret = stmt.expression;
         if (ts.isCallExpression(ret) && ts.isIdentifier(ret.expression)
           && ret.expression.text === callee.name && owner.id === root.id) {
+          if (locals.has(callee.name)) return uncertain('callee-shadowed-by-local');
           if (!resolvedCall(graph, owner, callee, sourcePath, lineOf(ret, file))) {
             return uncertain('callsite-not-resolved-by-canonical-graph');
           }

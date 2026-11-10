@@ -67,6 +67,15 @@ test('unproven config, edge, or mutating control does not become established',()
   calleeId:callee.id,bindings:values('0')});
  assert.equal(c.status,'unproven');
 });
+test('same-name callee parameter or local shadow must not become transitive proof',()=>{
+ const paramShadow=source.replace('options: unknown) {','authorize: unknown) {');
+ assert.equal(evaluateCapturedBooleanChain({graph:actualGraph(),sourcePath:path,
+  source:paramShadow,rootId:root.id,calleeId:callee.id,bindings:values('1')}).status,'unproven');
+ const localShadow=source.replace("  if (mode === 'none') return authorize(req, res, options);",
+  "  const authorize = true;\n  if (mode === 'none') return authorize(req, res, options);");
+ assert.equal(evaluateCapturedBooleanChain({graph:actualGraph(),sourcePath:path,
+  source:localShadow,rootId:root.id,calleeId:callee.id,bindings:values('1')}).status,'unproven');
+});
 test('compiler-bound HTTP route false auth returns before route body, true falls through',()=>{
  const http="export function serve(req:unknown,res:unknown) {\n  if (!authorizeOwnerWrite(req, res)) return;\n  return write();\n}";
  const neg=verifyGuardedEarlyReturn({graph,source:http,sourcePath:'src/http.ts',
