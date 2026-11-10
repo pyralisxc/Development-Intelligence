@@ -45,7 +45,8 @@ test('unknown environment cannot be guessed from source alone',()=>{
 });
 test('unsupported asynchronous, computed, or side-effecting expression fails closed',()=>{
   assert.equal(evaluate(after.replace('return browserClerkHandler(request, event);',
-    'return browserClerkHandler(resolve(request), event);'),bound).status,'unproven');
+    'return browserClerkHandler(resolve(request), event);'),{...bound,
+      'request.nextUrl.pathname':'/account'}).status,'unproven');
   assert.equal(evaluate(after.replace('return browserClerkHandler(request, event);',
     'try { return browserClerkHandler(request, event); } finally {}'),{...bound,
       'request.nextUrl.pathname':'/account'}).status,'unproven');
