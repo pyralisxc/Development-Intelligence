@@ -8,7 +8,7 @@ const root:GraphNode={id:'symbol:src/auth.ts#function:authorizeOwnerWrite',sourc
   kind:'function',layer:'structural',name:'authorizeOwnerWrite',locator:'src/auth.ts:1',
   value:'authorizeOwnerWrite',raw:'authorizeOwnerWrite'};
 const callee:GraphNode={...root,id:'symbol:src/auth.ts#function:authorize',
-  name:'authorize',locator:'src/auth.ts:7'};
+  name:'authorize',locator:'src/auth.ts:10'};
 const graph={repositoryRevision:sha,nodes:[root,callee],edges:[
  {from:root.id,to:callee.id,kind:'calls',status:'resolved',layer:'structural',
   evidence:['src/auth.ts:11']},
