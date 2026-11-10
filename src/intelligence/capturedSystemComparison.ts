@@ -156,9 +156,17 @@ export function compareCapturedExecution(
   for (const fact of facts) {
     const events = byFact.get(fact.id) ?? [];
     if (!events.length) {
+      const derived = fact.proof === 'established-conditional'
+        && fact.dependenciesComplete && fact.evidence.length > 0
+        && (!fact.requiresDatabase || Boolean(capture.database
+          && capture.database.sourceBinding === 'independently-attested'
+          && capture.database.observedSourceRevision === capture.revision));
       items.push({
-        factId: fact.id, observationId: null, status: 'derived-only',
-        reason: 'No mapped assertion event; absence of execution is not established',
+        factId: fact.id, observationId: null,
+        status: derived ? 'derived-only' : 'unverified',
+        reason: derived
+          ? 'Established captured fact has no mapped test observation; absence of execution is not proven'
+          : 'Unestablished candidate has no mapped assertion event',
         sourceFactRemainsHistorical: true, currentEnvironmentEstablished: false,
       });
     }
@@ -203,10 +211,16 @@ export function compareCapturedExecution(
     }
   }
   for (const event of observations) if (!factIds.has(event.factId)) {
+    const attested = event.provenance === 'provider-verified'
+      && event.assertionIdentityVerified && event.observedEffect !== null
+      && event.outcome !== 'unknown' && event.outcome !== 'skip'
+      && (event.outcome !== 'fail' || event.failureIsAssertionMismatch);
     items.push({
       factId: event.factId, observationId: event.id,
-      status: 'observed-only',
-      reason: 'No independently derived fact; execution provenance must be checked separately',
+      status: attested ? 'observed-only' : 'unverified',
+      reason: attested
+        ? 'Authenticated assertion-specific observation lacks independently derived fact'
+        : 'Reported or incomplete assertion is not verified execution evidence',
       sourceFactRemainsHistorical: true, currentEnvironmentEstablished: false,
     });
   }
