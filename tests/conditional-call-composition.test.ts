@@ -15,8 +15,7 @@ const graph={repositoryRevision:sha,nodes:[root,callee],edges:[
  {from:'file:src/http.ts',to:root.id,kind:'references-symbol',
   status:'resolved',strategy:'typescript-checker-symbol.v1',
   evidence:['src/http.ts:2:12']}
- ],coverage:{files:[{path,status:'complete'},{path:'src/http.ts',status:'complete'}]}}
- as unknown as IntelligenceGraph;
+ ],coverage:{files:[{path,status:'complete'},{path:'src/http.ts',status:'complete'}]}} as unknown as IntelligenceGraph;
 const source=[
 'export function authorizeOwnerWrite(req: unknown, res: unknown, options: unknown) {',
 '  const mode = authMode();',
