@@ -11,6 +11,7 @@ import { queryTechnicalSource } from './intelligence/technicalSources.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { verifyTransition } from './intelligence/temporalVerification.js';
 import { assessRevisionEvidence, type PriorTestRunReference } from './intelligence/revisionEvidenceApplicability.js';
+import { deriveCapturedSourceSelection } from './intelligence/exactCapturedSelection.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import { inspectPortfolio, tracePortfolio, type PortfolioParticipantInput } from './intelligence/portfolio.js';
 import { semanticPromotionGateSurface, semanticReviewSurface } from './intelligence/semanticWorkflow.js';
@@ -450,6 +451,88 @@ export const tools: ToolDefinition[] = [
   { name: 'analyze_impact', description: 'Compare two authorized Git revisions by actual changed files, map those paths into each revision graph, and trace bounded dependency impact. Inbound resolved relationships are used by default; direction, relationship kinds, relationship status, layers, depth, and result limit are caller-controlled.', inputSchema: objectSchema({ project: string, baseRef: string, ref: string, direction: { enum: ['inbound', 'outbound', 'both'] }, depth: integer, relationshipKinds: strings, status: relationshipStatusSchema, layers: layersSchema, limit: integer }, ['project', 'baseRef']), handler: async args => await analyzeImpact({ project: s(args, 'project'), baseRef: s(args, 'baseRef'), ref: optString(args, 'ref'), direction: args.direction as any, depth: typeof args.depth === 'number' ? args.depth : undefined, relationshipKinds: Array.isArray(args.relationshipKinds) ? args.relationshipKinds as string[] : undefined, statuses: relationshipStatuses(args), layers: layers(args), limit: typeof args.limit === 'number' ? args.limit : undefined }) },
   { name: 'verify_transition', description: 'Verify an exact repository transition from immutable A to immutable B under the current analyzer. Composes graph delta, changed-file impact, optional caller-owned head expectations and preserved invariants, unexpected-change review surface, and coverage-qualified uncertainty without approving or mutating the repository.', inputSchema: objectSchema({ project: string, baseRef: string, ref: string, contract: transitionContractSchema, direction: { enum: ['inbound', 'outbound', 'both'] }, depth: integer, relationshipKinds: strings, status: relationshipStatusSchema, layers: layersSchema, limit: integer }, ['project', 'baseRef', 'ref']), handler: async args => await verifyTransition({ project: s(args, 'project'), baseRef: s(args, 'baseRef'), ref: s(args, 'ref'), ...(args.contract === undefined ? {} : { contract: args.contract }), ...(typeof args.direction === 'string' ? { direction: args.direction as 'inbound' | 'outbound' | 'both' } : {}), ...(typeof args.depth === 'number' ? { depth: args.depth } : {}), ...(Array.isArray(args.relationshipKinds) ? { relationshipKinds: args.relationshipKinds as string[] } : {}), ...(relationshipStatuses(args)?.length ? { statuses: relationshipStatuses(args)! } : {}), ...(layers(args)?.length ? { layers: layers(args)! } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }) },
   { name: 'assess_revision_evidence', description: 'Compare independently evaluated caller-owned static source obligations across two exact Git revisions and explain changed source, SQL/migration rechecks, and historical test-run limitations. Caller-supplied run metadata is NOT attested execution or current proof. Read-only, no test removal or semantic history.', inputSchema: objectSchema({ project: string, baseRef: string, ref: string, contract: parityContractSchema, priorTestRun: objectSchema({ runId: string, claimedSourceRevision: string, reportedOutcome: { enum: ['pass', 'fail', 'unknown'] }, reportDigest: string }, ['runId', 'claimedSourceRevision', 'reportedOutcome']) }, ['project', 'baseRef', 'ref', 'contract']), handler: async args => await assessRevisionEvidence({ project: s(args, 'project'), baseRef: s(args, 'baseRef'), ref: s(args, 'ref'), contract: args.contract, ...(args.priorTestRun ? { priorTestRun: args.priorTestRun as PriorTestRunReference } : {}) }), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
+  {
+    name: 'derive_captured_source_selection',
+    description: 'Derive one bounded conditional return-call selection from an exact Git source revision and DI callable identity. Bindings are caller-supplied hypothetical input assumptions, never observed deployment config; sensitive key values must be presence booleans. Returns a source-derived graph/evidence projection, not execution of the selected callee, a current runtime claim, or a test outcome.',
+    inputSchema: objectSchema({
+      project: string,
+      ref: { type: 'string', pattern: '^commit:[a-f0-9]{40} 'Inspect semantic entities and their observed human/agent/API/provider representations over the selected canonical graph. Pass queries for up to 20 independent terms over one loaded graph. Only resolved relations populate confirmed representation lists; candidates and unresolved relations remain explicit.', inputSchema: objectSchema(queryProperties, ['project']), handler: async args => await parityLens({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), query: optString(args, 'query'), queries: Array.isArray(args.queries) ? args.queries as string[] : undefined, kinds: Array.isArray(args.kinds) ? args.kinds as string[] : undefined, sourceIds: Array.isArray(args.sourceIds) ? args.sourceIds as string[] : undefined, status: relationshipStatuses(args), limit: typeof args.limit === 'number' ? args.limit : undefined, offset: typeof args.offset === 'number' ? args.offset : undefined }) },
+  { name: 'evaluate_parity', description: 'Evaluate a caller-owned ephemeral expectation contract (E) against canonical W or an explicit graph snapshot. Supports exact entities/relationships plus bounded quantified reachability predicates, and reports satisfied, missing, forbidden-present, unproven, or not-applicable obligations with static-proof replacement limits without modifying accepted graph truth.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, contract: parityContractSchema }, ['project', 'contract']), handler: async args => await evaluateParityContract({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), contract: args.contract }) },
+  { name: 'get_test_claim_report', description: 'Derive and evaluate source-validated test obligations and conditional redundancy evidence directly from one exact authorized source revision plus normalized scope. Later pages require the first-page projection digest. Default full population includes all diagnostics; populationDetail summary omits details with counts. Recover full details using the same inputs and expectedReportDigest; pageSize does not bound population diagnostics, which are returned in full on every full page and may exceed response limits. Results never recommend deletion.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, sourcePrefixes: testClaimScopeStrings, sourceSuffixes: testClaimScopeStrings, expectedReportDigest: string, page: integer, pageSize: integer, populationDetail: { type: 'string', enum: ['full', 'summary'] } }, ['project', 'sourcePrefixes', 'sourceSuffixes']), handler: async args => { const ref = optString(args, 'ref'); const graphId = optString(args, 'graphId'); const expectedReportDigest = optString(args, 'expectedReportDigest'); const populationDetail = optString(args, 'populationDetail') as 'full' | 'summary' | undefined; return await queryTestClaimReport({ project: s(args, 'project'), sourcePrefixes: Array.isArray(args.sourcePrefixes) ? args.sourcePrefixes as string[] : [], sourceSuffixes: Array.isArray(args.sourceSuffixes) ? args.sourceSuffixes as string[] : [], ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}), ...(expectedReportDigest ? { expectedReportDigest } : {}), ...(populationDetail ? { populationDetail } : {}), ...(typeof args.page === 'number' ? { page: args.page } : {}), ...(typeof args.pageSize === 'number' ? { pageSize: args.pageSize } : {}) }); }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
+];
+
+function annotationsFor(name: string): Record<string, boolean> {
+  return { readOnlyHint: true, destructiveHint: false, openWorldHint: name !== 'list_projects' };
+}
+
+export function listTools() { return tools.map(({ handler: _handler, ...tool }) => ({ ...tool, annotations: tool.annotations ?? annotationsFor(tool.name) })); }
+export function toolContract(): { toolCount: number; contractFingerprint: string } {
+  const definitions = listTools();
+  return { toolCount: definitions.length, contractFingerprint: stableHash(definitions) };
+}
+export async function callTool(name: string, args: Record<string, unknown> = {}) {
+  const tool = tools.find(item => item.name === name);
+  if (!tool) throw new Error(`Unknown tool: ${name}`);
+  if (computeOnly()) {
+    if (tool.annotations?.readOnlyHint === false) assertAuthorityWritesAllowed();
+    if (name === 'scan_graph' && !(typeof args.ref === 'string' && /^commit:[a-f0-9]{40}$/i.test(args.ref))) {
+      throw Object.assign(new Error('Compute-only scan_graph requires an immutable commit:<full-sha> replay'), { status: 403 });
+    }
+  }
+  validateAgainstSchema(tool.inputSchema, args);
+  const project = typeof args.project === 'string' && args.project ? args.project : null;
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+  try {
+    const result = await tool.handler(args);
+    if (project) recordToolExecution({ project, tool: name, startedAt, durationMs: Math.max(0, Date.now() - started), status: 'ok' });
+    return result;
+  } catch (error) {
+    if (project) recordToolExecution({ project, tool: name, startedAt, durationMs: Number((Date.now() - started).toFixed(3)), status: 'error' });
+    throw error;
+  }
+}
+ },
+      callableId: string,
+      bindings: { type: 'object', maxProperties: 24, additionalProperties: {
+        oneOf: [{ type: 'string', maxLength: 128 }, { type: 'boolean' }, { type: 'null' }],
+      } },
+      mockedDependencies: { type: 'array', items: string, maxItems: 32 },
+    }, ['project', 'ref', 'callableId', 'bindings']),
+    handler: async args => {
+      const raw = args.bindings;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bindings must be an object');
+      const entries = Object.entries(raw as Record<string, unknown>);
+      if (!entries.length || entries.length > 24) throw new Error('bindings must have 1-24 hypothetical properties');
+      const bindings: Record<string, string | boolean | null> = {};
+      for (const [key, value] of entries) {
+        if (key.length > 128 || !/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/u.test(key)) {
+          throw new Error('Invalid source expression identity in bindings');
+        }
+        if (!(value === null || typeof value === 'boolean'
+          || (typeof value === 'string' && value.length <= 128))) {
+          throw new Error('Bindings only admit bounded hypothetical literals');
+        }
+        if (typeof value === 'string'
+          && /(?:secret|token|credential|password|api.?key|private.?key)/iu.test(key)) {
+          throw new Error('Sensitive configuration bindings must be booleans, never raw values');
+        }
+        bindings[key] = value;
+      }
+      const mocks = args.mockedDependencies;
+      if (mocks !== undefined && (!Array.isArray(mocks) || mocks.length > 32
+        || mocks.some(v => typeof v !== 'string' || !v || v.length > 128))) {
+        throw new Error('mockedDependencies must be bounded source identities');
+      }
+      return await deriveCapturedSourceSelection({
+        project: s(args, 'project'), ref: s(args, 'ref'),
+        callableId: s(args, 'callableId'),
+        bindings,
+        ...(Array.isArray(mocks) ? { mockedDependencies: mocks as string[] } : {}),
+      });
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
   { name: 'query_parity', description: 'Inspect semantic entities and their observed human/agent/API/provider representations over the selected canonical graph. Pass queries for up to 20 independent terms over one loaded graph. Only resolved relations populate confirmed representation lists; candidates and unresolved relations remain explicit.', inputSchema: objectSchema(queryProperties, ['project']), handler: async args => await parityLens({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), query: optString(args, 'query'), queries: Array.isArray(args.queries) ? args.queries as string[] : undefined, kinds: Array.isArray(args.kinds) ? args.kinds as string[] : undefined, sourceIds: Array.isArray(args.sourceIds) ? args.sourceIds as string[] : undefined, status: relationshipStatuses(args), limit: typeof args.limit === 'number' ? args.limit : undefined, offset: typeof args.offset === 'number' ? args.offset : undefined }) },
   { name: 'evaluate_parity', description: 'Evaluate a caller-owned ephemeral expectation contract (E) against canonical W or an explicit graph snapshot. Supports exact entities/relationships plus bounded quantified reachability predicates, and reports satisfied, missing, forbidden-present, unproven, or not-applicable obligations with static-proof replacement limits without modifying accepted graph truth.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, contract: parityContractSchema }, ['project', 'contract']), handler: async args => await evaluateParityContract({ project: s(args, 'project'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), contract: args.contract }) },
   { name: 'get_test_claim_report', description: 'Derive and evaluate source-validated test obligations and conditional redundancy evidence directly from one exact authorized source revision plus normalized scope. Later pages require the first-page projection digest. Default full population includes all diagnostics; populationDetail summary omits details with counts. Recover full details using the same inputs and expectedReportDigest; pageSize does not bound population diagnostics, which are returned in full on every full page and may exceed response limits. Results never recommend deletion.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, sourcePrefixes: testClaimScopeStrings, sourceSuffixes: testClaimScopeStrings, expectedReportDigest: string, page: integer, pageSize: integer, populationDetail: { type: 'string', enum: ['full', 'summary'] } }, ['project', 'sourcePrefixes', 'sourceSuffixes']), handler: async args => { const ref = optString(args, 'ref'); const graphId = optString(args, 'graphId'); const expectedReportDigest = optString(args, 'expectedReportDigest'); const populationDetail = optString(args, 'populationDetail') as 'full' | 'summary' | undefined; return await queryTestClaimReport({ project: s(args, 'project'), sourcePrefixes: Array.isArray(args.sourcePrefixes) ? args.sourcePrefixes as string[] : [], sourceSuffixes: Array.isArray(args.sourceSuffixes) ? args.sourceSuffixes as string[] : [], ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}), ...(expectedReportDigest ? { expectedReportDigest } : {}), ...(populationDetail ? { populationDetail } : {}), ...(typeof args.page === 'number' ? { page: args.page } : {}), ...(typeof args.pageSize === 'number' ? { pageSize: args.pageSize } : {}) }); }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
