@@ -60,7 +60,7 @@ export function composeTwoHopSourceEffects(input:{
     return no('callable-identity-not-canonical');
   const from=caller.effects.filter(x=>x.kind==='return-call'
     && x.sourceLine===input.call.effectLine && x.expressionSha256===input.call.effectSha256);
-  const to=callee.effects.filter(x=>x.kind==='return'
+  const to=callee.effects.filter(x=>(x.kind==='return'||x.kind==='return-call')
     && x.sourceLine===input.calleeReturn.effectLine
     && x.expressionSha256===input.calleeReturn.effectSha256);
   if(from.length!==1||to.length!==1)return no('effect-witness-not-unique');
@@ -103,6 +103,7 @@ export function composeTwoHopSourceEffects(input:{
     calleeReturnValueProven:false as const,
     /** This is a source selection, not a proof of callee normal completion. */
     selectedCalleeReturnExpression:to[0]!.expression,
+    selectedCalleeEffectKind:to[0]!.kind,
     requiredConditions:requirements,
     sourceWitnesses:[
       caller.identity.sourcePath+':'+from[0]!.sourceLine,
