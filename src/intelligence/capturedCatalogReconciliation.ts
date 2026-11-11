@@ -161,6 +161,10 @@ export function reconcileCapturedCatalog(input: {
   }
   const page = rows.slice(offset, offset + limit);
   const graphNodes:GraphNode[] = [],graphEdges:GraphEdge[] = [];
+  // Keep provider snapshot IDs out of responses, even when a sanitizer missed
+  // an unfamiliar sensitive token embedded in an ETag or observation ID.
+  const publicObservationId = evidence.snapshot.id === null ? null
+    : 'sha256:' + digest([evidence.source.id,evidence.snapshot.id]);
   const overlayId = 'snapshot-catalog:' + projectionDigest.slice(0,32);
   const sourceIds = new Set(graph.nodes.map(n => n.id));
   for (const row of page) {
@@ -171,7 +175,7 @@ export function reconcileCapturedCatalog(input: {
       locator:overlayId,name:qualifiedName,layer:'semantic',checkpoint:false,
       value:{qualifiedName,identityArguments:row.observedIdentityArguments,
         sourceRevisionReported:revisionReported,
-        snapshotId:evidence.snapshot.id, freshness:evidence.snapshot.freshness,
+        snapshotId:publicObservationId, freshness:evidence.snapshot.freshness,
         status:'reported-metadata-candidate'},raw:qualifiedName,
     });
     if (row.sourceNodeId && sourceIds.has(row.sourceNodeId)
@@ -187,7 +191,7 @@ export function reconcileCapturedCatalog(input: {
     version:CAPTURED_CATALOG_COMPARISON,
     source:{project:graph.project,revision:graph.repositoryRevision,graphId:graph.graphId},
     capture:{
-      providerSourceId:evidence.source.id,observationId:evidence.snapshot.id,
+      providerSourceId:evidence.source.id,observationId:publicObservationId,
       observedAt:evidence.snapshot.observedAt,
       sourceObservedAt:evidence.snapshot.sourceObservedAt,
       reportedRevision:revisionReported,reportedRevisionMatches,

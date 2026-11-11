@@ -135,6 +135,17 @@ test('untrusted SQL identity text cannot leak arbitrary provider content',()=>{
  assert.equal(JSON.stringify(result).includes('secret_records'),false);
 });
 
+test('provider snapshot id remains stable but private in projected evidence',()=>{
+ const sensitive={...evidence,snapshot:{
+  ...evidence.snapshot,id:'provider-opaque-possible-sensitive-value-123',
+ }} as TechnicalEvidenceEnvelope;
+ const r=reconcileCapturedCatalog({graph,evidence:sensitive,qualifiedName:name});
+ assert.ok(r.capture.observationId?.startsWith('sha256:'));
+ assert.equal(JSON.stringify(r).includes('provider-opaque-possible-sensitive-value-123'),false);
+ assert.equal(reconcileCapturedCatalog({graph,evidence:sensitive,qualifiedName:name})
+  .capture.observationId,r.capture.observationId);
+});
+
 test('invalid scope, provider adapter, or oversized population is refused',()=>{
  assert.throws(()=>reconcileCapturedCatalog({graph,evidence,qualifiedName:'heart'}),/schema-qualified/);
  assert.throws(()=>reconcileCapturedCatalog({graph,evidence:{...evidence,source:{...evidence.source,adapter:'generic-json'}} as TechnicalEvidenceEnvelope,
