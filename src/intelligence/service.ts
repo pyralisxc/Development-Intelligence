@@ -5,6 +5,9 @@ import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceG
 import { stableHash } from '../util/hash.js';
 import { changedFilesBetweenRevisions, revisionIdentity, withResolvedProjectCheckoutObserved, resolveProjectRevision, type ProjectCheckoutTiming, type ProjectRevision } from '../source/git.js';
 import { analyzeHtml, analyzeJson } from './analyzers/index.js';
+import { proveRuntimeDeployment } from './runtimeDeploymentProof.js';
+import { sanitizeExternalPayload } from './externalSanitization.js';
+import { resolution } from './model.js';
 import { AsyncGate, cacheEntryLimitSetting, graphRecordWeight, positiveIntegerSetting, retentionEvictions, type RetentionItem } from './capacity.js';
 import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
 import { assertGraphIntegrity } from './integrity.js';
@@ -796,12 +799,15 @@ function runtimeHeaders(projectHeaders: Array<{ name: string; valueEnv: string }
   return headers;
 }
 
-async function scanRuntimeUrl(project: string, urlText: string): Promise<{ source: SourceDescriptor; nodes: GraphNode[]; edges: GraphEdge[]; evidence: EvidenceRecord[] }> {
+async function scanRuntimeUrl(project: string, urlText: string, repositoryRevision: string): Promise<{ source: SourceDescriptor; nodes: GraphNode[]; edges: GraphEdge[]; evidence: EvidenceRecord[] }> {
   const config = await getProjectConfig(project);
   const requested = new URL(urlText);
   const allowed = new Set((config.runtimeOrigins ?? []).map(value => new URL(value).origin));
   if (!allowed.has(requested.origin)) throw new Error(`Runtime origin is not allowlisted for ${project}: ${requested.origin}`);
-  if (!['http:', 'https:'].includes(requested.protocol) || requested.username || requested.password) throw new Error('Runtime URL must be credential-free HTTP(S)');
+  if (!['http:', 'https:'].includes(requested.protocol) || requested.username || requested.password || requested.search || requested.hash) throw new Error('Runtime URL must be credential-free HTTP(S) without query or fragment');
+  // A source ref alone cannot authorize runtime facts. Require a provider-reported
+  // ready deployment with the exact inspected SHA and matching runtime origin.
+  const deployment = await proveRuntimeDeployment(project, repositoryRevision, requested);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(process.env.DEVINT_RUNTIME_TIMEOUT_MS ?? 15_000));
   const observedAt = new Date().toISOString();
@@ -809,13 +815,14 @@ async function scanRuntimeUrl(project: string, urlText: string): Promise<{ sourc
     let current = requested;
     let response: Response | null = null;
     for (let redirects = 0; redirects <= 5; redirects += 1) {
-      if (!allowed.has(current.origin)) throw new Error(`Runtime redirect origin is not allowlisted for ${project}: ${current.origin}`);
+      if (!allowed.has(current.origin) || current.origin !== requested.origin) throw new Error('Runtime redirect no longer matches the verified deployment origin');
       response = await fetch(current, { method: 'GET', headers: runtimeHeaders(config.runtimeHeaders), redirect: 'manual', signal: controller.signal });
       if (response.status < 300 || response.status >= 400) break;
       const location = response.headers.get('location');
       if (!location) break;
       const next = new URL(location, current);
-      if (next.username || next.password) throw new Error('Runtime redirect URL must not contain credentials');
+      if (next.username || next.password || next.search || next.hash) throw new Error('Runtime redirect URL must not contain credentials, query or fragment');
+      if (next.origin !== requested.origin) throw new Error('Runtime redirect crosses the deployment-verified origin');
       if ((config.runtimeHeaders?.length ?? 0) > 0 && next.origin !== requested.origin) throw new Error('Authenticated runtime redirects must remain on the originally requested origin');
       current = next;
       if (redirects === 5) throw new Error('Runtime redirect limit exceeded');
@@ -824,8 +831,11 @@ async function scanRuntimeUrl(project: string, urlText: string): Promise<{ sourc
     const body = await response.arrayBuffer();
     if (body.byteLength > MAX_RUNTIME_BYTES) throw new Error(`Runtime response exceeds ${MAX_RUNTIME_BYTES} bytes`);
     const text = new TextDecoder().decode(body);
-    const revision = response.headers.get('etag') ?? response.headers.get('last-modified');
-    const source: SourceDescriptor = { id: `runtime:${requested.href}`, kind: 'runtime-http', locator: requested.href, revision, observedAt, available: true };
+    const source: SourceDescriptor = {
+      id: `runtime:${requested.href}`, kind: 'runtime-http', locator: requested.href,
+      revision: deployment.revision, observedAt, available: true,
+      warnings: [`HTTP observation on provider-reported ready deployment ${deployment.deploymentId} at exact source revision ${deployment.revision}; no execution path is inferred`],
+    };
     const statusNode: GraphNode = {
       id: stableHash([source.id, 'http-status']),
       sourceId: source.id,
@@ -839,15 +849,56 @@ async function scanRuntimeUrl(project: string, urlText: string): Promise<{ sourc
       checkpoint: false,
     };
     const contentType = response.headers.get('content-type') ?? '';
+    // Do not expose HTML scripts, form values, embedded secrets or JSON row data
+    // through runtime representation nodes. Runtime content is never canonical source.
+    const safeHtml = (sanitizeExternalPayload(text
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, '<script>[redacted]</script>')
+      .replace(/\b(?:value|data-[\w-]+)\s*=\s*(?:"[^"]*"|'[^']*')/giu, 'value="[redacted]"')).value as string);
+    let safeJson = '';
+    if (/application\/(?:[^;]+\+)?json/iu.test(contentType)) {
+      try { safeJson = JSON.stringify(sanitizeExternalPayload(JSON.parse(text)).value); }
+      catch { safeJson = '{}'; }
+    }
     const result = /text\/html/i.test(contentType)
-      ? analyzeHtml({ source, text, locatorBase: requested.href })
+      ? analyzeHtml({ source, text: safeHtml, locatorBase: requested.href })
       : /application\/(?:[^;]+\+)?json/i.test(contentType)
-        ? analyzeJson({ source, text, locatorBase: requested.href })
+        ? analyzeJson({ source, text: safeJson, locatorBase: requested.href })
         : { observations: [], resolutions: [], evidence: [] };
-    return { source, nodes: [statusNode, ...result.observations.map(node => ({ ...node, layer: node.layer ?? 'representation', checkpoint: false }))], edges: result.resolutions.map(edge => ({ ...edge, layer: edge.layer ?? 'representation', checkpoint: false })), evidence: result.evidence ?? [] };
+    const deploymentNode: GraphNode = {
+      id: stableHash([source.id, deployment.deploymentId, deployment.revision, 'deployment-observation']),
+      sourceId: source.id,
+      kind: 'deployment-observation',
+      locator: 'deployment:' + deployment.deploymentId,
+      field: 'deployment',
+      name: deployment.deploymentId,
+      value: {
+        deploymentId: deployment.deploymentId,
+        gitSha: deployment.revision,
+        providerSourceId: deployment.deploymentSourceId,
+        providerId: deployment.providerId,
+        observedAt: deployment.observedAt,
+        evidenceClass: deployment.evidenceClass,
+      },
+      raw: `deployment ${deployment.deploymentId} at source ${deployment.revision}`,
+      layer: 'representation', checkpoint: false,
+    };
+    const provenance = resolution({
+      from: statusNode.id, to: deploymentNode.id,
+      kind: 'observed-on-deployment', strategy: 'provider-deployment-and-http-get',
+      confidence: 1, status: 'resolved',
+      evidence: [requested.origin, deployment.deploymentSourceId,
+        deployment.deploymentId, deployment.revision, 'Provider-reported ready deployment and observed GET; not proven runtime execution of any specific code path'],
+      layer: 'representation', checkpoint: false,
+    });
+    return {
+      source,
+      nodes: [statusNode, deploymentNode, ...result.observations.map(node => ({ ...node, layer: node.layer ?? 'representation', checkpoint: false }))],
+      edges: [provenance, ...result.resolutions.map(edge => ({ ...edge, layer: edge.layer ?? 'representation', checkpoint: false }))],
+      evidence: result.evidence ?? [],
+    };
   } catch (error) {
     return {
-      source: { id: `runtime:${requested.href}`, kind: 'runtime-http', locator: requested.href, revision: null, observedAt, available: false, error: error instanceof Error ? error.message : String(error) },
+      source: { id: `runtime:${requested.href}`, kind: 'runtime-http', locator: requested.href, revision: deployment.revision, observedAt, available: false, error: 'Runtime GET unavailable after deployment verification' },
       nodes: [],
       edges: [],
       evidence: [],
@@ -880,7 +931,7 @@ export async function scanGraph(project: string, options: { ref?: string | undef
   const evidence = [...repository.graph.evidence];
   let edges = [...repository.graph.edges];
   for (const url of urls) {
-    const runtime = await scanRuntimeUrl(project, url);
+    const runtime = await scanRuntimeUrl(project, url, revision.sha);
     sources.push(runtime.source);
     nodes.push(...runtime.nodes);
     edges.push(...runtime.edges);

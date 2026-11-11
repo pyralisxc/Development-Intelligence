@@ -280,12 +280,50 @@ test('runtime observation snapshots are explicit and never contaminate canonical
   await new Promise<void>(resolve => runtime.listen(0, '127.0.0.1', resolve));
   const address = runtime.address() as any;
   const origin = `http://127.0.0.1:${address.port}`;
+  const originalFetch = globalThis.fetch;
+  const initialSha = (await runChecked('git', ['-C', fixture.source, 'rev-parse', 'HEAD'])).stdout.trim();
+  let claimedDeploymentSha = initialSha;
+  globalThis.fetch = async (input: any, init?: any) => {
+    const location = new URL(String(input));
+    if (location.origin === 'https://deployments.example.test') {
+      assert.equal(init?.method, 'GET');
+      return new Response(JSON.stringify({
+        id: 'fixture-deployment-1', state: 'READY',
+        url: origin, gitSource: { sha: claimedDeploymentSha, ref: 'main' },
+        updatedAt: new Date().toISOString(),
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return originalFetch(input, init);
+  };
   try {
     const registry = JSON.parse(await fs.readFile(fixture.config, 'utf8'));
     registry[fixture.project].runtimeOrigins = [origin];
     await fs.writeFile(fixture.config, JSON.stringify(registry, null, 2));
     clearGraphCache(fixture.project);
+    await assert.rejects(() => scanGraph(fixture.project, { urls: [`${origin}/`] }),
+      /requires an authorized read-only deployment-state/u,
+      'allowlisting a runtime origin alone cannot establish deployed code');
+    registry[fixture.project].technicalSources = [{
+      id: 'deployment', label: 'Deployment proof', type: 'read-only-http',
+      adapter: 'deployment-state', providerId: 'vercel',
+      endpoint: 'https://deployments.example.test/current',
+      capabilities: ['query'], freshnessMs: 60000,
+    }];
+    await fs.writeFile(fixture.config, JSON.stringify(registry, null, 2));
+    clearGraphCache(fixture.project);
+    await assert.rejects(() => scanGraph(fixture.project, { urls: [`${origin}/?token=do-not-share`] }),
+      /Runtime URL must be credential-free HTTP\(S\) without query or fragment/u);
+    claimedDeploymentSha = 'f'.repeat(40);
+    await assert.rejects(() => scanGraph(fixture.project, { urls: [`${origin}/`] }),
+      /No matching ready deployment/u,
+      'a valid deployment on the wrong Git SHA must not authorize runtime facts');
+    claimedDeploymentSha = initialSha;
     const snapshot = await scanGraph(fixture.project, { urls: [`${origin}/`] });
+    assert.equal(snapshot.sources.find(source => source.kind === 'runtime-http')?.revision, initialSha);
+    assert.ok(snapshot.nodes.some(node => node.kind === 'deployment-observation'
+      && (node.value as any)?.deploymentId === 'fixture-deployment-1'));
+    assert.ok(snapshot.edges.some(edge => edge.kind === 'observed-on-deployment'
+      && edge.status === 'resolved'));
     assert.match(snapshot.graphId, /^snapshot-/);
     assert.ok(snapshot.sources.some(source => source.kind === 'runtime-http'));
     assert.ok(snapshot.nodes.some(node => node.kind === 'ui-element' && node.name === 'Manage item'));
@@ -363,6 +401,7 @@ test('runtime observation snapshots are explicit and never contaminate canonical
       'runtime overlays remain intentionally ephemeral',
     );
   } finally {
+    globalThis.fetch = originalFetch;
     await close(runtime);
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
