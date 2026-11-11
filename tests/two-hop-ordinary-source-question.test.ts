@@ -56,8 +56,8 @@ test('ordinary explicit pair grammar does not hijack unrelated questions', () =>
   assert.equal(isConditionEffectQuestion('How does caller call callee?'), true);
   assert.deepEqual(parseTwoHopSourceQuestion('Under what conditions does caller call callee?'),
     { caller:'caller',callee:'callee' });
-  assert.deepEqual(parseTwoHopSourceQuestion('When does caller invoke callee?'),
-    { caller:'caller',callee:'callee' });
+  assert.equal(parseTwoHopSourceQuestion('When does caller invoke callee?'),null);
+  assert.equal(isConditionEffectQuestion('When does caller invoke callee?'),true);
   assert.deepEqual(parseTwoHopSourceQuestion('Which conditions govern caller calling callee?'),
     { caller:'caller',callee:'callee' });
   assert.equal(parseTwoHopSourceQuestion('Under what conditions does caller call a function?'),null);
