@@ -61,6 +61,8 @@ test('ordinary explicit pair grammar does not hijack unrelated questions', () =>
   assert.deepEqual(parseTwoHopSourceQuestion('Which conditions govern caller calling callee?'),
     { caller:'caller',callee:'callee' });
   assert.equal(parseTwoHopSourceQuestion('Under what conditions does caller call a function?'),null);
+  assert.equal(parseTwoHopSourceQuestion('Under what conditions does caller invoke callee or alternate?'),null);
+  assert.equal(isConditionEffectQuestion('Under what conditions does caller invoke callee or alternate?'),true);
   assert.equal(parseTwoHopSourceQuestion('Under what conditions does caller call caller?'),null);
   assert.equal(isConditionEffectQuestion('Which tests cover callee?'), false);
   assert.equal(parseTwoHopSourceQuestion('What happens when the MSI rollback fails?'),null);
