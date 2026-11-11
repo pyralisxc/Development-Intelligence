@@ -1,0 +1,61 @@
+name: ordinary-twohop-existing-graph-proof
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "src/intelligence/sourceConditionEffects.ts"
+      - "src/intelligence/twoHopSourceComposition.ts"
+      - "tests/two-hop-ordinary-source-question.test.ts"
+      - "scripts/benchmark-twohop-ordinary.mjs"
+      - ".github/workflows/ordinary-twohop-existing-graph-proof.yml"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: di-ordinary-twohop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  existing-graph:
+    name: real existing graph (${{ matrix.source }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [di, cardforge]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Exact CardForge source, read only
+        if: matrix.source == 'cardforge'
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: 0e86857cedfc14cf7c3d12ce4df00d20909c637c
+          path: benchmark/cardforge
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build:server
+      - name: Compare cold graph build with existing-graph conditional understanding
+        shell: bash
+        env:
+          SOURCE_KIND: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE_KIND" = "di" ]; then
+            node --max-old-space-size=4096 scripts/benchmark-twohop-ordinary.mjs --source di --repo-root .
+          else
+            node --max-old-space-size=4096 scripts/benchmark-twohop-ordinary.mjs --source cardforge --repo-root benchmark/cardforge --expected-sha 0e86857cedfc14cf7c3d12ce4df00d20909c637c
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ordinary-twohop-${{ matrix.source }}-measurements
+          path: twohop-ordinary-${{ matrix.source }}-measurements.json
+          retention-days: 7
+          if-no-files-found: error
