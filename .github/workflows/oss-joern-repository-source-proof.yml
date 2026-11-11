@@ -75,19 +75,22 @@ jobs:
           set -euo pipefail
           SOURCE_ROOT="."
           PROJECT_NAME="Development-Intelligence"
+          JOERN_FOCUS="src/auth.ts"
           if [ "$SOURCE_KIND" = "cardforge" ]; then
             SOURCE_ROOT="benchmark/cardforge"
             PROJECT_NAME="CardForge"
+            JOERN_FOCUS="src/features/pipeline/lib/pipelineHearts.ts"
           fi
           SOURCE_SHA="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
           test -n "$SOURCE_SHA"
-          printf 'Measured source kind=%s exactGitSha=%s\n' "$SOURCE_KIND" "$SOURCE_SHA"
+          printf 'Measured source kind=%s exactGitSha=%s scopedJoernFile=%s\n' "$SOURCE_KIND" "$SOURCE_SHA" "$JOERN_FOCUS"
           node --max-old-space-size=4096 scripts/run-oss-understanding.mjs \
             --repo-path "$SOURCE_ROOT" \
             --project "$PROJECT_NAME" \
             --joern-executable "$JOERN_SLICE" \
             --joern-version "$JOERN_VERSION" \
             --joern-language JAVASCRIPT \
+            --joern-file-filter "$JOERN_FOCUS" \
             --joern-depth 12 \
             --joern-heap-mb 5120 \
             --joern-timeout-ms 900000 \
@@ -112,6 +115,10 @@ jobs:
           assert.equal(receipt.joern.executedPinnedBinaryLocally, true);
           assert.equal(receipt.joern.configuredJoernHeapMiB, 5120);
           assert.equal(receipt.joern.parsedSourceToEphemeralCpg, true);
+          const exactFocus = sourceKind === 'di' ? 'src/auth.ts'
+            : 'src/features/pipeline/lib/pipelineHearts.ts';
+          assert.deepEqual(receipt.joern.fileFilters, [exactFocus],
+            'this run establishes only a bounded source-filtered slice, not full-repository DDG');
           assert.ok(receipt.joern.counts.sliceNodes > 0);
           assert.ok(receipt.joern.counts.sourceLocatedNodes > 0);
           assert.ok(receipt.joern.counts.candidateFlowEdges > 0);
