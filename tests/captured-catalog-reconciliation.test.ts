@@ -102,6 +102,28 @@ test('unknown routine metadata cannot prove body or active Postgres overload',()
  assert.equal(JSON.stringify(r).includes('sensitive string'),false);
  assert.equal(r.policy.exactSourceAndCatalogBodyEquivalenceNotEstablished,true);
 });
+test('overloaded routine identities remain distinct, duplicate missing signatures fail closed',()=>{
+ const overloaded={...evidence,observations:[
+  evidence.observations[0]!,
+  {...evidence.observations[0]!,
+    value:{qualifiedName:name,raw:{identity_arguments:'p_lineage_id uuid'}}},
+ ]} as TechnicalEvidenceEnvelope;
+ const result=reconcileCapturedCatalog({graph,evidence:overloaded,qualifiedName:name});
+ assert.equal(result.population.observedCandidates,2);
+ assert.equal(result.population.total,6);
+ assert.equal(result.graphProjection.nodes.length,2);
+ assert.equal(result.graphProjection.edges.length,3);
+ assert.equal(result.coverage.ambiguousObservedRoutineIdentity,false);
+ const ambiguous={...evidence,observations:[
+   {...evidence.observations[0]!,value:{qualifiedName:name,raw:{}}},
+   {...evidence.observations[0]!,value:{qualifiedName:name,raw:{}}},
+ ]} as TechnicalEvidenceEnvelope;
+ const unresolved=reconcileCapturedCatalog({graph,evidence:ambiguous,qualifiedName:name});
+ assert.equal(unresolved.coverage.ambiguousObservedRoutineIdentity,true);
+ assert.ok(unresolved.rows.every(x=>x.comparison==='incomparable'));
+ assert.equal(unresolved.graphProjection.edges.length,0);
+});
+
 test('invalid scope, provider adapter, or oversized population is refused',()=>{
  assert.throws(()=>reconcileCapturedCatalog({graph,evidence,qualifiedName:'heart'}),/schema-qualified/);
  assert.throws(()=>reconcileCapturedCatalog({graph,evidence:{...evidence,source:{...evidence.source,adapter:'generic-json'}} as TechnicalEvidenceEnvelope,

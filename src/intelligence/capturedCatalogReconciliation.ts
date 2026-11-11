@@ -101,14 +101,17 @@ export function reconcileCapturedCatalog(input: {
     && safeName(object(o.value)?.qualifiedName ?? o.name) === qualifiedName)
     .map(o => {
       const v = object(o.value), raw = object(v?.raw);
-      return { id: digest([o.id,o.locator,o.observedAt]),
-        signature: normArgs(raw?.identity_arguments ?? raw?.identityArguments
-          ?? raw?.signature ?? v?.identityArguments) };
+      const signature = normArgs(raw?.identity_arguments ?? raw?.identityArguments
+        ?? raw?.signature ?? v?.identityArguments);
+      // The upstream normalized database-function id is name-scoped, so
+      // overloads must remain distinct by captured identity arguments.
+      return { id: digest([o.id,o.locator,o.observedAt,signature]), signature };
     }).sort((a,b) => a.id.localeCompare(b.id));
   if (source.length > 1000 || observed.length > 1000 || source.length * observed.length > 10000) {
     throw new Error('Catalog candidate population exceeds bounded comparison; not proof of absence');
   }
-  const usableObservation = evidence.availability.available
+  const ambiguousObservedIdentity = new Set(observed.map(o => o.id)).size !== observed.length;
+  const usableObservation = !ambiguousObservedIdentity && evidence.availability.available
     && evidence.availability.httpStatus >= 200 && evidence.availability.httpStatus < 300
     && Boolean(evidence.snapshot.id) && validIso(evidence.snapshot.observedAt);
   const rows: CatalogComparisonRow[] = [];
@@ -197,7 +200,8 @@ export function reconcileCapturedCatalog(input: {
     coverage:{sourceSqlFiles:sqlFiles.length,sqlComplete,
       providerObservedCount:evidence.coverage.observed,
       providerExpectedCount:evidence.coverage.expected,
-      providerInventoryExhaustive:false},
+      providerInventoryExhaustive:false,
+      ambiguousObservedRoutineIdentity:ambiguousObservedIdentity},
     population:{sourceCandidates:source.length,observedCandidates:observed.length,
       total:rows.length,returned:page.length,omitted:Math.max(0,rows.length-offset-page.length),
       offset,limit,hasNext:offset+page.length<rows.length,projectionDigest},
