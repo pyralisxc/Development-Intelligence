@@ -57,7 +57,7 @@ test('candidate pages recover exactly and reject changed source population', () 
 });
 test('an entirely omitted SQL file invalidates completeness of the declaration population', () => {
   const partial={...graph,coverage:{files:[
-    ...graph.coverage.files,
+    ...graph.coverage!.files,
     {path:'supabase/migrations/uninspected.sql',status:'skipped'},
   ]}} as IntelligenceGraph;
   const result=projectRpcSqlSourceCandidates({
