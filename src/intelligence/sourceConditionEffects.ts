@@ -39,13 +39,17 @@ export function parseTwoHopSourceQuestion(question: string): { caller: string; c
     new RegExp('\\bwhat happens when\\s+' + identifier + '\\s+(?:calls|invokes)\\s+' + identifier + '\\b', 'iu'),
     new RegExp('\\b(?:what|which)\\s+(?:conditions?|effects?|conditions and effects)\\s+(?:propagate|flow)\\s+from\\s+' + identifier + '\\s+to\\s+' + identifier + '\\b', 'iu'),
     new RegExp('\\bhow does\\s+' + identifier + '\\s+(?:call|invoke)\\s+' + identifier + '\\b', 'iu'),
+    new RegExp('\\bunder what conditions does\\s+' + identifier + '\\s+(?:call|invoke)\\s+' + identifier + '\\s*\\??$', 'iu'),
+    new RegExp('\\bwhich conditions govern\\s+' + identifier + '\\s+(?:calling|invoking)\\s+' + identifier + '\\s*\\??$', 'iu'),
   ];
   const matches = patterns.flatMap(pattern => {
     const match = pattern.exec(question);
     return match?.[1] && match[2] ? [{ caller: match[1], callee: match[2] }] : [];
   });
   const unique = [...new Map(matches.map(pair => [pair.caller + ':' + pair.callee, pair])).values()];
-  return unique.length === 1 && unique[0]!.caller !== unique[0]!.callee ? unique[0]! : null;
+  return unique.length === 1 && unique[0]!.caller !== unique[0]!.callee
+    && !/^(?:a|an|the|this|that|some|any)$/iu.test(unique[0]!.callee)
+    ? unique[0]! : null;
 }
 export function isConditionEffectQuestion(question: string): boolean {
   return parseTwoHopSourceQuestion(question) !== null || explicitCallableSubject(question) !== null;
