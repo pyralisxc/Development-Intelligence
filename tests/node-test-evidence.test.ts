@@ -178,7 +178,7 @@ test('real Node TestStream skips and TODOs never appear as passing assertion evi
       path.join(root, 'scripts', 'observable.test.mjs'),
     ], { cwd: root, timeoutMs: 30000, env: { NODE_TEST_CONTEXT: undefined } });
     assert.equal(result.code, 0, result.stderr);
-    const rawEvents = result.stdout.trim().split('\\n').map((line: string) => JSON.parse(line));
+    const rawEvents = result.stdout.trim().split('\n').map((line: string) => JSON.parse(line));
     assert.equal(rawEvents.filter((e:any) => e.type === 'test:pass').length, 3);
     assert.equal(rawEvents.some((e:any) => e.type === 'test:pass'
       && e.data.skip === true), true);
@@ -206,7 +206,7 @@ test('real Node TestStream skips and TODOs never appear as passing assertion evi
       const x=structuredClone(e); x.schemaVersion=1;
       if (x.type === 'test:pass') { delete x.data.skip; delete x.data.todo; }
       return JSON.stringify(x);
-    }).join('\\n')+'\\n';
+    }).join('\n')+'\n';
     await fs.writeFile(file,legacy);
     const old=await projectNodeTestEvents({root,graph,catalog,
       eventPath:'observations/native.jsonl',nodeVersion:process.version});
@@ -221,7 +221,7 @@ test('real Node TestStream skips and TODOs never appear as passing assertion evi
       const x=structuredClone(e);
       if(x.type==='test:pass' && x.data.name==='skipped result')delete x.data.skip;
       return JSON.stringify(x);
-    }).join('\\n')+'\\n';
+    }).join('\n')+'\n';
     await fs.writeFile(file,broken);
     await assert.rejects(() => projectNodeTestEvents({root,graph,catalog,
       eventPath:'observations/native.jsonl',nodeVersion:process.version}),
