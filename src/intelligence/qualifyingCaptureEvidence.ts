@@ -91,7 +91,7 @@ export function qualifyDatabaseCapture(input: {
     if (captureTime === null) catalogReasons.push('catalog-timestamp-invalid');
     if (run && captureTime !== null && timestamp(run.finishedAt) !== null
       && captureTime < timestamp(run.finishedAt)!) testPolicyReasons.push('catalog-captured-before-qualifying-tests-finished');
-    if (deployment && catalog.environmentId !== deployment.databaseEnvironmentId) catalogReasons.push('catalog-environment-differs-from-deployment');
+    if (deployment && catalog.environmentId !== deployment.databaseEnvironmentId) deploymentReasons.push('catalog-environment-differs-from-deployment');
   }
   const reasons = [...testPolicyReasons, ...deploymentReasons, ...catalogReasons];
   const catalogObservationQualifiedByReceipts = catalogReasons.length === 0;
