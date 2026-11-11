@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
-import { performance } from 'node:perf_hooks';
+// Node 22 exposes the high-resolution clock globally via the DOM lib.
 import { composeTwoHopSourceEffects } from './twoHopSourceComposition.js';
 import type { GraphNode, IntelligenceGraph } from '../types.js';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';

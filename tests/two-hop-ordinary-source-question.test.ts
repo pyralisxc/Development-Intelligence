@@ -97,10 +97,10 @@ test('cross-file direct return-call in callee is presented as selection, never o
   const g: IntelligenceGraph = {
     ...graph,
     nodes: [
-      {...nodes[0],name:'proxy',id:'symbol:src/caller.ts#function:proxy'},
-      {...nodes[1],name:'middleware',id:'symbol:src/callee.ts#function:middleware'},
+      {...nodes[0]!,name:'proxy',id:'symbol:src/caller.ts#function:proxy'},
+      {...nodes[1]!,name:'middleware',id:'symbol:src/callee.ts#function:middleware'},
     ],
-    edges:[{...graph.edges[0],from:'symbol:src/caller.ts#function:proxy',
+    edges:[{...graph.edges[0]!,from:'symbol:src/caller.ts#function:proxy',
       to:'symbol:src/callee.ts#function:middleware'}],
   };
   const nextSources:Record<string,string>={
@@ -124,7 +124,7 @@ test('cross-file direct return-call in callee is presented as selection, never o
 });
 
 test('same-line wrong callee expression does not become a conditional path', async () => {
-  const wrong={...sources,'src/caller.ts':callerSource.replace('callee(req)','unrelated(req)')};
+  const wrong:Record<string,string>={...sources,'src/caller.ts':callerSource.replace('callee(req)','unrelated(req)')};
   const result=await projectTwoHopSourceQuestion({
     graph,project:'fixture',question:'What happens when caller calls callee?',
     readSource:async p=>wrong[p] ?? null,
