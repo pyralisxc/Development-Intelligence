@@ -160,25 +160,55 @@ async function main() {
     }
     if (requestedTestFiles.length) {
       const uniqueTargets = [...new Set(requestedTestFiles)];
-      if (uniqueTargets.length > 40) throw new Error('Native test run supports max 40 exact sources');
+      // File count is not a proof limit. Bound each native subprocess for
+      // resource isolation, and process every exact tracked target in batches.
+      // The complete event population is rejoined before assertion assessment.
+      const batchSize = Number(flag('--node-test-batch-size') || '40');
+      if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 200) {
+        throw new Error('Node test batch size must be an integer from 1 to 200');
+      }
       const targets = await Promise.all(uniqueTargets.map(name => trustedTarget(root, name)));
       const reporterPath = new URL('./node-test-events-reporter.mjs', import.meta.url).href;
       const start = Date.now();
-      const executed = await run(process.execPath, [
-        '--test', '--test-reporter=' + reporterPath, ...targets.map(item => item.full),
-      ], { cwd: root, timeoutMs: 180000, env: { NODE_TEST_CONTEXT: undefined } });
+      const batches = [];
+      const combined = [];
+      let allPassed = true;
+      for (let offset = 0; offset < targets.length; offset += batchSize) {
+        const group = targets.slice(offset, offset + batchSize);
+        const executed = await run(process.execPath, [
+          '--test', '--test-reporter=' + reporterPath, ...group.map(item => item.full),
+        ], { cwd: root, timeoutMs: 180000, env: { NODE_TEST_CONTEXT: undefined } });
+        if (!executed.stdout.trim()) {
+          throw new Error('Node test batch ' + batches.length + ' emitted no structured events');
+        }
+        const events = executed.stdout.trim().split(/\r?\n/u);
+        // Validate every event envelope before admitting the aggregate;
+        // do not allow a failed batch to disappear behind later successes.
+        for (const line of events) {
+          const event = JSON.parse(line);
+          if (event.schemaVersion !== 1 || !event.data || typeof event.type !== 'string') {
+            throw new Error('Native test batch emitted an invalid structured event');
+          }
+        }
+        combined.push(...events);
+        batches.push({
+          index: batches.length, fileCount: group.length, exitCode: executed.code,
+          eventCount: events.length,
+        });
+        if (executed.code !== 0) allPassed = false;
+      }
       measures.nodeTestMs = Date.now() - start;
       const reportPath = path.join(scratch, 'node-test-events.jsonl');
-      if (!executed.stdout.trim()) throw new Error('Node test runner emitted no structured events');
-      await fs.writeFile(reportPath, executed.stdout);
+      await fs.writeFile(reportPath, combined.join('\n') + '\n');
       const associated = await projectNodeTestEvents({
         root, graph, catalog, eventPath: path.relative(root, reportPath),
         nodeVersion: process.version, runId: 'operator-owned-local-execution',
       });
       nodeProjection = associated;
-      runExit = executed.code;
+      runExit = allPassed ? 0 : 1;
       testResult = {
-        exitCode: executed.code, exactSourceFiles: targets.map(item => item.relative),
+        exitCode: runExit, exactSourceFiles: targets.map(item => item.relative),
+        batches, batchSize, allBatchesCompleted: batches.length === Math.ceil(targets.length / batchSize),
         identity: associated.identity, counts: associated.counts,
         tests: associated.tests.slice(0, 20),
         eventPresentation: {
