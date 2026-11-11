@@ -54,3 +54,44 @@ test('skipped required test and missing binding fail closed',()=>{
   assert.equal(qualifyDatabaseCapture({source,run:unrun,deployment,catalog}).captureReady,false);
   assert.equal(qualifyDatabaseCapture({source,run,deployment:{...deployment,databaseEnvironmentId:null},catalog}).captureReady,false);
 });
+
+test('a coherent captured catalog remains qualified when no tests have run',()=>{
+  const r=qualifyDatabaseCapture({source,run:null,deployment,catalog});
+  assert.equal(r.catalogObservation.qualifiedByUpstreamReceipts,true);
+  assert.equal(r.environmentAssociation.qualifiedByUpstreamReceipts,true);
+  assert.equal(r.postCiCollectionPolicy.ready,false);
+  assert.ok(r.postCiCollectionPolicy.testReasons.includes('qualifying-run-unavailable'));
+  assert.equal(r.catalogObservation.historicalValidityRequiresGreenTests,false);
+  assert.equal(r.catalogObservation.currentEnvironmentEstablished,false);
+});
+test('a failed or mocked/unauthenticated CI run is not an epistemic veto over captured metadata',()=>{
+  const red={...run,jobs:[{id:'verify',required:true,status:'failure' as const}]};
+  const observed=qualifyDatabaseCapture({source,run:red,deployment,catalog});
+  assert.equal(observed.catalogObservation.qualifiedByUpstreamReceipts,true);
+  assert.equal(observed.environmentAssociation.qualifiedByUpstreamReceipts,true);
+  assert.equal(observed.postCiCollectionPolicy.ready,false);
+  assert.ok(observed.postCiCollectionPolicy.testReasons.includes('required-run-jobs-not-green'));
+  const reported=qualifyDatabaseCapture({source,run:{...run,source:'caller-reported'},deployment,catalog});
+  assert.equal(reported.catalogObservation.qualifiedByUpstreamReceipts,true);
+  assert.equal(reported.postCiCollectionPolicy.ready,false);
+});
+test('untrusted catalog and mismatched deployment never become qualified observations',()=>{
+  const unverified=qualifyDatabaseCapture({source,run,deployment,
+    catalog:{...catalog,source:'caller-reported'}});
+  assert.equal(unverified.catalogObservation.qualifiedByUpstreamReceipts,false);
+  assert.equal(unverified.environmentAssociation.qualifiedByUpstreamReceipts,false);
+  const mismatch=qualifyDatabaseCapture({source,run,
+    deployment:{...deployment,databaseEnvironmentId:'other-db'},catalog});
+  assert.equal(mismatch.catalogObservation.qualifiedByUpstreamReceipts,true);
+  assert.equal(mismatch.environmentAssociation.qualifiedByUpstreamReceipts,false);
+  assert.equal(mismatch.postCiCollectionPolicy.ready,false);
+});
+test('CI timing is a collection policy and cannot negate a historical capture',()=>{
+  const earlier=qualifyDatabaseCapture({source,run,deployment,
+    catalog:{...catalog,capturedAt:'2026-11-09T11:59:59Z'}});
+  assert.equal(earlier.catalogObservation.qualifiedByUpstreamReceipts,true);
+  assert.equal(earlier.environmentAssociation.qualifiedByUpstreamReceipts,true);
+  assert.equal(earlier.postCiCollectionPolicy.ready,false);
+  assert.ok(earlier.postCiCollectionPolicy.testReasons
+    .includes('catalog-captured-before-qualifying-tests-finished'));
+});
