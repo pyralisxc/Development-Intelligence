@@ -70,7 +70,8 @@ export function projectRpcSqlSourceCandidates(input: {
     throw new Error('RPC routine name requires one exact source identifier');
   }
   const base = {
-    mode: RPC_SQL_SOURCE_LENS as 'rpc-sql-source-candidates',
+    mode: 'rpc-sql-source-candidates' as const,
+    version: RPC_SQL_SOURCE_LENS,
     project: graph.project, revision: graph.repositoryRevision, graphId: graph.graphId,
     callerId: input.callerId, routineName: input.routineName,
     proof: {
