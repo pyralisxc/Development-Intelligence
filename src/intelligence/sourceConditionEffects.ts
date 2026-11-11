@@ -39,6 +39,9 @@ export function parseTwoHopSourceQuestion(question: string): { caller: string; c
     new RegExp('\\bwhat happens when\\s+' + identifier + '\\s+(?:calls|invokes)\\s+' + identifier + '\\b', 'iu'),
     new RegExp('\\b(?:what|which)\\s+(?:conditions?|effects?|conditions and effects)\\s+(?:propagate|flow)\\s+from\\s+' + identifier + '\\s+to\\s+' + identifier + '\\b', 'iu'),
     new RegExp('\\bhow does\\s+' + identifier + '\\s+(?:call|invoke)\\s+' + identifier + '\\b', 'iu'),
+    new RegExp('\\bunder what conditions does\\s+' + identifier + '\\s+(?:call|invoke)\\s+' + identifier + '\\b', 'iu'),
+    new RegExp('\\bwhen does\\s+' + identifier + '\\s+(?:call|invoke)\\s+' + identifier + '\\b', 'iu'),
+    new RegExp('\\bwhich conditions govern\\s+' + identifier + '\\s+(?:calling|invoking)\\s+' + identifier + '\\b', 'iu'),
   ];
   const matches = patterns.flatMap(pattern => {
     const match = pattern.exec(question);

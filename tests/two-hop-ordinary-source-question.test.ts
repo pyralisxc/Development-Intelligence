@@ -54,6 +54,14 @@ test('ordinary explicit pair grammar does not hijack unrelated questions', () =>
   assert.deepEqual(parseTwoHopSourceQuestion('What conditions and effects propagate from caller to callee?'),
     { caller:'caller',callee:'callee' });
   assert.equal(isConditionEffectQuestion('How does caller call callee?'), true);
+  assert.deepEqual(parseTwoHopSourceQuestion('Under what conditions does caller call callee?'),
+    { caller:'caller',callee:'callee' });
+  assert.deepEqual(parseTwoHopSourceQuestion('When does caller invoke callee?'),
+    { caller:'caller',callee:'callee' });
+  assert.deepEqual(parseTwoHopSourceQuestion('Which conditions govern caller calling callee?'),
+    { caller:'caller',callee:'callee' });
+  assert.equal(parseTwoHopSourceQuestion('Under what conditions does caller call a function?'),null);
+  assert.equal(parseTwoHopSourceQuestion('Under what conditions does caller call caller?'),null);
   assert.equal(isConditionEffectQuestion('Which tests cover callee?'), false);
   assert.equal(parseTwoHopSourceQuestion('What happens when the MSI rollback fails?'),null);
 });
@@ -121,6 +129,16 @@ test('cross-file direct return-call in callee is presented as selection, never o
   assert.ok(r.paths.every((p:any)=>p.kind==='return-call'));
   assert.ok(r.paths.some((p:any)=>p.expression==='oauthHandler(...)'));
   assert.equal(r.proof.runtimeExecutionObserved,false);
+});
+
+test('ordinary caller/callee condition wording uses the exact existing-graph proof', async () => {
+  const q='Under what conditions does caller call callee?';
+  const result=await ask(q) as any;
+  assert.equal(result.status,'supported',JSON.stringify(result));
+  assert.equal(result.mode,'two-hop-conditional-source');
+  assert.equal(result.counts.qualified,2);
+  assert.equal(result.timing.graphBuildIncluded,false);
+  assert.equal(result.proof.runtimeExecutionObserved,false);
 });
 
 test('same-line wrong callee expression does not become a conditional path', async () => {
