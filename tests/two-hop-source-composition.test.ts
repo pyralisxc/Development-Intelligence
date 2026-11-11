@@ -10,7 +10,7 @@ const calleeMode='src/auth.ts:condition:6805';
 const calleeFlag='src/auth.ts:condition:6832';
 const graph={
  project:'DI',graphId,repositoryRevision:revision,analyzerVersion:'test',
- nodes:[callerId,calleeId].map(id=>({id,layer:'structural',kind:'function'})),
+ nodes:[callerId,calleeId].map(id=>({id,layer:'structural',kind:'function',name:id.split(':').at(-1)})),
  edges:[{id:'call-210',from:callerId,to:calleeId,kind:'calls',layer:'structural',
  status:'resolved',evidence:['src/auth.ts:210']}],
  coverage:{files:[{path:'src/auth.ts',status:'complete'}]},
@@ -67,4 +67,19 @@ test('mismatched revision, effect or partial lens does not promote proof',()=>{
  assert.equal(composeTwoHopSourceEffects({...input,callee:{...callee,identity:{...callee.identity,sourceRevision:'b'.repeat(40)}}}).status,'unproven');
  assert.equal(composeTwoHopSourceEffects({...input,call:{effectLine:210,effectSha256:'wrong'}}).status,'unproven');
  assert.equal(composeTwoHopSourceEffects({...input,caller:{...caller,coverage:{completeForSupportedStatements:true,presentationTruncated:true}}}).status,'unproven');
+});
+
+test('same-line resolved edge to a different nested callee is not returned-call proof',()=>{
+ const otherId='symbol:src/auth.ts#function:other';
+ const wrong={
+   ...graph,
+   nodes:[...graph.nodes,{id:otherId,layer:'structural',kind:'function',name:'other'}],
+   edges:[{...graph.edges[0],to:otherId}],
+ } as IntelligenceGraph;
+ const calleeOther={...callee,identity:{...callee.identity,functionId:otherId}};
+ assert.equal(composeTwoHopSourceEffects({...input,graph:wrong,callee:calleeOther}).status,'unproven');
+});
+test('duplicate predicate identity cannot establish a conditional source path',()=>{
+ const repeated={...callee,branches:[...callee.branches,callee.branches[0]]};
+ assert.equal(composeTwoHopSourceEffects({...input,callee:repeated}).status,'unproven');
 });

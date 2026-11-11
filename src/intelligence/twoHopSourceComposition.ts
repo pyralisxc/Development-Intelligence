@@ -64,6 +64,14 @@ export function composeTwoHopSourceEffects(input:{
     && x.sourceLine===input.calleeReturn.effectLine
     && x.expressionSha256===input.calleeReturn.effectSha256);
   if(from.length!==1||to.length!==1)return no('effect-witness-not-unique');
+  // Multiple resolved callees can share one source line (nested calls). An
+  // exact resolved edge at that line alone does not identify which call is
+  // the returned expression. Keep this first proof slice to a direct, named
+  // callee and reject method/dynamic/nested alternatives until exact AST
+  // call-expression identity is available.
+  const calleeNode=graph.nodes.find(x=>x.id===callee.identity.functionId);
+  if(!calleeNode?.name || from[0]!.expression!==calleeNode.name+'(...)')
+    return no('direct-return-call-target-not-confirmed');
   const edge=graph.edges.filter(x=>x.kind==='calls'&&x.status==='resolved'
     && x.layer==='structural'&&x.from===caller.identity.functionId
     && x.to===callee.identity.functionId
@@ -75,6 +83,8 @@ export function composeTwoHopSourceEffects(input:{
     [callee,to[0]!,input.calleeAssumptions],
   ] as const){
     const branches=new Map(item.branches.map(b=>[b.id,b]));
+    if(branches.size!==item.branches.length)
+      return no('ambiguous-branch-identities');
     for(const required of effect.requiredConditions){
       const branch=branches.get(required.conditionId);
       if(!branch||!branch.predicateSha256||!Object.prototype.hasOwnProperty.call(assumptions,required.conditionId)
