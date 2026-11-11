@@ -104,8 +104,8 @@ export function projectRpcSqlSourceCandidates(input: {
     && node.name === input.routineName
     && sourcePath(node) && covered.has(sourcePath(node)!)).map(node => node.id));
   const calls = graph.edges.filter(edge => edge.from === caller.id && edge.kind === 'invokes'
-    && edge.status === 'resolved' && rpcTargets.has(edge.to));
-  const distinctTargets = [...new Set(calls.map(edge => edge.to))];
+    && edge.status === 'resolved' && edge.to !== null && rpcTargets.has(edge.to));
+  const distinctTargets = [...new Set(calls.map(edge => edge.to!))];
   if (distinctTargets.length !== 1 || calls.length !== 1) {
     return unknown(distinctTargets.length > 1
       ? 'ambiguous-resolved-source-rpc-invocation'
@@ -119,19 +119,22 @@ export function projectRpcSqlSourceCandidates(input: {
   if (sourceSql.some(node => !sourcePath(node) || !covered.has(sourcePath(node)!))) {
     return unknown('sql-source-coverage-incomplete');
   }
+  if (sourceSql.some(node => !nodeValue(node, 'qualifiedName')
+    || !nodeValue(node, 'signature'))) return unknown('sql-definition-identity-incomplete');
   const candidates = sourceSql.map(node => {
     const refs = graph.edges.filter(edge => edge.from === node.id
       && edge.status === 'resolved'
+      && edge.to !== null
       && (edge.kind === 'reads' || edge.kind === 'writes'))
       .map(edge => ({ kind: edge.kind as 'reads' | 'writes',
-        name: nodes.get(edge.to)?.name ?? '[unresolved reference]',
-        targetNodeId: edge.to }))
+        name: nodes.get(edge.to!)?.name ?? '[unresolved reference]',
+        targetNodeId: edge.to! }))
       .sort((a, b) => a.kind.localeCompare(b.kind)
         || a.name.localeCompare(b.name) || a.targetNodeId.localeCompare(b.targetNodeId));
     return {
       id: node.id,
-      qualifiedName: nodeValue(node, 'qualifiedName') ?? node.name,
-      signature: nodeValue(node, 'signature') ?? '[signature unavailable]',
+      qualifiedName: nodeValue(node, 'qualifiedName')!,
+      signature: nodeValue(node, 'signature')!,
       sourcePath: sourcePath(node)!,
       declaredReferences: refs,
     };
