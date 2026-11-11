@@ -344,6 +344,8 @@ Runtime URLs must use operator-allowlisted HTTP(S) origins. Redirects are revali
 
 External technical-source data is sanitized before constructing normalized evidence, graph IDs or outward query results. Arbitrary provider row contents, nested secrets, request/response bodies, credentials and personal identifiers are not returned by default; the envelope reports redaction/truncation counts and retains bounded technical metadata only. Source discovery exposes provider origins rather than credential-bearing query/path details. Such observations remain ephemeral, never accepted graph truth.
 
+The provider-neutral database-schema projection also represents schema-qualified tables, safe column types, reported RLS state, foreign-key relationships, migration versions and serverless function identity. Source correlations require an exact unique tracked migration version, function entrypoint, or unambiguous SQL table; matching migration version IDs is not proof of schema equivalence or runtime database writes. All provider metadata remains a sanitized ephemeral observation with explicit source, environment and time boundaries.
+
 ## Human visualization
 
 `/graph` is a human client of the same graph contracts agents use. It accepts canonical project/ref context or an explicit runtime `graphId`.

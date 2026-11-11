@@ -237,7 +237,12 @@ function databaseEvidence(source: TechnicalSourceConfig, data: unknown, observed
       kind: 'database-table',
       locator: id,
       name: qualified,
-      value: { schema: table.schema, name: table.name, qualifiedName: qualified, raw: table.raw },
+      value: { schema: table.schema, name: table.name, qualifiedName: qualified,
+        rlsEnabled: typeof record(table.raw)?.rls_enabled === 'boolean'
+          ? record(table.raw)!.rls_enabled : null,
+        primaryKeys: Array.isArray(record(table.raw)?.primary_keys)
+          ? record(table.raw)!.primary_keys : [],
+        raw: table.raw },
       observedAt,
       revision,
     }));
@@ -269,6 +274,74 @@ function databaseEvidence(source: TechnicalSourceConfig, data: unknown, observed
       to: id,
       kind: 'contains',
       evidence: [`schema ${routine.schema} contains routine ${routine.name}`],
+    }));
+  }
+
+  const knownTables = new Set(items.tables.map(item => (item.schema + '.' + item.name).toLowerCase()));
+  const seenForeignKeys = new Set<string>();
+  for (const table of items.tables) {
+    const raw = record(table.raw);
+    if (!raw) continue;
+    const qualified = (table.schema + '.' + table.name).toLowerCase();
+    if (Array.isArray(raw.columns)) for (const columnValue of raw.columns) {
+      const column = record(columnValue);
+      const name = textField(column, 'name');
+      if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) continue;
+      const locator = 'database-column:' + qualified + '.' + name.toLowerCase();
+      observations.push(observation({
+        source, adapter: 'database-schema', kind: 'database-column',
+        locator, name: qualified + '.' + name,
+        value: { table: qualified, column: name,
+          dataType: textField(column, 'data_type', 'type', 'format'),
+          nullable: typeof column?.nullable === 'boolean' ? column.nullable : null },
+        observedAt, revision,
+      }));
+      relationships.push(relationship({
+        sourceId: source.id, from: 'database-table:' + qualified, to: locator,
+        kind: 'contains', evidence: ['table ' + qualified + ' declares column ' + name],
+      }));
+    }
+    const foreignKeys = Array.isArray(raw.foreign_key_constraints)
+      ? raw.foreign_key_constraints : raw.foreignKeys;
+    if (Array.isArray(foreignKeys)) for (const itemValue of foreignKeys) {
+      const item = record(itemValue);
+      if (!item) continue;
+      const target = textField(item, 'target_table', 'targetTable')?.toLowerCase();
+      const from = textField(item, 'source_table', 'sourceTable')?.toLowerCase();
+      const constraint = textField(item, 'name');
+      if (!target || !from || from !== qualified || !constraint) continue;
+      const key = [from, target, constraint].join('\0');
+      if (seenForeignKeys.has(key)) continue;
+      seenForeignKeys.add(key);
+      relationships.push(relationship({
+        sourceId: source.id, from: 'database-table:' + from, to: 'database-table:' + target,
+        kind: 'foreign-key', status: knownTables.has(target) ? 'resolved' : 'candidate',
+        evidence: ['provider reported foreign key ' + constraint, 'source ' + from, 'target ' + target],
+      }));
+    }
+  }
+
+  const metadata = record(data);
+  if (Array.isArray(metadata?.migrations)) for (const value of metadata.migrations) {
+    const item = record(value);
+    const version = typeof value === 'string' ? value : textField(item, 'version');
+    if (!version || !/^\d{6,20}$/u.test(version)) continue;
+    observations.push(observation({
+      source, adapter: 'database-schema', kind: 'database-migration',
+      locator: 'database-migration:' + version, name: version,
+      value: { version }, observedAt, revision,
+    }));
+  }
+
+  const functions = Array.isArray(metadata?.edgeFunctions) ? metadata.edgeFunctions : metadata?.edge_functions;
+  if (Array.isArray(functions)) for (const value of functions) {
+    const item = record(value);
+    const slug = textField(item, 'slug', 'name');
+    if (!slug || !/^[A-Za-z0-9_-]{1,128}$/u.test(slug)) continue;
+    observations.push(observation({
+      source, adapter: 'database-schema', kind: 'edge-function',
+      locator: 'edge-function:' + slug, name: slug,
+      value: { slug }, observedAt, revision,
     }));
   }
 
@@ -334,15 +407,35 @@ async function correlate(project: string, source: TechnicalSourceConfig, observa
         evidence: [`external git revision ${gitSha} equals inspected repository revision`],
       });
 
+      if (item.kind === 'database-migration') {
+        const version = typeof value?.version === 'string' ? value.version : null;
+        const matches = version ? graph.nodes.filter(node =>
+          node.kind === 'file' && node.sourceId.startsWith('repo:supabase/migrations/')
+          && node.sourceId.slice('repo:supabase/migrations/'.length).startsWith(version + '_')
+          && node.sourceId.endsWith('.sql')) : [];
+        if (matches.length === 1) correlations.push({
+          externalId: item.id, repositoryTarget: matches[0]!.id,
+          kind: 'matches-entity', status: 'resolved',
+          evidence: ['provider migration version uniquely matches tracked SQL migration source'],
+        });
+      }
+      if (item.kind === 'edge-function') {
+        const slug = typeof value?.slug === 'string' ? value.slug : null;
+        const matches = slug ? graph.nodes.filter(node =>
+          node.kind === 'file'
+          && node.sourceId === 'repo:supabase/functions/' + slug + '/index.ts') : [];
+        if (matches.length === 1) correlations.push({
+          externalId: item.id, repositoryTarget: matches[0]!.id,
+          kind: 'matches-entity', status: 'resolved',
+          evidence: ['provider function slug uniquely matches tracked edge-function entrypoint'],
+        });
+      }
       if (item.kind === 'database-table') {
         const qualified = typeof value?.qualifiedName === 'string' ? value.qualifiedName.toLowerCase() : null;
-        const short = typeof value?.name === 'string' ? value.name.toLowerCase() : null;
-        const candidates = graph.nodes.filter(node => {
-          if (node.kind !== 'sql-table') return false;
-          const candidateQualified = graphText(node, 'qualifiedName')?.toLowerCase();
-          const candidateName = node.name?.toLowerCase();
-          return Boolean((qualified && candidateQualified === qualified) || (short && candidateName === short));
-        });
+        // Source SQL may use an unqualified name whose real search_path is unknown.
+        // Never resolve a provider-qualified table from a coincident short name.
+        const candidates = graph.nodes.filter(node => node.kind === 'sql-table'
+          && qualified !== null && graphText(node, 'qualifiedName')?.toLowerCase() === qualified);
         if (candidates.length === 1) correlations.push({
           externalId: item.id,
           repositoryTarget: candidates[0]!.id,
