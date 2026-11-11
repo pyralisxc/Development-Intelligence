@@ -332,7 +332,7 @@ export async function projectTwoHopSourceQuestion(input: {
   const callerPath = canonicalPath(caller.node);
   const calleePath = canonicalPath(callee);
   const paths = [callerPath, calleePath];
-  if (paths.some(p => !p || !/\\.(?:[cm]?[jt]sx?)$/iu.test(p) || isWrittenTestSource(p))
+  if (paths.some(p => !p || !/\.(?:[cm]?[jt]sx?)$/iu.test(p) || isWrittenTestSource(p))
     || paths.some(p => graph.coverage?.files?.find(file => file.path === p)?.status !== 'complete')) {
     return unavailable('source-coverage-or-language-incomplete', {
       callerId: caller.node.id, calleeId: callee.id });
@@ -340,7 +340,7 @@ export async function projectTwoHopSourceQuestion(input: {
   const readStarted = performance.now();
   const texts = await Promise.all(paths.map(p => input.readSource(p!)));
   const sourceReadMs = performance.now() - readStarted;
-  if (texts.some(v => !v || v.includes('\\0'))) {
+  if (texts.some(v => !v || v.includes('\0'))) {
     return unavailable('exact-source-unavailable', { callerId: caller.node.id,
       calleeId: callee.id });
   }
@@ -465,7 +465,7 @@ export async function querySourceConditionEffects(input: {
             const stat = await fs.lstat(file);
             if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) return null;
             const text = await fs.readFile(file, 'utf8');
-            return text.includes('\\0') ? null : text;
+            return text.includes('\0') ? null : text;
           } catch { return null; }
         },
       }));
