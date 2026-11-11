@@ -2696,7 +2696,9 @@ export async function queryWorkbench(input: {
   const testQuestion = !input.sourceId ? parseTestSourceQuestion(text) : null;
   if (testQuestion) {
     const graph = await currentGraph(input.project, input.ref, input.graphId);
-    const observed = testSourceProjection(graph, testQuestion, input.scope);
+    const visibleTestFiles = input.semanticDepth === 'exhaustive' ? 200
+      : input.semanticDepth === 'expanded' ? 100 : 20;
+    const observed = testSourceProjection(graph, testQuestion, input.scope, visibleTestFiles);
     return {
       intent: 'test-source-links',
       subject: observed.targetNodeId

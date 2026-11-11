@@ -56,12 +56,25 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
       "import test from 'node:test';",
       "import assert from 'node:assert/strict';",
       "import { provideAnswer } from '../src/impl.js';",
-      "test('referenced function', () => { assert.equal(provideAnswer(1), 2); });", '',
+      "test('referenced function', () => {",
+      ...Array.from({ length: 8 }, (_, i) =>
+        '  assert.equal(provideAnswer(' + (i + 1) + '), ' + (i + 2) + ');'),
+      '});', '',
     ].join('\n'));
     await fs.writeFile(path.join(source, 'tests', 'importOnly.test.ts'), [
       "import { unrelated } from '../src/adjacent.js';",
       'void unrelated;', '',
     ].join('\n'));
+    // More than the default 20 response rows: each file must have a true
+    // compiler-resolved call, not a misleading import or name match.
+    await Promise.all(Array.from({ length: 24 }, (_, i) =>
+      fs.writeFile(path.join(source, 'tests', 'z-extra-' + String(i).padStart(3, '0') + '.test.ts'), [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "import { provideAnswer } from '../src/impl.js';",
+        "test('native source call " + i + "', () => { assert.equal(provideAnswer(" + i + "), " + (i + 1) + "); });",
+        '',
+      ].join('\n'))));
     await runChecked('git', ['-C', source, 'add', '.']);
     await runChecked('git', ['-C', source,
       '-c', 'user.email=di@example.invalid', '-c', 'user.name=DI Test',
@@ -139,16 +152,39 @@ test('ordinary source-reference questions reuse exact compiler graph proof in in
     assert.equal(testInvestigation.intent, 'test-source-links');
     assert.equal(testInvestigation.answerClassification, 'established-bounded');
     assert.equal(testInvestigation.result.status, 'supported');
-    assert.equal(testInvestigation.result.totalTestFiles, 1);
-    assert.deepEqual(testInvestigation.result.tests.map((item: any) => item.path),
-      ['tests/reference.test.ts']);
+    assert.equal(testInvestigation.result.totalTestFiles, 25);
+    assert.equal(testInvestigation.result.returnedTestFiles, 20);
+    assert.equal(testInvestigation.result.testFilesTruncated, true);
+    assert.equal(testInvestigation.result.callsiteEvidenceTruncated, true);
+    assert.equal(testInvestigation.result.tests[0]?.path, 'tests/reference.test.ts');
+    assert.match(testInvestigation.answer, /additional source-linked test file\(s\) are omitted/u);
+    const exhaustive = await callTool('investigate', {
+      ...selected, question: testQuestion, semanticDepth: 'exhaustive',
+    }) as any;
+    assert.equal(exhaustive.intent, 'test-source-links');
+    assert.equal(exhaustive.result.totalTestFiles, 25);
+    assert.equal(exhaustive.result.returnedTestFiles, 25);
+    assert.equal(exhaustive.result.testFilesTruncated, false,
+      'exhaustive mode must not preserve the artificial 20-file ceiling');
+    assert.equal(exhaustive.result.callsiteEvidenceTruncated, true,
+      'separate callsite presentation omission from test-file completeness');
+    assert.equal(exhaustive.result.tests.length, 25);
+    assert.equal(exhaustive.result.graphId, testInvestigation.result.graphId);
+    assert.ok(exhaustive.result.totalCallsites > exhaustive.result.returnedCallsites,
+      'one compiler edge may hold many exact source callsite locations');
+    assert.match(exhaustive.answer, /source callsite\(s\) and .*relationship edge\(s\) are omitted/u);
+    assert.doesNotMatch(exhaustive.answer, /not an exhaustive test listing/u);
     assert.equal(testInvestigation.result.tests[0].compilerVerified, true);
     assert.equal(testInvestigation.result.executionObserved, false);
     assert.equal(testInvestigation.result.assertionBehaviorEstablished, false);
     assert.match(testInvestigation.answer, /does not prove that the test ran/u);
     assert.equal(testAssessment.mode, 'test-source-links');
     assert.equal(testAssessment.answerStatus, 'supported');
-    assert.ok(testAssessment.claims[0].proof.edgeIds.includes(compilerTestEdge.id));
+    assert.ok(testAssessment.claims[0].proof.edgeIds.some((id: string) =>
+      testDirect.edges.some((edge: any) => edge.id === id
+        && edge.from === 'file:tests/reference.test.ts'
+        && edge.strategy === 'typescript-checker-symbol.v1')),
+      'bounded source proof must be an exact independently resolved compiler edge');
     assert.equal(testDirect.graphId, testAssessment.graphId);
     assert.equal(testAssessment.graphId, testInvestigation.result.graphId);
 
