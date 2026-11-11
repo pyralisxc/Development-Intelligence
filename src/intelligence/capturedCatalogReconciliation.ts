@@ -39,7 +39,8 @@ const normArgs = (s: unknown): string | null => {
   if (typeof s !== 'string' || !s.trim() || s.length > 2048 || s.includes('\0')) return null;
   // Deliberately conservative: do not rewrite PostgreSQL defaults, aliases,
   // type names, quoted identifiers or overloaded argument modes.
-  if (/\bdefault\b|["']/iu.test(s)) return null;
+  if (/\bdefault\b|["']/iu.test(s)
+    || !/^[A-Za-z0-9_.,()[\] \t]+$/u.test(s)) return null;
   return s.trim().replace(/\s+/gu, ' ').replace(/\s*,\s*/gu, ', ').toLowerCase();
 };
 const digest = (v: unknown): string => createHash('sha256')

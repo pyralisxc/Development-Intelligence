@@ -124,6 +124,17 @@ test('overloaded routine identities remain distinct, duplicate missing signature
  assert.equal(unresolved.graphProjection.edges.length,0);
 });
 
+test('untrusted SQL identity text cannot leak arbitrary provider content',()=>{
+ const injected={...evidence,observations:[{
+   ...evidence.observations[0]!,
+   value:{qualifiedName:name,
+     raw:{identity_arguments:'p_lineage_id uuid; DROP TABLE secret_records'}},
+ }]} as TechnicalEvidenceEnvelope;
+ const result=reconcileCapturedCatalog({graph,evidence:injected,qualifiedName:name});
+ assert.ok(result.rows.every(x=>x.comparison==='candidate-name-only'));
+ assert.equal(JSON.stringify(result).includes('secret_records'),false);
+});
+
 test('invalid scope, provider adapter, or oversized population is refused',()=>{
  assert.throws(()=>reconcileCapturedCatalog({graph,evidence,qualifiedName:'heart'}),/schema-qualified/);
  assert.throws(()=>reconcileCapturedCatalog({graph,evidence:{...evidence,source:{...evidence.source,adapter:'generic-json'}} as TechnicalEvidenceEnvelope,
