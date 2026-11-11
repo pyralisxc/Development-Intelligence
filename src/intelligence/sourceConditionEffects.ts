@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
+import { performance } from 'node:perf_hooks';
+import { composeTwoHopSourceEffects } from './twoHopSourceComposition.js';
 import type { GraphNode, IntelligenceGraph } from '../types.js';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
@@ -30,8 +32,23 @@ function explicitCallableSubject(question: string): string | null {
   }))];
   return names.length === 1 ? names[0]! : null;
 }
+/** Narrow ordinary grammar: require two explicitly named callables. */
+export function parseTwoHopSourceQuestion(question: string): { caller: string; callee: string } | null {
+  const identifier = '([A-Za-z_$][A-Za-z0-9_$]*)';
+  const patterns = [
+    new RegExp('\\bwhat happens when\\s+' + identifier + '\\s+(?:calls|invokes)\\s+' + identifier + '\\b', 'iu'),
+    new RegExp('\\b(?:what|which)\\s+(?:conditions?|effects?|conditions and effects)\\s+(?:propagate|flow)\\s+from\\s+' + identifier + '\\s+to\\s+' + identifier + '\\b', 'iu'),
+    new RegExp('\\bhow does\\s+' + identifier + '\\s+(?:call|invoke)\\s+' + identifier + '\\b', 'iu'),
+  ];
+  const matches = patterns.flatMap(pattern => {
+    const match = pattern.exec(question);
+    return match?.[1] && match[2] ? [{ caller: match[1], callee: match[2] }] : [];
+  });
+  const unique = [...new Map(matches.map(pair => [pair.caller + ':' + pair.callee, pair])).values()];
+  return unique.length === 1 && unique[0]!.caller !== unique[0]!.callee ? unique[0]! : null;
+}
 export function isConditionEffectQuestion(question: string): boolean {
-  return explicitCallableSubject(question) !== null;
+  return parseTwoHopSourceQuestion(question) !== null || explicitCallableSubject(question) !== null;
 }
 
 export interface SourceRequirement {
@@ -263,9 +280,203 @@ export function projectSourceConditionEffects(input: {
   };
 }
 
+/** 
+ * Compose source conditions from two exact callables in one already-built graph.
+ * No checkout is performed here; callers inject exact-source reads, so this
+ * projection can be measured/tested independently of repository construction.
+ */
+export async function projectTwoHopSourceQuestion(input: {
+  graph: IntelligenceGraph;
+  project: string;
+  question: string;
+  scope?: string;
+  readSource: (sourcePath: string) => Promise<string | null>;
+}): Promise<Record<string, unknown> | null> {
+  const pair = parseTwoHopSourceQuestion(input.question);
+  if (!pair) return null;
+  const started = performance.now();
+  const { graph } = input;
+  const base = { project: input.project, revision: graph.repositoryRevision,
+    graphId: graph.graphId, mode: 'two-hop-conditional-source',
+    sourceOnly: true, runtimeObserved: false, requestedQuestion: input.question,
+    query: pair };
+  const unavailable = (reason: string, extra: Record<string, unknown> = {}) => ({
+    ...base, status: 'unproven', reason, paths: [], 
+    proof: { jointPredicateSatisfiabilityProven: false,
+      argumentMappingProven: false, runtimeExecutionObserved: false,
+      deployedConfigurationEstablished: false, independentlyVerifiedTestRun: false },
+    timing: { graphBuildIncluded: false,
+      existingGraphProjectionMs: Number((performance.now()-started).toFixed(2)) },
+    ...extra,
+  });
+  if (graph.project !== input.project || !graph.repositoryRevision) {
+    return unavailable('graph-identity-incomplete');
+  }
+  const caller = relevantFunction(graph, pair.caller, input.scope);
+  if (!caller.node) return unavailable(caller.reason, {
+    candidates: caller.candidates.map(node => ({ id: node.id, path: canonicalPath(node) })),
+  });
+  const targets = new Map(graph.nodes.filter(node =>
+    node.layer === 'structural' && CALLABLE.has(node.kind)
+    && node.name === pair.callee).map(node => [node.id, node]));
+  const candidateEdges = graph.edges.filter(edge =>
+    edge.layer === 'structural' && edge.kind === 'calls' && edge.status === 'resolved'
+    && edge.from === caller.node!.id && Boolean(edge.to && targets.has(edge.to)));
+  const candidateTargetIds = [...new Set(candidateEdges.map(edge => edge.to!))];
+  if (candidateTargetIds.length !== 1) {
+    return unavailable(candidateTargetIds.length > 1
+      ? 'ambiguous-resolved-call-target' : 'exact-resolved-call-target-unavailable',
+      { callerId: caller.node.id, candidateTargetIds });
+  }
+  const callee = targets.get(candidateTargetIds[0]!)!;
+  const callerPath = canonicalPath(caller.node);
+  const calleePath = canonicalPath(callee);
+  const paths = [callerPath, calleePath];
+  if (paths.some(p => !p || !/\\.(?:[cm]?[jt]sx?)$/iu.test(p) || isWrittenTestSource(p))
+    || paths.some(p => graph.coverage?.files?.find(file => file.path === p)?.status !== 'complete')) {
+    return unavailable('source-coverage-or-language-incomplete', {
+      callerId: caller.node.id, calleeId: callee.id });
+  }
+  const readStarted = performance.now();
+  const texts = await Promise.all(paths.map(p => input.readSource(p!)));
+  const sourceReadMs = performance.now() - readStarted;
+  if (texts.some(v => !v || v.includes('\\0'))) {
+    return unavailable('exact-source-unavailable', { callerId: caller.node.id,
+      calleeId: callee.id });
+  }
+  const lensStarted = performance.now();
+  const callerLens = projectSourceConditionEffects({
+    graph, sourcePath: callerPath!, symbol: caller.node, source: texts[0]!,
+  });
+  const calleeLens = projectSourceConditionEffects({
+    graph, sourcePath: calleePath!, symbol: callee, source: texts[1]!,
+  });
+  const lensMs = performance.now() - lensStarted;
+  if (callerLens.status !== 'supported' || calleeLens.status !== 'supported') {
+    return unavailable('source-lens-unavailable', { callerId: caller.node.id,
+      calleeId: callee.id });
+  }
+  const callerEffects = (callerLens.effects as SourceEffect[]).filter(effect =>
+    effect.kind === 'return-call' && effect.expression === pair.callee + '(...)');
+  const calleeEffects = (calleeLens.effects as SourceEffect[]).filter(effect =>
+    effect.kind === 'return' || effect.kind === 'return-call');
+  const callerBranches = new Map((callerLens.branches as SourceCondition[]).map(b => [b.id, b]));
+  const calleeBranches = new Map((calleeLens.branches as SourceCondition[]).map(b => [b.id, b]));
+  const compositionStarted = performance.now();
+  const MAX_COMPOSITIONS = 100;
+  const MAX_REPORTED_PATHS = 24;
+  const results: Array<{ kind: SourceEffect['kind']; expression: string; sourceLine: number;
+    requiredConditions: Array<{ functionId: string; conditionId: string;
+      truth: boolean; predicateSha256: string; predicate: string }>;
+    sourceWitnesses: string[] }> = [];
+  const reasons: Record<string, number> = {};
+  const totalPairCount = callerEffects.length * calleeEffects.length;
+  let attempted = 0, qualified = 0;
+  for (const from of callerEffects) {
+    for (const to of calleeEffects) {
+      if (attempted >= MAX_COMPOSITIONS) break;
+      attempted++;
+      const callerAssumptions = Object.fromEntries(from.requiredConditions.map(r =>
+        [r.conditionId, r.expectedTruth]));
+      const calleeAssumptions = Object.fromEntries(to.requiredConditions.map(r =>
+        [r.conditionId, r.expectedTruth]));
+      const composed = composeTwoHopSourceEffects({
+        graph, caller: callerLens, callee: calleeLens,
+        call: { effectLine: from.sourceLine, effectSha256: from.expressionSha256 },
+        calleeReturn: { effectLine: to.sourceLine, effectSha256: to.expressionSha256 },
+        callerAssumptions, calleeAssumptions,
+      });
+      if (composed.status !== 'established-conditional-source-path') {
+        reasons[composed.reason] = (reasons[composed.reason] ?? 0) + 1;
+        continue;
+      }
+      qualified++;
+      if (results.length >= MAX_REPORTED_PATHS) continue;
+      const requirements = composed.requiredConditions.map(r => {
+        const branch = (r.functionId === caller.node!.id
+          ? callerBranches : calleeBranches).get(r.conditionId);
+        return { ...r, predicate: branch?.predicate ?? '[unresolved condition]' };
+      });
+      results.push({ kind: to.kind, expression: to.expression, sourceLine: to.sourceLine,
+        requiredConditions: requirements, sourceWitnesses: composed.sourceWitnesses });
+    }
+    if (attempted >= MAX_COMPOSITIONS) break;
+  }
+  const compositionMs = performance.now() - compositionStarted;
+  const incomplete = totalPairCount > attempted
+    || results.length < qualified
+    || Object.keys(reasons).length > 0
+    || !(callerLens.coverage as {completeForSupportedStatements:boolean}).completeForSupportedStatements
+    || !(calleeLens.coverage as {completeForSupportedStatements:boolean}).completeForSupportedStatements;
+  return {
+    ...base, status: qualified ? 'supported' : 'unproven',
+    reason: qualified ? 'exact-two-hop-source-conditions'
+      : Object.keys(reasons)[0] ?? 'no-composable-direct-return-call',
+    identity: { project: graph.project, graphId: graph.graphId,
+      sourceRevision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
+      functionId: caller.node.id, functionName: caller.node.name,
+      sourcePath: callerPath, calleeId: callee.id, calleeName: callee.name,
+      calleeSourcePath: calleePath },
+    paths: results,
+    counts: { candidatePairCount: totalPairCount, attempted, qualified,
+      rejected: attempted-qualified, returned: results.length,
+      omitted: totalPairCount-attempted+qualified-results.length,
+      incomplete, rejectedReasons: reasons },
+    proof: { exactCanonicalCallEdgeUsed: qualified>0,
+      sourcePathAssumptionsOnly: true, jointPredicateSatisfiabilityProven: false,
+      argumentMappingProven: false, exceptionalOrAsyncCompletionProven: false,
+      runtimeExecutionObserved: false, deployedConfigurationEstablished: false,
+      independentlyVerifiedTestRun: false, canonicalGraphUnaffected: true },
+    timing: { graphBuildIncluded: false,
+      sourceReadMs: Number(sourceReadMs.toFixed(2)),
+      sourceLensMs: Number(lensMs.toFixed(2)),
+      pureCompositionMs: Number(compositionMs.toFixed(2)),
+      existingGraphProjectionMs: Number((performance.now()-started).toFixed(2)) },
+  };
+}
+
 export async function querySourceConditionEffects(input: {
   graph: IntelligenceGraph; project: string; question: string; scope?: string;
 }): Promise<Record<string, unknown> | null> {
+  const pair = parseTwoHopSourceQuestion(input.question);
+  if (pair) {
+    if (!input.graph.repositoryRevision) {
+      return { status: 'unproven', reason: 'graph-missing-exact-revision',
+        project: input.project, graphId: input.graph.graphId, paths: [] };
+    }
+    // Source acquisition belongs to the question path, not graph construction.
+    // Keep it separate from the pure already-built-graph projection measurements.
+    const started = performance.now();
+    const revision = await resolveProjectRevision(input.project,
+      'commit:' + input.graph.repositoryRevision);
+    if (revision.sha !== input.graph.repositoryRevision) {
+      throw new Error('Two-hop query did not resolve the exact graph revision');
+    }
+    const revisionResolutionMs = performance.now() - started;
+    const result = await withResolvedProjectCheckout(revision, async checkout =>
+      await projectTwoHopSourceQuestion({
+        graph: input.graph, project: input.project, question: input.question,
+        ...(input.scope ? { scope: input.scope } : {}),
+        readSource: async relative => {
+          const file = path.resolve(checkout.root, relative);
+          const rel = path.relative(checkout.root, file).split(path.sep).join('/');
+          if (rel !== relative || rel.startsWith('../') || path.isAbsolute(rel)) return null;
+          try {
+            const stat = await fs.lstat(file);
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) return null;
+            const text = await fs.readFile(file, 'utf8');
+            return text.includes('\\0') ? null : text;
+          } catch { return null; }
+        },
+      }));
+    if (!result) return null;
+    return { ...result, timing: {
+      ...(result.timing as Record<string, unknown>),
+      revisionResolutionMs: Number(revisionResolutionMs.toFixed(2)),
+      fullQueryAfterGraphLoadMs: Number((performance.now()-started).toFixed(2)),
+      graphConstructionIncluded: false,
+    } };
+  }
   const requestedSymbol = explicitCallableSubject(input.question);
   if (!requestedSymbol) return null;
   const selected = relevantFunction(input.graph, requestedSymbol, input.scope);
@@ -301,6 +512,32 @@ export async function querySourceConditionEffects(input: {
 }
 
 export function sourceConditionsAnswer(result: Record<string, unknown>): string {
+  if (result.mode === 'two-hop-conditional-source') {
+    const identity = result.identity as { functionName: string; calleeName: string } | undefined;
+    const summary = result.counts as { qualified: number; rejected: number;
+      omitted: number; incomplete: boolean } | undefined;
+    if (result.status !== 'supported' || !identity || !summary) {
+      return 'No complete, uniquely bound two-function source path was established (' +
+        String(result.reason ?? 'unknown') + '). This does not establish the behavior is absent.';
+    }
+    const paths = result.paths as Array<{kind:string;expression:string;sourceLine:number;
+      requiredConditions: Array<{predicate:string;truth:boolean}>}>;
+    const examples = paths.slice(0, 4).map(item => {
+      const guards = item.requiredConditions.map(r =>
+        (r.truth ? '(' : 'NOT (') + r.predicate + ')').join(' AND ');
+      return (guards ? 'When ' + guards + ', ' : 'Along the direct source call, ')
+        + identity.calleeName + ' has a ' + item.kind + ' of ' + item.expression
+        + ' (source line ' + item.sourceLine + ')';
+    });
+    return identity.functionName + ' has a uniquely resolved direct source call to '
+      + identity.calleeName + '. ' + examples.join('; ')
+      + '. DI established ' + summary.qualified + ' conditional source-path witness(es)'
+      + (summary.omitted || summary.rejected ? ', with '
+        + summary.omitted + ' omitted and ' + summary.rejected + ' unresolved candidate(s)' : '')
+      + '. The conditions are source requirements, not known actual configuration. '
+      + 'Joint path feasibility, argument binding, callee completion, test execution, and runtime behavior are not proven.'
+      + (summary.incomplete ? ' The composed path population is incomplete.' : '');
+  }
   if (result.status !== 'supported') return 'No unique, completely analyzed callable source body could establish these branch/effect facts. ' +
     'This does not establish that the condition or behavior is absent.';
   const identity = result.identity as { functionName: string; sourcePath: string };
