@@ -72,7 +72,8 @@ export function reconcileCapturedCatalog(input: {
     || !Number.isSafeInteger(offset) || offset < 0 || offset > 20000) {
     throw new Error('Catalog comparison requires a bounded page');
   }
-  if (!/^[0-9a-f]{40}$/iu.test(graph.repositoryRevision)
+  if (typeof graph.repositoryRevision !== 'string'
+    || !/^[0-9a-f]{40}$/iu.test(graph.repositoryRevision)
     || !graph.project || !graph.graphId || !graph.analyzerVersion) {
     throw new Error('Exact canonical graph identity required');
   }
