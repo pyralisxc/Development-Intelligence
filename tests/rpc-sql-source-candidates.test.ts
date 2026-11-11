@@ -55,6 +55,18 @@ test('candidate pages recover exactly and reject changed source population', () 
   assert.throws(()=>projectRpcSqlSourceCandidates({graph,callerId:caller,
     routineName:routine,pageSize:2,offset:2,expectedDigest:'0'.repeat(64)}));
 });
+test('an entirely omitted SQL file invalidates completeness of the declaration population', () => {
+  const partial={...graph,coverage:{files:[
+    ...graph.coverage.files,
+    {path:'supabase/migrations/uninspected.sql',status:'skipped'},
+  ]}} as IntelligenceGraph;
+  const result=projectRpcSqlSourceCandidates({
+    graph:partial,callerId:caller,routineName:routine,
+  });
+  assert.equal(result.status,'unproven');
+  assert.equal(result.reason,'tracked-sql-population-coverage-incomplete');
+});
+
 test('wrong or candidate RPC edge never upgrades a source relation', () => {
   const wrong={...graph,edges:[{...graph.edges[0],status:'candidate'}]} as IntelligenceGraph;
   assert.equal(projectRpcSqlSourceCandidates({graph:wrong,callerId:caller,

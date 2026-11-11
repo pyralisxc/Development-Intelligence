@@ -117,6 +117,14 @@ export function projectRpcSqlSourceCandidates(input: {
     && nodeValue(node, 'shortName') === input.routineName);
   if (sourceSql.length > MAX_POPULATION) return unknown('source-routine-candidate-population-exceeds-budget');
   if (!sourceSql.length) return unknown('no-tracked-sql-definition-proven');
+  // Source declaration completeness requires a full tracked SQL census, not
+  // merely complete files for the declarations we happened to discover.
+  // Otherwise an omitted migration could make the observed set falsely unique.
+  if (!graph.coverage?.files?.length
+    || graph.coverage.files.some(file => /\.sql$/iu.test(file.path)
+      && file.status !== 'complete')) {
+    return unknown('tracked-sql-population-coverage-incomplete');
+  }
   if (sourceSql.some(node => !sourcePath(node) || !covered.has(sourcePath(node)!))) {
     return unknown('sql-source-coverage-incomplete');
   }
