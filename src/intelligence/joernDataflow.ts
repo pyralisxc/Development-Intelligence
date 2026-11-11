@@ -15,12 +15,38 @@ import { stableHash } from '../util/hash.js';
  * proof). No Joern CPG, report, or extra graph becomes durable authority.
  */
 export const JOERN_DATAFLOW_STRATEGY = 'joern-slice-source-correlated.v1';
-const MAX_SLICE_BYTES = 16 * 1024 * 1024;
-const MAX_SLICE_NODES = 25000;
-const MAX_SLICE_EDGES = 75000;
-const MAX_SOURCE_FILES = 250;
-const MAX_SOURCE_FILE_BYTES = 1024 * 1024;
-const MAX_CODE_CHARS = 1024;
+export interface JoernSourceBudget {
+  maxSliceBytes: number;
+  maxSliceNodes: number;
+  maxSliceEdges: number;
+  maxSourceFiles: number;
+  maxSourceFileBytes: number;
+  maxCodeChars: number;
+}
+/** Each source shard remains resource-bounded; corpora may union many shards. */
+export const DEFAULT_JOERN_SOURCE_BUDGET: Readonly<JoernSourceBudget> = Object.freeze({
+  maxSliceBytes: 16 * 1024 * 1024,
+  maxSliceNodes: 25000,
+  maxSliceEdges: 75000,
+  maxSourceFiles: 250,
+  maxSourceFileBytes: 1024 * 1024,
+  maxCodeChars: 1024,
+});
+function sourceBudget(overrides: Partial<JoernSourceBudget> | undefined): JoernSourceBudget {
+  const budget = { ...DEFAULT_JOERN_SOURCE_BUDGET, ...overrides };
+  const hardMaximums: JoernSourceBudget = {
+    maxSliceBytes: 256 * 1024 * 1024, maxSliceNodes: 500000,
+    maxSliceEdges: 1000000, maxSourceFiles: 20000,
+    maxSourceFileBytes: 16 * 1024 * 1024, maxCodeChars: 16000,
+  };
+  for (const key of Object.keys(budget) as Array<keyof JoernSourceBudget>) {
+    if (!Number.isSafeInteger(budget[key]) || budget[key] < 1
+      || budget[key] > hardMaximums[key]) {
+      throw new Error('Invalid Joern producer resource budget ' + key);
+    }
+  }
+  return budget;
+}
 
 type UnknownRecord = Record<string, unknown>;
 interface SliceNode {
@@ -40,7 +66,8 @@ interface LocalSource {
 }
 export interface JoernEvidenceProjection {
   graph: IntelligenceGraph;
-  producer: { name: 'joern-slice'; version: string; sliceSha256: string; independentlyAttested: false };
+  producer: { name: 'joern-slice'; version: string; sliceSha256: string;
+    batchSliceSha256s?: string[]; independentlyAttested: false };
   source: { revision: string; graphId: string; projectPrefix: string };
   counts: {
     sliceNodes: number;
@@ -58,6 +85,12 @@ export interface JoernEvidenceProjection {
     label: string;
     edgeId: string;
   }>;
+  budget?: JoernSourceBudget;
+  segmentPopulation?: {
+    sourceArtifacts: number; totalSegmentSourceNodes: number;
+    uniqueValidatedSourceNodes: number; uniqueCandidateFlowEdges: number;
+    duplicateCandidateEdges: number;
+  };
   policy: {
     sourceSpansAreExactGitVerified: true;
     flowIsPotentialNotRuntime: true;
@@ -121,7 +154,7 @@ function normalizePath(root: string, parentFile: string, prefix: string): string
   }
   return canonicalRelative(value) ? value : null;
 }
-function parseNode(raw: unknown): SliceNode {
+function parseNode(raw: unknown, codeLimit: number): SliceNode {
   const item = record(raw, 'Joern slice node');
   const lineNumber = item.lineNumber === null || item.lineNumber === undefined
     ? null : requiredInt(item.lineNumber, 'Joern node.lineNumber', 1);
@@ -130,7 +163,7 @@ function parseNode(raw: unknown): SliceNode {
   return {
     id: requiredInt(item.id, 'Joern node.id', 0),
     label: boundedText(item.label, 'Joern node.label', 100),
-    code: boundedText(item.code, 'Joern node.code', MAX_CODE_CHARS),
+    code: boundedText(item.code, 'Joern node.code', codeLimit),
     parentFile: boundedText(item.parentFile, 'Joern node.parentFile', 2048),
     parentMethod: boundedText(item.parentMethod ?? '', 'Joern node.parentMethod', 1024),
     lineNumber, columnNumber,
@@ -145,7 +178,7 @@ function parseEdge(raw: unknown): SliceEdge {
   };
 }
 
-async function sourceFile(root: string, relative: string, graph: IntelligenceGraph): Promise<LocalSource | null> {
+async function sourceFile(root: string, relative: string, graph: IntelligenceGraph, maxBytes: number): Promise<LocalSource | null> {
   if (!canonicalRelative(relative)
     || !graph.coverage?.files.some(file => file.path === relative && file.status === 'complete')
     || !graph.nodes.some(node => node.id === 'file:' + relative && node.kind === 'file')) return null;
@@ -153,7 +186,7 @@ async function sourceFile(root: string, relative: string, graph: IntelligenceGra
   if (!inside(root, location)) return null;
   try {
     const stat = await fs.lstat(location);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_SOURCE_FILE_BYTES) return null;
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) return null;
     const real = await fs.realpath(location);
     if (!inside(root, real)) return null;
     // A consumer-supplied Joern slice must not become a source fact after the
@@ -198,7 +231,9 @@ export async function projectLocalJoernDataflow(input: {
   producerVersion: string;
   projectPrefix?: string;
   testCatalog?: TestClaimCatalog;
+  budget?: Partial<JoernSourceBudget>;
 }): Promise<JoernEvidenceProjection> {
+  const budget = sourceBudget(input.budget);
   const root = await fs.realpath(path.resolve(input.root));
   const head = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
   if (head !== input.graph.repositoryRevision) {
@@ -216,7 +251,7 @@ export async function projectLocalJoernDataflow(input: {
   const location = path.resolve(root, input.slicePath);
   if (!inside(root, location)) throw new Error('Joern slice path must be confined to the inspected checkout');
   const stat = await fs.lstat(location);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > MAX_SLICE_BYTES) {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > budget.maxSliceBytes) {
     throw new Error('Joern slice must be a bounded, ordinary file');
   }
   const real = await fs.realpath(location);
@@ -224,11 +259,11 @@ export async function projectLocalJoernDataflow(input: {
   const bytes = await fs.readFile(real);
   const digest = createHash('sha256').update(bytes).digest('hex');
   const parsed = record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)), 'Joern DataFlowSlice');
-  if (!Array.isArray(parsed.nodes) || parsed.nodes.length > MAX_SLICE_NODES
-    || !Array.isArray(parsed.edges) || parsed.edges.length > MAX_SLICE_EDGES) {
+  if (!Array.isArray(parsed.nodes) || parsed.nodes.length > budget.maxSliceNodes
+    || !Array.isArray(parsed.edges) || parsed.edges.length > budget.maxSliceEdges) {
     throw new Error('Joern DataFlowSlice nodes/edges must be bounded arrays');
   }
-  const sliceNodes = parsed.nodes.map(parseNode);
+  const sliceNodes = parsed.nodes.map(item => parseNode(item, budget.maxCodeChars));
   const sliceEdges = parsed.edges.map(parseEdge);
   const ids = new Set<number>();
   for (const item of sliceNodes) {
@@ -252,8 +287,8 @@ export async function projectLocalJoernDataflow(input: {
     const relative = normalizePath(root, item.parentFile, prefix);
     if (!relative) { missing++; continue; }
     if (!fileCache.has(relative)) {
-      if (fileCache.size >= MAX_SOURCE_FILES) throw new Error('Joern slice exceeds bounded source-file census');
-      fileCache.set(relative, sourceFile(root, relative, input.graph));
+      if (fileCache.size >= budget.maxSourceFiles) throw new Error('Joern slice exceeds configured per-shard source-file budget');
+      fileCache.set(relative, sourceFile(root, relative, input.graph, budget.maxSourceFileBytes));
     }
     const file = await fileCache.get(relative)!;
     const exact = file ? exactLocation(file, item) : null;
@@ -326,7 +361,7 @@ export async function projectLocalJoernDataflow(input: {
   return {
     graph: {
       ...input.graph,
-      graphId: 'joern-overlay-' + stableHash([input.graph.graphId, digest, version, prefix]),
+      graphId: 'joern-overlay-' + stableHash([input.graph.graphId, digest, version, prefix, budget]),
       nodes: [...input.graph.nodes, ...nodes],
       edges: [...input.graph.edges, ...edges],
     },
@@ -342,7 +377,7 @@ export async function projectLocalJoernDataflow(input: {
       unlocatedFlowEdges: lost,
       assertionSpanAnchors: assertionPairs.size,
     },
-    candidates,
+    candidates, budget,
     policy: {
       sourceSpansAreExactGitVerified: true,
       flowIsPotentialNotRuntime: true,
@@ -353,6 +388,152 @@ export async function projectLocalJoernDataflow(input: {
       testReplacementProven: false,
       canonicalAuthorityUnaffected: true,
       stored: false,
+    },
+  };
+}
+
+
+/**
+ * Compose independently source-validated Joern partitions as ONE disposable
+ * DI overlay. The historical per-slice 250-file / 25k-node limits become
+ * bounded *per shard*, not a hard limit on the evidence population.
+ *
+ * This is a source/evidence union, NOT a second canonical graph or an
+ * assertion-level behavioral proof. Duplicate or conflicting producer
+ * identities are rejected before any status can be promoted.
+ */
+export function mergeJoernDataflowEvidence(input: {
+  canonical: IntelligenceGraph;
+  segments: JoernEvidenceProjection[];
+}): JoernEvidenceProjection {
+  const { canonical } = input;
+  const segments = [...input.segments].sort((a,b) =>
+    a.producer.sliceSha256.localeCompare(b.producer.sliceSha256));
+  if (segments.length < 1 || segments.length > 1000) {
+    throw new Error('Joern source partition union must contain 1..1000 independently bounded slices');
+  }
+  if (segments.length === 1) return segments[0]!;
+  const first = segments[0]!;
+  const ids = new Set<string>();
+  const nodeMap = new Map<string, GraphNode>();
+  const edgeMap = new Map<string, GraphEdge>();
+  const candidateMap = new Map<string, JoernEvidenceProjection['candidates'][number]>();
+  const sourceIds = new Set<string>();
+  let duplicateEdges = 0;
+  for (const segment of segments) {
+    if (segment.source.graphId !== canonical.graphId
+      || segment.source.revision !== canonical.repositoryRevision
+      || segment.graph.repositoryRevision !== canonical.repositoryRevision
+      || segment.producer.version !== first.producer.version
+      || segment.source.projectPrefix !== first.source.projectPrefix) {
+      throw new Error('Joern source shards must share one exact canonical graph, revision, prefix and producer');
+    }
+    if (segment.budget && first.budget
+      && JSON.stringify(segment.budget) !== JSON.stringify(first.budget)) {
+      throw new Error('Joern source shards must share the declared resource profile');
+    }
+    if (ids.has(segment.producer.sliceSha256)) {
+      throw new Error('Joern source shard digest is duplicated; coverage cannot be double-counted');
+    }
+    ids.add(segment.producer.sliceSha256);
+    for (const node of segment.graph.nodes.slice(canonical.nodes.length)) {
+      const earlier = nodeMap.get(node.id);
+      if (earlier && JSON.stringify(earlier) !== JSON.stringify(node)) {
+        throw new Error('Joern source shards contradict a stable exact source node identity');
+      }
+      nodeMap.set(node.id, node);
+      if (node.sourceId.startsWith('repo:')) sourceIds.add(node.sourceId);
+    }
+    for (const edge of segment.graph.edges.slice(canonical.edges.length)) {
+      const earlier = edgeMap.get(edge.id);
+      if (earlier) {
+        if (earlier.from !== edge.from || earlier.to !== edge.to
+          || earlier.kind !== edge.kind || earlier.status !== edge.status
+          || earlier.strategy !== edge.strategy) {
+          throw new Error('Joern source shards contradict stable evidence edge identity');
+        }
+        duplicateEdges += Number(edge.strategy === JOERN_DATAFLOW_STRATEGY);
+        earlier.evidence = [...new Set([...earlier.evidence, ...edge.evidence])].sort();
+      } else {
+        edgeMap.set(edge.id, { ...edge, evidence: [...edge.evidence] });
+      }
+    }
+    for (const candidate of segment.candidates) {
+      candidateMap.set(candidate.edgeId, candidate);
+    }
+  }
+  const counts: JoernEvidenceProjection['counts'] = {
+    sliceNodes: segments.reduce((sum, segment) => sum + segment.counts.sliceNodes, 0),
+    sliceEdges: segments.reduce((sum, segment) => sum + segment.counts.sliceEdges, 0),
+    sourceLocatedNodes: [...nodeMap.values()].filter(node =>
+      node.kind === 'source-located-dataflow-node').length,
+    sourceUnlocatedNodes: segments.reduce((sum, segment) => sum + segment.counts.sourceUnlocatedNodes, 0),
+    sourceFilesChecked: segments.reduce((sum, segment) => sum + segment.counts.sourceFilesChecked, 0),
+    candidateFlowEdges: [...edgeMap.values()].filter(edge =>
+      edge.kind === 'dataflow-reported' && edge.status === 'candidate').length,
+    unlocatedFlowEdges: segments.reduce((sum, segment) => sum + segment.counts.unlocatedFlowEdges, 0),
+    assertionSpanAnchors: [...edgeMap.values()].filter(edge =>
+      edge.kind === 'within-test-assertion' && edge.status === 'resolved').length,
+  };
+  const digestList = [...ids].sort();
+  const digest = createHash('sha256').update(JSON.stringify(digestList)).digest('hex');
+  const nodes = [...nodeMap.values()].sort((a,b) => a.id.localeCompare(b.id));
+  const edges = [...edgeMap.values()].sort((a,b) => a.id.localeCompare(b.id));
+  const merged: JoernEvidenceProjection = {
+    graph: {
+      ...canonical,
+      graphId: 'joern-overlay-batch-' + stableHash([
+        canonical.graphId, digest, first.producer.version, first.source.projectPrefix,
+        first.budget ?? DEFAULT_JOERN_SOURCE_BUDGET,
+      ]),
+      nodes: [...canonical.nodes, ...nodes],
+      edges: [...canonical.edges, ...edges],
+    },
+    producer: {
+      name: 'joern-slice', version: first.producer.version,
+      sliceSha256: digest, batchSliceSha256s: digestList,
+      independentlyAttested: false,
+    },
+    source: first.source,
+    counts,
+    candidates: [...candidateMap.values()].sort((a,b) =>
+      a.edgeId.localeCompare(b.edgeId)).slice(0, 20),
+    segmentPopulation: {
+      sourceArtifacts: segments.length,
+      totalSegmentSourceNodes: segments.reduce((sum, segment) =>
+        sum + segment.counts.sourceLocatedNodes, 0),
+      uniqueValidatedSourceNodes: counts.sourceLocatedNodes,
+      uniqueCandidateFlowEdges: counts.candidateFlowEdges,
+      duplicateCandidateEdges: duplicateEdges,
+    },
+    policy: first.policy,
+  };
+  if (first.budget) merged.budget = first.budget;
+  return merged;
+}
+
+/** Recover complete positive Joern candidate evidence, not only 20 samples. */
+export function pageJoernDataflowEvidence(
+  projection: JoernEvidenceProjection, offset = 0, pageSize = 100,
+): {
+  edges: GraphEdge[];
+  page: { offset: number; pageSize: number; returned: number; total: number;
+    hasMore: boolean; sliceSha256: string };
+} {
+  if (!Number.isSafeInteger(offset) || offset < 0
+    || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
+    throw new Error('Joern evidence page offset or page size is invalid');
+  }
+  const admissible = projection.graph.edges
+    .filter(edge => edge.strategy === JOERN_DATAFLOW_STRATEGY
+      && edge.status === 'candidate').sort((a,b) => a.id.localeCompare(b.id));
+  const edges = admissible.slice(offset, offset + pageSize);
+  return {
+    edges,
+    page: {
+      offset, pageSize, returned: edges.length, total: admissible.length,
+      hasMore: offset + edges.length < admissible.length,
+      sliceSha256: projection.producer.sliceSha256,
     },
   };
 }

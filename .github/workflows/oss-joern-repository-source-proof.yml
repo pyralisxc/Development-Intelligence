@@ -1,0 +1,144 @@
+name: oss-joern-repository-source-proof
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "src/intelligence/joernDataflow.ts"
+      - "scripts/run-oss-understanding.mjs"
+      - ".github/workflows/oss-joern-repository-source-proof.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: di-joern-real-repo-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-accurate-dataflow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [development-intelligence, cardforge]
+    env:
+      JOERN_VERSION: "4.0.666"
+      JOERN_ZIP_SHA256: "be2c23393268e97a46eb8d5175a79ae77ecf023f8e27a718ecd279752c7eb123"
+      JOERN_ASSET: joern-cli-linux-x86_64.zip
+    steps:
+      - name: Check out DI exact PR source (no stored Git credentials)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check out pinned CardForge solely as read-only source evidence
+        if: matrix.source == 'cardforge'
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084
+          path: benchmark/cardforge
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Compile canonical DI project and OSS evidence worker
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Verify exact pinned upstream open-source Joern distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --show-error --silent --retry 3 \
+            "https://github.com/joernio/joern/releases/download/v$JOERN_VERSION/$JOERN_ASSET" \
+            -o "$RUNNER_TEMP/joern.zip"
+          printf '%s  %s\n' "$JOERN_ZIP_SHA256" "$RUNNER_TEMP/joern.zip" | sha256sum --check --
+          mkdir -p "$RUNNER_TEMP/joern"
+          unzip -q "$RUNNER_TEMP/joern.zip" -d "$RUNNER_TEMP/joern"
+          JOERN_SLICE="$(find "$RUNNER_TEMP/joern" -maxdepth 5 -type f -name joern-slice -print -quit)"
+          test -n "$JOERN_SLICE"
+          chmod u+x "$JOERN_SLICE"
+          echo "JOERN_SLICE=$JOERN_SLICE" >> "$GITHUB_ENV"
+      - name: Run real Joern source frontend and dataflow against actual repository
+        shell: bash
+        env:
+          SOURCE_KIND: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          SOURCE_ROOT="."
+          PROJECT_NAME="Development-Intelligence"
+          if [ "$SOURCE_KIND" = "cardforge" ]; then
+            SOURCE_ROOT="benchmark/cardforge"
+            PROJECT_NAME="CardForge"
+          fi
+          SOURCE_SHA="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
+          test -n "$SOURCE_SHA"
+          printf 'Measured source kind=%s exactGitSha=%s\n' "$SOURCE_KIND" "$SOURCE_SHA"
+          node --max-old-space-size=4096 scripts/run-oss-understanding.mjs \
+            --repo-path "$SOURCE_ROOT" \
+            --project "$PROJECT_NAME" \
+            --joern-executable "$JOERN_SLICE" \
+            --joern-version "$JOERN_VERSION" \
+            --joern-language JAVASCRIPT \
+            --joern-depth 12 \
+            --joern-heap-mb 5120 \
+            --joern-timeout-ms 900000 \
+            --joern-max-slice-bytes 67108864 \
+            --joern-max-slice-nodes 150000 \
+            --joern-max-slice-edges 400000 \
+            --joern-max-source-files 3000 \
+            --joern-max-source-file-bytes 2097152 \
+            --joern-max-code-chars 2048 \
+            > "$RUNNER_TEMP/repository-joern-evidence.json"
+          node --input-type=module - "$RUNNER_TEMP/repository-joern-evidence.json" "$SOURCE_SHA" "$SOURCE_KIND" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const receipt = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          const expectedSha = process.argv[3];
+          const sourceKind = process.argv[4];
+          assert.equal(receipt.exactRevision, expectedSha);
+          assert.equal(receipt.oneCanonicalGraph, true);
+          assert.equal(receipt.changedCanonicalAuthority, false);
+          assert.equal(receipt.noAutomaticTestDeletion, true);
+          assert.equal(receipt.joern.producer.version, '4.0.666');
+          assert.equal(receipt.joern.executedPinnedBinaryLocally, true);
+          assert.equal(receipt.joern.configuredJoernHeapMiB, 5120);
+          assert.equal(receipt.joern.parsedSourceToEphemeralCpg, true);
+          assert.ok(receipt.joern.counts.sliceNodes > 0);
+          assert.ok(receipt.joern.counts.sourceLocatedNodes > 0);
+          assert.ok(receipt.joern.counts.candidateFlowEdges > 0);
+          assert.equal(receipt.joern.segmentCoverage.completeForRequestedFilters, true);
+          assert.equal(receipt.joern.policy.flowIsPotentialNotRuntime, true);
+          assert.equal(receipt.assertionEvidence.counts.independentlyProvenReplacements, 0);
+          const measured = {
+            sourceKind, exactRevision: receipt.exactRevision,
+            canonicalGraphId: receipt.canonicalGraphId,
+            analyzerVersion: receipt.analyzerVersion,
+            joernVersion: receipt.joern.producer.version,
+            sliceSha256: receipt.joern.producer.sliceSha256,
+            counts: receipt.joern.counts,
+            coverage: receipt.joern.segmentCoverage,
+            measures: receipt.measures,
+            configuredJoernHeapMiB: receipt.joern.configuredJoernHeapMiB,
+            possibleFlowIsNotRuntimeProof: true,
+            assertionValueOrReplacementNotEstablished: true,
+          };
+          writeFileSync('oss-real-repo-joern-measurement.json', JSON.stringify(measured));
+          console.log(JSON.stringify(measured));
+          NODE
+      - name: Save only source-safe measurement summary, not source contents
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oss-joern-real-${{ matrix.source }}-metrics
+          path: oss-real-repo-joern-measurement.json
+          retention-days: 3
+          if-no-files-found: error

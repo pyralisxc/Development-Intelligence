@@ -125,3 +125,67 @@ assertion-level evidence. Empty/unmatched rows never become negative
 coverage, assertion execution, expected-value, or replacement proof.
 The input byte/event-size guards remain operational resource protections,
 not a restriction of the amount of evidence evaluated inside them.
+
+## Full-source capacity and evidence recovery (analyzer 2.20)
+
+The TypeScript compiler defaults are 4,096 tracked TS/JS roots, 32 MiB of
+source and 12,000 resolved bindings instead of 1,600/12 MiB/3,000.
+Isolated native analyzers may supply a separately validated budget up to
+20,000 roots/256 MiB/200,000 bindings. Saturation keeps independently
+resolved positive source facts but does not prove exhaustive negatives.
+
+The native benchmark `scripts/benchmark-oss-compiler-capacity.mjs --fixture`
+generates a real 1,655-file exact-Git source oracle with 3,205 independently
+specified TypeChecker callsites, plus import-only, shadowed and dynamic
+negative examples. The CI workflow `oss-repository-scale-compiler-proof`
+also evaluates exact-current DI and pinned read-only CardForge source.
+Use `--compare-legacy` to measure old and new positive callsite sets on the
+*same* Git SHA. It rejects lost previously resolved source sites and reports
+newly supported static compiler identities, not runtime behavior.
+
+### Native Node test evidence across multiple bounded runs
+
+The historical 40-test-file worker cap now governs each subprocess batch,
+not the total corpus. Supply repeated `--node-test-file` selectors, optional
+`--node-batch-size` (1–40), `--node-max-files` resource budget and a fresh
+untracked `--node-evidence-dir observations/native-run` for recoverable
+restricted-permission JSONL artifacts. Only explicitly named exact-Git
+source files are run; arbitrary repository code is never executed by a
+discovery flag alone. The 43-executed/1-unrun fixture verifies serial
+20+20+3 batches, unique joined identities and no missing/false results.
+
+The local `node-test-evidence` CLI accepts *repeated*
+`--node-test-events-jsonl` paths. A later `--node-events-offset` page needs
+the aggregate first-page `--node-events-expected-sha256`. Recovery retains
+complete evidence and unknown unrun assertions, rejecting duplicates or
+foreign source revisions; compact presentation is not a truth ceiling.
+
+Discovery defaults to `tests/`, `scripts/`, and `packaging/` paths. It
+does not imply test absence elsewhere. Use `--native-test-scope
+all-supported` or repeated `--native-test-prefix` and
+`--native-test-suffix` flags to select tracked supported names.
+The report discloses selected and omitted filename candidates.
+Python/C#/other runners are not executed by the Node TestStream producer;
+their potential obligations remain outside this native coverage.
+
+### Joern source-shard union, full positive flow recovery
+
+An operator can generate several source-filtered `joern-slice` outputs
+from a single disposable CPG using repeated `--joern-file-filter` flags,
+bounded by a validated per-segment budget and explicit timeout/depth.
+Choose `--joern-evidence-dir` to retain bounded slice JSON locally.
+The `joern-evidence` CLI accepts repeated `--joern-slice-json` paths.
+Recover all candidate edges with `--joern-edge-offset`,
+`--joern-edge-page-size` and `--joern-edge-expected-sha256`.
+Duplicate, conflicting or unrelated revision/producers fail closed.
+A 256-file exact-source fixture verifies two 128-file shards and lossless
+100+100+56 candidate edge recovery. This demonstrates source-validating
+import and union, not an actual Joern JVM run over that entire fixture.
+
+The pinned Joern 4.0.666 JVM succeeded on a real tiny JS source fixture.
+The separate `oss-joern-repository-source-proof` workflow is the
+independent DI/CardForge full-source acceptance, not hosted MCP execution.
+Any unsupported Joern CPG, memory ceiling, empty source slice or
+unmapped assertion remains an explicit unknown, not proven absence.
+Source facts, possible-flow candidates, observed test execution and
+independently proven replacement remain distinct. No test is auto-deleted.
