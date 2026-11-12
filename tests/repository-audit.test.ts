@@ -82,5 +82,34 @@ test('repository audit stays bounded, evidence-linked, and non-authoritative', (
   assert.equal(audit.policy.persisted, false);
   assert.equal(audit.policy.modifiesRepository, false);
   assert.equal(audit.policy.createsWorkItems, false);
+  assert.equal(audit.selfDiagnosis.developerDefectsProvenByTheseSignals,false);
+  assert.ok(audit.investigationTargets.every((item: any) =>
+    item.triage && typeof item.triage.route === 'string'));
+  const unresolved = audit.investigationTargets.find((item: any) =>
+    item.kind === 'relationship' && item.evidence.kind === 'uses-script');
+  assert.equal(unresolved.triage.route,'investigate-binding-or-missing-evidence');
+  const architecture = audit.investigationTargets.find((item: any) =>
+    item.kind === 'architecture-boundary');
+  assert.equal(architecture.triage.developerDecisionRequired,null);
   assert.ok(audit.investigationTargets.length <= 10);
+});
+
+test('a compiler precision ceiling becomes an explicit DI self-improvement target, not a source bug',()=>{
+  const graph = {
+    project:'Example', graphId:'repo-a', repositoryRevision:'a'.repeat(40),
+    analyzerVersion:'source-lens', role:'W',
+    sources:[{id:'repository',warnings:[
+      'Optional TypeScript compiler symbol evidence completed: Binding limit reached; compiler evidence is non-exhaustive',
+    ]}],
+    nodes:[],edges:[], unavailableSourceIds:[], explicitValueConflicts:[],
+    coverage:{trackedFiles:1,eligibleFiles:1,analyzedFiles:1,completeFiles:1,
+      partialFiles:0,failedFiles:0,skippedFiles:0,unsupportedFiles:0,
+      files:[{path:'src/a.ts',status:'complete'}]},
+  } as unknown as IntelligenceGraph;
+  const audit=synthesizeRepositoryAudit(graph,{limit:5}) as any;
+  assert.equal(audit.selfDiagnosis.observedAnalyzerPrecisionLimits,1);
+  const limit=audit.investigationTargets.find((x:any)=>x.kind==='analyzer-precision');
+  assert.equal(limit.triage.route,'strengthen-di-understanding');
+  assert.equal(limit.triage.developerDecisionRequired,false);
+  assert.equal(audit.selfDiagnosis.developerDefectsProvenByTheseSignals,false);
 });
