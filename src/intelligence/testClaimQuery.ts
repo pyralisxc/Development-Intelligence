@@ -58,6 +58,7 @@ export async function queryTestClaimReport(input: {
       sourceExecutionFacts: {
         strategy: executionFacts.strategy, revision: executionFacts.revision,
         graphId: executionFacts.graphId, factsSha256: executionFacts.factsSha256,
+        sourceFactsSha256: executionFacts.sourceFactsSha256,
         counts: executionFacts.counts, items: pageExecutionFacts,
         returned: pageExecutionFacts.length, total: executionFacts.facts.length,
         note: 'Source success-path proofs are independent of runtime observations; a passing run must be supplied separately.',

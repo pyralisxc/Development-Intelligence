@@ -248,6 +248,7 @@ async function main() {
       sourceExecutionFacts: {
         strategy: factsForThisRun.strategy, revision: factsForThisRun.revision,
         graphId: factsForThisRun.graphId, factsSha256: factsForThisRun.factsSha256,
+        sourceFactsSha256: factsForThisRun.sourceFactsSha256,
         counts: factsForThisRun.counts, samples: factsForThisRun.facts.slice(0, 20),
         returned: Math.min(20, factsForThisRun.facts.length), total: factsForThisRun.facts.length,
         truncated: factsForThisRun.facts.length > 20, policy: factsForThisRun.policy,

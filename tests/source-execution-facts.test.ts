@@ -84,6 +84,10 @@ test('source-derived successful-path facts reconcile with a real native Node run
     const attributed = correlateSourceExecutionFacts(facts, observed, 'unattested-report');
     assert.equal(inTest('direct', attributed).inferredExecution, 'conditional-on-reported-pass');
     const local = correlateSourceExecutionFacts(facts, observed, 'direct-local-run');
+    assert.equal(local.sourceFactsSha256, facts.sourceFactsSha256,
+      'attaching observed execution must not change independently established source facts');
+    assert.notEqual(local.factsSha256, facts.factsSha256,
+      'the source-plus-run evidence assessment has its own identity');
     assert.equal(inTest('direct', local).inferredExecution, 'direct-local-run');
     assert.equal(inTest('must despite failing branch', local).inferredExecution, 'direct-local-run');
     assert.equal(inTest('optional', local).inferredExecution, 'none');

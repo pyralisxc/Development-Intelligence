@@ -27,6 +27,7 @@ export interface SourceExecutionFactProjection {
   analyzerVersion: string;
   graphId: string;
   factsSha256: string;
+  sourceFactsSha256: string;
   counts: {
     assertions: number;
     sourceMust: number;
@@ -178,7 +179,15 @@ function unknownFact(assertion: TestClaimCatalog['assertions'][number], reason: 
 }
 function summarize(projection: SourceExecutionFactProjection): SourceExecutionFactProjection {
   const facts = projection.facts;
-  return { ...projection, factsSha256: createHash('sha256').update(JSON.stringify({ strategy: projection.strategy,
+  const sourceFactsSha256 = createHash('sha256').update(JSON.stringify({
+    strategy: projection.strategy, revision: projection.revision,
+    analyzerVersion: projection.analyzerVersion, graphId: projection.graphId,
+    sourceFacts: facts.map(({ assertionId, sourceId, testDeclarationId,
+      sourceReach, sourceReason, locator }) => ({ assertionId, sourceId, testDeclarationId,
+      sourceReach, sourceReason, locator })),
+  })).digest('hex');
+  return { ...projection, sourceFactsSha256,
+    factsSha256: createHash('sha256').update(JSON.stringify({ strategy: projection.strategy,
     revision: projection.revision, analyzerVersion: projection.analyzerVersion,
     graphId: projection.graphId, facts: projection.facts })).digest('hex'), counts: {
     assertions: facts.length,
@@ -259,7 +268,7 @@ export async function deriveSourceExecutionFacts(root: string, catalog: TestClai
     }
   }
   return summarize({ strategy: SOURCE_EXECUTION_FACT_STRATEGY, revision: catalog.revision,
-    analyzerVersion: catalog.analyzerVersion, graphId, factsSha256: '', facts: facts.sort((a, b) => a.assertionId.localeCompare(b.assertionId)),
+    analyzerVersion: catalog.analyzerVersion, graphId, factsSha256: '', sourceFactsSha256: '', facts: facts.sort((a, b) => a.assertionId.localeCompare(b.assertionId)),
     counts: { assertions: 0, sourceMust: 0, sourceMay: 0, sourceNever: 0, sourceUnknown: 0,
       insideReportedPass: 0, conditionalOnReportedPass: 0, directlyInferredLocalExecution: 0 },
     policy: { sourceProofIndependentOfRun: true, reportedPassIsNotIndependentAttestation: true,
