@@ -49,7 +49,8 @@ export async function queryTestClaimReport(input: {
       });
     const reportDigest = String((projection as any).identity?.projectionSha256 ?? '');
     if (input.expectedReportDigest && input.expectedReportDigest !== reportDigest) throw new Error('test claim report digest does not match the requested immutable page identity');
-    const pageAssertionIds = new Set((projection.items ?? [])
+    const pageItems: any[] = Array.isArray(projection.items) ? projection.items : [];
+    const pageAssertionIds = new Set(pageItems
       .filter((item: any) => item.kind === 'assertion').map((item: any) => item.id));
     const pageExecutionFacts = executionFacts.facts.filter(f => pageAssertionIds.has(f.assertionId));
     return {
