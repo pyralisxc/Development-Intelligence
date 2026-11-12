@@ -1311,9 +1311,10 @@ export function planInvestigationQuestion(input: {
   else if (/\bcoverage\b/u.test(lower)) lane = 'coverage';
   else if (/\bparity\b/u.test(lower)) lane = 'parity';
   else if (implementationClaimIntent) lane = 'implementation-claim';
+  // Evidence-backed whole-repository diagnosis beats a generic 'code' keyword.
+  else if (repositoryAuditIntent) lane = 'repository-audit';
   else if (codeIntent) lane = 'code';
   else if (semanticAuditIntent) lane = 'semantic-audit';
-  else if (repositoryAuditIntent) lane = 'repository-audit';
   else if (orientationIntent) lane = 'orientation';
   else if (traceIntent) lane = 'trace';
   else if (evidenceIntent) lane = 'evidence';
