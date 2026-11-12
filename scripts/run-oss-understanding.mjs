@@ -186,8 +186,17 @@ async function main() {
         // do not allow a failed batch to disappear behind later successes.
         for (const line of events) {
           const event = JSON.parse(line);
-          if (event.schemaVersion !== 1 || !event.data || typeof event.type !== 'string') {
+          if ((event.schemaVersion !== 1 && event.schemaVersion !== 2)
+            || !event.data || typeof event.data !== 'object' || Array.isArray(event.data)
+            || typeof event.type !== 'string') {
             throw new Error('Native test batch emitted an invalid structured event');
+          }
+          if (event.schemaVersion === 2 && (event.type === 'test:pass' || event.type === 'test:fail')) {
+            const { skip, todo } = event.data;
+            if (typeof skip !== 'boolean' || typeof todo !== 'boolean'
+              || (skip && todo) || (event.type === 'test:fail' && (skip || todo))) {
+              throw new Error('Native test batch v2 event has invalid pass/skip/TODO flags');
+            }
           }
         }
         combined.push(...events);

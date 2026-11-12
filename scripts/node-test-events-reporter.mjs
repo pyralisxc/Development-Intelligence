@@ -12,7 +12,11 @@ export default new Transform({
     const filtered = event.type === 'test:summary'
       ? { success: data.success === true, counts: data.counts }
       : { name: data.name, file: data.file, line: data.line, column: data.column,
-          nesting: data.nesting, testNumber: data.testNumber };
-    callback(null, JSON.stringify({ schemaVersion: 1, type: event.type, data: filtered }) + '\n');
+          nesting: data.nesting, testNumber: data.testNumber,
+          // Node's test:pass is also emitted for skip/todo; preserve only
+          // boolean state, never its potentially sensitive explanation.
+          skip: data.skip !== undefined && data.skip !== null && data.skip !== false,
+          todo: data.todo !== undefined && data.todo !== null && data.todo !== false };
+    callback(null, JSON.stringify({ schemaVersion: 2, type: event.type, data: filtered }) + '\n');
   },
 });

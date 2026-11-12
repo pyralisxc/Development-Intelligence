@@ -56,13 +56,15 @@ export function joinAssertionEvidence(input: {
 
   let mappedToTest = 0, ambiguousOwner = 0, withSourceAnchors = 0;
   let withPossibleFlow = 0, withReportedPass = 0, withReportedFail = 0;
+  let withReportedSkip = 0, withReportedTodo = 0, withLegacyUnknown = 0;
   const items: Array<{
     assertionId: string;
     source: string;
     containingTestId: string | null;
     sourceAnchorCount: number;
     possibleFlowAnchors: number;
-    containingTestReported: 'pass' | 'fail' | 'unavailable' | 'ambiguous';
+    containingTestReported: 'pass' | 'fail' | 'skip' | 'todo' | 'unknown'
+      | 'unavailable' | 'ambiguous';
     assertionExecutionProven: false;
     expectedValueProven: false;
     independentReplacementProven: false;
@@ -84,10 +86,17 @@ export function joinAssertionEvidence(input: {
     const observations = owner ? (events.get(owner.id) ?? []) : [];
     const reported = observations.length === 1
       && observations[0]!.evidenceStatus === 'source-associated-unattested'
-      ? observations[0]!.outcome === 'reported-pass' ? 'pass' : 'fail'
+      ? ({
+        'reported-pass': 'pass', 'reported-fail': 'fail',
+        'reported-skip': 'skip', 'reported-todo': 'todo',
+        'reported-unknown': 'unknown',
+      } as const)[observations[0]!.outcome]
       : observations.length > 1 ? 'ambiguous' : 'unavailable';
     if (reported === 'pass') withReportedPass++;
     if (reported === 'fail') withReportedFail++;
+    if (reported === 'skip') withReportedSkip++;
+    if (reported === 'todo') withReportedTodo++;
+    if (reported === 'unknown') withLegacyUnknown++;
     items.push({
       assertionId: assertion.id, source: assertion.sourceId,
       containingTestId: owner?.id ?? null,
@@ -119,6 +128,9 @@ export function joinAssertionEvidence(input: {
       assertionsWithPossibleFlowAnchors: withPossibleFlow,
       assertionsInsideReportedPassingTests: withReportedPass,
       assertionsInsideReportedFailingTests: withReportedFail,
+      assertionsInsideReportedSkippedTests: withReportedSkip,
+      assertionsInsideReportedTodoTests: withReportedTodo,
+      assertionsInsideLegacyUnclassifiedTestCases: withLegacyUnknown,
       assertionsWhoseOwnRuntimeExecutionIsProven: 0,
       assertionsWithExpectedValueProven: 0,
       independentlyProvenReplacements: 0,
