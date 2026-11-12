@@ -117,8 +117,17 @@ test('compiler-level precision gaps are explicitly disclosed without inventing n
   const content = new Map(Array.from({ length: 1601 }, (_, i) => [`file${i}.ts`, 'export const value = 1;']));
   const result = compilerTypeScriptReferences({
     root: '/root/unused', sourceTexts: content, nodes: [], fileNodes: new Map(), options: {},
+    budget: { maxFiles: 1600 },
   });
   assert.equal(result.state, 'bounded-out');
+  assert.equal((result.coverage?.sourceBytes ?? 0) > 0, true);
+  assert.equal(result.coverage?.visitedFiles, 0);
+  assert.equal(result.coverage?.completeForEligibleSources, false);
+  assert.match(result.reason ?? '', /1600 files/u);
+  assert.throws(() => compilerTypeScriptReferences({
+    root: '/root/unused', sourceTexts: content, nodes: [], fileNodes: new Map(), options: {},
+    budget: { maxFiles: Number.NaN },
+  }), /resource budget/u);
   assert.deepEqual(result.edges, []);
   assert.match(compilerPrecisionWarning(result) ?? '', /bounded-out/);
   assert.match(compilerPrecisionWarning(result) ?? '', /negative or exhaustive conclusions are not established/);
