@@ -2,6 +2,7 @@ import { graphContext } from './service.js';
 import { withResolvedProjectCheckout } from '../source/git.js';
 import { buildTestClaimDecisionRecord, generateTestClaimCatalog } from './testClaimInventory.js';
 import { projectTestClaimDecisionPage } from './testClaimReport.js';
+import { deriveSourceExecutionFacts } from './sourceExecutionFacts.js';
 
 export async function queryTestClaimReport(input: {
   project: string;
@@ -34,6 +35,7 @@ export async function queryTestClaimReport(input: {
       catalog,
       [],
     ) as Record<string, any>;
+    const executionFacts = await deriveSourceExecutionFacts(checkout.root, catalog, context.graph.graphId);
     const producerCommit = [process.env.DEVINT_BUILD_SHA, process.env.VERCEL_GIT_COMMIT_SHA]
       .map(value => value?.trim().toLowerCase()).find(value => value && /^[0-9a-f]{40}$/u.test(value)) ?? null;
     if (!producerCommit) throw new Error('test claim agent reads require an exact deployed DI producer commit');
@@ -47,8 +49,19 @@ export async function queryTestClaimReport(input: {
       });
     const reportDigest = String((projection as any).identity?.projectionSha256 ?? '');
     if (input.expectedReportDigest && input.expectedReportDigest !== reportDigest) throw new Error('test claim report digest does not match the requested immutable page identity');
+    const pageAssertionIds = new Set((projection.items ?? [])
+      .filter((item: any) => item.kind === 'assertion').map((item: any) => item.id));
+    const pageExecutionFacts = executionFacts.facts.filter(f => pageAssertionIds.has(f.assertionId));
     return {
       ...projection,
+      sourceExecutionFacts: {
+        strategy: executionFacts.strategy, revision: executionFacts.revision,
+        graphId: executionFacts.graphId, factsSha256: executionFacts.factsSha256,
+        counts: executionFacts.counts, items: pageExecutionFacts,
+        returned: pageExecutionFacts.length, total: executionFacts.facts.length,
+        note: 'Source success-path proofs are independent of runtime observations; a passing run must be supplied separately.',
+        policy: executionFacts.policy,
+      },
       source: {
         scope: catalog.scope,
         catalogMode: 'derived-from-exact-source',
