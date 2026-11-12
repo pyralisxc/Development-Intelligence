@@ -5,6 +5,7 @@ import ts from 'typescript';
 // Node 22 exposes the high-resolution clock globally via the DOM lib.
 import { composeTwoHopSourceEffects } from './twoHopSourceComposition.js';
 import { projectRpcSqlSourceCandidates } from './rpcSqlSourceCandidates.js';
+import { parseRpcDiscoveryQuestion, projectRpcDiscoveryQuestion, rpcDiscoveryAnswer } from './rpcDiscoveryQuestion.js';
 import type { GraphNode, IntelligenceGraph } from '../types.js';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
@@ -53,7 +54,8 @@ export function parseTwoHopSourceQuestion(question: string): { caller: string; c
     ? unique[0]! : null;
 }
 export function isConditionEffectQuestion(question: string): boolean {
-  return parseTwoHopSourceQuestion(question) !== null || explicitCallableSubject(question) !== null;
+  return parseRpcDiscoveryQuestion(question) !== null
+    || parseTwoHopSourceQuestion(question) !== null || explicitCallableSubject(question) !== null;
 }
 
 export interface SourceRequirement {
@@ -453,6 +455,8 @@ export async function projectTwoHopSourceQuestion(input: {
 export async function querySourceConditionEffects(input: {
   graph: IntelligenceGraph; project: string; question: string; scope?: string;
 }): Promise<Record<string, unknown> | null> {
+  const discovery = parseRpcDiscoveryQuestion(input.question);
+  if (discovery) return projectRpcDiscoveryQuestion(input);
   const pair = parseTwoHopSourceQuestion(input.question);
   if (pair) {
     if (!input.graph.repositoryRevision) {
@@ -527,6 +531,7 @@ export async function querySourceConditionEffects(input: {
 }
 
 export function sourceConditionsAnswer(result: Record<string, unknown>): string {
+  if (result.mode === 'ordinary-source-rpc-discovery') return rpcDiscoveryAnswer(result);
   if (result.mode === 'rpc-sql-source-candidates') {
     const query = result.routineName as string;
     const candidates = result.candidates as Array<{qualifiedName:string;signature:string;sourcePath:string;
