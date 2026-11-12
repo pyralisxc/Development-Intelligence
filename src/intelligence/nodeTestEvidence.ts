@@ -20,12 +20,13 @@ export interface NodeTestEvidenceProjection {
   identity: { project: string; revision: string; graphId: string; reportSha256: string;
     nodeVersion: string; runId: string | null; independentlyAttested: false };
   counts: { testEvents: number; reportedPass: number; reportedFail: number;
+    reportedSkip: number; reportedTodo: number; legacyPassUnclassified: number;
     sourceMatched: number; ambiguous: number; unavailable: number; summariesObserved: number };
   tests: Array<{
     eventId: string;
     file: string;
     testName: string;
-    outcome: 'reported-pass' | 'reported-fail';
+    outcome: 'reported-pass' | 'reported-fail' | 'reported-skip' | 'reported-todo' | 'reported-unknown';
     declarationId: string | null;
     sourceMapping: 'direct-git-source' | 'compiler-output-name-only' | 'unavailable';
     evidenceStatus: 'source-associated-unattested' | 'unproven';
@@ -35,6 +36,7 @@ export interface NodeTestEvidenceProjection {
     reportIntegrityIsNotCIExecutionAttestation: true;
     compilerOutputMappingCannotProveRuntime: true;
     sourceAssociatedEventsProveAssertionResults: false;
+    missingLegacySkipTodoFlagsRemainUnknown: true;
     noneOrMissingDoesNotProveNoExecution: true;
     independentlyProvenReplacement: false;
     canonicalAuthorityUnaffected: true;
@@ -160,18 +162,39 @@ export async function projectNodeTestEvents(input: {
   const sourceCache = new Map<string, Promise<boolean>>();
   const sourceTitles = new Map<string, Promise<Array<{ id: string; name: string }>>>();
   const tests: NodeTestEvidenceProjection['tests'] = [];
-  let ambiguous = 0, unavailable = 0, summariesObserved = 0, pass = 0, fail = 0;
+  let ambiguous = 0, unavailable = 0, summariesObserved = 0;
+  let pass = 0, fail = 0, skip = 0, todo = 0, legacyUnknown = 0;
   for (const [index, line] of lines.entries()) {
     if (!line.trim()) continue;
     const raw: unknown = JSON.parse(line);
-    if (!isRecord(raw) || raw.schemaVersion !== 1 || !isRecord(raw.data)) {
-      throw new Error('Node test stream must use the bounded v1 reporter event envelope');
+    if (!isRecord(raw) || (raw.schemaVersion !== 1 && raw.schemaVersion !== 2)
+      || !isRecord(raw.data)) {
+      throw new Error('Node test stream must use a supported bounded reporter event envelope');
     }
     if (raw.type === 'test:summary') { summariesObserved++; continue; }
     if (raw.type !== 'test:pass' && raw.type !== 'test:fail') continue;
     const name = safeText(raw.data.name);
     const file = safeText(raw.data.file);
-    if (raw.type === 'test:pass') pass++; else fail++;
+    let outcome: NodeTestEvidenceProjection['tests'][number]['outcome'];
+    if (raw.schemaVersion === 1) {
+      // v1 lost Node TestStream's skip/todo flags. A reported test:pass from
+      // that format could be a skip or TODO, so it is NOT a proven pass.
+      outcome = raw.type === 'test:fail' ? 'reported-fail' : 'reported-unknown';
+    } else {
+      if (typeof raw.data.skip !== 'boolean' || typeof raw.data.todo !== 'boolean'
+        || (raw.data.skip && raw.data.todo)
+        || (raw.type === 'test:fail' && (raw.data.skip || raw.data.todo))) {
+        throw new Error('Node v2 outcome requires unambiguous boolean skip and todo flags');
+      }
+      outcome = raw.type === 'test:fail' ? 'reported-fail'
+        : raw.data.skip ? 'reported-skip'
+          : raw.data.todo ? 'reported-todo' : 'reported-pass';
+    }
+    if (outcome === 'reported-pass') pass++;
+    else if (outcome === 'reported-fail') fail++;
+    else if (outcome === 'reported-skip') skip++;
+    else if (outcome === 'reported-todo') todo++;
+    else legacyUnknown++;
     if (!name || !file) { unavailable++; continue; }
     const location = await eventSourcePath(root, file);
     if (!location) { unavailable++; continue; }
@@ -194,9 +217,10 @@ export async function projectNodeTestEvents(input: {
     if (candidates.length > 1) ambiguous++;
     else if (!uniquelyLocated) unavailable++;
     tests.push({
-      eventId: stableHash([revision, digest, index, file, name, raw.type]),
+      eventId: stableHash([revision, digest, index, file, name, raw.type,
+        raw.schemaVersion, outcome]),
       file: sourcePath, testName: name,
-      outcome: raw.type === 'test:pass' ? 'reported-pass' : 'reported-fail',
+      outcome,
       declarationId: uniquelyLocated ? candidates[0]!.id : null,
       sourceMapping: location.mapping,
       evidenceStatus: uniquelyLocated ? 'source-associated-unattested' : 'unproven',
@@ -211,7 +235,9 @@ export async function projectNodeTestEvents(input: {
       runId: input.runId ?? null, independentlyAttested: false,
     },
     counts: {
-      testEvents: pass + fail, reportedPass: pass, reportedFail: fail,
+      testEvents: pass + fail + skip + todo + legacyUnknown,
+      reportedPass: pass, reportedFail: fail,
+      reportedSkip: skip, reportedTodo: todo, legacyPassUnclassified: legacyUnknown,
       sourceMatched: tests.filter(item => item.evidenceStatus === 'source-associated-unattested').length,
       ambiguous, unavailable, summariesObserved,
     },
@@ -223,6 +249,7 @@ export async function projectNodeTestEvents(input: {
       reportIntegrityIsNotCIExecutionAttestation: true,
       compilerOutputMappingCannotProveRuntime: true,
       sourceAssociatedEventsProveAssertionResults: false,
+      missingLegacySkipTodoFlagsRemainUnknown: true,
       noneOrMissingDoesNotProveNoExecution: true,
       independentlyProvenReplacement: false,
       canonicalAuthorityUnaffected: true, stored: false,
