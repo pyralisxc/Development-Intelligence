@@ -230,7 +230,7 @@ function resolvedNeighborhood(graph: IntelligenceGraph, seed: GraphNode, depth =
 
 function realizationTraversal(graph: IntelligenceGraph, seed: GraphNode, depth = 5, limit = 300): { nodes: GraphNode[]; edges: GraphEdge[]; paths: RealizationPath[] } {
   const context = graphQueryContext(graph);
-  const edgesById = new Map(graph.edges.map(edge => [edge.id, edge]));
+  const edgesById = context.edgesById;
   const pathByNode = new Map<string, { nodeIds: string[]; edgeIds: string[] }>([[seed.id, { nodeIds: [seed.id], edgeIds: [] }]]);
   let frontier = [seed.id];
   for (let level = 0; level < depth && frontier.length && pathByNode.size < limit; level += 1) {
@@ -314,7 +314,7 @@ function answerStatus(claims: readonly IntelligenceClaim[]): AssessmentStatus {
 }
 
 function summarizeFindings(graph: IntelligenceGraph, findings: readonly AuditFinding[], scope: { rootId: string; resolvedDepth: number; nodeCount: number } | null): Record<string, unknown> {
-  const edges = new Map(graph.edges.map(edge => [edge.id, edge]));
+  const edges = graphQueryContext(graph).edgesById;
   const grouped = new Map<string, { category: AuditFinding['category']; ruleId: string; relationshipKind: string | null; count: number; affectedIds: Set<string>; sampleFindingIds: string[] }>();
   for (const item of findings) {
     const relationshipKind = item.proof.edgeIds.map(id => edges.get(id)?.kind).find(Boolean) ?? null;
@@ -348,13 +348,17 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
     summary: `Conflicting observed values for ${conflict.entityId}.${conflict.key}.`, affectedIds: [conflict.entityId],
     proof: proof(graph, 'evidence.explicit-conflict', graph.nodes.filter(node => node.id === conflict.entityId), [], 'audit'),
   }));
-  if (includes('relationship')) for (const edge of graph.edges.filter(item => item.status === 'unresolved' && (!affectedIds || (typeof item.from === 'string' && affectedIds.has(item.from)) || (typeof item.to === 'string' && affectedIds.has(item.to))))) findings.push(finding(graph, {
+  const context = graphQueryContext(graph);
+  const relationshipEdges: readonly GraphEdge[] = affectedIds
+    ? [...new Map([...affectedIds].flatMap(id =>
+      context.incident(id).map(edge => [edge.id, edge] as const))).values()]
+    : graph.edges;
+  if (includes('relationship')) for (const edge of relationshipEdges.filter(item => item.status === 'unresolved')) findings.push(finding(graph, {
     ruleId: `relationship.${edge.status}`, category: 'relationship', status: 'attention',
     summary: `${edge.kind} relationship remains ${edge.status}; it cannot satisfy a proof requiring resolved evidence.`,
     affectedIds: [edge.from, edge.to].filter((id): id is string => Boolean(id)),
     proof: proof(graph, 'relationship.' + edge.status, graph.nodes.filter(node => node.id === edge.from || node.id === edge.to), [edge], 'audit'),
   }));
-  const context = graphQueryContext(graph);
   if (includes('realization')) for (const node of graph.nodes.filter(item => item.layer === 'semantic' && ['capability', 'action'].includes(item.kind) && (!affectedIds || affectedIds.has(item.id)))) {
     const incident = context.incident(node.id);
     if (!incident.some(edge => edgeAdmissible(edge, 'realization'))) findings.push(finding(graph, {
