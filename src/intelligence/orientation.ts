@@ -1,6 +1,7 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { deriveMotifs } from './motifs.js';
+import { graphQueryContext } from './queryContext.js';
 
 export type SourceScope =
   | 'implementation'
@@ -131,7 +132,7 @@ export function projectOrientation(
   const technology = profile?.technology ?? null;
   const depth = technology ? analyzerDepth(technology) : 'unknown';
   const incident = selected
-    ? graph.edges.filter(edge => edge.from === selected.id || edge.to === selected.id)
+    ? graphQueryContext(graph).incident(selected.id)
     : [];
   const resolved = incident.filter(edge => edge.status === 'resolved');
   const possible = incident.filter(edge => edge.status === 'candidate').map(relationshipOrientation);

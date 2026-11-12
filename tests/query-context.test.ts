@@ -40,6 +40,8 @@ test('compiled query context indexes immutable graph neighborhoods without chang
   const second = graphQueryContext(input);
   assert.equal(first, second, 'one immutable graph reuses one compiled context');
   assert.equal(first.node('b')?.name, 'b');
+  assert.equal(first.edgesById.get('e2'), input.edges[1]);
+  assert.equal(first.edgesById.get('e3')?.status, 'unresolved');
   assert.deepEqual(first.nodes('function').map(node => node.id), ['a', 'b']);
   assert.deepEqual(first.incoming('b').map(edge => edge.id), ['e1', 'e2']);
   assert.deepEqual(first.outgoing('b').map(edge => edge.id), ['e3']);
