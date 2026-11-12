@@ -4,6 +4,7 @@ import path from 'node:path';
 import ts from 'typescript';
 // Node 22 exposes the high-resolution clock globally via the DOM lib.
 import { composeTwoHopSourceEffects } from './twoHopSourceComposition.js';
+import { projectRpcSqlSourceCandidates } from './rpcSqlSourceCandidates.js';
 import type { GraphNode, IntelligenceGraph } from '../types.js';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
@@ -328,6 +329,16 @@ export async function projectTwoHopSourceQuestion(input: {
     && edge.from === caller.node!.id && Boolean(edge.to && targets.has(edge.to)));
   const candidateTargetIds = [...new Set(candidateEdges.map(edge => edge.to!))];
   if (candidateTargetIds.length !== 1) {
+    if (candidateTargetIds.length === 0) {
+      const sql = projectRpcSqlSourceCandidates({
+        graph, callerId: caller.node.id, routineName: pair.callee,
+      });
+      if (sql.proof.exactSourceRpcCallEstablished) {
+        return { ...sql, requestedQuestion: input.question,
+          timing: { graphBuildIncluded: false,
+            existingGraphProjectionMs: Number((performance.now()-started).toFixed(2)) } };
+      }
+    }
     return unavailable(candidateTargetIds.length > 1
       ? 'ambiguous-resolved-call-target' : 'exact-resolved-call-target-unavailable',
       { callerId: caller.node.id, candidateTargetIds });
@@ -516,6 +527,31 @@ export async function querySourceConditionEffects(input: {
 }
 
 export function sourceConditionsAnswer(result: Record<string, unknown>): string {
+  if (result.mode === 'rpc-sql-source-candidates') {
+    const query = result.routineName as string;
+    const candidates = result.candidates as Array<{qualifiedName:string;signature:string;sourcePath:string;
+      declaredReferences:Array<{kind:'reads'|'writes';name:string}>}> | undefined;
+    const counts = result.counts as {total:number;returned:number;omitted:number;
+      nextOffset:number|null} | undefined;
+    if (result.status !== 'supported' || !candidates || !counts) {
+      return 'No exact source-backed RPC-to-SQL declaration correlation could be established. '
+        + 'That does not prove the SQL function is absent or deployed.';
+    }
+    const examples = candidates.slice(0, 4).map(item => {
+      const writes = item.declaredReferences.filter(ref => ref.kind === 'writes')
+        .map(ref => ref.name);
+      return item.qualifiedName + ' (' + item.signature + ') in '
+        + item.sourcePath + (writes.length ? '; source-declared writes to '
+          + [...new Set(writes)].slice(0, 4).join(', ') : '');
+    });
+    return 'The captured source has a resolved invocation of RPC ' + query
+      + ' and ' + counts.total + ' tracked SQL function declaration candidate(s): '
+      + examples.join('; ') + '. ' + (counts.omitted
+        ? counts.omitted + ' candidate(s) are omitted from this page. ' : '')
+      + 'The active database routine, migration application, role/RLS context, '
+      + 'branch feasibility, transaction completion, and runtime execution '
+      + 'are not established by these source declarations.';
+  }
   if (result.mode === 'two-hop-conditional-source') {
     const identity = result.identity as { functionName: string; calleeName: string } | undefined;
     const summary = result.counts as { qualified: number; rejected: number;
