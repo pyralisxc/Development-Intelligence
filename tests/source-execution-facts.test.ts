@@ -13,15 +13,18 @@ import { run, runChecked } from '../src/util/process.js';
 const source = [
   "import test from 'node:test';",
   "import assert from 'node:assert/strict';",
-  "test('direct', () => { assert.equal(1, 1); });",
-  "test('must despite failing branch', () => { if (Date.now() < 0) throw Error('fail'); assert.equal(2, 2); });",
-  "test('optional', () => { if (Date.now() < 0) assert.equal(3, 3); });",
-  "test('early return', () => { if (Date.now() < 0) return; assert.equal(4, 4); });",
-  "test('never', () => { if (false) assert.equal(5, 5); });",
-  "test('nested callback', () => { const nested = () => assert.equal(6, 6); });",
-  "test('simulated dependency', () => { const fake = { write: () => true }; assert.equal(fake.write(), true); });",
-  "test('awaited', async () => { await Promise.resolve(); assert.equal(8, 8); });",
-  "test.skip('skipped', () => { assert.equal(9, 9); });",
+  "import { appendFileSync } from 'node:fs';",
+  "const mark = (name) => { if (process.env.DI_RUNTIME_WITNESS) appendFileSync(process.env.DI_RUNTIME_WITNESS, name + '\\n'); };",
+  "test('direct', () => { assert.equal((mark('direct'), 1), 1); });",
+  "test('must despite failing branch', () => { if (Date.now() < 0) throw Error('fail'); assert.equal((mark('guard'), 2), 2); });",
+  "test('optional', () => { if (process.env.DI_OPTIONAL_UNREACHED === 'yes') assert.equal((mark('optional'), 3), 3); });",
+  "test('optional executed', () => { if (process.env.DI_OPTIONAL_EXECUTED === 'yes') assert.equal((mark('optional executed'), 10), 10); });",
+  "test('early return', () => { if (process.env.DI_EARLY === 'yes') return; assert.equal((mark('early'), 4), 4); });",
+  "test('never', () => { if (false) assert.equal((mark('never'), 5), 5); });",
+  "test('nested callback', () => { const nested = () => assert.equal((mark('nested'), 6), 6); });",
+  "test('simulated dependency', () => { const fake = { write: () => true }; assert.equal((mark('mock'), fake.write()), true); });",
+  "test('awaited', async () => { await Promise.resolve(); assert.equal((mark('awaited'), 8), 8); });",
+  "test.skip('skipped', () => { assert.equal((mark('skipped'), 9), 9); });",
   '',
 ].join('\n');
 
@@ -51,6 +54,7 @@ test('source-derived successful-path facts reconcile with a real native Node run
     assert.equal(inTest('direct').sourceReach, 'must-on-success');
     assert.equal(inTest('must despite failing branch').sourceReach, 'must-on-success');
     assert.equal(inTest('optional').sourceReach, 'may-on-success');
+    assert.equal(inTest('optional executed').sourceReach, 'may-on-success');
     assert.equal(inTest('early return').sourceReach, 'may-on-success');
     assert.equal(inTest('never').sourceReach, 'never-on-success');
     assert.equal(inTest('nested callback').sourceReach, 'unknown');
@@ -58,11 +62,18 @@ test('source-derived successful-path facts reconcile with a real native Node run
     assert.equal(inTest('awaited').sourceReach, 'must-on-success');
     assert.equal(inTest('direct').inferredExecution, 'none');
 
+    const witnessFile = path.join(root, 'observations', 'actual-assertion-reach.txt');
     const reporter = pathToFileURL(path.resolve('scripts/node-test-events-reporter.mjs')).href;
     const executed = await run(process.execPath, [
       '--test', '--test-reporter=' + reporter, path.join(root, testFile),
-    ], { cwd: root, timeoutMs: 30000, env: { NODE_TEST_CONTEXT: undefined } });
+    ], { cwd: root, timeoutMs: 30000, env: {
+      NODE_TEST_CONTEXT: undefined, DI_RUNTIME_WITNESS: witnessFile,
+      DI_OPTIONAL_EXECUTED: 'yes', DI_EARLY: 'yes',
+    } });
     assert.equal(executed.code, 0, 'real tracked Node test run must succeed');
+    const observedHits = (await fs.readFile(witnessFile, 'utf8')).trim().split('\n').sort();
+    assert.deepEqual(observedHits, ['awaited', 'direct', 'guard', 'mock', 'optional executed'].sort(),
+      'the instrumented runtime witness must distinguish reached and unreached assertion callsites');
     await fs.writeFile(path.join(root, 'observations', 'test-events.jsonl'), executed.stdout);
     const observed = await projectNodeTestEvents({
       root, graph, catalog, eventPath: 'observations/test-events.jsonl',
@@ -76,6 +87,8 @@ test('source-derived successful-path facts reconcile with a real native Node run
     assert.equal(inTest('direct', local).inferredExecution, 'direct-local-run');
     assert.equal(inTest('must despite failing branch', local).inferredExecution, 'direct-local-run');
     assert.equal(inTest('optional', local).inferredExecution, 'none');
+    assert.equal(inTest('optional executed', local).inferredExecution, 'none',
+      'runtime reached optional assertions, but a test pass alone cannot prove their reach');
     assert.equal(inTest('never', local).inferredExecution, 'none');
     assert.equal(inTest('nested callback', local).inferredExecution, 'none');
     assert.equal(inTest('simulated dependency', local).observedProviderEffect, false);
