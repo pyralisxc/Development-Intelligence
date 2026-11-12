@@ -76,7 +76,10 @@ test('ordinary DI routed question uses the existing graph without graph construc
  const answer=await querySourceConditionEffects({graph,project:'project',question:q});
  assert.equal(answer?.mode,'ordinary-source-rpc-discovery');
  assert.equal(answer?.status,'supported');
- assert.match(sourceConditionsAnswer(answer!),/Staging remains unknown/);
+ const text=sourceConditionsAnswer(answer!);
+ assert.match(text,/not established.*applied in Staging/u);
+ assert.match(text,/authenticated environment-bound catalog/u);
+ assert.doesNotMatch(text,/is applied in Staging\./u);
  assert.equal((answer?.timing as any)?.graphConstructionIncluded,false);
  assert.equal(isConditionEffectQuestion('Which tests cover setPipelineHeart?'),false);
 });
