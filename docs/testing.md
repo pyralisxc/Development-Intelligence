@@ -8,6 +8,37 @@ npm run verify
 
 Permanent evidence protects durable Development Intelligence contracts, not historical analyzer/provider implementation.
 
+## Actual-use-first DI acceptance
+
+DI intelligence is accepted as useful only after the updated implementation is
+exercised through its actual Workbench/MCP/service questions on pinned real
+codebases, including questions **not preselected by the test fixture**. Ask
+follow-ups a developer would naturally ask, inspect exact source/revision and
+coverage behind each answer, and compare with the previous deployed candidate.
+A passing test runner is a safeguard; it cannot establish that DI found and
+explained the requested engineering answer correctly.
+
+Keep four independent measurements: graph construction/refresh, graph retrieval
+and revision/checkout access, reasoning over an already-built graph, and
+end-to-end hosted question/response. A gain in node count, warm test speed, or
+fixture coverage alone is not a product-value acceptance criterion.
+
+Retain narrowly targeted automated checks for source determinism, false-proof
+negatives, confidentiality, auth/provider boundaries, pagination, packaging,
+recovery, and other guarantees a manual question cannot reliably exercise.
+Use real existing repositories for saturation and discover unanticipated
+questions and limitations, not a growing collection of hardcoded example
+answers. The truth of a captured code/database snapshot does not depend on
+green CI. Green CI reports how controlled executions behaved under their
+exact mocks/fixtures; deployed use and provider observations require separate
+evidence. Never automatically delete tests on the basis of DI's analysis.
+
+A pure internal projection can be a verified foundation without being a
+user-accepted intelligence capability: the latter requires the corresponding
+ordinary tool/question to work on the updated hosted Preview. Preserve known
+unknowns and report false positives, omissions and latency rather than teaching
+the acceptance harness to expect DI's current answer.
+
 ## Durable contracts
 
 Account/network tests use disposable identities and a simulated remote Blob provider to exercise exact account separation, fresh-service configuration recovery, conditional-save conflicts, requested versus active associations, secret exclusion, binding replacement/revocation and fresh replacement-node metadata. This does not prove live provider durability, hosted identity, key possession or issued node grants. The engine integration fixture covers two same-named bindings at the same Git revision with distinct adopted authorities, warm/cold graph identity reads, foreign runtime snapshots, scoped scratch/diagnostics and authority-write/worker refusal. Those tests must execute with the normal dependencies before claiming engine isolation acceptance; metadata-only tests cannot substitute.
