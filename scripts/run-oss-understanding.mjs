@@ -8,6 +8,7 @@ import { generateTestClaimCatalog } from '../dist/src/intelligence/testClaimInve
 import { projectLocalJoernDataflow } from '../dist/src/intelligence/joernDataflow.js';
 import { projectNodeTestEvents } from '../dist/src/intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from '../dist/src/intelligence/assertionEvidenceRouting.js';
+import { deriveSourceExecutionFacts, correlateSourceExecutionFacts } from '../dist/src/intelligence/sourceExecutionFacts.js';
 import { run, runChecked } from '../dist/src/util/process.js';
 
 /**
@@ -71,6 +72,7 @@ async function main() {
     sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
     sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
   });
+  const sourceExecutionFacts = await deriveSourceExecutionFacts(root, catalog, graph.graphId);
   const scratch = await fs.mkdtemp(path.join(root, '.di-oss-evidence-'));
   let joernResult = null, testResult = null, runExit = null;
   let joernProjection = null, nodeProjection = null;
@@ -233,6 +235,9 @@ async function main() {
     if (after.stdout.trim() !== graph.repositoryRevision) {
       throw new Error('Source revision changed during OSS evidence run');
     }
+    const factsForThisRun = nodeProjection
+      ? correlateSourceExecutionFacts(sourceExecutionFacts, nodeProjection, 'direct-local-run')
+      : sourceExecutionFacts;
     const result = {
       mode: 'operator-owned-open-source-understanding',
       project: graph.project, exactRevision: graph.repositoryRevision,
@@ -240,6 +245,14 @@ async function main() {
       joern: joernResult, nodeTests: testResult, measures,
       assertionEvidence: joinAssertionEvidence({ graph, catalog,
         joern: joernProjection, testEvents: nodeProjection }),
+      sourceExecutionFacts: {
+        strategy: factsForThisRun.strategy, revision: factsForThisRun.revision,
+        graphId: factsForThisRun.graphId, factsSha256: factsForThisRun.factsSha256,
+        sourceFactsSha256: factsForThisRun.sourceFactsSha256,
+        counts: factsForThisRun.counts, samples: factsForThisRun.facts.slice(0, 20),
+        returned: Math.min(20, factsForThisRun.facts.length), total: factsForThisRun.facts.length,
+        truncated: factsForThisRun.facts.length > 20, policy: factsForThisRun.policy,
+      },
       oneCanonicalGraph: true, changedCanonicalAuthority: false,
       noAutomaticTestDeletion: true,
     };
