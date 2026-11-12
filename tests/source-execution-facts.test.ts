@@ -61,7 +61,7 @@ test('source-derived successful-path facts reconcile with a real native Node run
     const reporter = pathToFileURL(path.resolve('scripts/node-test-events-reporter.mjs')).href;
     const executed = await run(process.execPath, [
       '--test', '--test-reporter=' + reporter, path.join(root, testFile),
-    ], { cwd: root, timeoutMs: 30000 });
+    ], { cwd: root, timeoutMs: 30000, env: { NODE_TEST_CONTEXT: undefined } });
     assert.equal(executed.code, 0, 'real tracked Node test run must succeed');
     await fs.writeFile(path.join(root, 'observations', 'test-events.jsonl'), executed.stdout);
     const observed = await projectNodeTestEvents({
