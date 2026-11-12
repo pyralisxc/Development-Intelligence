@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseRpcDiscoveryQuestion, projectRpcDiscoveryQuestion, rpcDiscoveryAnswer }
   from '../src/intelligence/rpcDiscoveryQuestion.js';
+import { isConditionEffectQuestion, querySourceConditionEffects, sourceConditionsAnswer }
+  from '../src/intelligence/sourceConditionEffects.js';
 import type { IntelligenceGraph } from '../src/types.js';
 
 const name='cardforge_set_pipeline_heart', callerId='function:src/set.ts';
@@ -66,4 +68,14 @@ test('explicit source scope resolves unique exact caller, not coincidental name'
  assert.equal(projectRpcDiscoveryQuestion({graph:dup,project:'project',question:q})!.status,'unproven');
  assert.equal(projectRpcDiscoveryQuestion({graph:dup,project:'project',question:q,
   scope:'src/set.ts'})!.status,'supported');
+});
+
+test('ordinary DI routed question uses the existing graph without graph construction',async ()=>{
+ assert.equal(isConditionEffectQuestion(q),true);
+ const answer=await querySourceConditionEffects({graph,project:'project',question:q});
+ assert.equal(answer?.mode,'ordinary-source-rpc-discovery');
+ assert.equal(answer?.status,'supported');
+ assert.match(sourceConditionsAnswer(answer!),/Staging remains unknown/);
+ assert.equal((answer?.timing as any)?.graphConstructionIncluded,false);
+ assert.equal(isConditionEffectQuestion('Which tests cover setPipelineHeart?'),false);
 });
