@@ -62,6 +62,7 @@ export function projectRpcDiscoveryQuestion(input: {
     committedWriteObserved: false,
     testedRuntimeEstablished: false,
     canonicalGraphUnchanged: true,
+    unknownDynamicRpcTransfersNotExcluded: true,
   };
   const unproven = (reason: string) => ({
     ...base, status: 'unproven', reason,
@@ -149,12 +150,15 @@ export function rpcDiscoveryAnswer(result: Record<string, unknown>): string {
       + (r.omitted ? '; ' + r.omitted + ' additional source candidate(s) omitted from this page' : '');
   });
   const env = result.requestedEnvironment;
-  const applied = typeof env === 'string' ? 'Which routine is applied in ' + env
-    + ' remains unknown without authenticated environment-bound catalog evidence. '
-    : 'The applied routine remains unknown without authenticated environment-bound catalog evidence. ';
+  const applied = typeof env === 'string'
+    ? 'DI has not established which SQL definition, if any, is applied in ' + env
+      + '; an authenticated environment-bound catalog is required. '
+    : 'DI has not established which SQL definition is currently applied; '
+      + 'authenticated environment-bound catalog evidence is required. ';
   return 'The exact source caller ' + String(result.caller)
     + ' has ' + rs.length + ' uniquely resolved RPC invocation(s): '
     + labels.join('. ') + '. ' + applied
-    + 'These are source declarations only: no database body, grant/RLS outcome, '
-    + 'successful transaction, mocked test, or real runtime execution is proven.';
+    + 'These are known resolved source RPC relationships, not proof that every dynamic '
+    + 'or unresolved call has been discovered. No database body, grant/RLS outcome, '
+    + 'successful transaction, test result, or real runtime execution is proven.';
 }

@@ -45,7 +45,8 @@ test('source SQL declarations are connected, active database is explicitly unkno
  assert.equal((result.proof as any).appliedDatabaseFunctionEstablished,false);
  assert.equal((result.proof as any).sourceRpcInvocationEstablished,true);
  const answer=rpcDiscoveryAnswer(result);
- assert.match(answer,/Staging remains unknown/);
+ assert.match(answer,/applied in Staging/);
+ assert.match(answer,/not established/);
  assert.match(answer,/two.sql/);
  assert.doesNotMatch(answer,/was applied in Staging/);
 });
