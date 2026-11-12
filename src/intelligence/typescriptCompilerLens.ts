@@ -9,11 +9,36 @@ import { resolution } from './model.js';
  * No independent symbol authority or persisted TypeScript program is created.
  */
 export const TYPESCRIPT_COMPILER_LENS = 'typescript-checker-symbol.v1';
-// Wider source-only compiler analysis is permitted when the real file/byte budgets fit.
-// The binding budget remains independent, so incomplete precision is disclosed.
-export const TYPESCRIPT_COMPILER_MAX_FILES = 1600;
-const MAX_SOURCE_BYTES = 12 * 1024 * 1024;
-const MAX_BINDINGS = 3000;
+// Versioned native-compiler capacity defaults. These are resource budgets,
+// not scientific limits on meaning. The same defaults apply to full and
+// incremental canonical graph builds; local isolated producer probes may use
+// explicitly supplied, validated budgets without changing hosted authority.
+export const TYPESCRIPT_COMPILER_MAX_FILES = 4096;
+export const TYPESCRIPT_COMPILER_MAX_SOURCE_BYTES = 32 * 1024 * 1024;
+export const TYPESCRIPT_COMPILER_MAX_BINDINGS = 12000;
+export interface TypeScriptCompilerBudget {
+  maxFiles: number;
+  maxSourceBytes: number;
+  maxBindings: number;
+}
+export const DEFAULT_TYPESCRIPT_COMPILER_BUDGET: Readonly<TypeScriptCompilerBudget> = Object.freeze({
+  maxFiles: TYPESCRIPT_COMPILER_MAX_FILES,
+  maxSourceBytes: TYPESCRIPT_COMPILER_MAX_SOURCE_BYTES,
+  maxBindings: TYPESCRIPT_COMPILER_MAX_BINDINGS,
+});
+function compilerBudget(overrides: Partial<TypeScriptCompilerBudget> | undefined): TypeScriptCompilerBudget {
+  const budget = { ...DEFAULT_TYPESCRIPT_COMPILER_BUDGET, ...overrides };
+  for (const [name, value, maximum] of [
+    ['maxFiles', budget.maxFiles, 20000],
+    ['maxSourceBytes', budget.maxSourceBytes, 256 * 1024 * 1024],
+    ['maxBindings', budget.maxBindings, 200000],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+      throw new Error('Invalid TypeScript compiler resource budget ' + name);
+    }
+  }
+  return budget;
+}
 const DECLARATION_KINDS = new Set(['function', 'method', 'declaration', 'constructor']);
 
 export interface CompilerBindingResult {
@@ -23,6 +48,14 @@ export interface CompilerBindingResult {
   resolvedBindings: number;
   state: 'completed' | 'not-applicable' | 'bounded-out' | 'unavailable';
   reason: string | null;
+  coverage?: {
+    sourceBytes: number;
+    visitedFiles: number;
+    maxFiles: number;
+    maxSourceBytes: number;
+    maxBindings: number;
+    completeForEligibleSources: boolean;
+  };
 }
 
 /** Disclose optional frontend precision gaps without mislabeling syntax as absent. */
@@ -71,14 +104,27 @@ export function compilerTypeScriptReferences(input: {
   nodes: GraphNode[];
   fileNodes: Map<string, GraphNode>;
   options: ts.CompilerOptions;
+  /** Explicit local/benchmark-only budget; canonical callers use revision-stable defaults. */
+  budget?: Partial<TypeScriptCompilerBudget>;
 }): CompilerBindingResult {
   const relatives = [...input.sourceTexts.keys()].sort();
+  const budget = compilerBudget(input.budget);
+  const sourceBytes = [...input.sourceTexts.values()]
+    .reduce((sum, content) => sum + Buffer.byteLength(content, 'utf8'), 0);
+  let visitedFiles = 0;
+  const coverage = (completeForEligibleSources: boolean) => ({
+    sourceBytes, visitedFiles, maxFiles: budget.maxFiles, maxSourceBytes: budget.maxSourceBytes,
+    maxBindings: budget.maxBindings, completeForEligibleSources,
+  });
   const empty = (state: CompilerBindingResult['state'], reason: string | null): CompilerBindingResult =>
-    ({ nodes: [], edges: [], sourceFiles: relatives.length, resolvedBindings: 0, state, reason });
-  if (!relatives.length) return empty('not-applicable', null);
-  if (relatives.length > TYPESCRIPT_COMPILER_MAX_FILES
-    || [...input.sourceTexts.values()].reduce((sum, content) => sum + Buffer.byteLength(content, 'utf8'), 0) > MAX_SOURCE_BYTES) {
-    return empty('bounded-out', 'TypeScript compiler lens exceeded its bounded source-file or byte limit');
+    ({ nodes: [], edges: [], sourceFiles: relatives.length, resolvedBindings: 0, state, reason,
+      coverage: coverage(false) });
+  if (!relatives.length) return { ...empty('not-applicable', null), coverage: coverage(true) };
+  if (relatives.length > budget.maxFiles || sourceBytes > budget.maxSourceBytes) {
+    return empty('bounded-out', 'TypeScript compiler lens requires ' + relatives.length
+      + ' files/' + sourceBytes + ' bytes but this producer budget allows '
+      + budget.maxFiles + ' files/' + budget.maxSourceBytes
+      + ' bytes; no compiler-wide negative or exhaustive assertion is established');
   }
 
   const native = new Map<string, GraphNode[]>();
@@ -103,12 +149,13 @@ export function compilerTypeScriptReferences(input: {
     const resultEdges: GraphEdge[] = [];
     let resolvedBindings = 0;
     for (const file of relatives) {
-      if (resolvedBindings >= MAX_BINDINGS) break;
+      if (resolvedBindings >= budget.maxBindings) break;
+      visitedFiles += 1;
       const source = program.getSourceFile(path.join(input.root, file));
       const owner = input.fileNodes.get(file);
       if (!source || !owner || program.getSyntacticDiagnostics(source).length > 0) continue;
       const visit = (node: ts.Node): void => {
-        if (resolvedBindings >= MAX_BINDINGS) return;
+        if (resolvedBindings >= budget.maxBindings) return;
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           if (ts.isIdentifier(node.expression) || ts.isPropertyAccessExpression(node.expression)) {
             const signature = checker.getResolvedSignature(node);
@@ -138,8 +185,13 @@ export function compilerTypeScriptReferences(input: {
       };
       visit(source);
     }
+    const saturated = resolvedBindings >= budget.maxBindings;
     return { nodes: resultNodes, edges: resultEdges, sourceFiles: relatives.length, resolvedBindings,
-      state: 'completed', reason: resolvedBindings === MAX_BINDINGS ? 'Binding limit reached; compiler evidence is non-exhaustive' : null };
+      state: saturated ? 'bounded-out' : 'completed',
+      reason: saturated ? 'Binding budget ' + budget.maxBindings + ' reached after '
+        + visitedFiles + '/' + relatives.length
+        + ' files; retained positive source facts are not exhaustive' : null,
+      coverage: coverage(!saturated && visitedFiles === relatives.length) };
   } catch (error) {
     return empty('unavailable', error instanceof Error ? 'TypeScript compiler lens unavailable' : 'Unknown compiler lens failure');
   }
