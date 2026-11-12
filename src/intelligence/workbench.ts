@@ -1284,7 +1284,7 @@ export function planInvestigationQuestion(input: {
       || /\b(?:itself|ourselves|self[- ]audit|repository-wide|project-wide|overall)\b/u.test(lower)
       || /\bwhich\s+(?:current\s+)?(?:failures?|warnings?)\b/u.test(lower)
     )
-    && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower));
+    && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
 
   const specificSemantic = specificSemanticQuestion(text);
   const testAssuranceComparison = testAssuranceComparisonIntent(text);
