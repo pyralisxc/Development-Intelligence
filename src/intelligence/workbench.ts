@@ -1274,13 +1274,17 @@ export function planInvestigationQuestion(input: {
   const statisticsIntent =
     /\b(?:project|repository|repo|codebase|graph)\b[^?.!]{0,60}\b(?:size|stats|statistics|capacity|footprint|limits?|big|large|resource pressure|storage usage)\b/u.test(lower)
     || /\b(?:how (?:big|large) is (?:this|the) (?:project|repository|repo|codebase)|general (?:project )?stats|project stats|capacity profile|how many (?:files|nodes|edges|semantic concepts)|near (?:our )?capacity|close to (?:our )?capacity)\b/u.test(lower);
+  const directInvestigationAuditIntent =
+    /^(?:audit|review|assess)\s+[^?]{1,110}\b(?:areas?|developer|investigat\w*|bottlenecks?|blind spots?|weaknesses?|limitations?|risks?)\b/iu.test(text)
+    || (/\b(?:bottlenecks?|blind spots?|precision limits?|understanding gaps?|struggl\w*)\b/u.test(lower)
+      && /\b(?:code|source|analysis|understanding|analyzer|compiler|indexer|graph|repository|repo|codebase|di|development intelligence)\b/u.test(lower));
   const repositoryAuditIntent =
-    (
+    directInvestigationAuditIntent || (
       /\b(?:this|the|our)\s+(?:project|repository|repo|codebase|system)\b/u.test(lower)
       || /\b(?:itself|ourselves|self[- ]audit|repository-wide|project-wide|overall)\b/u.test(lower)
       || /\bwhich\s+(?:current\s+)?(?:failures?|warnings?)\b/u.test(lower)
     )
-    && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower);
+    && /\b(?:audit|risks?|problems?|failures?|warnings?|blind spots?|weaknesses?|correctness|maintainability|architecture|architectural|fix(?:ed|es|ing)?|priorit(?:y|ize|ized|ization)|limitations?|issues?)\b/u.test(lower));
 
   const specificSemantic = specificSemanticQuestion(text);
   const testAssuranceComparison = testAssuranceComparisonIntent(text);
@@ -1610,17 +1614,25 @@ function repositoryAuditAnswer(result: Record<string, any>): string {
   const findings = Array.isArray(result.findings) ? result.findings : [];
   const blockers = Array.isArray(result.coverageBlockers) ? result.coverageBlockers : [];
   const targets = Array.isArray(result.investigationTargets) ? result.investigationTargets : [];
-  if (findings.length === 0 && blockers.length === 0) {
-    return targets.length
-      ? `No deterministic repository defects or coverage blockers were found on the pinned revision. DI did surface ${targets.length} investigation target(s); those are evidence-backed areas worth inspecting, not proven defects.`
-      : 'No deterministic repository defects or coverage blockers were found on the pinned revision.';
+  if (!targets.length && !findings.length && !blockers.length) {
+    return 'No evidence-backed investigation targets were found on this pinned graph. '
+      + 'That is not proof that the repository has no defects or remaining analyzer limits.';
   }
-  const summaries = findings
-    .slice(0, 3)
-    .map((item: any) => String(item.summary ?? item.message ?? '').trim())
-    .filter(Boolean);
-  const detail = summaries.length ? ` Leading findings: ${summaries.join(' ')}` : '';
-  return `Repository audit found ${findings.length} deterministic finding(s) and ${blockers.length} coverage blocker(s) on the pinned revision.${detail}`;
+  const leading = targets.slice(0, 4).map((item: any) => {
+    const summary = String(item.summary ?? '').slice(0, 230);
+    const route = String(item.triage?.route ?? 'inspect-further').replaceAll('-', ' ');
+    const next = String(item.nextEvidence ?? '').slice(0, 230);
+    return summary + ' [Investigation: ' + route + ']' + (next ? ' Next: ' + next : '');
+  });
+  const precision = Number(result.selfDiagnosis?.observedAnalyzerPrecisionLimits ?? 0);
+  return 'Revision-bound DI investigation: ' + findings.length
+    + ' deterministic finding(s), ' + blockers.length
+    + ' coverage blocker group(s), ' + precision
+    + ' explicitly reported analyzer precision limit(s), and ' + targets.length
+    + ' bounded investigation target(s). '
+    + 'These are not all confirmed software defects. Leading evidence and next checks: '
+    + leading.join(' | ')
+    + ' Developer intervention is warranted only after the relevant source, provider evidence, and project intent establish an actionable concern.';
 }
 
 // Per-investigation, revision-pinned orientation work. Never shared globally:

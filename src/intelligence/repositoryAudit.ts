@@ -263,6 +263,66 @@ function coverageBlockers(graph: IntelligenceGraph, limit: number) {
     .slice(0, limit);
 }
 
+/** A detected precision boundary is a reason to improve DI, not a defect in the inspected product. */
+function analyzerPrecisionLimits(graph: IntelligenceGraph) {
+  const seen = new Set<string>();
+  const signals: Array<{ sourceId: string; observation: string; status: 'observed-precision-boundary' }> = [];
+  for (const source of graph.sources) {
+    for (const warning of source.warnings ?? []) {
+      if (typeof warning !== 'string'
+        || !/^(?:Optional TypeScript compiler symbol evidence)/u.test(warning)) continue;
+      const observation = warning.slice(0, 400);
+      const key = source.id + '\u0000' + observation;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      signals.push({ sourceId: source.id, observation, status: 'observed-precision-boundary' });
+    }
+  }
+  return signals.sort((x,y) => x.sourceId.localeCompare(y.sourceId)
+    || x.observation.localeCompare(y.observation));
+}
+
+/** Recommendations remain investigation hypotheses; no inferred bug or product decision. */
+function triageInvestigationTarget(item: Record<string, unknown>) {
+  const kind = String(item.kind ?? '');
+  if (kind === 'analyzer-precision') return {
+    route: 'strengthen-di-understanding',
+    confidence: 'observed-limitation',
+    developerDecisionRequired: false,
+    why: 'The analyzer reported a bounded or incomplete precision pass; that is not a source-code defect.',
+  };
+  if (kind === 'coverage') return {
+    route: 'evaluate-analyzer-support',
+    confidence: 'observed-coverage',
+    developerDecisionRequired: false,
+    why: 'Unsupported files do not establish a defect. First determine whether these files matter to the requested behavior, then improve coverage where useful.',
+  };
+  if (kind === 'relationship') return {
+    route: 'investigate-binding-or-missing-evidence',
+    confidence: 'candidate-cause',
+    developerDecisionRequired: false,
+    why: 'An unresolved or candidate relationship can reflect a missing static binding, dynamic dispatch, or absent evidence, not necessarily incorrect source code.',
+  };
+  if (kind === 'architecture-boundary') return {
+    route: 'developer-judgment-after-evidence',
+    confidence: 'investigation-signal',
+    developerDecisionRequired: null,
+    why: 'Bidirectional dependencies may be intentional. A developer decides whether ownership and layering meet product constraints after inspecting the contracts.',
+  };
+  if (kind === 'finding') return {
+    route: 'evaluate-evidence-and-project-intent',
+    confidence: 'finding-requires-interpretation',
+    developerDecisionRequired: null,
+    why: 'DI established a graph finding; whether it is an actionable product defect depends on the actual conflicting evidence and project-owned expectations.',
+  };
+  return {
+    route: 'check-revision-and-provider-evidence',
+    confidence: 'observed-context',
+    developerDecisionRequired: null,
+    why: 'Version or provider currentness must be reconciled before an engineering conclusion.',
+  };
+}
+
 function staleDimensions(currentness: GraphCurrentness | null | undefined): string[] {
   if (!currentness) return [];
   return [
@@ -284,6 +344,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
   const blockers = coverageBlockers(graph, limit);
   const architectureBoundaries = bidirectionalArchitectureBoundaries(graph, limit, indexes);
   const stale = staleDimensions(options.currentness);
+  const precisionLimits = analyzerPrecisionLimits(graph);
   const targets: Array<Record<string, unknown>> = [];
 
   if (options.acceptedPresent === true && stale.length) targets.push({
@@ -294,6 +355,16 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     evidence: { dimensions: stale, checkpointError: options.currentness?.checkpointError ?? null },
     fixSurface: { paths: [], areas: [] },
     nextEvidence: 'Reconcile the accepted checkpoint/current analyzer state for the exact candidate before treating accepted semantics as current.',
+  });
+
+  for (const signal of precisionLimits) targets.push({
+    kind: 'analyzer-precision',
+    basis: 'observed',
+    count: 1,
+    summary: 'DI compiler precision is incomplete: ' + signal.observation,
+    evidence: { sourceId: signal.sourceId, observation: signal.observation },
+    fixSurface: { paths: [], areas: [] },
+    nextEvidence: 'Measure which source bindings were omitted or truncated and whether bounded incremental/partitioned compiler analysis recovers useful results on this exact revision. Do not turn this into a source defect or silently remove safety budgets.',
   });
 
   for (const blocker of blockers) targets.push({
@@ -355,7 +426,19 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     relationshipConcentrations: relationships,
     coverageBlockers: blockers,
     architectureBoundaries,
-    investigationTargets: targets.slice(0, limit),
+    investigationTargets: targets.slice(0, limit).map(item => ({
+      ...item, triage: triageInvestigationTarget(item),
+    })),
+    selfDiagnosis: {
+      version: 'evidence-based-bottleneck-triage.v1',
+      observedAnalyzerPrecisionLimits: precisionLimits.length,
+      sourceWarnings: precisionLimits,
+      // Counts are diagnostic signals, not a number of bugs or failed product features.
+      unresolvedRelationshipGroups: relationships.filter(item => item.status === 'unresolved').length,
+      developerDefectsProvenByTheseSignals: false,
+      selfImprovementBeforeBlamingSource: true,
+      independentExecutionOrRuntimeProof: false,
+    },
     policy: {
       projection: 'audit-only',
       persisted: false,
