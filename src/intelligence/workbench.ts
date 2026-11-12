@@ -178,13 +178,15 @@ export async function semanticAudit(input: {
   const candidateLimit = Math.min(Math.max(input.candidateLimit ?? 200, 1), 1000);
   const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
   const audit = auditSemanticCandidates(graph, bootstrap, { limit: input.limit ?? 30 });
-  const reviewed = audit.items.length;
+  const audited = audit.counts.audited;
+  const displayed = audit.items.length;
   const core = audit.counts.coreCandidates;
   const needsReview = audit.counts.factualityNeedsReview;
   return {
     project: input.project,
     graphId: graph.graphId,
-    summary: `${audit.candidateUniverse.eligible} evidence-qualified semantic candidate(s); ${core} of ${reviewed} audited candidate(s) satisfy the explicit core-candidate facets and ${needsReview} require factuality review.`,
+    // Total evaluated and bounded detail presentation are different populations.
+    summary: `${audit.candidateUniverse.eligible} evidence-qualified semantic candidate(s); ${audited} audited, ${core} meeting the explicit core-candidate facets and ${needsReview} requiring factuality review; ${displayed} detailed item(s) displayed. ${audit.candidateUniverse.truncated ? 'The eligible candidate population is truncated by the requested source-candidate budget.' : 'The eligible candidate population is complete for this request.'}`,
     ...audit,
     coverage: compactCoverage(graph),
     policyNote: 'Core/supporting is an evidence-grounded audit classification, not semantic authority. Acceptance and verification remain separate.',
