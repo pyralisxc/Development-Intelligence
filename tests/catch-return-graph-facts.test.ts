@@ -96,3 +96,18 @@ test('direct catch-return statements remain conditional source syntax, never neg
   assert.equal(value.exceptionCauseEstablished, false);
   assert.equal(value.sourceOnly, true);
 });
+
+test('same-line identical catch returns have distinct exact source identities', () => {
+  const source = 'export function many(flag: boolean) { if (flag) { try {} catch { return {failed: true}; } } else { try {} catch { return {failed: true}; } } }';
+  const result = analyzeTypeScript({
+    source: {id: 'repo:src/many.ts', kind: 'repository-file', locator: 'src/many.ts',
+      revision: 'f'.repeat(40), observedAt: '2026-01-01T00:00:00Z', available: true},
+    text: source, locatorBase: 'src/many.ts',
+  });
+  const facts = result.observations.filter(node => node.kind === 'source-catch-return');
+  assert.equal(facts.length, 2);
+  assert.equal(new Set(facts.map(fact => fact.id)).size, 2);
+  assert.equal(new Set(facts.flatMap(fact => fact.evidenceIds ?? [])).size, 2);
+  const edges = result.resolutions.filter(edge => edge.kind === 'catch-returns');
+  assert.equal(edges.length, 2);
+});

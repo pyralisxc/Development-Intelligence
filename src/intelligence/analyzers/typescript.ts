@@ -243,11 +243,13 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       sourceId: context.source.id,
       kind: 'direct-catch-return-source',
       locator: where,
+      field: 'offset:' + String(last.getStart(sourceFile)),
       message: 'Final direct catch statement returns a literal object; catch reachability and external effects are not proven.',
       value: { functionId: owner.id, outcome },
     });
     evidence.push(proof);
     const fact = observation({
+      identity: [context.source.id, 'source-catch-return', owner.id, last.getStart(sourceFile)],
       sourceId: context.source.id,
       kind: 'source-catch-return',
       locator: where,
