@@ -8,7 +8,7 @@ The canonical programmatic surface is **MCP**. The **Development Intelligence Wo
 
 Development Intelligence is built first for a solo software owner working with agents across many repositories, with enterprise-grade evidence discipline but without requiring team administration or process governance. It observes and explains; it does not own product intent, write inspected repositories, or become a development methodology.
 
-Read the [DI Product Vision](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4751361/Development+Intelligence+Product+Vision+and+Principles) and [Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770/Development+Intelligence+Product+Version+Roadmap) for product identity, decisions and cross-version goals. [Revision-bound technical profile](docs/product-direction.md) and the source/architecture/operations docs describe what this Git revision implements and where its proof stops. External tools can improve what Development Intelligence observes, but they do not own its graph model, lifecycle, query semantics, storage, or hosting.
+Read [Product direction](docs/product-direction.md) for the authoritative product identity, current truth, direction, decision filter, and non-goals. External tools can improve what Development Intelligence observes, but they do not own its graph model, lifecycle, query semantics, storage, or hosting.
 
 ## Core rules
 
@@ -23,7 +23,7 @@ Read the [DI Product Vision](https://pyralisholdings.atlassian.net/wiki/spaces/P
 - Runtime and technical-source access is allowlisted, bounded, and read-only.
 - Temporary checkouts/caches are disposable compute, not durable state.
 
-See [Confluence Product Vision](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4751361/Development+Intelligence+Product+Vision+and+Principles), [Revision-bound technical profile](docs/product-direction.md), [Architecture](docs/architecture.md), [Operations](docs/operations.md), [Testing](docs/testing.md), and [ChatGPT publishing](docs/chatgpt-publishing.md).
+See [Product direction](docs/product-direction.md), [Architecture](docs/architecture.md), [Operations](docs/operations.md), [Testing](docs/testing.md), and [ChatGPT publishing](docs/chatgpt-publishing.md).
 
 ## A / W / B lifecycle
 

@@ -39,14 +39,6 @@ ordinary tool/question to work on the updated hosted Preview. Preserve known
 unknowns and report false positives, omissions and latency rather than teaching
 the acceptance harness to expect DI's current answer.
 
-## Source-derived execution facts versus observed runs
-
-The exact source analyzer can establish conditional `must-on-success`, `may-on-success`, `never-on-success` and `unknown` assertion reachability for the supported test-callback control-flow families. These are **source facts within their stated proof scope** and do not require a runtime report to be meaningful. Actual success-path observations can corroborate or extend them, but must not change the immutable source-proof identity.
-
-The native Node TestStream path can parse executed test-case results and, in the explicitly direct local runner, correlate uniquely mapped PASS outcomes to source-proven mandatory assertions. The hosted source-only `get_test_claim_report` and ordinary execution-fact questions must distinguish an absent authenticated run attachment from evidence that no tests ran. **A passing test can be evidence of execution** for a matched run/source/environment; it does not alone imply every assertion in a conditional callback executed or every dependency was real. A mock test still executes tested code, but is not evidence of real provider/database side effects.
-
-Measure factuality by representative positive and negative source/run witnesses (including throws, catch/finally overrides, optional returns, ambiguous/duplicate test names and changed source), source-fact proof identity, real-run attestation, and provider boundary evidence. An authenticated run used as a premise for inferred execution cannot also count as independent validation of that same inference. Keep unsupported control flow unknown and **do not automatically retire tests**. The [Confluence DI vision](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4751361/Development+Intelligence+Product+Vision+and+Principles) owns longer-term evidence goals; this source document records current technical acceptance semantics.
-
 ## Durable contracts
 
 Account/network tests use disposable identities and a simulated remote Blob provider to exercise exact account separation, fresh-service configuration recovery, conditional-save conflicts, requested versus active associations, secret exclusion, binding replacement/revocation and fresh replacement-node metadata. This does not prove live provider durability, hosted identity, key possession or issued node grants. The engine integration fixture covers two same-named bindings at the same Git revision with distinct adopted authorities, warm/cold graph identity reads, foreign runtime snapshots, scoped scratch/diagnostics and authority-write/worker refusal. Those tests must execute with the normal dependencies before claiming engine isolation acceptance; metadata-only tests cannot substitute.
