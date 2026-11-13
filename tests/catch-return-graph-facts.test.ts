@@ -70,6 +70,8 @@ test('catch-return fact emission fails closed on finally, nested or nonliteral r
     'export function conditional(flag: boolean) { try { throw Error("x"); } catch { if (flag) return {failed: true}; } }',
     'export function indirect() { try { throw Error("x"); } catch { const result = {failed: true}; return result; } }',
     'export function noCatch() { try { return {failed: true}; } finally {} }',
+    'export function risky() { try {} catch { return {message: "unrestricted literal"}; } }',
+    'export function malformed() { try {} catch { return {failed: true}; }',
   ];
   for (const source of cases) {
     const result = analyzeTypeScript({

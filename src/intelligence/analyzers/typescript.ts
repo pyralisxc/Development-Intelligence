@@ -223,6 +223,9 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   // that statement, or produces any external provider effect.
   const emitCatchReturn = (statement: ts.TryStatement, owner: Observation): void => {
     if (!statement.catchClause || statement.finallyBlock) return;
+    // Never promote positive proof from an AST recovered through parse errors.
+    const parsed = sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+    if (parsed.parseDiagnostics?.length) return;
     const catchStatements = statement.catchClause.block.statements;
     const last = catchStatements.at(-1);
     if (!last || !ts.isReturnStatement(last)) return;
@@ -235,7 +238,9 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       const name = propertyName(property.name);
       if (!name || Object.hasOwn(outcome, name)) return;
       const value = scalar(property.initializer);
-      if (value === undefined || (value !== null && typeof value === 'object')) return;
+      // Avoid persistently indexing arbitrary literal strings as new graph values.
+      if (value === undefined || typeof value === 'string'
+        || (value !== null && typeof value === 'object')) return;
       outcome[name] = redactSensitiveValue(name, value).value as string | number | boolean | null;
     }
     const where = locator(last, ':catch-return');
