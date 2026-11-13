@@ -4,7 +4,8 @@ This file owns only **project-local execution policy** for Development Intellige
 
 Use the existing owners for those concerns:
 
-- `docs/product-direction.md` — product identity and direction.
+- [DI Confluence blueprint](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/720897) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) — durable product vision, intended boundaries and milestone acceptance.
+- `docs/product-direction.md` — revision-bound product-interface and implementation context, not product roadmap authority.
 - `docs/architecture.md` — graph/system semantics and technical boundaries.
 - `docs/testing.md` — durable proof strategy and acceptance surfaces.
 - `.github/workflows/verify.yml` — current CI, sealing, benchmark, and ephemeral preview implementation.
