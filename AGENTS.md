@@ -8,12 +8,13 @@ Development Intelligence owns **one intrinsic evidence graph**. Source inspectio
 
 Development Intelligence provides technical evidence. It does not decide product intent or development workflow and must not depend on custom agent methodologies.
 
-`docs/product-direction.md` is the living authority for product identity, intended direction, current product position, and enduring non-goals. Read it before material product or architecture work. Source/provider state remains authoritative for implementation and operational fact.
+[Confluence DI Product Vision](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4751361/Development+Intelligence+Product+Vision+and+Principles) and [Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770/Development+Intelligence+Product+Version+Roadmap) own product identity, intended cross-version direction and milestone outcomes. `docs/product-direction.md` is a revision-local technical capability/boundary profile, **not** the product-intent owner. For material work, read both relevant Confluence intent and exact Git source; CI/provider state remains authoritative for observed implementation and operations.
 
 ## Documentation ownership
 
 - `README.md` — concise entry point and usage orientation.
-- `docs/product-direction.md` — identity, direction, current product position, decision filter, and non-goals.
+- Confluence DI Product Vision and Version Roadmap — durable product identity, user outcomes, planned milestones, and product decision criteria.
+- `docs/product-direction.md` — source-adjacent technical capabilities, design constraints, supported boundaries, and limitations for the inspected Git revision.
 - `docs/architecture.md` — system design, graph semantics, lifecycle, and technical boundaries.
 - `ORCHESTRATION.md` — project-local branch, seal, preview, provider, evidence, and human-gate execution policy; it points to the operational owners rather than duplicating them.
 - `docs/operations.md` — deployment, configuration, authentication, recovery, and production operation.
