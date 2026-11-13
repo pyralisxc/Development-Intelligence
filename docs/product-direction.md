@@ -1,4 +1,6 @@
-# Product direction
+# Product direction — revision-bound implementation context
+
+**Documentation authority:** [DI Confluence blueprint](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/720897) and its [public product-version roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable product vision, intended outcomes, future milestone scope, and acceptance meaning. This Git document records the currently described product interfaces, implementation boundaries and technical improvement context for the source revision that contains it; it is **not a competing product roadmap**. The [documentation and evidence guide](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4030466) defines how immutable source, CI and provider observations establish implemented truth.
 
 ## Identity
 
@@ -74,9 +76,9 @@ Development Intelligence is not:
 
 These are product boundaries, not temporary omissions. Integrations may connect these systems, but Development Intelligence should not absorb their authority.
 
-## Current truth
+## Described v2.9.0 production capabilities (verify deployed identity)
 
-As of release **v2.9.0**, the production service at `https://devint.cardforges.com` provides:
+The following is this repository document's account of release **v2.9.0** at `https://devint.cardforges.com`, not a fresh provider observation or a claim that all newer Preview capabilities have shipped. Establish current production truth from its actual deployed revision, runtime capability schema and provider checks. This source-revision context describes:
 
 - one schema-v2 intrinsic graph with semantic, structural, and representation layers;
 - exact Git revision resolution for commits, branches, tags, and explicit pull-request head/base/result identities;
@@ -104,11 +106,11 @@ Current boundaries are equally important:
 
 For mechanically current details, prefer the deployed `GET /health`, MCP tool schemas, `project_status`, `get_graph_schema`, DI canonical persistence/currentness, `package.json`, source, and CI over prose. Repository-local `.development-intelligence` files are legacy/self-test compatibility artifacts, not the semantic authority for inspected projects.
 
-## Direction
+## Implementation-facing improvement areas
 
-Development Intelligence should become more useful by increasing the **fidelity, reach, and efficiency of trustworthy project understanding**, not by accumulating unrelated agent powers.
+The durable cross-version vision and priority of future milestones live in Confluence. The following source-authored engineering themes explain the focus of this revision; they are neither an accepted product-version release plan nor proof of implementation. Improve **fidelity, reach, and efficiency of trustworthy project understanding**, rather than accumulate unrelated agent powers.
 
-The next durable improvements should come from five directions:
+Relevant technical improvement areas are:
 
 1. **Deeper technical fidelity.** Improve cross-file and cross-language relationships, framework/protocol understanding, evidence quality, ranking, and honest coverage where real repository questions expose gaps.
 2. **Stronger temporal intelligence.** Reconstruct and compare distant commits, PR proposals, accepted results, regressions, and architectural evolution on demand without turning those comparisons into a second storage authority.
@@ -140,7 +142,7 @@ It should be rejected, integrated externally, or kept project-owned when its pri
 
 ## Documentation authority
 
-This file owns Development Intelligence's product identity, direction, current product position, and enduring non-goals.
+Confluence owns DI's durable product identity, cross-version vision, release milestones, and intended non-goals. This file is an exact-Git-revision technical context for current described interfaces, implementation design decisions, and constraints. The source and live provider/runtime evidence decide what truly runs at that revision; this document does not grant additional capabilities or override the adopted Confluence direction.
 
 - `README.md` is the concise entry point and usage orientation.
 - `docs/architecture.md` owns system design, graph semantics, lifecycle, and technical boundaries.
@@ -151,4 +153,4 @@ This file owns Development Intelligence's product identity, direction, current p
 - `AGENTS.md` owns contributor/agent invariants.
 - Source, provider state, generated MCP schemas, deployed health, and Git history establish current implementation and operational fact when prose drifts.
 
-Update this document when product identity, intended direction, current capability boundaries, or enduring non-goals materially change. Do not use it as a changelog, task tracker, or speculative roadmap.
+Update the Confluence blueprint when product identity, intended direction, milestone acceptance, or enduring product boundaries change. Update this revision-bound document when the implementation's interfaces, verified capabilities, limitations or technical decisions change. Preserve immutable Git/release/provider evidence; do not use either document as a changelog, issue tracker, or substitute for measured runtime truth.
