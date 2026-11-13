@@ -221,6 +221,25 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   // Source-verified local catch returns become ordinary structural graph facts.
   // This observes a literal return, NOT a guarantee that catch runs, reaches
   // that statement, or produces any external provider effect.
+  // Both try- and catch-return facts use the same fail-closed literal predicate.
+  // Only scalar non-string properties are written to the canonical graph.
+  const literalReturnOutcome = (last: ts.ReturnStatement): Record<string, number | boolean | null> | null => {
+    const returned = unwrap(last.expression);
+    if (!returned || !ts.isObjectLiteralExpression(returned)
+      || returned.properties.length < 1 || returned.properties.length > 12) return null;
+    const outcome: Record<string, number | boolean | null> = {};
+    for (const property of returned.properties) {
+      if (!ts.isPropertyAssignment(property)) return null;
+      const name = propertyName(property.name);
+      if (!name || Object.hasOwn(outcome, name)) return null;
+      const value = scalar(property.initializer);
+      if (value === undefined || typeof value === 'string'
+        || (value !== null && typeof value === 'object')) return null;
+      outcome[name] = redactSensitiveValue(name, value).value as number | boolean | null;
+    }
+    return outcome;
+  };
+
   const emitCatchReturn = (statement: ts.TryStatement, owner: Observation): void => {
     if (!statement.catchClause || statement.finallyBlock) return;
     // Never promote positive proof from an AST recovered through parse errors.
@@ -229,20 +248,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     const catchStatements = statement.catchClause.block.statements;
     const last = catchStatements.at(-1);
     if (!last || !ts.isReturnStatement(last)) return;
-    const returned = unwrap(last.expression);
-    if (!returned || !ts.isObjectLiteralExpression(returned)
-      || returned.properties.length < 1 || returned.properties.length > 12) return;
-    const outcome: Record<string, string | number | boolean | null> = {};
-    for (const property of returned.properties) {
-      if (!ts.isPropertyAssignment(property)) return;
-      const name = propertyName(property.name);
-      if (!name || Object.hasOwn(outcome, name)) return;
-      const value = scalar(property.initializer);
-      // Avoid persistently indexing arbitrary literal strings as new graph values.
-      if (value === undefined || typeof value === 'string'
-        || (value !== null && typeof value === 'object')) return;
-      outcome[name] = redactSensitiveValue(name, value).value as string | number | boolean | null;
-    }
+    const outcome = literalReturnOutcome(last);
+    if (!outcome) return;
     const where = locator(last, ':catch-return');
     const proof = evidenceRecord({
       sourceId: context.source.id,
@@ -291,6 +298,66 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     }));
   };
 
+
+  // This is only a literal return statement INSIDE a try block. Earlier
+  // statements can throw, a catch may run instead, and no runtime path is proven.
+  // The already-established catch-return fact is deliberately independent.
+  const emitTryReturn = (statement: ts.TryStatement, owner: Observation): void => {
+    if (!statement.catchClause || statement.finallyBlock) return;
+    const parsed = sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+    if (parsed.parseDiagnostics?.length) return;
+    const last = statement.tryBlock.statements.at(-1);
+    if (!last || !ts.isReturnStatement(last)) return;
+    const outcome = literalReturnOutcome(last);
+    if (!outcome) return;
+    const where = locator(last, ':try-return');
+    const proofRule = 'typescript-ast-direct-try-return.v1';
+    const proof = evidenceRecord({
+      sourceId: context.source.id,
+      kind: 'direct-try-return-source',
+      locator: where,
+      field: 'offset:' + String(last.getStart(sourceFile)),
+      message: 'Final direct try statement returns a literal object; try completion, catch behavior and provider effects are not proven.',
+      value: { functionId: owner.id, outcome },
+    });
+    evidence.push(proof);
+    const fact = observation({
+      identity: [context.source.id, 'source-try-return', owner.id, last.getStart(sourceFile)],
+      sourceId: context.source.id,
+      kind: 'source-try-return',
+      locator: where,
+      name: 'Try return in ' + (owner.name ?? 'callable'),
+      field: 'try-return',
+      value: {
+        functionId: owner.id,
+        tryLine: lineOf(statement.tryBlock),
+        returnLine: lineOf(last),
+        outcome,
+        sourceOnly: true,
+        guaranteedOnTryEntry: false,
+        runtimeObserved: false,
+        tryCompletionProven: false,
+        finallyAbsent: true,
+        proofRule,
+      },
+      layer: 'structural',
+      checkpoint: false,
+      evidenceIds: [proof.id],
+    });
+    observations.push(fact);
+    resolutions.push(resolution({
+      from: owner.id,
+      to: fact.id,
+      kind: 'try-returns',
+      strategy: proofRule,
+      confidence: 1,
+      status: 'resolved',
+      evidence: [where],
+      evidenceIds: [proof.id],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  };
 
   const parseSemanticDeclaration = (outer: ts.ObjectLiteralExpression): void => {
     const outerProps = objectProperties(outer);
@@ -692,7 +759,10 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
 
     if (ts.isTryStatement(node)) {
       const owner = functionOwner();
-      if (owner) emitCatchReturn(node, owner);
+      if (owner) {
+        emitCatchReturn(node, owner);
+        emitTryReturn(node, owner);
+      }
     }
 
     ts.forEachChild(node, visit);
