@@ -8,6 +8,8 @@ import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLe
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
 import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
+import { parseSourceExecutionQuestion, sourceExecutionQuestionAnswer, SOURCE_EXECUTION_TEST_SUFFIXES } from './sourceExecutionQuestion.js';
+import { queryTestClaimReport } from './testClaimQuery.js';
 import { isConditionEffectQuestion, querySourceConditionEffects, sourceConditionsAnswer } from './sourceConditionEffects.js';
 import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
@@ -2688,6 +2690,35 @@ export async function queryWorkbench(input: {
     ...(input.sourceId ? { sourceId: input.sourceId } : {}),
     ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
   });
+  const executionQuestion = !input.sourceId ? parseSourceExecutionQuestion(text) : null;
+  if (executionQuestion) {
+    const graph = executionQuestion.mode === 'file' || executionQuestion.mode === 'repository'
+      ? await currentGraph(input.project, input.ref, input.graphId) : null;
+    const sourcePrefixes = executionQuestion.mode === 'file'
+      ? [executionQuestion.path] : ['tests/', 'scripts/'];
+    const sourceSuffixes = executionQuestion.mode === 'file'
+      ? [...SOURCE_EXECUTION_TEST_SUFFIXES] : ['.test.ts', '.test.mjs'];
+    const report = graph ? await queryTestClaimReport({
+      project: input.project, graphId: graph.graphId, sourcePrefixes, sourceSuffixes,
+      pageSize: 500, populationDetail: 'summary',
+    }) : undefined;
+    const rendered = sourceExecutionQuestionAnswer(executionQuestion, report as any);
+    return {
+      intent: 'source-execution-facts',
+      subject: executionQuestion.mode === 'file' && rendered.status === 'supported'
+        ? { id: 'file:' + executionQuestion.path, name: executionQuestion.path, kind: 'file' }
+        : null,
+      routing: {
+        tool: report ? 'get_test_claim_report' : 'none',
+        projection: 'source-execution-facts',
+        questionPlan: { ...plan, lane: 'evidence', proofMode: 'evidence',
+          subjectStrategy: executionQuestion.mode === 'file' ? 'scope-or-entity' : 'repository' },
+      },
+      answer: rendered.answer,
+      answerClassification: rendered.status === 'supported' ? 'established-bounded' : 'evidence-only',
+      result: rendered.result,
+    };
+  }
   const conditionalSource = !input.sourceId && isConditionEffectQuestion(text)
     ? await querySourceConditionEffects({
         graph: await currentGraph(input.project, input.ref, input.graphId),
