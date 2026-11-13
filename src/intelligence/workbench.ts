@@ -2728,11 +2728,14 @@ export async function queryWorkbench(input: {
   if (conditionalSource) {
     const status = conditionalSource.status === 'supported' ? 'established-source-syntax' : 'unproven';
     const identity = conditionalSource.identity as { functionId?: string; functionName?: string } | undefined;
+    const graphBuilt = String(conditionalSource.mode ?? '').startsWith('canonical-source-');
     return {
       intent: 'source-condition-effects',
       subject: identity?.functionId ? { id: identity.functionId, name: identity.functionName, kind: 'function' } : null,
-      routing: { tool: 'exact-git-typescript-ast', direction: 'source-control-path',
-        projection: 'condition-and-direct-effect', questionPlan: { ...plan, lane: 'trace',
+      routing: { tool: graphBuilt ? 'canonical-graph-relationships' : 'exact-git-typescript-ast',
+        direction: graphBuilt ? 'canonical-evidence' : 'source-control-path',
+        projection: graphBuilt ? 'source-control-return' : 'condition-and-direct-effect',
+        questionPlan: { ...plan, lane: 'trace',
           proofMode: 'evidence', subjectStrategy: 'entity-or-query' } },
       answer: sourceConditionsAnswer(conditionalSource),
       answerClassification: status,

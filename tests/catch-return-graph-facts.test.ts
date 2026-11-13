@@ -45,6 +45,16 @@ test('canonical graph build owns source catch-return facts before any question, 
     assert.ok((fact?.evidenceIds?.length ?? 0) > 0);
     assert.equal(graph.evidence.some(item => fact?.evidenceIds?.includes(item.id)), true);
 
+    const tryEdges = graph.edges.filter(edge => edge.from === fn.id
+      && edge.kind === 'try-returns' && edge.status === 'resolved');
+    assert.equal(tryEdges.length, 1);
+    const tryFact = graph.nodes.find(node => node.id === tryEdges[0]?.to);
+    assert.equal(tryFact?.kind, 'source-try-return');
+    assert.deepEqual((tryFact?.value as any).outcome, {purged: true, failed: false});
+    assert.equal((tryFact?.value as any).tryCompletionProven, false);
+    assert.equal((tryFact?.value as any).runtimeObserved, false);
+    assert.equal(graph.evidence.some(item => tryFact?.evidenceIds?.includes(item.id)), true);
+
     // The selected immutable graph has already earned this source fact.
     // Changing the local working file must not cause the answer to recompute it.
     await fs.writeFile(path.join(root, 'src', 'processor.ts'),
@@ -59,6 +69,22 @@ test('canonical graph build owns source catch-return facts before any question, 
     assert.equal(derived.coverage.catchReachabilityProven, false);
     assert.equal(derived.proof.externalProviderEffectProven, false);
     assert.match(sourceConditionsAnswer(derived), /not proof that the catch executes/u);
+
+    const success = await querySourceConditionEffects({
+      project: 'catch-source-fixture', graph,
+      question: 'When does processRevisionPurge return failed false?',
+    }) as any;
+    assert.equal(success.mode, 'canonical-source-try-return');
+    assert.deepEqual(success.sourceReturns[0].outcome, {purged: true, failed: false});
+    assert.equal(success.proof.tryCompletionProven, false);
+    assert.equal(success.proof.externalProviderEffectProven, false);
+    assert.match(sourceConditionsAnswer(success), /not proof that the catch executes/u);
+    const summary = await querySourceConditionEffects({
+      project: 'catch-source-fixture', graph,
+      question: 'What does processRevisionPurge return?',
+    }) as any;
+    assert.equal(summary.mode, 'canonical-source-try-catch-returns');
+    assert.equal(summary.sourceReturns.length, 2);
   } finally {
     await fs.rm(root, {recursive: true, force: true});
   }
@@ -72,6 +98,11 @@ test('catch-return fact emission fails closed on finally, nested or nonliteral r
     'export function noCatch() { try { return {failed: true}; } finally {} }',
     'export function risky() { try {} catch { return {message: "unrestricted literal"}; } }',
     'export function malformed() { try {} catch { return {failed: true}; }',
+    'export function maskedTry() { try { return {failed: false}; } catch { return {failed: true}; } finally { return {failed: false}; } }',
+    'export function nestedTry(flag: boolean) { try { if (flag) return {failed: false}; } catch {} }',
+    'export function variableTry() { try { const value = {failed: false}; return value; } catch {} }',
+    'export function privateTry() { try { return {error: "internal details"}; } catch {} }',
+    'export function brokenTry() { try { return {failed: false}; } catch {',
   ];
   for (const source of cases) {
     const result = analyzeTypeScript({
@@ -81,6 +112,8 @@ test('catch-return fact emission fails closed on finally, nested or nonliteral r
     });
     assert.equal(result.observations.filter(node => node.kind === 'source-catch-return').length, 0, source);
     assert.equal(result.resolutions.filter(edge => edge.kind === 'catch-returns').length, 0, source);
+    assert.equal(result.observations.filter(node => node.kind === 'source-try-return').length, 0, source);
+    assert.equal(result.resolutions.filter(edge => edge.kind === 'try-returns').length, 0, source);
   }
 });
 
@@ -112,4 +145,18 @@ test('same-line identical catch returns have distinct exact source identities', 
   assert.equal(new Set(facts.flatMap(fact => fact.evidenceIds ?? [])).size, 2);
   const edges = result.resolutions.filter(edge => edge.kind === 'catch-returns');
   assert.equal(edges.length, 2);
+});
+
+test('same-line try returns have independent site and evidence identities', () => {
+  const source = 'export function different(flag: boolean) { if(flag) { try { return {failed:false}; } catch{} } else { try { return {failed:false}; } catch{} } }';
+  const result = analyzeTypeScript({
+    source: {id: 'repo:src/two.ts', kind: 'repository-file', locator: 'src/two.ts',
+      revision: 'f'.repeat(40), observedAt: '2026-01-01T00:00:00Z', available: true},
+    text: source, locatorBase: 'src/two.ts',
+  });
+  const facts = result.observations.filter(node => node.kind === 'source-try-return');
+  assert.equal(facts.length, 2);
+  assert.equal(new Set(facts.map(fact => fact.id)).size, 2);
+  assert.equal(new Set(facts.flatMap(fact => fact.evidenceIds ?? [])).size, 2);
+  assert.equal(result.resolutions.filter(edge => edge.kind === 'try-returns').length, 2);
 });
