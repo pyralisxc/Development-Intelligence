@@ -89,6 +89,24 @@ function truth(expression: ts.Expression): boolean | null {
   }
   return null;
 }
+/**
+ * A finally block cannot make an earlier thrown exception into a successful
+ * test completion unless it overrides that exception with return/break/continue.
+ * Inspect all nested syntax (including callbacks) conservatively.
+ */
+function finallyCanReplaceCompletion(block: ts.Block): boolean {
+  let overrides = false;
+  const inspect = (node: ts.Node): void => {
+    if (overrides) return;
+    if (ts.isReturnStatement(node) || ts.isBreakStatement(node) || ts.isContinueStatement(node)) {
+      overrides = true;
+      return;
+    }
+    ts.forEachChild(node, inspect);
+  };
+  inspect(block);
+  return overrides;
+}
 function walkStatements(statements: readonly ts.Statement[], input: Paths, source: ts.SourceFile,
   target: Target, budget: Budget, depth: number): Paths {
   let paths = input;
@@ -102,6 +120,18 @@ function walk(statement: ts.Statement, input: Paths, source: ts.SourceFile,
   target: Target, budget: Budget, depth: number): Paths {
   if (--budget.left < 0 || depth > 64) return { ...input, unknown: true };
   if (ts.isBlock(statement)) return walkStatements(statement.statements, input, source, target, budget, depth + 1);
+  if (ts.isTryStatement(statement)) {
+    // Without catch, a thrown pre-assertion path cannot complete a passing test.
+    // A normally-completing finally without an abrupt completion override
+    // preserves the try block's reachability facts. Do not model an assertion
+    // *inside* finally until explicit handling of all try/return exits exists.
+    if (statement.catchClause || !statement.finallyBlock
+      || contains(statement.finallyBlock, source, target)
+      || finallyCanReplaceCompletion(statement.finallyBlock)) {
+      return { ...input, unknown: true };
+    }
+    return walk(statement.tryBlock, input, source, target, budget, depth + 1);
+  }
   if (ts.isIfStatement(statement)) {
     if (contains(statement.expression, source, target)) return { ...input, unknown: true };
     const condition = truth(statement.expression);

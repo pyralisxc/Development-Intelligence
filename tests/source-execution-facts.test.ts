@@ -24,6 +24,10 @@ const source = [
   "test('nested callback', () => { const nested = () => assert.equal((mark('nested'), 6), 6); });",
   "test('simulated dependency', () => { const fake = { write: () => true }; assert.equal((mark('mock'), fake.write()), true); });",
   "test('awaited', async () => { await Promise.resolve(); assert.equal((mark('awaited'), 8), 8); });",
+  "test('cleanup mandatory', () => { try { assert.equal((mark('cleanup mandatory'), 11), 11); } finally { mark('cleaned'); } });",
+  "test('cleanup masked failure', () => { try { if (process.env.DI_MASKED_THROW === 'yes') throw Error('masked'); assert.equal((mark('cleanup masked'), 12), 12); } finally { return; } });",
+  "test('cleanup optional', () => { try { if (process.env.DI_EARLY === 'yes') return; assert.equal((mark('cleanup optional'), 13), 13); } finally { mark('cleanup optional finalizer'); } });",
+  "test('caught branch', () => { try { if (process.env.DI_CATCH === 'yes') throw Error('caught'); assert.equal((mark('caught'), 14), 14); } catch {} });",
   "test.skip('skipped', () => { assert.equal((mark('skipped'), 9), 9); });",
   '',
 ].join('\n');
@@ -60,6 +64,13 @@ test('source-derived successful-path facts reconcile with a real native Node run
     assert.equal(inTest('nested callback').sourceReach, 'unknown');
     assert.equal(inTest('simulated dependency').sourceReach, 'must-on-success');
     assert.equal(inTest('awaited').sourceReach, 'must-on-success');
+    assert.equal(inTest('cleanup mandatory').sourceReach, 'must-on-success');
+    assert.equal(inTest('cleanup masked failure').sourceReach, 'unknown',
+      'return from finally can suppress a pre-assertion throw and make the test pass');
+    assert.equal(inTest('cleanup optional').sourceReach, 'may-on-success',
+      'a successful early return must not become a mandatory assertion');
+    assert.equal(inTest('caught branch').sourceReach, 'unknown',
+      'a catch may swallow a pre-assertion throw');
     assert.equal(inTest('direct').inferredExecution, 'none');
 
     const witnessFile = path.join(root, 'observations', 'actual-assertion-reach.txt');
@@ -69,10 +80,13 @@ test('source-derived successful-path facts reconcile with a real native Node run
     ], { cwd: root, timeoutMs: 30000, env: {
       NODE_TEST_CONTEXT: undefined, DI_RUNTIME_WITNESS: witnessFile,
       DI_OPTIONAL_EXECUTED: 'yes', DI_EARLY: 'yes',
+      DI_MASKED_THROW: 'yes', DI_CATCH: 'yes',
     } });
     assert.equal(executed.code, 0, 'real tracked Node test run must succeed');
     const observedHits = (await fs.readFile(witnessFile, 'utf8')).trim().split('\n').sort();
-    assert.deepEqual(observedHits, ['awaited', 'direct', 'guard', 'mock', 'optional executed'].sort(),
+    assert.deepEqual(observedHits,
+      ['awaited', 'direct', 'guard', 'mock', 'optional executed',
+        'cleanup mandatory', 'cleaned', 'cleanup optional finalizer'].sort(),
       'the instrumented runtime witness must distinguish reached and unreached assertion callsites');
     await fs.writeFile(path.join(root, 'observations', 'test-events.jsonl'), executed.stdout);
     const observed = await projectNodeTestEvents({
@@ -95,6 +109,10 @@ test('source-derived successful-path facts reconcile with a real native Node run
       'runtime reached optional assertions, but a test pass alone cannot prove their reach');
     assert.equal(inTest('never', local).inferredExecution, 'none');
     assert.equal(inTest('nested callback', local).inferredExecution, 'none');
+    assert.equal(inTest('cleanup mandatory', local).inferredExecution, 'direct-local-run');
+    assert.equal(inTest('cleanup masked failure', local).inferredExecution, 'none');
+    assert.equal(inTest('cleanup optional', local).inferredExecution, 'none');
+    assert.equal(inTest('caught branch', local).inferredExecution, 'none');
     assert.equal(inTest('simulated dependency', local).observedProviderEffect, false);
     assert.equal(inTest('simulated dependency', local).observedAssertionResult, false);
     assert.equal(local.counts.directlyInferredLocalExecution >= 4, true);
