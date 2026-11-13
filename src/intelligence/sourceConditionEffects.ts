@@ -493,6 +493,8 @@ function projectBuiltSourceReturns(graph: IntelligenceGraph, symbol: GraphNode, 
       project: graph.project, graphId: graph.graphId, sourceRevision: graph.repositoryRevision,
       analyzerVersion: graph.analyzerVersion,
       functionId: symbol.id, functionName: symbol.name, sourcePath: canonicalPath(symbol),
+      // Keep PR379 single-rule consumers compatible while also supporting a mixed result.
+      proofRule: regions.size === 1 ? facts[0]?.proofRule ?? null : null,
       proofRules: [...new Set(facts.map(fact => fact.proofRule))],
     },
     sourceReturns: facts.slice(0, 12),
@@ -609,10 +611,10 @@ export function sourceConditionsAnswer(result: Record<string, unknown>): string 
     const examples = (facts ?? []).slice(0, 3).map(fact =>
       fact.locator + ': ' + JSON.stringify(fact.outcome)).join('; ');
     const coverage = result.coverage as { omitted?: number } | undefined;
-    const region = result.mode === 'canonical-source-catch-return' ? 'catch block'
-      : result.mode === 'canonical-source-try-return' ? 'try block' : 'try and catch blocks';
+    const region = result.mode === 'canonical-source-catch-return' ? 'a catch block'
+      : result.mode === 'canonical-source-try-return' ? 'a try block' : 'try and catch blocks';
     return 'The exact source for ' + (identity?.functionName ?? 'this function')
-      + ' contains a directly written literal return in a ' + region + ': ' + examples + '. '
+      + ' contains a directly written literal return in ' + region + ': ' + examples + '. '
       + (coverage?.omitted ? String(coverage.omitted) + ' additional return(s) omitted from this bounded sample. ' : '')
       + 'This is an established source statement, not proof that the catch executes, '
       + 'that the try block completes, that every path reaches a return, or that a real storage/database effect occurred. '

@@ -64,6 +64,7 @@ test('canonical graph build owns source catch-return facts before any question, 
       question: 'When does processRevisionPurge return failed true?',
     }) as any;
     assert.equal(derived.mode, 'canonical-source-catch-return');
+    assert.equal(derived.identity.proofRule, 'typescript-ast-direct-catch-return.v1');
     assert.equal(derived.status, 'supported');
     assert.deepEqual(derived.sourceReturns[0].outcome, {purged: false, failed: true});
     assert.equal(derived.coverage.catchReachabilityProven, false);
@@ -75,6 +76,7 @@ test('canonical graph build owns source catch-return facts before any question, 
       question: 'When does processRevisionPurge return failed false?',
     }) as any;
     assert.equal(success.mode, 'canonical-source-try-return');
+    assert.equal(success.identity.proofRule, 'typescript-ast-direct-try-return.v1');
     assert.deepEqual(success.sourceReturns[0].outcome, {purged: true, failed: false});
     assert.equal(success.proof.tryCompletionProven, false);
     assert.equal(success.proof.externalProviderEffectProven, false);
