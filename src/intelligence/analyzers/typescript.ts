@@ -218,6 +218,73 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
 
   const functionOwner = () => functionStack.at(-1) ?? null;
 
+  // Source-verified local catch returns become ordinary structural graph facts.
+  // This observes a literal return, NOT a guarantee that catch runs, reaches
+  // that statement, or produces any external provider effect.
+  const emitCatchReturn = (statement: ts.TryStatement, owner: Observation): void => {
+    if (!statement.catchClause || statement.finallyBlock) return;
+    const catchStatements = statement.catchClause.block.statements;
+    const last = catchStatements.at(-1);
+    if (!last || !ts.isReturnStatement(last)) return;
+    const returned = unwrap(last.expression);
+    if (!returned || !ts.isObjectLiteralExpression(returned)
+      || returned.properties.length < 1 || returned.properties.length > 12) return;
+    const outcome: Record<string, string | number | boolean | null> = {};
+    for (const property of returned.properties) {
+      if (!ts.isPropertyAssignment(property)) return;
+      const name = propertyName(property.name);
+      if (!name || Object.hasOwn(outcome, name)) return;
+      const value = scalar(property.initializer);
+      if (value === undefined || (value !== null && typeof value === 'object')) return;
+      outcome[name] = redactSensitiveValue(name, value).value as string | number | boolean | null;
+    }
+    const where = locator(last, ':catch-return');
+    const proof = evidenceRecord({
+      sourceId: context.source.id,
+      kind: 'direct-catch-return-source',
+      locator: where,
+      message: 'Final direct catch statement returns a literal object; catch reachability and external effects are not proven.',
+      value: { functionId: owner.id, outcome },
+    });
+    evidence.push(proof);
+    const fact = observation({
+      sourceId: context.source.id,
+      kind: 'source-catch-return',
+      locator: where,
+      name: 'Catch return in ' + (owner.name ?? 'callable'),
+      field: 'catch-return',
+      value: {
+        functionId: owner.id,
+        catchLine: lineOf(statement.catchClause),
+        returnLine: lineOf(last),
+        outcome,
+        sourceOnly: true,
+        guaranteedOnCatchEntry: false,
+        runtimeObserved: false,
+        exceptionCauseEstablished: false,
+        finallyAbsent: true,
+        proofRule: 'typescript-ast-direct-catch-return.v1',
+      },
+      layer: 'structural',
+      checkpoint: false,
+      evidenceIds: [proof.id],
+    });
+    observations.push(fact);
+    resolutions.push(resolution({
+      from: owner.id,
+      to: fact.id,
+      kind: 'catch-returns',
+      strategy: 'typescript-ast-direct-catch-return.v1',
+      confidence: 1,
+      status: 'resolved',
+      evidence: [where],
+      evidenceIds: [proof.id],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  };
+
+
   const parseSemanticDeclaration = (outer: ts.ObjectLiteralExpression): void => {
     const outerProps = objectProperties(outer);
     const semanticExpression = outerProps.get(SEMANTIC_DECLARATION_FIELD);
@@ -614,6 +681,11 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         if (config && ts.isObjectLiteralExpression(unwrap(config) ?? config)) flattenObject(tool, unwrap(config)! as ts.ObjectLiteralExpression);
       }
       if (owner && ts.isIdentifier(node.expression)) pendingReferences.push({ from: owner, targetName: node.expression.text, kind: 'calls', line: lineOf(node) });
+    }
+
+    if (ts.isTryStatement(node)) {
+      const owner = functionOwner();
+      if (owner) emitCatchReturn(node, owner);
     }
 
     ts.forEachChild(node, visit);

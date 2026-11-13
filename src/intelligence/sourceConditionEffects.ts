@@ -7,6 +7,7 @@ import { composeTwoHopSourceEffects } from './twoHopSourceComposition.js';
 import { projectRpcSqlSourceCandidates } from './rpcSqlSourceCandidates.js';
 import { parseRpcDiscoveryQuestion, projectRpcDiscoveryQuestion, rpcDiscoveryAnswer } from './rpcDiscoveryQuestion.js';
 import type { GraphNode, IntelligenceGraph } from '../types.js';
+import { graphQueryContext } from './queryContext.js';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
 
@@ -452,6 +453,60 @@ export async function projectTwoHopSourceQuestion(input: {
   };
 }
 
+
+function projectBuiltCatchReturn(graph: IntelligenceGraph, symbol: GraphNode, question: string): Record<string, unknown> | null {
+  const context = graphQueryContext(graph);
+  const request = /\breturn\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+(true|false)\b/iu.exec(question);
+  const expectedKey = request?.[1] ?? null;
+  const expectedValue = request ? request[2]!.toLowerCase() === 'true' : null;
+  const facts = context.outgoing(symbol.id)
+    .filter(edge => edge.kind === 'catch-returns' && edge.status === 'resolved' && Boolean(edge.to))
+    .flatMap(edge => {
+      const fact = context.node(edge.to!);
+      if (fact?.kind !== 'source-catch-return' || !fact.value || typeof fact.value !== 'object') return [];
+      const value = fact.value as Record<string, unknown>;
+      const outcome = value.outcome;
+      if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) return [];
+      const object = outcome as Record<string, unknown>;
+      if (expectedKey && object[expectedKey] !== expectedValue) return [];
+      return [{
+        id: fact.id, locator: fact.locator, catchLine: value.catchLine,
+        returnLine: value.returnLine, outcome: object,
+        evidenceIds: fact.evidenceIds ?? [], proofRule: value.proofRule,
+      }];
+    }).sort((a, b) => a.locator.localeCompare(b.locator));
+  if (!facts.length) return null;
+  return {
+    mode: 'canonical-source-catch-return',
+    status: 'supported',
+    reason: 'source-return-syntax-in-catch-not-execution',
+    sourceOnly: true,
+    project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
+    identity: {
+      project: graph.project, graphId: graph.graphId, sourceRevision: graph.repositoryRevision,
+      analyzerVersion: graph.analyzerVersion,
+      functionId: symbol.id, functionName: symbol.name, sourcePath: canonicalPath(symbol),
+      proofRule: 'typescript-ast-direct-catch-return.v1',
+    },
+    sourceReturns: facts.slice(0, 12),
+    coverage: {
+      sourceReturnsTotal: facts.length,
+      returned: Math.min(facts.length, 12),
+      omitted: Math.max(facts.length - 12, 0),
+      completeForAllExecutionPaths: false,
+      catchReachabilityProven: false,
+      absenceOutsideTheseReturnsProven: false,
+    },
+    proof: {
+      actualSourceSyntaxLocated: true, catchReturnObservedInSource: true,
+      catchReachabilityProven: false, guaranteedOnCatchEntry: false,
+      returnOrCallRuntimeObserved: false, externalProviderEffectProven: false,
+      allPossibleExecutionPathsProven: false,
+      noSecondGraphOrSemanticHistory: true,
+    },
+  };
+}
+
 export async function querySourceConditionEffects(input: {
   graph: IntelligenceGraph; project: string; question: string; scope?: string;
 }): Promise<Record<string, unknown> | null> {
@@ -512,6 +567,9 @@ export async function querySourceConditionEffects(input: {
   if (!input.graph.repositoryRevision || input.graph.coverage?.files?.find(f => f.path === relative)?.status !== 'complete') {
     return { ...base, status: 'unproven', reason: 'source-coverage-not-complete', branches: [], effects: [] };
   }
+  // A proved, versioned graph observation needs no new checkout or AST pass.
+  const builtFact = projectBuiltCatchReturn(input.graph, symbol, input.question);
+  if (builtFact) return builtFact;
   const revision = await resolveProjectRevision(input.project, 'commit:' + input.graph.repositoryRevision);
   if (revision.sha !== input.graph.repositoryRevision) throw new Error('Source condition read did not resolve exact graph revision');
   return await withResolvedProjectCheckout(revision, async checkout => {
@@ -531,6 +589,18 @@ export async function querySourceConditionEffects(input: {
 }
 
 export function sourceConditionsAnswer(result: Record<string, unknown>): string {
+  if (result.mode === 'canonical-source-catch-return') {
+    const identity = result.identity as { functionName?: string } | undefined;
+    const facts = result.sourceReturns as Array<{ locator: string; outcome: Record<string, unknown> }> | undefined;
+    const examples = (facts ?? []).slice(0, 3).map(fact =>
+      fact.locator + ': ' + JSON.stringify(fact.outcome)).join('; ');
+    const coverage = result.coverage as { omitted?: number } | undefined;
+    return 'The exact source for ' + (identity?.functionName ?? 'this function')
+      + ' contains a directly written literal return in a catch block: ' + examples + '. '
+      + (coverage?.omitted ? String(coverage.omitted) + ' additional return(s) omitted from this bounded sample. ' : '')
+      + 'This is an established source statement, not proof that the catch executes, that every catch path reaches the return, or that a real storage/database effect occurred. '
+      + 'Other exception and dynamic behavior remains unproven.';
+  }
   if (result.mode === 'ordinary-source-rpc-discovery') return rpcDiscoveryAnswer(result);
   if (result.mode === 'rpc-sql-source-candidates') {
     const query = result.routineName as string;
