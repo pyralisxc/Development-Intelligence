@@ -10,8 +10,8 @@ import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenc
 import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
 import { parseSourceExecutionQuestion, sourceExecutionQuestionAnswer, SOURCE_EXECUTION_TEST_SUFFIXES } from './sourceExecutionQuestion.js';
 import { queryTestClaimReport } from './testClaimQuery.js';
-import { isConditionEffectQuestion, querySourceConditionEffects, sourceConditionsAnswer } from './sourceConditionEffects.js';
-import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
+import { isConditionEffectQuestion } from './sourceConditionEffects.js';
+import { assessGraph, auditGraph, queryIntelligence, evaluateSourceQuestionEvidence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
@@ -2801,14 +2801,15 @@ export async function queryWorkbench(input: {
       result: rendered.result,
     };
   }
-  const conditionalSource = !input.sourceId && isConditionEffectQuestion(text)
-    ? await querySourceConditionEffects({
+  const sourceEvidence = !input.sourceId && isConditionEffectQuestion(text)
+    ? await evaluateSourceQuestionEvidence({
         graph: await currentGraph(input.project, input.ref, input.graphId),
         project: input.project, question: text,
         ...(input.scope ? { scope: input.scope } : {}),
       }) : null;
-  if (conditionalSource) {
-    const status = conditionalSource.status === 'supported' ? 'established-source-syntax' : 'unproven';
+  if (sourceEvidence) {
+    const conditionalSource = sourceEvidence.source;
+    const status = sourceEvidence.answerStatus === 'supported' ? 'established-source-syntax' : 'unproven';
     const identity = conditionalSource.identity as { functionId?: string; functionName?: string } | undefined;
     const graphBuilt = String(conditionalSource.mode ?? '').startsWith('canonical-source-');
     return {
@@ -2819,8 +2820,9 @@ export async function queryWorkbench(input: {
         projection: graphBuilt ? 'source-control-return' : 'condition-and-direct-effect',
         questionPlan: { ...plan, lane: 'trace',
           proofMode: 'evidence', subjectStrategy: 'entity-or-query' } },
-      answer: sourceConditionsAnswer(conditionalSource),
+      answer: sourceEvidence.answer,
       answerClassification: status,
+      claims: sourceEvidence.claims,
       result: conditionalSource,
     };
   }

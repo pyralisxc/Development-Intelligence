@@ -688,24 +688,46 @@ function sourceDerivedExecutionClaims(graph: IntelligenceGraph,
   })];
 }
 
+/**
+ * Common graph-backed evidence evaluator for source/conditional questions.
+ * Workbench and query_intelligence must not disagree about established facts
+ * just because a wording route selected a different presentation entry point.
+ */
+export async function evaluateSourceQuestionEvidence(input: {
+  project: string; graph: IntelligenceGraph; question: string; scope?: string;
+}): Promise<{
+  source: Record<string, unknown>;
+  answer: string;
+  answerStatus: 'supported' | 'unproven';
+  claims: IntelligenceClaim[];
+} | null> {
+  const source = await querySourceConditionEffects(input);
+  if (!source) return null;
+  return {
+    source,
+    answer: sourceConditionsAnswer(source),
+    answerStatus: source.status === 'supported' ? 'supported' : 'unproven',
+    claims: sourceDerivedExecutionClaims(input.graph, source),
+  };
+}
+
 export async function queryIntelligence(input: { project: string; question: string; ref?: string; graphId?: string; requiredFacets?: RealizationFacet[] }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   if (!(input.requiredFacets?.length)) {
-    const conditionalSource = await querySourceConditionEffects({
+    const evaluated = await evaluateSourceQuestionEvidence({
       graph, project: input.project, question: input.question,
     });
-    if (conditionalSource) {
-      const sourceClaims = sourceDerivedExecutionClaims(graph, conditionalSource);
+    if (evaluated) {
       return {
       project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
       analyzerVersion: graph.analyzerVersion, question: input.question,
       mode: 'source-condition-effects',
-      answerStatus: conditionalSource.status === 'supported' ? 'supported' : 'unproven',
-      answer: sourceConditionsAnswer(conditionalSource),
-      conditionEffects: conditionalSource,
+      answerStatus: evaluated.answerStatus,
+      answer: evaluated.answer,
+      conditionEffects: evaluated.source,
       // A graph-backed source fact can be an established claim without
       // claiming authentication, runtime behavior or product realization.
-      claims: sourceClaims, findings: [], realization: null,
+      claims: evaluated.claims, findings: [], realization: null,
       policy: { sourceSyntaxNotRuntime: true, expectedValueNotProven: true,
         testReplacementNotProven: true, graphAuthorityUnchanged: true },
       };

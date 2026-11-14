@@ -114,6 +114,12 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     assert.equal(sourceAssessment.answerStatus, 'supported');
     assert.equal(sourceAssessment.conditionEffects.mode, 'canonical-source-condition-effects');
     assert.equal(sourceAssessment.claims.length, 1);
+    assert.equal(compiledControl.answer, sourceAssessment.answer,
+      'ordinary and formal question entrypoints must compose one semantic answer');
+    assert.deepEqual(compiledControl.result, sourceAssessment.conditionEffects,
+      'different question entrypoints must select identical canonical source facts');
+    assert.deepEqual(compiledControl.claims, sourceAssessment.claims,
+      'source-derived technical claims must be independent of the question route');
     const established = sourceAssessment.claims[0];
     assert.equal(established.type, 'source-derived-execution');
     assert.equal(established.status, 'supported');
