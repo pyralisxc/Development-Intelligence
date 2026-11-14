@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import type { AnalyzeResult } from './model.js';
 import { evidenceRecord, observation, resolution } from './model.js';
@@ -11,14 +10,11 @@ import { analyzeSourceConditionStatements } from './sourceConditionFacts.js';
  * The graph owns source evidence, while this module owns only extraction.
  */
 const proofRule = 'typescript-source-control-graph.v1';
-const sourceDigest = (value: string): string =>
-  createHash('sha256').update(value).digest('hex');
-
 export function buildSourceConditionGraphFacts(input: {
-  parsed: ts.SourceFile; sourcePath: string; sourceText: string;
+  parsed: ts.SourceFile; sourcePath: string; sourceSha256: string;
   sourceId: string; owner: Observation; statements: readonly ts.Statement[];
 }): AnalyzeResult {
-  const { parsed, sourcePath, sourceText, sourceId, owner, statements } = input;
+  const { parsed, sourcePath, sourceSha256, sourceId, owner, statements } = input;
   const parsedSource = parsed as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
   if (parsedSource.parseDiagnostics?.length) return { observations: [], resolutions: [] };
   const lens = analyzeSourceConditionStatements(parsed, sourcePath, statements);
@@ -30,7 +26,7 @@ export function buildSourceConditionGraphFacts(input: {
     sourceId, kind: 'source-control-summary', locator: owner.locator,
     name: 'Source control analysis of ' + (owner.name ?? owner.id),
     value: {
-      functionId: owner.id, sourceSha256: sourceDigest(sourceText),
+      functionId: owner.id, sourceSha256,
       branchTotal: lens.branches.length, effectTotal: lens.effects.length,
       unknownConstructs: lens.unknownConstructs,
       boundedOut: lens.boundedOut,

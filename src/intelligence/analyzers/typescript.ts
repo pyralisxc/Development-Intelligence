@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import type { AnalyzeContext, AnalyzeResult } from '../model.js';
 import { evidenceRecord, observation, redactSensitiveValue, resolution, semanticEntity, semanticRelationship } from '../model.js';
@@ -100,6 +101,7 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     true,
     context.locatorBase.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+  const sourceSha256 = createHash('sha256').update(context.text).digest('hex');
   const observations: Observation[] = [];
   const resolutions = [] as ReturnType<typeof resolution>[];
   const evidence: EvidenceRecord[] = [];
@@ -814,7 +816,7 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
           : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) ? node.body : undefined;
       if (owner && body && ts.isBlock(body)) {
         const facts = buildSourceConditionGraphFacts({
-          parsed: sourceFile, sourcePath: context.locatorBase, sourceText: context.text,
+          parsed: sourceFile, sourcePath: context.locatorBase, sourceSha256,
           sourceId: context.source.id, owner, statements: body.statements,
         });
         observations.push(...facts.observations);
