@@ -6,7 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { clearGraphCache } from '../src/intelligence/service.js';
-import { queryWorkbench, scopeOrientation } from '../src/intelligence/workbench.js';
+import { queryWorkbench, scopeOrientation, selectBoundedMechanismRelations } from '../src/intelligence/workbench.js';
 import { callTool } from '../src/mcp.js';
 
 test('investigation keeps callable identity, call direction and unknown-symbol boundaries', async () => {
@@ -205,5 +205,26 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     else process.env.DEVINT_PROJECTS_FILE = before;
     clearGraphCache();
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('bounded implementation views retain resolved direct effects when source-control links dominate', () => {
+  const controls = Array.from({ length: 90 }, (_, i) => ({
+    edgeId: 'condition-' + i,
+    kind: 'has-condition',
+    to: { kind: 'source-condition' },
+  }));
+  const effects = ['bulkDataInput', 'lastGeneratedCards', 'pendingRevision'].map(name => ({
+    edgeId: 'state-' + name,
+    kind: 'invokes',
+    to: { kind: 'state-write' },
+  }));
+  const picked = selectBoundedMechanismRelations([...controls, ...effects], 50);
+  assert.equal(picked.length, 50);
+  assert.equal(new Set(picked.map(edge => edge.edgeId)).size, 50);
+  for (const effect of effects) {
+    assert.ok(picked.some(item => item.edgeId === effect.edgeId),
+      'existing direct-effect evidence must not vanish behind new source-control relation volume');
   }
 });

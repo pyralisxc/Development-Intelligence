@@ -914,6 +914,47 @@ function rankedMechanismSourceFiles(
       || a.file.localeCompare(b.file))
     .slice(0, Math.max(1, limit));
 }
+/**
+ * An output bound must not let a single prolific relation kind erase every
+ * other established kind from an answer. Ranked source relevance still
+ * selects representatives; round-robin over distinct relation/target kinds
+ * retains multiple independently established direct consequences.
+ * This only chooses a bounded view of W; it never alters the graph/proof.
+ */
+export function selectBoundedMechanismRelations<T extends {
+  edgeId: string; kind: string; to: { kind: string } | null;
+}>(ranked: readonly T[], max = 50): T[] {
+  const limit = Math.max(1, Math.min(250, Math.floor(max)));
+  if (ranked.length <= limit) return [...ranked];
+  const groups = new Map<string, T[]>();
+  for (const edge of ranked) {
+    const key = edge.kind + ':' + (edge.to?.kind ?? 'unresolved-target');
+    const group = groups.get(key);
+    if (group) group.push(edge);
+    else groups.set(key, [edge]);
+  }
+  const result: T[] = [];
+  const chosen = new Set<string>();
+  // Four passes preserve multiple same-kind consequences, not only a sample
+  // from whichever new fact family happens to dominate a whole-file graph.
+  for (let round = 0; round < 4 && result.length < limit; round += 1) {
+    for (const group of groups.values()) {
+      const item = group[round];
+      if (!item || chosen.has(item.edgeId)) continue;
+      result.push(item);
+      chosen.add(item.edgeId);
+      if (result.length === limit) break;
+    }
+  }
+  for (const edge of ranked) {
+    if (result.length === limit) break;
+    if (chosen.has(edge.edgeId)) continue;
+    result.push(edge);
+    chosen.add(edge.edgeId);
+  }
+  return result;
+}
+
 async function implementationMechanismProjection(input: {
   project: string;
   text: string;
@@ -1176,7 +1217,14 @@ async function implementationMechanismProjection(input: {
       },
       files,
       keyEntities,
-      relationships: resolved.slice(0, 50),
+      relationships: selectBoundedMechanismRelations(resolved, 50),
+      relationshipProjection: {
+        totalResolved: resolved.length,
+        returned: Math.min(resolved.length, 50),
+        omitted: Math.max(0, resolved.length - 50),
+        selection: 'ranked-relation-kind-diversity-with-four-per-kind-first',
+        complete: resolved.length <= 50,
+      },
       decisionEvidence,
       uncertainty: {
         candidateRelationships: unresolved.filter(item => item.status === 'candidate').length,
