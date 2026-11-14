@@ -107,6 +107,13 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const identityCollisions = new Map<string, number>();
   const pendingHandlers: Array<{ ui: Observation; handler: string; line: number; ownerId: string | null }> = [];
   const pendingReferences: Array<{ from: Observation; targetName: string; kind: string; line: number }> = [];
+  // An inline function expression occurs in source even when its recipient
+  // never invokes it. Do not infer receiver behavior from the argument site.
+  const pendingCallbackArguments: Array<{
+    owner: Observation; callStart: number; callLine: number;
+    callbackStart: number; callbackLine: number; argumentIndex: number;
+    property: string | null; registeredHandlerId: string | null;
+  }> = [];
   const functionStack: Observation[] = [];
   const scopeStack: string[] = [];
   const componentPropsByOwner = new Map<string, Set<string>>();
@@ -678,6 +685,36 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     if (ts.isCallExpression(node)) {
       const owner = functionOwner();
       const expressionText = node.expression.getText(sourceFile);
+      // Recovered parse trees cannot establish an exact source fact.
+      const parsed = sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+      if (owner && !parsed.parseDiagnostics?.length) {
+        for (const [argumentIndex, argument] of node.arguments.entries()) {
+          const unwrapped = unwrap(argument) ?? argument;
+          const capture = (callback: ts.ArrowFunction | ts.FunctionExpression, property: string | null): void => {
+            pendingCallbackArguments.push({
+              owner, callStart: node.getStart(sourceFile), callLine: lineOf(node),
+              callbackStart: callback.getStart(sourceFile), callbackLine: lineOf(callback),
+              argumentIndex, property,
+              registeredHandlerId: expressionText.endsWith('.registerTool') && argumentIndex === 2
+                ? `symbol:${context.locatorBase}#function:mcp-handler-${lineOf(node)}-${node.getStart(sourceFile)}`
+                : null,
+            });
+          };
+          if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+            capture(unwrapped, null);
+          } else if (ts.isObjectLiteralExpression(unwrapped)) {
+            for (const property of unwrapped.properties) {
+              if (!ts.isPropertyAssignment(property)) continue;
+              const value = unwrap(property.initializer) ?? property.initializer;
+              if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+                // Duplicate keys, computed keys and later spreads may change
+                // effective delivery. This is source syntax only.
+                capture(value, propertyName(property.name) ?? null);
+              }
+            }
+          }
+        }
+      }
       if (expressionText === 'fetch' && node.arguments.length >= 1) {
         const target = templateTarget(node.arguments[0], sourceFile);
         if (target) {
@@ -771,6 +808,43 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   };
 
   visit(sourceFile);
+
+  const observationsById = new Map(observations.map(item => [item.id, item]));
+  for (const argument of pendingCallbackArguments) {
+    const callbackPrefix = `symbol:${context.locatorBase}#function:`;
+    const callback = [
+      argument.registeredHandlerId,
+      callbackPrefix + 'callback-' + argument.callbackStart,
+      callbackPrefix + 'isolated-callback-' + argument.callbackStart,
+    ].filter((id): id is string => typeof id === 'string')
+      .map(id => observationsById.get(id)).find(item => item?.kind === 'function');
+    if (!callback || callback.id === argument.owner.id) continue;
+    const where = `${context.locatorBase}:${argument.callLine}:argument-${argument.argumentIndex}:offset-${argument.callStart}`;
+    const proof = evidenceRecord({
+      sourceId: context.source.id,
+      kind: 'source-callback-argument',
+      locator: where,
+      field: argument.property ?? `argument-${argument.argumentIndex}`,
+      message: 'A literal function expression occurs within this call argument; effective delivery, invocation and runtime effects are not established.',
+      value: {
+        callerId: argument.owner.id, callbackId: callback.id,
+        callOffset: argument.callStart, callbackOffset: argument.callbackStart,
+        argumentIndex: argument.argumentIndex, property: argument.property,
+        sourceSyntaxOnly: true, effectiveDeliveryProven: false,
+        invokedByReceiverProven: false, runtimeObserved: false,
+      },
+    });
+    evidence.push(proof);
+    resolutions.push(resolution({
+      identity: [context.source.id, 'callback-argument', argument.callStart,
+        argument.argumentIndex, argument.property, argument.callbackStart],
+      from: argument.owner.id, to: callback.id, kind: 'callback-argument',
+      strategy: 'typescript-source-callback-argument', confidence: 1,
+      status: 'resolved',
+      evidence: [where, `${context.locatorBase}:${argument.callbackLine}:callback-offset-${argument.callbackStart}`],
+      evidenceIds: [proof.id], layer: 'structural', checkpoint: false,
+    }));
+  }
 
   for (const pending of pendingHandlers) {
     const targets = symbols.get(pending.handler) ?? [];

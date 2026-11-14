@@ -113,3 +113,35 @@ test('a compiler precision ceiling becomes an explicit DI self-improvement targe
   assert.equal(limit.triage.developerDecisionRequired,false);
   assert.equal(audit.selfDiagnosis.developerDefectsProvenByTheseSignals,false);
 });
+
+
+test('a known source callback argument does not resolve its invocation', () => {
+  const caller = node('function:caller', 'function', 'structural', 'src/caller.ts:2');
+  const callback = node('function:callback', 'function', 'structural', 'src/caller.ts:3');
+  const graph = {
+    project: 'Fixture', graphId: 'repo-callback', repositoryRevision: 'a'.repeat(40),
+    analyzerVersion: 'fixture', role: 'W', sources: [source],
+    nodes: [caller, callback], evidence: [],
+    edges: [
+      { id: 'source-argument', from: caller.id, to: callback.id, kind: 'callback-argument',
+        status: 'resolved', strategy: 'typescript-source-callback-argument', confidence: 1,
+        evidence: ['src/caller.ts:2'], layer: 'structural' },
+      { id: 'execution-unknown', from: caller.id, to: callback.id, kind: 'invokes',
+        status: 'unresolved', strategy: 'callback-transfer-unresolved', confidence: null,
+        evidence: ['src/caller.ts:2'], layer: 'structural' },
+    ],
+    unavailableSourceIds: [], explicitValueConflicts: [], namingDivergences: [],
+    coverage: { trackedFiles: 1, eligibleFiles: 1, analyzedFiles: 1, completeFiles: 1,
+      partialFiles: 0, unsupportedFiles: 0, skippedFiles: 0, failedFiles: 0,
+      files: [{ path: 'src/caller.ts', status: 'complete' }] },
+  } as unknown as IntelligenceGraph;
+  const report = synthesizeRepositoryAudit(graph, { limit: 10 }) as any;
+  const group = report.relationshipConcentrations.find((item: any) => item.kind === 'invokes');
+  assert.equal(group.knownEndpointCount, 1);
+  assert.equal(group.uncertainty, 'callback-invocation-unproven-with-known-participants');
+  assert.match(group.nextEvidence, /receiver behavior/);
+  const target = report.investigationTargets.find((item: any) => item.kind === 'relationship');
+  assert.equal(target.triage.route, 'investigate-higher-order-invocation');
+  assert.equal(target.triage.developerDecisionRequired, false);
+  assert.equal(report.selfDiagnosis.sourceCallbackArgumentFacts, 1);
+});

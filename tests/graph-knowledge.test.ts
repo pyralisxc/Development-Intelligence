@@ -47,12 +47,23 @@ test('a complete Go structural file does not imply call emission or absence', ()
     ...graph, coverage: { ...graph.coverage!, files: [{ path: 'Scripts/Controller.cs', status: 'complete' }] },
   };
   assert.equal(sourceCapabilityCoverage(csharp).find(x => x.language === 'csharp' && x.family === 'calls')?.emitter, 'supported-partial');
+  assert.equal(sourceCapabilityCoverage(csharp).find(x => x.language === 'csharp' && x.family === 'callback-arguments')?.emitter, 'not-emitted');
+  const typescript: IntelligenceGraph = {
+    ...graph, coverage: { ...graph.coverage!, files: [{ path: 'src/owner.ts', status: 'complete' }] },
+  };
+  const callbacks = sourceCapabilityCoverage(typescript).find(x =>
+    x.language === 'typescript' && x.family === 'callback-arguments');
+  assert.equal(callbacks?.emitter, 'supported-partial');
+  assert.equal(callbacks?.exhaustiveForNegativeClaims, false);
 });
 test('one vocabulary is used for reach and proof, not name-pattern guesses', () => {
   assert.ok(nodeTraits('method').includes('callable'));
   assert.deepEqual(nodeTraits('toString'), []);
   assert.deepEqual(nodeTraits('__proto__'), []);
   assert.ok(nodeKindsForFacet('implementation').includes('method'));
+  assert.equal(relationshipKindContract('callback-argument').family, 'reference');
+  assert.equal(relationshipKindContract('callback-argument').proof, 'syntax');
+  assert.equal(relationshipKindContract('callback-argument').realizationEligible, false);
   assert.equal(relationshipKindContract('calls').family, 'invocation');
   assert.equal(relationshipKindContract('calls').proof, 'bound-source');
   assert.equal(relationshipKindContract('uses_classes').proof, 'syntax');

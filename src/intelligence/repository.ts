@@ -15,7 +15,7 @@ import { resolveFrameworkSpine } from './frameworkSpine.js';
 import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS, TYPESCRIPT_COMPILER_MAX_FILES } from './typescriptCompilerLens.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.22.0-source-try-catch-return-graph-facts';
+export const ANALYZER_VERSION = '2.23.0-source-callback-argument-facts';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);

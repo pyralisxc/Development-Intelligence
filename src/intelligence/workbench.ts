@@ -1273,6 +1273,8 @@ export function planInvestigationQuestion(input: {
   const implementationClaimIntent = /\b(write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|write back|accepted graph|accepted checkpoint)\b/u.test(lower);
   const codeIntent = /\b(code|source|implementation|implemented)\b/u.test(lower);
   const traceIntent = /\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/u.test(lower);
+  const callbackArgumentIntent = /\bcallbacks?\b/u.test(lower)
+    && /\b(pass(?:es|ed|ing)?|suppl(?:y|ies|ied)|arguments?|provid(?:e|es|ed|ing))\b/u.test(lower);
   const evidenceIntent = /\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/u.test(lower);
   const claimIntent = /\b(no|none|not|only|second|absent|missing|without|actually|whether|cannot|can't)\b/u.test(lower);
   const statisticsIntent =
@@ -1317,6 +1319,7 @@ export function planInvestigationQuestion(input: {
   else if (implementationClaimIntent) lane = 'implementation-claim';
   // Evidence-backed whole-repository diagnosis beats a generic 'code' keyword.
   else if (repositoryAuditIntent) lane = 'repository-audit';
+  else if (callbackArgumentIntent) lane = 'trace';
   else if (codeIntent) lane = 'code';
   else if (semanticAuditIntent) lane = 'semantic-audit';
   else if (orientationIntent) lane = 'orientation';
@@ -1326,7 +1329,8 @@ export function planInvestigationQuestion(input: {
   else lane = 'entity';
 
   const proofMode: InvestigationQuestionProofMode =
-    lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
+    lane === 'trace' && callbackArgumentIntent ? 'evidence'
+      : lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
       ? 'claim'
       : lane === 'evidence'
         ? 'evidence'
@@ -2466,7 +2470,7 @@ function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
     case 'orientation':
       return [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi];
     case 'trace':
-      return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi];
+      return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a|callbacks?|arguments?|pass(?:es|ed|ing)?|suppl(?:y|ies|ied)|provid(?:e|es|ed|ing))\b/gi];
     case 'evidence':
       return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the|exists?|existence|whether|and|also|it|this|that)\b/gi];
     case 'entity':
@@ -3031,25 +3035,48 @@ export async function queryWorkbench(input: {
       const inboundCall = /^\s*(?:what|who|which)\s+(?:functions?\s+)?calls?\b/u.test(lower)
         || /\b(?:callers?|called by)\b/u.test(lower);
       const isCallQuestion = outboundCall || inboundCall;
-      const direction = outboundCall ? 'outbound' : inboundCall ? 'inbound'
+      const isCallbackArgumentQuestion = /\bcallbacks?\b/u.test(lower)
+        && /\b(pass(?:es|ed|ing)?|suppl(?:y|ies|ied)|arguments?|provid(?:e|es|ed|ing))\b/u.test(lower);
+      const directedKinds = isCallbackArgumentQuestion ? ['callback-argument']
+        : isCallQuestion ? ['calls'] : null;
+      const direction = isCallbackArgumentQuestion ? 'outbound'
+        : outboundCall ? 'outbound' : inboundCall ? 'inbound'
         : /used by|consumers?|^\s*what\s+depends?\s+on\b|^\s*which\b[^?]*\bdepends?\s+on\b|\bwhich\b.*\buses?\b|\bwhat\b.*\bconstructs?\b/u.test(lower)
           ? 'inbound'
           : /depend(?:s)? on|uses/u.test(lower) ? 'outbound' : 'both';
       const result = await traceGraph({
         project: input.project, ref: input.ref, graphId: input.graphId,
-        node: subject, direction, depth: isCallQuestion ? 1 : 2,
-        ...(isCallQuestion ? { relationshipKinds: ['calls'] } : {}),
+        node: subject, direction, depth: isCallQuestion || isCallbackArgumentQuestion ? 1 : 2,
+        ...(directedKinds ? { relationshipKinds: directedKinds } : {}),
         statuses: ['resolved'], limit: 250,
       }) as any;
       const callEdges = isCallQuestion && !result.ambiguous
         ? (result.edges ?? []).filter((edge: any) => edge.kind === 'calls'
           && (direction === 'outbound' ? edge.from === subject : edge.to === subject))
         : [];
+      const nodeById = new Map<string, any>((result.nodes ?? []).map((node: any) => [node.id, node]));
+      const callbackEdges = isCallbackArgumentQuestion && !result.ambiguous
+        ? (result.edges ?? []).filter((edge: any) => edge.kind === 'callback-argument'
+          && edge.status === 'resolved' && edge.from === subject)
+        : [];
+      const callbackSites = [...new Set<string>(callbackEdges.map((edge: any) => {
+        const target = nodeById.get(edge.to);
+        const loc = (edge.evidence ?? []).find((item: string) => item.includes('callback-offset-'))
+          ?? target?.locator ?? String(edge.to);
+        return (target?.name === 'unresolved callback' ? 'callback expression' : target?.name ?? 'callback')
+          + ' at ' + loc;
+      }))].sort();
       const names = new Map<string, string>((result.nodes ?? []).map((node: any) => [node.id, node.name || node.id]));
       const observed = [...new Set<string>(callEdges.map((edge: any) =>
         names.get(direction === 'outbound' ? edge.to : edge.from) ?? String(direction === 'outbound' ? edge.to : edge.from)))].sort();
       const answer = result.ambiguous
         ? 'The requested graph subject is ambiguous; choose an exact entity.'
+        : isCallbackArgumentQuestion
+          ? callbackSites.length
+            ? 'Source-located callback argument(s) of “' + displayName(resolved.node ?? undefined, subject)
+              + '”: ' + callbackSites.join(', ')
+              + '. These are source syntax facts, not proof of effective delivery, receiver invocation or runtime effects.'
+            : 'No source-located callback argument relationship was observed for this subject; this does not prove callback absence.'
         : isCallQuestion
           ? observed.length
             ? 'Observed resolved direct ' + (direction === 'outbound' ? 'callees' : 'callers')
@@ -3061,9 +3088,11 @@ export async function queryWorkbench(input: {
       return {
         intent: 'trace',
         subject: subjectDescriptor(resolved.node, resolved.query),
-        routing: { tool: 'trace_path', direction, ...(isCallQuestion ? { relationshipKinds: ['calls'] } : {}) },
+        routing: { tool: 'trace_path', direction, ...(directedKinds ? { relationshipKinds: directedKinds } : {}) },
         answer,
-        answerClassification: result.ambiguous ? 'unresolved-input' : isCallQuestion && observed.length ? 'established-bounded' : 'evidence-only',
+        answerClassification: result.ambiguous ? 'unresolved-input'
+          : isCallbackArgumentQuestion && callbackSites.length ? 'established-bounded'
+          : isCallQuestion && observed.length ? 'established-bounded' : 'evidence-only',
         result,
       };
     }

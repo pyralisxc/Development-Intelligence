@@ -23,6 +23,8 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
       'export function leaf() { return 1; }',
       'export function target() { return leaf(); }',
       'export function caller() { return target(); }',
+      'export function ignore(_callback: () => number) { return 0; }',
+      'export function ownerStored() { return ignore(() => 42); }',
       ''
     ].join('\n'));
     await fs.writeFile(path.join(source, 'src', 'consumer.ts'),
@@ -78,6 +80,24 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     assert.deepEqual(outgoing.routing.relationshipKinds, ['calls']);
     assert.equal(outgoing.answerClassification, 'established-bounded');
     assert.match(outgoing.answer, /leaf/u);
+    const callbackQuestion = await queryWorkbench({ ...input,
+      text: 'Which callbacks does ownerStored pass?' }) as any;
+    assert.equal(callbackQuestion.intent, 'trace');
+    assert.equal(callbackQuestion.routing.tool, 'trace_path');
+    assert.deepEqual(callbackQuestion.routing.relationshipKinds, ['callback-argument']);
+    assert.equal(callbackQuestion.answerClassification, 'established-bounded');
+    assert.match(callbackQuestion.answer, /src\/workbench\.ts/u);
+    assert.match(callbackQuestion.answer, /not proof of effective delivery/u);
+    const argument = callbackQuestion.result.edges.find((edge: any) =>
+      edge.kind === 'callback-argument' && edge.status === 'resolved');
+    assert.ok(argument, 'ordinary questions must select the existing source argument relationship');
+    const callbackEvidence = await callTool('get_evidence', { ...input, edge: argument.id }) as any;
+    assert.ok(callbackEvidence.evidence.some((item: any) => item.kind === 'source-callback-argument'));
+    const ordinaryCalls = await queryWorkbench({ ...input,
+      text: 'What does ownerStored call?' }) as any;
+    assert.deepEqual(ordinaryCalls.routing.relationshipKinds, ['calls']);
+    assert.ok(!ordinaryCalls.result.edges.some((edge: any) => edge.kind === 'callback-argument'),
+      'source argument edges may not masquerade as executed calls');
     const incoming = await queryWorkbench({ ...input, text: 'What calls target?' }) as any;
     assert.equal(incoming.subject.id, outgoing.subject.id);
     assert.equal(incoming.routing.direction, 'inbound');

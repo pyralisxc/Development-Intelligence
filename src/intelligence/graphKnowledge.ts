@@ -107,6 +107,9 @@ define(['registered-as'], 'realization', 'surface', true, 'bound-source', ['boun
 // A resolved technical connection can carry a capability to an API or other
 // concrete realization. Preserve the already-proven traversal contract.
 define(['connected-to'], 'reference', 'dependency', true, 'bound-source');
+// A source-located callback expression does not prove any invocation.
+define(['callback-argument'], 'reference', 'dependency', false, 'syntax',
+  ['callable'], ['callable']);
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
   'automated-by', 'constructs'], 'invocation', 'execution', true, 'bound-source');
@@ -163,40 +166,40 @@ export function inspectRelationshipShape(edge: GraphEdge,
   return { status: 'valid', reason: null };
 }
 
-type CapabilityFamily = 'declarations' | 'bindings' | 'calls' | 'conditions-effects' | 'persistence';
+type CapabilityFamily = 'declarations' | 'bindings' | 'calls' | 'callback-arguments' | 'conditions-effects' | 'persistence';
 type Emission = 'supported-partial' | 'not-emitted';
 const CAPABILITIES: Record<string, Record<CapabilityFamily, Emission>> = {
   typescript: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'supported-partial', 'conditions-effects': 'supported-partial',
+    calls: 'supported-partial', 'callback-arguments': 'supported-partial', 'conditions-effects': 'supported-partial',
     persistence: 'supported-partial',
   },
   go: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   java: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   csharp: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'supported-partial', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'supported-partial', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   python: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   rust: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   sql: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'supported-partial',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'supported-partial',
   },
 };
-const FAMILIES: CapabilityFamily[] = ['declarations', 'bindings', 'calls', 'conditions-effects', 'persistence'];
+const FAMILIES: CapabilityFamily[] = ['declarations', 'bindings', 'calls', 'callback-arguments', 'conditions-effects', 'persistence'];
 function sourceLanguage(sourcePath: string): string | null {
   if (/\.(?:[cm]?[jt]sx?)$/iu.test(sourcePath)) return 'typescript';
   if (/\.go$/iu.test(sourcePath)) return 'go';
