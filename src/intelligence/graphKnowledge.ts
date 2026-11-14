@@ -168,7 +168,7 @@ export function inspectRelationshipShape(edge: GraphEdge,
 
 type CapabilityFamily = 'declarations' | 'bindings' | 'calls' | 'callback-arguments' | 'conditions-effects' | 'persistence';
 type Emission = 'supported-partial' | 'not-emitted';
-const CAPABILITIES: Record<string, Partial<Record<CapabilityFamily, Emission>>> = {
+const CAPABILITIES: Record<string, Record<CapabilityFamily, Emission>> = {
   typescript: {
     declarations: 'supported-partial', bindings: 'supported-partial',
     calls: 'supported-partial', 'callback-arguments': 'supported-partial', 'conditions-effects': 'supported-partial',
@@ -176,27 +176,27 @@ const CAPABILITIES: Record<string, Partial<Record<CapabilityFamily, Emission>>> 
   },
   go: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   java: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   csharp: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'supported-partial', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'supported-partial', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   python: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   rust: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   sql: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'supported-partial',
+    calls: 'not-emitted', 'callback-arguments': 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'supported-partial',
   },
 };
 const FAMILIES: CapabilityFamily[] = ['declarations', 'bindings', 'calls', 'callback-arguments', 'conditions-effects', 'persistence'];
