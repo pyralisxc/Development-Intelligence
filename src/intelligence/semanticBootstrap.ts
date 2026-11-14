@@ -224,7 +224,7 @@ function motifSubjects(group: CandidateGroup): GraphNode[] {
     .slice(0, 6);
 }
 function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph,
-  motifContext: MotifReadContext | null): { families: SemanticEvidenceFamily[]; motifs: DerivedMotifKind[] } {
+  motifContext: MotifReadContext | null, selectedMotifs: readonly GraphNode[]): { families: SemanticEvidenceFamily[]; motifs: DerivedMotifKind[] } {
   const families = new Set<SemanticEvidenceFamily>();
   if (group.files.size > 0) families.add('structure');
   const resolvedEdges = group.edges.filter(edge => edge.status === 'resolved');
@@ -249,7 +249,7 @@ function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph,
   // lookups. Only invoke it when the entity identity can satisfy one of the current
   // deterministic motif predicates; do not run motif detection speculatively across
   // every node in every semantic candidate group.
-  for (const node of motifSubjects(group)) {
+  for (const node of selectedMotifs) {
     for (const motif of deriveMotifs(graph, node, motifContext ?? undefined)) motifKinds.add(motif.kind);
   }
   if (motifKinds.size > 0) families.add('motif');
@@ -320,8 +320,12 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     for (const scope of scopes) groups.get(scope)?.edges.push(edge);
   }
 
-  const motifIds = [...new Set([...groups.values()].flatMap(group =>
-    motifSubjects(group).map(node => node.id)))];
+  // Selection is a pure function of each existing source scope; reuse it
+  // across the scoped adjacency build and its motif evidence projection.
+  const motifSubjectsByScope = new Map([...groups.values()].map(group =>
+    [group.scope, motifSubjects(group)] as const));
+  const motifIds = [...new Set([...motifSubjectsByScope.values()].flatMap(group =>
+    group.map(node => node.id)))];
   const motifContext = motifIds.length ? scopedMotifReadContext(graph, motifIds) : null;
   const candidates: SemanticCandidate[] = [];
   const excludedScopes: ExcludedSemanticScope[] = [];
@@ -331,7 +335,8 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     genericSupportScope: 0,
   };
   for (const group of groups.values()) {
-    const { families, motifs } = familyEvidence(group, graph, motifContext);
+    const { families, motifs } = familyEvidence(group, graph, motifContext,
+      motifSubjectsByScope.get(group.scope) ?? []);
     const strongFamily = families.some(family => ['interface', 'api', 'persistence', 'motif', 'state'].includes(family));
     const excludedReason: ExcludedSemanticScope['reason'] | null =
       group.scopeRole === 'direct' && SUPPORT_SEGMENTS.has(group.token.toLowerCase())
