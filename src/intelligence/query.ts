@@ -1285,7 +1285,7 @@ export function nodeArea(node: GraphNode): string {
  * Fuzzy identities and historic generations retain the full-graph path.
  */
 async function indexedGraphEvidence(input: {
-  project: string; ref?: string; graphId?: string;
+  project: string; ref?: string | undefined; graphId?: string;
   node?: string; edge?: string; evidenceIds?: string[];
 }): Promise<Record<string, unknown> | null> {
   if (input.ref || !(input.node || input.edge || input.evidenceIds?.length)) return null;
