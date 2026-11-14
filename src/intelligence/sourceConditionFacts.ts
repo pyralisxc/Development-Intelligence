@@ -108,7 +108,7 @@ export function analyzeSourceConditionStatements(
       expressionSha256: digest(node.getText(parsed)),
       requiredConditions: [...requires], runtimeObserved: false });
   };
-  const scan = (list: ts.Statement[], requirements: SourceRequirement[], depth: number): void => {
+  const scan = (list: readonly ts.Statement[], requirements: SourceRequirement[], depth: number): void => {
     if (depth > MAX_DEPTH) { boundedOut = true; return; }
     const active = [...requirements];
     for (const stmt of list) {
