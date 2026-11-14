@@ -11,6 +11,7 @@ import { analyzeSourceConditionStatements,
   type SourceCondition, type SourceEffect, type SourceRequirement } from './sourceConditionFacts.js';
 export type { SourceCondition, SourceEffect, SourceRequirement } from './sourceConditionFacts.js';
 import { graphQueryContext } from './queryContext.js';
+import { sourceDerivedTechnicalEdge } from './graphKnowledge.js';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
 
@@ -414,7 +415,7 @@ export function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: Grap
     const effectId = effectNodes[index]?.id;
     if (!effectId) return null;
     const observed = context.outgoing(effectId).filter(edge =>
-      edge.kind === 'requires-condition' && edge.status === 'resolved');
+      edge.kind === 'requires-condition' && sourceDerivedTechnicalEdge(edge));
     const expectedKeys = effect.requiredConditions.map(req => {
       const target = branchById.get(req.conditionId);
       return target + ':' + (req.expectedTruth ? 'source-condition-true' : 'source-condition-false');

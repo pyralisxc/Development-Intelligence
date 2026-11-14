@@ -217,8 +217,11 @@ export function reconcileCanonicalSourceFact(left: GraphNode, right: GraphNode):
  * it is NOT an assertion that a source-derived condition or effect is unusable.
  */
 export function sourceDerivedTechnicalEdge(edge: GraphEdge): boolean {
-  return edge.status === 'resolved'
+  // The source-conditional vocabulary describes modality; the actual source
+  // occurrence and its evidence must also be present for positive proof.
+  return edge.status === 'resolved' && edge.confidence === 1
     && relationshipKindContract(edge.kind).proof === 'source-conditional'
+    && (edge.evidenceIds?.length ?? 0) > 0
     && Boolean(edge.from && edge.to);
 }
 

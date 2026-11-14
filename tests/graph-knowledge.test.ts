@@ -163,10 +163,13 @@ test('source-derived execution is established technical truth without runtime re
     id: 'edge:guard', kind: 'requires-condition', from: established.id,
     to: 'condition:id', status: 'resolved', confidence: 1,
     strategy: 'source-condition-false', evidence: [established.locator],
+    evidenceIds: ['evidence:guard'],
   };
   assert.equal(sourceDerivedTechnicalEdge(guard), true,
     'verified conditional source premises must be valid facts');
   assert.equal(relationshipKindContract(guard.kind).realizationEligible, false,
     'source proof must not become a runtime or product-realization assertion');
   assert.equal(sourceDerivedTechnicalEdge({ ...guard, status: 'unresolved' }), false);
+  assert.equal(sourceDerivedTechnicalEdge({ ...guard, evidenceIds: [] }), false,
+    'the relationship kind alone must not manufacture positive source evidence');
 });
