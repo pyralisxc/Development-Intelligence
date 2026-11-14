@@ -107,6 +107,9 @@ define(['registered-as'], 'realization', 'surface', true, 'bound-source', ['boun
 // A resolved technical connection can carry a capability to an API or other
 // concrete realization. Preserve the already-proven traversal contract.
 define(['connected-to'], 'reference', 'dependency', true, 'bound-source');
+// A source-located callback expression does not prove any invocation.
+define(['callback-argument'], 'reference', 'dependency', false, 'syntax',
+  ['callable'], ['callable']);
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
   'automated-by', 'constructs'], 'invocation', 'execution', true, 'bound-source');

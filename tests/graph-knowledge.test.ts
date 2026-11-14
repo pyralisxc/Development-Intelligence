@@ -53,6 +53,9 @@ test('one vocabulary is used for reach and proof, not name-pattern guesses', () 
   assert.deepEqual(nodeTraits('toString'), []);
   assert.deepEqual(nodeTraits('__proto__'), []);
   assert.ok(nodeKindsForFacet('implementation').includes('method'));
+  assert.equal(relationshipKindContract('callback-argument').family, 'reference');
+  assert.equal(relationshipKindContract('callback-argument').proof, 'syntax');
+  assert.equal(relationshipKindContract('callback-argument').realizationEligible, false);
   assert.equal(relationshipKindContract('calls').family, 'invocation');
   assert.equal(relationshipKindContract('calls').proof, 'bound-source');
   assert.equal(relationshipKindContract('uses_classes').proof, 'syntax');
