@@ -7,6 +7,7 @@ import { nodeTraits, relationshipKindContract, inspectRelationshipShape,
 import { buildCanonicalQueryArtifacts, materializeQueryBuckets,
   queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
 import { reachMechanism } from '../src/intelligence/reach.js';
+import { mergeNodes } from '../src/intelligence/repository.js';
 
 const go: GraphNode = {
   id: 'symbol:gin.go#method:gin.Engine.ServeHTTP', sourceId: 'repo:gin.go',
@@ -172,4 +173,53 @@ test('source-derived execution is established technical truth without runtime re
   assert.equal(sourceDerivedTechnicalEdge({ ...guard, status: 'unresolved' }), false);
   assert.equal(sourceDerivedTechnicalEdge({ ...guard, evidenceIds: [] }), false,
     'the relationship kind alone must not manufacture positive source evidence');
+});
+
+
+test('canonical graph construction prefers exact derived source proof while preserving contrary evidence', () => {
+  const sourceSha256 = 'd'.repeat(64);
+  const base: GraphNode = {
+    id: 'effect:fact', sourceId: 'repo:src/run.ts',
+    kind: 'source-effect', locator: 'src/run.ts:8:effect-offset-200',
+    name: 'Source return in run', value: {
+      functionId: 'symbol:src/run.ts#function:run',
+      sourceOnly: true, runtimeObserved: false, sourceSha256,
+      expression: 'return runStage(...)',
+      proofRule: 'typescript-source-control-graph.v1',
+      derivedExecution: {
+        status: 'established', proposition: 'source-conditional-effect',
+        evidenceGrade: 'exact-source-derivation', scope: 'selected-source-revision',
+        sourceSha256, proofRule: 'typescript-source-control-graph.v1',
+        requiredConditions: [{ conditionId: 'guard:A', expectedTruth: true }],
+        predicateSatisfiabilityProven: false, runtimeObserved: false,
+      },
+    }, raw: 'source-value', evidenceIds: ['evidence:source'], layer: 'structural',
+  };
+  const weak: GraphNode = { ...base, raw: 'guess',
+    evidenceIds: ['evidence:guess'],
+    value: { functionId: (base.value as any).functionId, sourceOnly: true,
+      runtimeObserved: false, expression: 'return otherStage(...)',
+      proofRule: 'heuristic' },
+  };
+  for (const candidates of [[weak, base], [base, weak]]) {
+    const merged = mergeNodes(candidates);
+    assert.equal(merged.nodes.length, 1);
+    assert.deepEqual(merged.nodes[0]?.value, base.value);
+    assert.ok(merged.nodes[0]?.tags?.includes('weaker-source-assertion-overruled'));
+    assert.deepEqual(merged.nodes[0]?.evidenceIds,
+      ['evidence:guess', 'evidence:source'], 'both observations remain inspectable');
+    assert.equal(merged.conflicts.length, 1);
+    assert.equal(merged.conflicts[0]?.resolution, 'higher-source-proof-preferred');
+    assert.deepEqual(merged.conflicts[0]?.preferredEvidenceIds, ['evidence:source']);
+  }
+  const equallyGrounded = { ...base,
+    value: { ...(base.value as Record<string, unknown>),
+      expression: 'return otherStage(...)' } };
+  const contested = mergeNodes([base, equallyGrounded]);
+  assert.equal(contested.conflicts[0]?.resolution, 'contested');
+  assert.ok(contested.nodes[0]?.tags?.includes('source-fact-contested'));
+  assert.ok(contested.nodes[0]?.tags?.includes('conflicted'));
+  assert.deepEqual(mergeNodes([equallyGrounded, base]).nodes[0]?.value,
+    contested.nodes[0]?.value,
+    'tie-breaking a contested fact must be deterministic, not evidence-order dependent');
 });

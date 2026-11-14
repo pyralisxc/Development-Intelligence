@@ -215,7 +215,8 @@ function semanticConflicts(left: GraphNode, right: GraphNode): ExplicitValueConf
     }));
 }
 
-function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts: ExplicitValueConflict[] } {
+/** Deterministic evidence reconciliation inside canonical graph construction. */
+export function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts: ExplicitValueConflict[] } {
   const byId = new Map<string, GraphNode>();
   const conflicts: ExplicitValueConflict[] = [];
   for (const node of nodes) {
