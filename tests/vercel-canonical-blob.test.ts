@@ -228,7 +228,7 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
     assert.equal(adaptiveTrace.queryPlane.authoritative, true);
     assert.ok(adaptiveTrace.queryPlane.selectedBuckets >= 2, 'cross-file trace should expand across at least two detail buckets');
     assert.ok(adaptiveTrace.nodes.some((node: any) => node.name === 'traceTarget'));
-    const fullTrace = await traceGraph({
+    const pinnedTrace = await traceGraph({
       project: item.project,
       graphId: first.working.graphId,
       node: 'traceEntry',
@@ -236,7 +236,27 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
       depth: 2,
       limit: 100,
     }) as any;
+    assert.equal(pinnedTrace.queryPlane.mode, 'adaptive');
+    assert.equal(pinnedTrace.graphId, first.working.graphId);
+    const fullTrace = await traceGraph({
+      project: item.project,
+      ref: 'commit:' + first.revision,
+      node: 'traceEntry',
+      direction: 'outbound',
+      depth: 2,
+      limit: 100,
+    }) as any;
     assert.equal(fullTrace.queryPlane.mode, 'full');
+    assert.deepEqual(
+      [...pinnedTrace.nodes.map((node: any) => node.id)].sort(),
+      [...fullTrace.nodes.map((node: any) => node.id)].sort(),
+      'explicit exact graphId adaptive trace must preserve full source-bound node recall',
+    );
+    assert.deepEqual(
+      [...pinnedTrace.edges.map((edge: any) => edge.id)].sort(),
+      [...fullTrace.edges.map((edge: any) => edge.id)].sort(),
+      'explicit exact graphId adaptive trace must preserve full source-bound edge recall',
+    );
     assert.deepEqual(
       [...adaptiveTrace.nodes.map((node: any) => node.id)].sort(),
       [...fullTrace.nodes.map((node: any) => node.id)].sort(),

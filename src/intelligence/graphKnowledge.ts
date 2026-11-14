@@ -75,8 +75,11 @@ function define(kinds: readonly string[], family: KnowledgeFamily,
 define(['contains', 'declares', 'declares-module', 'declares-state',
   'reexports', 'member-of', 'part-of'], 'composition', 'composition-context', false, 'syntax');
 define(['imports', 'imports-file', 'targets-module', 'references-symbol',
-  'resolves_to', 'binds_to', 'depends-on', 'connected-to', 'links_to',
+  'resolves_to', 'binds_to', 'depends-on', 'links_to',
   'uses', 'requires'], 'reference', 'dependency', false, 'bound-source');
+// A resolved technical connection can carry a capability to an API or other
+// concrete realization. Preserve the already-proven traversal contract.
+define(['connected-to'], 'reference', 'dependency', true, 'bound-source');
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
   'automated-by'], 'invocation', 'execution', true, 'bound-source');

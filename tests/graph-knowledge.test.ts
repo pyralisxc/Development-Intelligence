@@ -51,6 +51,8 @@ test('one vocabulary is used for reach and proof, not name-pattern guesses', () 
   assert.equal(relationshipKindContract('calls').proof, 'bound-source');
   assert.equal(reachMechanism('calls'), 'execution');
   assert.equal(relationshipKindContract('same_observed_name').realizationEligible, false);
+  assert.equal(relationshipKindContract('connected-to').realizationEligible, true);
+  assert.equal(relationshipKindContract('contains').realizationEligible, false);
   assert.equal(relationshipKindContract('mysterious-project-relation').realizationEligible, false);
 });
 test('typed domain and range require real graph identities without inventing execution', () => {
