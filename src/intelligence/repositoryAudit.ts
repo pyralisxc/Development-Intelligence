@@ -188,6 +188,8 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number, ind
     edgeIds: string[];
     evidenceIds: Set<string>;
     areas: Map<string, number>;
+    knownEndpointCount: number;
+    unknownCallbackExecutionCount: number;
     samples: Array<{ id: string; from: string | null; to: string | null; evidence: string[] }>;
   }>();
   for (const edge of graph.edges) {
@@ -200,9 +202,16 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number, ind
       edgeIds: [],
       evidenceIds: new Set<string>(),
       areas: new Map<string, number>(),
+      knownEndpointCount: 0,
+      unknownCallbackExecutionCount: 0,
       samples: [],
     };
     group.count += 1;
+    const knownEndpoints = Boolean(edge.from && edge.to
+      && indexes.nodes.has(edge.from) && indexes.nodes.has(edge.to));
+    if (knownEndpoints) group.knownEndpointCount += 1;
+    if (knownEndpoints && edge.kind === 'invokes' && edge.status === 'unresolved'
+      && edge.strategy === 'callback-transfer-unresolved') group.unknownCallbackExecutionCount += 1;
     if (group.edgeIds.length < 20) group.edgeIds.push(edge.id);
     for (const id of edge.evidenceIds ?? []) if (group.evidenceIds.size < 30) group.evidenceIds.add(id);
     if (group.samples.length < 3) group.samples.push({ id: edge.id, from: edge.from, to: edge.to, evidence: edge.evidence.slice(0, 2) });
@@ -220,6 +229,10 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number, ind
       status: group.status,
       kind: group.kind,
       count: group.count,
+      knownEndpointCount: group.knownEndpointCount,
+      uncertainty: group.count > 0 && group.unknownCallbackExecutionCount === group.count
+        ? 'callback-invocation-unproven-with-known-participants' as const
+        : 'unresolved-relationship' as const,
       edgeIds: group.edgeIds,
       evidenceIds: [...group.evidenceIds].sort(),
       areas: [...group.areas.entries()]
@@ -228,9 +241,11 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number, ind
         .slice(0, 5),
       fixSurface: fixSurface(indexes, [...new Set(group.samples.flatMap(item => [item.from, item.to].filter((id): id is string => Boolean(id))))]),
       samples: group.samples,
-      nextEvidence: group.status === 'unresolved'
-        ? 'Resolve target identity or supply the missing source/runtime/provider evidence before using these relationships as proof.'
-        : 'Strengthen deterministic binding evidence before promoting these candidate relationships into proof.',
+      nextEvidence: group.count > 0 && group.unknownCallbackExecutionCount === group.count
+        ? 'Both callback participants are identified. Inspect receiver behavior to prove invocation; source-located callback arguments are not execution proof.'
+        : group.status === 'unresolved'
+          ? 'Resolve target identity or supply the missing source/runtime/provider evidence before using these relationships as proof.'
+          : 'Strengthen deterministic binding evidence before promoting these candidate relationships into proof.',
     }))
     .sort((a, b) => {
       const statusOrder = (value: AuditRelationshipStatus) => value === 'unresolved' ? 0 : 1;
@@ -297,12 +312,22 @@ function triageInvestigationTarget(item: Record<string, unknown>) {
     developerDecisionRequired: false,
     why: 'Unsupported files do not establish a defect. First determine whether these files matter to the requested behavior, then improve coverage where useful.',
   };
-  if (kind === 'relationship') return {
+  if (kind === 'relationship') {
+    const relation = item.evidence && typeof item.evidence === 'object'
+      ? item.evidence as Record<string, unknown> : {};
+    if (relation.uncertainty === 'callback-invocation-unproven-with-known-participants') return {
+      route: 'investigate-higher-order-invocation',
+      confidence: 'identified-source-participants',
+      developerDecisionRequired: false,
+      why: 'Both callback identities are known. Check receiver execution, not missing targets; source argument syntax is a separate established fact.',
+    };
+    return {
     route: 'investigate-binding-or-missing-evidence',
     confidence: 'candidate-cause',
     developerDecisionRequired: false,
     why: 'An unresolved or candidate relationship can reflect a missing static binding, dynamic dispatch, or absent evidence, not necessarily incorrect source code.',
-  };
+    };
+  }
   if (kind === 'architecture-boundary') return {
     route: 'developer-judgment-after-evidence',
     confidence: 'investigation-signal',
@@ -382,7 +407,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     basis: 'observed',
     count: group.count,
     summary: `${group.count} ${group.kind} relationship(s) remain ${group.status}.`,
-    evidence: { status: group.status, kind: group.kind, edgeIds: group.edgeIds, evidenceIds: group.evidenceIds, areas: group.areas, samples: group.samples },
+    evidence: { status: group.status, kind: group.kind, uncertainty: group.uncertainty, knownEndpointCount: group.knownEndpointCount, edgeIds: group.edgeIds, evidenceIds: group.evidenceIds, areas: group.areas, samples: group.samples },
     fixSurface: group.fixSurface,
     nextEvidence: group.nextEvidence,
   });
@@ -435,6 +460,8 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
       sourceWarnings: precisionLimits,
       // Counts are diagnostic signals, not a number of bugs or failed product features.
       unresolvedRelationshipGroups: relationships.filter(item => item.status === 'unresolved').length,
+      sourceCallbackArgumentFacts: graph.edges.filter(edge => edge.kind === 'callback-argument'
+        && edge.status === 'resolved' && edge.strategy === 'typescript-source-callback-argument').length,
       developerDefectsProvenByTheseSignals: false,
       selfImprovementBeforeBlamingSource: true,
       independentExecutionOrRuntimeProof: false,
