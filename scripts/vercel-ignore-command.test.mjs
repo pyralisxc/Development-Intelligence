@@ -40,7 +40,7 @@ test('Vercel skip check requires known history and proven absence of runtime cha
     await writeFile(join(dir, 'src', 'http.ts'), 'export const version = 2;\n');
     git('add', '.'); git('commit', '-qm', 'runtime');
     const runtime = git('rev-parse', 'HEAD');
-    await writeFile(join(dir, 'scripts', 'vercel-ignore-command.sh'), nativeScript + '\\n# changed skip policy\\n');
+    await writeFile(join(dir, 'scripts', 'vercel-ignore-command.sh'), nativeScript + '\n# changed skip policy\n');
     git('add', 'scripts/vercel-ignore-command.sh'); git('commit', '-qm', 'skip-policy change');
     const policyChange = git('rev-parse', 'HEAD');
 
