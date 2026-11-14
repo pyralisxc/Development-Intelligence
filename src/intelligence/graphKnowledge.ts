@@ -166,12 +166,12 @@ export function inspectRelationshipShape(edge: GraphEdge,
   return { status: 'valid', reason: null };
 }
 
-type CapabilityFamily = 'declarations' | 'bindings' | 'calls' | 'conditions-effects' | 'persistence';
+type CapabilityFamily = 'declarations' | 'bindings' | 'calls' | 'callback-arguments' | 'conditions-effects' | 'persistence';
 type Emission = 'supported-partial' | 'not-emitted';
-const CAPABILITIES: Record<string, Record<CapabilityFamily, Emission>> = {
+const CAPABILITIES: Record<string, Partial<Record<CapabilityFamily, Emission>>> = {
   typescript: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'supported-partial', 'conditions-effects': 'supported-partial',
+    calls: 'supported-partial', 'callback-arguments': 'supported-partial', 'conditions-effects': 'supported-partial',
     persistence: 'supported-partial',
   },
   go: {
@@ -199,7 +199,7 @@ const CAPABILITIES: Record<string, Record<CapabilityFamily, Emission>> = {
     calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'supported-partial',
   },
 };
-const FAMILIES: CapabilityFamily[] = ['declarations', 'bindings', 'calls', 'conditions-effects', 'persistence'];
+const FAMILIES: CapabilityFamily[] = ['declarations', 'bindings', 'calls', 'callback-arguments', 'conditions-effects', 'persistence'];
 function sourceLanguage(sourcePath: string): string | null {
   if (/\.(?:[cm]?[jt]sx?)$/iu.test(sourcePath)) return 'typescript';
   if (/\.go$/iu.test(sourcePath)) return 'go';

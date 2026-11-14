@@ -47,6 +47,14 @@ test('a complete Go structural file does not imply call emission or absence', ()
     ...graph, coverage: { ...graph.coverage!, files: [{ path: 'Scripts/Controller.cs', status: 'complete' }] },
   };
   assert.equal(sourceCapabilityCoverage(csharp).find(x => x.language === 'csharp' && x.family === 'calls')?.emitter, 'supported-partial');
+  assert.equal(sourceCapabilityCoverage(csharp).find(x => x.language === 'csharp' && x.family === 'callback-arguments')?.emitter, 'not-emitted');
+  const typescript: IntelligenceGraph = {
+    ...graph, coverage: { ...graph.coverage!, files: [{ path: 'src/owner.ts', status: 'complete' }] },
+  };
+  const callbacks = sourceCapabilityCoverage(typescript).find(x =>
+    x.language === 'typescript' && x.family === 'callback-arguments');
+  assert.equal(callbacks?.emitter, 'supported-partial');
+  assert.equal(callbacks?.exhaustiveForNegativeClaims, false);
 });
 test('one vocabulary is used for reach and proof, not name-pattern guesses', () => {
   assert.ok(nodeTraits('method').includes('callable'));
