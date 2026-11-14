@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { analyzeByTechnology } from '../src/intelligence/analyzers/index.js';
 import { inspectRelationshipShape, relationshipKindContract } from '../src/intelligence/graphKnowledge.js';
+import { planInvestigationQuestion } from '../src/intelligence/workbench.js';
 
 test('source callback argument facts do not establish receiver invocation', () => {
   const content = [
@@ -39,4 +40,11 @@ test('source callback argument facts do not establish receiver invocation', () =
     assert.equal(value?.runtimeObserved, false);
   }
   assert.equal(relationshipKindContract('callback-argument').realizationEligible, false);
+});
+
+
+test('ordinary callback questions select graph-native source relationships, not runtime calls', () => {
+  const plan = planInvestigationQuestion({ text: 'Which callbacks does ownerStored pass?' });
+  assert.equal(plan.lane, 'trace');
+  assert.equal(plan.proofMode, 'evidence');
 });
