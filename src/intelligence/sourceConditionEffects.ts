@@ -350,7 +350,11 @@ function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode):
     if (branch.functionId !== symbol.id || branch.runtimeObserved !== false
       || branch.conditionsAreSourceSyntaxOnly !== true
       || typeof branch.id !== 'string' || typeof branch.predicateSha256 !== 'string') return null;
-    branches.push(branch as unknown as SourceCondition);
+    // Return the public source-lens shape: graph ownership/proof metadata is
+    // real but not part of the branch data contract.
+    const { functionId: _owner, sourceOnly: _source, runtimeObserved: _runtime,
+      proofRule: _proofRule, ...sourceBranch } = branch;
+    branches.push(sourceBranch as unknown as SourceCondition);
   }
   const effects: SourceEffect[] = [];
   for (const node of effectNodes) {
@@ -360,7 +364,9 @@ function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode):
     if (effect.functionId !== symbol.id || effect.runtimeObserved !== false
       || typeof effect.expressionSha256 !== 'string'
       || !Array.isArray(effect.requiredConditions)) return null;
-    effects.push(effect as unknown as SourceEffect);
+    const { functionId: _owner, sourceOnly: _source,
+      proofRule: _proofRule, ...sourceEffect } = effect;
+    effects.push(sourceEffect as unknown as SourceEffect);
   }
   // A source guard may have multiple truth requirements. The exact requirements
   // remain owned by each effect fact; the graph's edges navigate their predicates.
