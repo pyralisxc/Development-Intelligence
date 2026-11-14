@@ -116,7 +116,7 @@ test('nested callbacks have separate source-control ownership, never parent exec
   const owned = graph.edges.filter(edge => edge.from === owner.id && edge.kind === 'has-condition');
   assert.equal(owned.length, 0);
   const effectEdges = graph.edges.filter(edge => edge.from === owner.id && edge.kind === 'has-effect');
-  assert.equal(effectEdges.length, 1, 'enclosing function retains only its own return');
+  assert.equal(effectEdges.length, 2, 'enclosing function has its own call expression and return, not callback internal returns');
   const callbackNodes = graph.nodes.filter(node => node.kind === 'source-control-summary'
     && (node.value as {functionId:string}).functionId !== owner.id);
   assert.equal(callbackNodes.length, 1);

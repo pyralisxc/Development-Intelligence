@@ -23,6 +23,7 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
       'export function leaf() { return 1; }',
       'export function target() { return leaf(); }',
       'export function caller() { return target(); }',
+      'export function guarded(owner: boolean) { if (owner) return target(); return leaf(); }',
       'export function ignore(_callback: () => number) { return 0; }',
       'export function ownerStored() { return ignore(() => 42); }',
       ''
@@ -93,6 +94,16 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     assert.ok(argument, 'ordinary questions must select the existing source argument relationship');
     const callbackEvidence = await callTool('get_evidence', { ...input, edge: argument.id }) as any;
     assert.ok(callbackEvidence.evidence.some((item: any) => item.kind === 'source-callback-argument'));
+    const compiledControl = await queryWorkbench({ ...input,
+      text: 'What does guarded do?' }) as any;
+    assert.equal(compiledControl.intent, 'source-condition-effects');
+    assert.equal(compiledControl.routing.tool, 'canonical-graph-relationships',
+      'ordinary source behavior must use already compiled graph facts');
+    assert.equal(compiledControl.result.mode, 'canonical-source-condition-effects');
+    assert.equal(compiledControl.result.coverage.branchTotal, 1);
+    assert.equal(compiledControl.result.coverage.effectTotal, 2);
+    assert.equal(compiledControl.result.proof.returnOrCallRuntimeObserved, false);
+    assert.match(compiledControl.answer, /not whether the conditions are true/);
     const ordinaryCalls = await queryWorkbench({ ...input,
       text: 'What does ownerStored call?' }) as any;
     assert.deepEqual(ordinaryCalls.routing.relationshipKinds, ['calls']);
