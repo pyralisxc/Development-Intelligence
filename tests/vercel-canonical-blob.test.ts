@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { canonicalGraphBlobPath } from '../src/intelligence/canonicalStore.js';
 import { loadSemanticAuthority, persistDerivedSemanticMeanings } from '../src/intelligence/semanticAuthorityStore.js';
 import { clearGraphCache, currentGraph, graphCacheDiagnostics, graphStatus, scanGraph } from '../src/intelligence/service.js';
-import { searchGraph, traceGraph } from '../src/intelligence/query.js';
+import { graphEvidence, searchGraph, traceGraph } from '../src/intelligence/query.js';
 import { queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
 import {
   loadCanonicalQueryArtifacts,
@@ -296,6 +296,21 @@ test('Vercel canonical hit bypasses Git checkout after process-cache eviction', 
       traceRequests.some(request => request.pathname === `/private/${canonicalGraphBlobPath(item.project)}`),
       false,
       'authoritative adaptive trace must not read the full canonical graph blob',
+    );
+
+    const evidenceRequestStart = item.blob.requests.length;
+    const pinnedEvidence = await graphEvidence({
+      project: item.project, graphId: first.working.graphId,
+      node: 'symbol:src/trace-entry.ts#function:traceEntry',
+    }) as any;
+    assert.equal(pinnedEvidence.queryPlane.mode, 'adaptive');
+    assert.equal(pinnedEvidence.queryPlane.authoritative, true);
+    assert.equal(pinnedEvidence.node.id, 'symbol:src/trace-entry.ts#function:traceEntry');
+    assert.equal(pinnedEvidence.graphId, first.working.graphId);
+    assert.equal(
+      item.blob.requests.slice(evidenceRequestStart).some(request =>
+        request.pathname === `/private/${canonicalGraphBlobPath(item.project)}`),
+      false, 'exact pinned evidence must not load the full canonical graph blob',
     );
 
     const second = await graphStatus(item.project) as any;
