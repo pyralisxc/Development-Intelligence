@@ -685,7 +685,9 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     if (ts.isCallExpression(node)) {
       const owner = functionOwner();
       const expressionText = node.expression.getText(sourceFile);
-      if (owner) {
+      // Recovered parse trees cannot establish an exact source fact.
+      const parsed = sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+      if (owner && !parsed.parseDiagnostics?.length) {
         for (const [argumentIndex, argument] of node.arguments.entries()) {
           const unwrapped = unwrap(argument) ?? argument;
           const capture = (callback: ts.ArrowFunction | ts.FunctionExpression, property: string | null): void => {

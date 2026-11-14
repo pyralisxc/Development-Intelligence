@@ -48,3 +48,14 @@ test('ordinary callback questions select graph-native source relationships, not 
   assert.equal(plan.lane, 'trace');
   assert.equal(plan.proofMode, 'evidence');
 });
+
+
+test('recovered malformed TypeScript does not produce source-proven callback argument facts', () => {
+  const result = analyzeByTechnology({
+    source: { id: 'repo:src/broken.ts', kind: 'repository-file', locator: 'src/broken.ts',
+      revision: 'a'.repeat(40), observedAt: '2026-11-14T00:00:00Z', available: true },
+    text: 'function broken() { receiver(() => 1); if (',
+    locatorBase: 'src/broken.ts',
+  });
+  assert.equal(result.resolutions.some(edge => edge.kind === 'callback-argument'), false);
+});
