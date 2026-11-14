@@ -1767,7 +1767,7 @@ export async function scopeOrientation(input: {
     if (cached) return cached;
     const file = sourceFile(node.locator);
     const area = file ? (() => {
-      const parts = file.replace(/^\\.\\//u, '').split('/');
+      const parts = (file.startsWith('./') ? file.slice(2) : file).split('/');
       return parts[0] === 'src' && parts[1] ? 'src/' + parts[1] : parts[0] ?? null;
     })() : null;
     const location = { file, area };
