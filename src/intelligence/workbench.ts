@@ -1329,7 +1329,8 @@ export function planInvestigationQuestion(input: {
   else lane = 'entity';
 
   const proofMode: InvestigationQuestionProofMode =
-    lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
+    lane === 'trace' && callbackArgumentIntent ? 'evidence'
+      : lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
       ? 'claim'
       : lane === 'evidence'
         ? 'evidence'
