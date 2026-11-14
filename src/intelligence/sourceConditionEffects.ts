@@ -318,6 +318,89 @@ export async function projectTwoHopSourceQuestion(input: {
 }
 
 
+/**
+ * Canonical graph-native projection of the SAME source condition/effect lens
+ * that now runs during graph construction. No checkout, reparse or new graph.
+ * An incomplete/mismatched record falls through to the exact source path.
+ */
+function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode): Record<string, unknown> | null {
+  const context = graphQueryContext(graph);
+  const summaryEdges = context.outgoing(symbol.id).filter(edge =>
+    edge.kind === 'has-source-control' && edge.status === 'resolved' && Boolean(edge.to));
+  if (summaryEdges.length !== 1) return null;
+  const summary = context.node(summaryEdges[0]!.to!);
+  if (summary?.kind !== 'source-control-summary' || !summary.value
+    || typeof summary.value !== 'object' || Array.isArray(summary.value)) return null;
+  const scope = summary.value as Record<string, unknown>;
+  if (scope.functionId !== symbol.id || scope.sourceOnly !== true
+    || scope.runtimeObserved !== false || typeof scope.sourceSha256 !== 'string'
+    || !Array.isArray(scope.unknownConstructs)) return null;
+  const branchNodes = context.outgoing(symbol.id).filter(edge =>
+    edge.kind === 'has-condition' && edge.status === 'resolved' && Boolean(edge.to))
+    .map(edge => context.node(edge.to!));
+  const effectNodes = context.outgoing(symbol.id).filter(edge =>
+    edge.kind === 'has-effect' && edge.status === 'resolved' && Boolean(edge.to))
+    .map(edge => context.node(edge.to!));
+  if (branchNodes.length !== scope.branchTotal || effectNodes.length !== scope.effectTotal) return null;
+  const branches: SourceCondition[] = [];
+  for (const node of branchNodes) {
+    if (node?.kind !== 'source-condition' || !node.value
+      || typeof node.value !== 'object' || Array.isArray(node.value)) return null;
+    const branch = node.value as Record<string, unknown>;
+    if (branch.functionId !== symbol.id || branch.runtimeObserved !== false
+      || branch.conditionsAreSourceSyntaxOnly !== true
+      || typeof branch.id !== 'string' || typeof branch.predicateSha256 !== 'string') return null;
+    branches.push(branch as unknown as SourceCondition);
+  }
+  const effects: SourceEffect[] = [];
+  for (const node of effectNodes) {
+    if (node?.kind !== 'source-effect' || !node.value
+      || typeof node.value !== 'object' || Array.isArray(node.value)) return null;
+    const effect = node.value as Record<string, unknown>;
+    if (effect.functionId !== symbol.id || effect.runtimeObserved !== false
+      || typeof effect.expressionSha256 !== 'string'
+      || !Array.isArray(effect.requiredConditions)) return null;
+    effects.push(effect as unknown as SourceEffect);
+  }
+  // A source guard may have multiple truth requirements. The exact requirements
+  // remain owned by each effect fact; the graph's edges navigate their predicates.
+  const branchIds = new Set(branches.map(branch => branch.id));
+  if (effects.some(effect => effect.requiredConditions.some(req => !branchIds.has(req.conditionId)))) return null;
+  branches.sort((a, b) => (a.sourceOffset ?? 0) - (b.sourceOffset ?? 0));
+  effects.sort((a, b) => (a.sourceOffset ?? 0) - (b.sourceOffset ?? 0));
+  const maxRows = MAX_PREVIEW_ROWS;
+  const truncated = branches.length > maxRows || effects.length > maxRows;
+  return {
+    status: branches.length || effects.length ? 'supported' : 'unproven',
+    mode: 'canonical-source-condition-effects',
+    reason: scope.boundedOut ? 'bounded-canonical-source-control'
+      : branches.length || effects.length ? 'canonical-source-control-graph-facts'
+        : 'no-supported-source-effects',
+    identity: {
+      project: graph.project, graphId: graph.graphId,
+      sourceRevision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
+      functionId: symbol.id, functionName: symbol.name,
+      sourcePath: canonicalPath(symbol), sourceLine: Number(/:(\d+)(?::|$)/u.exec(symbol.locator)?.[1]),
+      sourceSha256: scope.sourceSha256, lens: CONDITION_EFFECT_LENS,
+    },
+    coverage: {
+      parseDiagnostics: 0, branchTotal: branches.length, effectTotal: effects.length,
+      unknownConstructs: scope.unknownConstructs, boundedOut: scope.boundedOut,
+      completeForSupportedStatements: scope.completeForSupportedStatements,
+      presentationTruncated: truncated,
+    },
+    branches: branches.slice(0, maxRows), effects: effects.slice(0, maxRows),
+    proof: {
+      actualSourceSyntaxLocated: true, predicateSatisfiabilityProven: false,
+      returnOrCallRuntimeObserved: false,
+      conditionsAndEffectsIndependentlyVerifiedAtRuntime: false,
+      callerMayCheckSourceSpans: true, allPossibleExecutionPathsProven: false,
+      transitiveCallEffectsProven: false, testReplacementProven: false,
+      noSecondGraphOrSemanticHistory: true,
+    },
+  };
+}
+
 function projectBuiltSourceReturns(graph: IntelligenceGraph, symbol: GraphNode, question: string): Record<string, unknown> | null {
   const context = graphQueryContext(graph);
   const request = /\breturn\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+(true|false)\b/iu.exec(question);
@@ -447,6 +530,8 @@ export async function querySourceConditionEffects(input: {
   // A proved, versioned graph observation needs no new checkout or AST pass.
   const builtFact = projectBuiltSourceReturns(input.graph, symbol, input.question);
   if (builtFact) return builtFact;
+  const compiledFacts = projectBuiltSourceControl(input.graph, symbol);
+  if (compiledFacts) return compiledFacts;
   const revision = await resolveProjectRevision(input.project, 'commit:' + input.graph.repositoryRevision);
   if (revision.sha !== input.graph.repositoryRevision) throw new Error('Source condition read did not resolve exact graph revision');
   return await withResolvedProjectCheckout(revision, async checkout => {
