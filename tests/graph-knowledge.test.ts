@@ -56,6 +56,13 @@ test('one vocabulary is used for reach and proof, not name-pattern guesses', () 
   assert.equal(relationshipKindContract('calls').family, 'invocation');
   assert.equal(relationshipKindContract('calls').proof, 'bound-source');
   assert.equal(relationshipKindContract('uses_classes').proof, 'syntax');
+  for (const kind of ['imports-file', 'targets-module', 'declares-module',
+    'has-component', 'attached-to', 'child-of', 'uses-script', 'references',
+    'used-by-unity-asset']) {
+    assert.equal(relationshipKindContract(kind).realizationEligible, true,
+      kind + ' keeps source-backed technical reach without runtime implications');
+    assert.notEqual(relationshipKindContract(kind).proof, 'observation');
+  }
   assert.equal(relationshipKindContract('constructs').family, 'invocation');
   assert.equal(reachMechanism('calls'), 'execution');
   assert.equal(relationshipKindContract('same_observed_name').realizationEligible, false);

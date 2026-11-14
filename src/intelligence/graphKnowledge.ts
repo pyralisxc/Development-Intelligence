@@ -38,6 +38,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'sql-function': ['callable', 'resource'], 'sql-procedure': ['callable', 'resource'],
   'import-binding': ['symbol'], 'call-reference': ['source-site'],
   'css-class-reference': ['source-site'], 'css-selector': ['resource'],
+  'unity-object': ['container', 'resource'], 'unity-asset-guid': ['resource'],
   'component-prop-handler': ['source-site', 'boundary'],
   'component-prop-binding': ['source-site'],
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
@@ -79,13 +80,20 @@ function define(kinds: readonly string[], family: KnowledgeFamily,
     kind, family, mechanism, realizationEligible, proof, fromTraits, toTraits,
   });
 }
-define(['contains', 'declares', 'declares-module',
+define(['contains', 'declares',
   'reexports', 'member-of', 'part-of'], 'composition', 'composition-context', false, 'syntax');
 // An established state declaration is a positive technical realization fact,
 // even though it is not evidence that state was changed in a runtime session.
 define(['declares-state'], 'state', 'persistence', true, 'syntax');
-define(['imports', 'imports-file', 'targets-module', 'resolves_to',
-  'uses', 'requires'], 'reference', 'dependency', false, 'bound-source');
+define(['imports', 'resolves_to'], 'reference', 'dependency', false, 'bound-source');
+// Source-identified module/file navigation and Unity links are technical facts
+// rather than runtime evidence. Preserve their prior positive reachability.
+define(['imports-file', 'targets-module', 'uses', 'requires',
+  'describes', 'uses-script', 'references', 'used-by-unity-asset'],
+  'reference', 'dependency', true, 'bound-source');
+define(['declares-module'], 'composition', 'composition-context', true, 'syntax');
+define(['has-component', 'attached-to', 'child-of'],
+  'composition', 'composition-context', true, 'syntax');
 // Actual bound references/dependencies contributed to accepted technical
 // realization before this registry; preserve their factual reach.
 define(['references-symbol', 'depends-on', 'links_to'],
