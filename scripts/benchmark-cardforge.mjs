@@ -556,7 +556,8 @@ if (!pipelineSubject || !persistenceSubject) throw new Error('CardForge benchmar
 
 assessGraph(graph, pipelineSubject.id);
 const pipelineMotifStarted = process.hrtime.bigint();
-const pipelineMotifAssessment = assessGraph(graph, pipelineSubject.id);
+const pipelineMotifPhases = { phaseMs: {} };
+const pipelineMotifAssessment = assessGraph(graph, pipelineSubject.id, [], pipelineMotifPhases);
 const pipelineMotifElapsedMs = Number(process.hrtime.bigint() - pipelineMotifStarted) / 1_000_000;
 const pipelineMotif = pipelineMotifAssessment.orientation?.certainty?.derived?.find(item => item.kind === 'pipeline');
 const pipelineUnresolvedTransfers = graph.edges.filter(edge => edge.from === pipelineSubject.id && edge.kind === 'invokes' && edge.status === 'unresolved');
@@ -568,7 +569,7 @@ const persistenceMotifElapsedMs = Number(process.hrtime.bigint() - persistenceMo
 const persistenceMotif = persistenceMotifAssessment.orientation?.certainty?.derived?.find(item => item.kind === 'persistence-owner');
 if (!persistenceMotif || persistenceMotif.confidence !== 'high' || persistenceMotif.signals.length < 3 || persistenceMotif.proofEligible !== false) throw new Error('CardForge profile store persistence-owner motif was not conservatively derived');
 if (Math.max(pipelineMotifElapsedMs, persistenceMotifElapsedMs) > 1000) {
-  throw new Error(`CardForge motif query exceeded 1000 ms acceptance budget: pipeline ${pipelineMotifElapsedMs.toFixed(2)} ms / persistence ${persistenceMotifElapsedMs.toFixed(2)} ms`);
+  throw new Error(`CardForge motif query exceeded 1000 ms acceptance budget: pipeline ${pipelineMotifElapsedMs.toFixed(2)} ms / persistence ${persistenceMotifElapsedMs.toFixed(2)} ms; assessmentPhases=${JSON.stringify(pipelineMotifPhases.phaseMs)}`);
 }
 
 const assessmentStarted = Date.now();

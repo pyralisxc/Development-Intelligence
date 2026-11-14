@@ -7,6 +7,7 @@ import { nodeTraits, relationshipKindContract, inspectRelationshipShape,
 import { buildCanonicalQueryArtifacts, materializeQueryBuckets,
   queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
 import { reachMechanism } from '../src/intelligence/reach.js';
+import { assessGraph } from '../src/intelligence/assessment.js';
 import { mergeNodes } from '../src/intelligence/repository.js';
 
 const go: GraphNode = {
@@ -228,4 +229,20 @@ test('canonical graph construction prefers exact derived source proof while pres
   assert.deepEqual(mergeNodes([equallyGrounded, base]).nodes[0]?.value,
     contested.nodes[0]?.value,
     'tie-breaking a contested fact must be deterministic, not evidence-order dependent');
+});
+
+
+test('assessment phase diagnostics remain request-local and do not alter semantic results', () => {
+  const graph = specimen();
+  const profile = { phaseMs: {} as Record<string, number> };
+  const normal = assessGraph(graph, go.id);
+  const timed = assessGraph(graph, go.id, [], profile);
+  assert.deepEqual(timed, normal);
+  for (const phase of ['subjectAndCandidates', 'claimsTraversalAndReach',
+    'auditAndCoverage', 'candidateHypotheses', 'orientationAndMotifs']) {
+    assert.ok(Number.isFinite(profile.phaseMs[phase]) && profile.phaseMs[phase]! >= 0,
+      'assessment must expose nonnegative stage ' + phase);
+  }
+  assert.equal(JSON.stringify(timed).includes('assessmentPhases'), false,
+    'timing receipts cannot become semantic results');
 });

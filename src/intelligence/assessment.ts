@@ -365,7 +365,20 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
   return findings.sort((a, b) => a.ruleId.localeCompare(b.ruleId) || a.id.localeCompare(b.id));
 }
 
-export function assessGraph(graph: IntelligenceGraph, question: string, requiredFacets: RealizationFacet[] = []): Record<string, unknown> {
+/** Optional request-local benchmark stages; never persisted graph authority. */
+export interface AssessmentPhaseDiagnostics {
+  phaseMs: Record<string, number>;
+}
+export function assessGraph(graph: IntelligenceGraph, question: string,
+  requiredFacets: RealizationFacet[] = [],
+  diagnostics?: AssessmentPhaseDiagnostics): Record<string, unknown> {
+  let phaseStart = diagnostics ? performance.now() : 0;
+  const markPhase = (phase: string): void => {
+    if (!diagnostics) return;
+    const now = performance.now();
+    diagnostics.phaseMs[phase] = Number((now - phaseStart).toFixed(3));
+    phaseStart = now;
+  };
   // Caller-owned realization facet expectations retain their existing assessment
   // path; source-reference proof alone cannot establish those facets.
   const testQuestion = requiredFacets.length ? null : parseTestSourceQuestion(question);
@@ -490,6 +503,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
         ? semanticRoots[0]
         : undefined;
   const ambiguous = matches.length > 1 && !selected;
+  markPhase('subjectAndCandidates');
   const claims: IntelligenceClaim[] = [];
   let realization: Record<string, unknown> | null = null;
   let reach: ReturnType<typeof projectTypedReach> | null = null;
@@ -581,6 +595,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
     }
   }
 
+  markPhase('claimsTraversalAndReach');
   const globalAudit = mode === 'audit' && (!subject || /^(?:all|global|graph|project|repository)$/u.test(searchableText(subject)));
   const auditNeighborhood = selected && mode === 'audit' ? resolvedNeighborhood(graph, selected, 2) : null;
   const findingScope = auditNeighborhood ? new Set(auditNeighborhood.nodes.map(node => node.id)) : undefined;
@@ -592,6 +607,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   const findingSummary = summarizeFindings(graph, findings, selected && auditNeighborhood
     ? { rootId: selected.id, resolvedDepth: 2, nodeCount: auditNeighborhood.nodes.length }
     : null);
+  markPhase('auditAndCoverage');
   const hypothesisScope = globalAudit
     ? undefined
     : auditNeighborhood
@@ -602,7 +618,9 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
           ? new Set([selected.id])
           : new Set<string>();
   const hypotheses = candidateHypotheses(graph, hypothesisScope);
+  markPhase('candidateHypotheses');
   const orientation = projectOrientation(graph, selected, matches, ambiguous, claims);
+  markPhase('orientationAndMotifs');
   return {
     project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
     question, mode, interpretedSubject: subject || null, ambiguous, candidates: matches.map(node => ({ id: node.id, name: node.name ?? node.id, kind: node.kind })),
