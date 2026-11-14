@@ -43,12 +43,17 @@ test('a complete Go structural file does not imply call emission or absence', ()
   assert.equal(calls?.completeFiles, 1);
   assert.equal(calls?.exhaustiveForNegativeClaims, false);
   assert.equal(graph.edges.length, 0);
+  const csharp: IntelligenceGraph = {
+    ...graph, coverage: { ...graph.coverage!, files: [{ path: 'Scripts/Controller.cs', status: 'complete' }] },
+  };
+  assert.equal(sourceCapabilityCoverage(csharp).find(x => x.language === 'csharp' && x.family === 'calls')?.emitter, 'supported-partial');
 });
 test('one vocabulary is used for reach and proof, not name-pattern guesses', () => {
   assert.ok(nodeTraits('method').includes('callable'));
   assert.ok(nodeKindsForFacet('implementation').includes('method'));
   assert.equal(relationshipKindContract('calls').family, 'invocation');
   assert.equal(relationshipKindContract('calls').proof, 'bound-source');
+  assert.equal(relationshipKindContract('constructs').family, 'invocation');
   assert.equal(reachMechanism('calls'), 'execution');
   assert.equal(relationshipKindContract('same_observed_name').realizationEligible, false);
   assert.equal(relationshipKindContract('connected-to').realizationEligible, true);

@@ -34,6 +34,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   class: ['container', 'symbol'], struct: ['container', 'symbol'],
   interface: ['symbol'], type: ['symbol'], declaration: ['symbol'],
   function: ['callable', 'container', 'symbol'], method: ['callable', 'container', 'symbol'],
+  constructor: ['callable', 'symbol'],
   'sql-function': ['callable', 'resource'], 'sql-procedure': ['callable', 'resource'],
   'import-binding': ['symbol'], 'call-reference': ['source-site'],
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
@@ -82,7 +83,7 @@ define(['imports', 'imports-file', 'targets-module', 'references-symbol',
 define(['connected-to'], 'reference', 'dependency', true, 'bound-source');
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
-  'automated-by'], 'invocation', 'execution', true, 'bound-source');
+  'automated-by', 'constructs'], 'invocation', 'execution', true, 'bound-source');
 define(['try-returns'], 'effect', 'execution', false, 'source-conditional',
   ['callable'], ['source-site']);
 define(['catch-returns'], 'effect', 'execution', false, 'source-conditional',
@@ -154,7 +155,7 @@ const CAPABILITIES: Record<string, Record<CapabilityFamily, Emission>> = {
   },
   csharp: {
     declarations: 'supported-partial', bindings: 'supported-partial',
-    calls: 'not-emitted', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
+    calls: 'supported-partial', 'conditions-effects': 'not-emitted', persistence: 'not-emitted',
   },
   python: {
     declarations: 'supported-partial', bindings: 'supported-partial',
