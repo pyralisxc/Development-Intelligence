@@ -129,3 +129,26 @@ test('malformed TypeScript cannot become a source-proven graph fact', () => {
   assert.equal(graph.nodes.filter(node => node.kind === 'source-control-summary').length, 0);
   assert.equal(graph.edges.filter(edge => edge.kind === 'has-effect').length, 0);
 });
+
+
+test('a two-hop question composes built source premises without reopening Git', async () => {
+  const source = [
+    'export function callee(mode: boolean) { if (mode) return true; return false; }',
+    'export function middleware() { if (ready) return callee(true); return false; }',
+  ].join('\n');
+  const { graph } = specimen(source);
+  const resolved = graph.edges.filter(edge => edge.kind === 'calls'
+    && edge.status === 'resolved' && edge.from?.includes('function:middleware'));
+  assert.ok(resolved.some(edge => edge.to?.includes('function:callee')),
+    'the two-hop question must begin with a real resolved source-call relationship');
+  const result = await querySourceConditionEffects({
+    graph, project: 'fixture', question: 'What happens when middleware calls callee?',
+  }) as any;
+  assert.equal(result.mode, 'canonical-source-two-hop-conditions');
+  assert.equal(result.timing.sourceReadMs, 0);
+  assert.equal(result.timing.sourceLensMs, 0);
+  assert.equal(result.timing.sourceCheckoutRequired, false);
+  assert.equal(result.proof.runtimeExecutionObserved, false);
+  assert.equal(result.proof.jointPredicateSatisfiabilityProven, false);
+  assert.equal(result.proof.canonicalGraphUnaffected, true);
+});

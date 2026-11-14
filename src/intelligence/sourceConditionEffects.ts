@@ -219,21 +219,36 @@ export async function projectTwoHopSourceQuestion(input: {
     return unavailable('source-coverage-or-language-incomplete', {
       callerId: caller.node.id, calleeId: callee.id });
   }
-  const readStarted = performance.now();
-  const texts = await Promise.all(paths.map(p => input.readSource(p!)));
-  const sourceReadMs = performance.now() - readStarted;
-  if (texts.some(v => !v || v.includes('\0'))) {
-    return unavailable('exact-source-unavailable', { callerId: caller.node.id,
-      calleeId: callee.id });
+  // Both callables may already carry the exact same AST facts in canonical W.
+  // If so, compose those facts without resolving Git, rereading source, or
+  // duplicating source parsing in the question path. Older graphs still work.
+  const compiledCaller = projectBuiltSourceControl(graph, caller.node);
+  const compiledCallee = projectBuiltSourceControl(graph, callee);
+  const compiled = compiledCaller?.status === 'supported' && compiledCallee?.status === 'supported';
+  let sourceReadMs = 0;
+  let lensMs = 0;
+  let callerLens: Record<string, unknown>;
+  let calleeLens: Record<string, unknown>;
+  if (compiled) {
+    callerLens = compiledCaller!;
+    calleeLens = compiledCallee!;
+  } else {
+    const readStarted = performance.now();
+    const texts = await Promise.all(paths.map(p => input.readSource(p!)));
+    sourceReadMs = performance.now() - readStarted;
+    if (texts.some(v => !v || v.includes('\0'))) {
+      return unavailable('exact-source-unavailable', { callerId: caller.node.id,
+        calleeId: callee.id });
+    }
+    const lensStarted = performance.now();
+    callerLens = projectSourceConditionEffects({
+      graph, sourcePath: callerPath!, symbol: caller.node, source: texts[0]!,
+    });
+    calleeLens = projectSourceConditionEffects({
+      graph, sourcePath: calleePath!, symbol: callee, source: texts[1]!,
+    });
+    lensMs = performance.now() - lensStarted;
   }
-  const lensStarted = performance.now();
-  const callerLens = projectSourceConditionEffects({
-    graph, sourcePath: callerPath!, symbol: caller.node, source: texts[0]!,
-  });
-  const calleeLens = projectSourceConditionEffects({
-    graph, sourcePath: calleePath!, symbol: callee, source: texts[1]!,
-  });
-  const lensMs = performance.now() - lensStarted;
   if (callerLens.status !== 'supported' || calleeLens.status !== 'supported') {
     return unavailable('source-lens-unavailable', { callerId: caller.node.id,
       calleeId: callee.id });
@@ -291,7 +306,8 @@ export async function projectTwoHopSourceQuestion(input: {
     || !(callerLens.coverage as {completeForSupportedStatements:boolean}).completeForSupportedStatements
     || !(calleeLens.coverage as {completeForSupportedStatements:boolean}).completeForSupportedStatements;
   return {
-    ...base, status: qualified ? 'supported' : 'unproven',
+    ...base, mode: compiled ? 'canonical-source-two-hop-conditions' : base.mode,
+    status: qualified ? 'supported' : 'unproven',
     reason: qualified ? 'exact-two-hop-source-conditions'
       : Object.keys(reasons)[0] ?? 'no-composable-direct-return-call',
     identity: { project: graph.project, graphId: graph.graphId,
@@ -484,8 +500,22 @@ export async function querySourceConditionEffects(input: {
       return { status: 'unproven', reason: 'graph-missing-exact-revision',
         project: input.project, graphId: input.graph.graphId, paths: [] };
     }
-    // Source acquisition belongs to the question path, not graph construction.
-    // Keep it separate from the pure already-built-graph projection measurements.
+    // A graph with independently compiled caller and callee control facts can
+    // compose their conditions immediately. Fail-open to exact Git only when
+    // the selected revision's graph cannot supply both source lenses.
+    const builtPair = await projectTwoHopSourceQuestion({
+      graph: input.graph, project: input.project, question: input.question,
+      ...(input.scope ? { scope: input.scope } : {}),
+      readSource: async () => null,
+    });
+    if (builtPair?.mode === 'canonical-source-two-hop-conditions') {
+      return { ...builtPair, timing: {
+        ...(builtPair.timing as Record<string, unknown>),
+        graphConstructionIncluded: false, sourceCheckoutRequired: false,
+      } };
+    }
+    // Older snapshots and unsupported paths retain exact Git source analysis.
+    // Keep this separate from pure graph-only projection measurements.
     const started = performance.now();
     const revision = await resolveProjectRevision(input.project,
       'commit:' + input.graph.repositoryRevision);
@@ -601,7 +631,8 @@ export function sourceConditionsAnswer(result: Record<string, unknown>): string 
       + 'branch feasibility, transaction completion, and runtime execution '
       + 'are not established by these source declarations.';
   }
-  if (result.mode === 'two-hop-conditional-source') {
+  if (result.mode === 'two-hop-conditional-source'
+    || result.mode === 'canonical-source-two-hop-conditions') {
     const identity = result.identity as { functionName: string; calleeName: string } | undefined;
     const summary = result.counts as { qualified: number; rejected: number;
       omitted: number; incomplete: boolean } | undefined;
