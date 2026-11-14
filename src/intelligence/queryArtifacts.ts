@@ -357,6 +357,43 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
   };
 }
 
+/**
+ * Exact graph identities select canonical source buckets without a broad
+ * lexical search. Legacy query generations still have node/edge identities
+ * even when direct evidence-ID addressing was not yet published.
+ * A miss means only "not index-addressable", never "fact does not exist".
+ */
+export function exactEvidenceQueryBuckets(
+  index: Pick<CanonicalQueryIndexArtifact, 'nodeSearch' | 'edgeSearch' | 'evidenceBucketById'>,
+  input: { node?: string; edge?: string; evidenceIds?: readonly string[] },
+): string[] | null {
+  const buckets = new Set<string>();
+  if (input.node) {
+    const found = index.nodeSearch.find(record => record[1] === input.node);
+    if (!found) return null;
+    buckets.add(found[0]);
+  }
+  if (input.edge) {
+    const found = index.edgeSearch.find(record => record[1] === input.edge);
+    if (!found) return null;
+    for (let i = 0; i < found[0].length; i += 2) {
+      const bucket = found[0].slice(i, i + 2);
+      if (!BUCKET_KEYS.includes(bucket)) return null;
+      buckets.add(bucket);
+    }
+  }
+  if (input.evidenceIds?.length) {
+    if (!index.evidenceBucketById) return null;
+    const evidenceBuckets = new Map(index.evidenceBucketById);
+    for (const id of input.evidenceIds) {
+      const bucket = evidenceBuckets.get(id);
+      if (!bucket) return null;
+      buckets.add(bucket);
+    }
+  }
+  return [...buckets].sort();
+}
+
 export function populatedQueryBuckets(index: CanonicalQueryIndexArtifact): string[] {
   return BUCKET_KEYS.filter(bucket => {
     const summary = index.buckets[bucket];

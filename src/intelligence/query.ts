@@ -8,6 +8,7 @@ import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 import { normalizeName } from './model.js';
 import { deriveQueryCorrelations } from './resolver.js';
+import { exactEvidenceQueryBuckets } from './queryArtifacts.js';
 import { observedRelationshipContracts, sourceCapabilityCoverage } from './graphKnowledge.js';
 
 function nodeText(node: GraphNode): string {
@@ -1301,29 +1302,10 @@ async function indexedGraphEvidence(input: {
   const loaded = await loadCurrentQueryArtifacts(input.project, [], input.graphId).catch(() => null);
   if (!loaded) return null;
   if (loaded.state !== 'hit' || !loaded.index || !loaded.pointer
-    || !Array.isArray(loaded.index.evidenceBucketById)
     || !queryArtifactEnvelopeComplete(loaded.index)) return null;
   const index = loaded.index;
-  const buckets = new Set<string>();
-  if (input.node) {
-    const record = index.nodeSearch.find(row => row[1] === input.node);
-    if (!record) return null; // Fuzzy node selection requires real ambiguity resolution.
-    buckets.add(record[0]);
-  }
-  if (input.edge) {
-    const record = index.edgeSearch.find(row => row[1] === input.edge);
-    if (!record) return null;
-    for (let offset = 0; offset < record[0].length; offset += 2) {
-      buckets.add(record[0].slice(offset, offset + 2));
-    }
-  }
-  const evidenceBuckets = new Map(index.evidenceBucketById);
-  for (const id of input.evidenceIds ?? []) {
-    const bucket = evidenceBuckets.get(id);
-    if (!bucket) return null;
-    buckets.add(bucket);
-  }
-  if (!buckets.size || buckets.size > 32) return null;
+  const buckets = exactEvidenceQueryBuckets(index, input);
+  if (!buckets?.length || buckets.length > 32) return null;
   const detail = await loadCurrentQueryArtifactBuckets(loaded, [...buckets]);
   if (detail.state !== 'hit' || !detail.index || detail.index.graphId !== index.graphId
     || detail.index.revision !== index.revision) return null;
@@ -1347,7 +1329,7 @@ async function indexedGraphEvidence(input: {
     node: node ?? null, edge: edge ?? null,
     evidence: [...ids].map(id => evidence.get(id)!),
     queryPlane: { mode: 'adaptive', authoritative: true,
-      selectedBuckets: buckets.size, bucketIds: [...buckets].sort(),
+      selectedBuckets: buckets.length, bucketIds: buckets,
       loadMs: loaded.loadMs + detail.loadMs,
       reason: 'exact-identity-evidence-index-no-full-canonical-materialization' },
   };

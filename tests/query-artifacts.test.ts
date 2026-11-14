@@ -4,6 +4,7 @@ import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
 import {
   buildCanonicalQueryArtifacts,
   candidateQueryBuckets,
+  exactEvidenceQueryBuckets,
   materializeQueryBuckets,
   queryBucketForSource,
 } from '../src/intelligence/queryArtifacts.js';
@@ -160,4 +161,31 @@ test('global query index preserves search_graph coverage and explicit conflict e
   assert.equal(artifacts.index.coverage.completeFiles, value.coverage?.completeFiles);
   assert.equal(artifacts.index.coverage.unsupportedFiles, value.coverage?.unsupportedFiles);
   assert.deepEqual(artifacts.index.explicitValueConflicts, value.explicitValueConflicts);
+});
+
+
+test('exact evidence queries use existing canonical indexes without a new-generation map', () => {
+  const value = graph();
+  value.evidence.push({
+    id: 'proof:panel', sourceId: 'repo:src/a.ts', kind: 'fixture',
+    locator: 'src/a.ts:1',
+  });
+  value.nodes[0]!.evidenceIds = ['proof:panel'];
+  value.edges[0]!.evidenceIds = ['proof:panel'];
+  const artifacts = buildCanonicalQueryArtifacts(value);
+  const oldGeneration = { ...artifacts.index, evidenceBucketById: undefined };
+  const panelBucket = queryBucketForSource('repo:src/a.ts');
+  const otherBucket = queryBucketForSource('repo:src/other.ts');
+  assert.deepEqual(exactEvidenceQueryBuckets(oldGeneration, { node: 'node:panel' }), [panelBucket]);
+  assert.deepEqual(
+    exactEvidenceQueryBuckets(oldGeneration, { edge: 'edge:panel-other' }),
+    [...new Set([panelBucket, otherBucket])].sort(),
+  );
+  assert.equal(exactEvidenceQueryBuckets(oldGeneration, { evidenceIds: ['proof:panel'] }), null,
+    'an old direct evidence-ID query cannot imply a negative; it must use canonical fallback');
+  assert.deepEqual(
+    exactEvidenceQueryBuckets(artifacts.index, { evidenceIds: ['proof:panel'] }),
+    [panelBucket],
+  );
+  assert.equal(exactEvidenceQueryBuckets(artifacts.index, { node: 'missing-id' }), null);
 });
