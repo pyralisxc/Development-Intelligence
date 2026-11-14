@@ -25,6 +25,7 @@ export function buildSourceConditionGraphFacts(input: {
     identity: [sourceId, 'source-control-summary', owner.id],
     sourceId, kind: 'source-control-summary', locator: owner.locator,
     name: 'Source control analysis of ' + (owner.name ?? owner.id),
+    raw: 'source control summary for ' + (owner.name ?? owner.id),
     value: {
       functionId: owner.id, sourceSha256,
       branchTotal: lens.branches.length, effectTotal: lens.effects.length,
@@ -58,6 +59,7 @@ export function buildSourceConditionGraphFacts(input: {
       identity: [sourceId, owner.id, 'source-condition', offset],
       sourceId, kind: 'source-condition', locator: at,
       name: 'Condition in ' + (owner.name ?? owner.id),
+      raw: branch.predicate,
       value: { ...branch, functionId: owner.id, sourceOnly: true,
         runtimeObserved: false, proofRule, sourceSha256,
         sourceTruth: {
@@ -92,6 +94,7 @@ export function buildSourceConditionGraphFacts(input: {
       identity: [sourceId, owner.id, 'source-effect', offset, effect.kind],
       sourceId, kind: 'source-effect', locator: at,
       name: 'Source ' + effect.kind + ' in ' + (owner.name ?? owner.id),
+      raw: effect.expression,
       value: { ...effect, functionId: owner.id, sourceOnly: true,
         proofRule, sourceSha256,
         // The condition/effect occurrence and its necessary source premises

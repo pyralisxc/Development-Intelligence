@@ -82,6 +82,9 @@ if (canonicalCold.observability?.persistence?.saveState !== 'stored' || !canonic
     + ', buildStrategy=' + String(build?.strategy ?? 'not-observed')
     + ', graphBuildMs=' + String(build?.graphBuildMs ?? 'not-observed')
     + ', queryArtifactState=' + String(observation.queryArtifacts?.state ?? 'not-observed')
+    + ', persistenceFailureClass='
+    + (String(persistence.error ?? '').startsWith('Canonical graph record exceeds the bounded storage size')
+      ? 'canonical-size-budget' : persistence.saveState === 'error' ? 'other-persistence-error' : 'none')
     + ']');
 }
 const canonicalHitDurations = [];

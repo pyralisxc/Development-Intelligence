@@ -143,6 +143,15 @@ test('graph-built derived execution is an established conditional fact, with exa
   assert.equal(out.coverage.effectTotal, 3);
   assert.equal(out.proof.sourceDerivedExecution.status, 'established');
   assert.equal(out.proof.sourceDerivedExecution.establishedEffectFacts, 3);
+  const facts = built.nodes.filter(node =>
+    node.kind === 'source-condition' || node.kind === 'source-effect');
+  assert.ok(facts.length >= 5);
+  assert.ok(facts.every(node => typeof node.raw === 'string'
+    && node.raw.length <= 220
+    && !node.raw.includes('"derivedExecution"')),
+    'searchable raw text must not reserialize the full evidence/proof value');
+  assert.ok(facts.every(node => node.value && typeof node.value === 'object'),
+    'compact raw text must preserve the rich canonical structured source fact');
   assert.equal(out.proof.sourceDerivedExecution.runtimeWitnessRequiredForSourceFact, false);
   assert.equal(out.proof.sourceDerivedExecution.runtimeObserved, false);
   assert.equal(out.proof.predicateSatisfiabilityProven, false);
