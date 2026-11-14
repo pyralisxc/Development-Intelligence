@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
 import { bootstrapSemanticCandidates } from '../src/intelligence/semanticBootstrap.js';
+import { deriveMotifs, scopedMotifReadContext } from '../src/intelligence/motifs.js';
 
 function node(id: string, kind: string, locator: string, name?: string, layer: 'structural' | 'representation' = 'structural'): GraphNode {
   return {
@@ -641,4 +642,28 @@ test('scoped motif retrieval is deterministic without manufacturing product evid
   const first = bootstrapSemanticCandidates(source, { limit: 20 });
   const second = bootstrapSemanticCandidates(source, { limit: 20 });
   assert.deepEqual(second.candidates, first.candidates);
+});
+
+
+test('scoped canonical motif adjacency exactly preserves full-index motif proof', () => {
+  const input = graph();
+  const root = node('file:bootstrap', 'file', 'src/authentication/bootstrap.ts', 'bootstrap');
+  const selected = node('symbol:bootstrap', 'function', 'src/authentication/bootstrap.ts:2', 'bootstrap');
+  const configured = node('symbol:configure', 'function', 'src/authentication/bootstrap.ts:3', 'configure');
+  const repo = node('symbol:save', 'function', 'src/authentication/bootstrap.ts:4', 'save');
+  input.nodes.push(root, selected, configured, repo);
+  input.edges.push(
+    edge('bootstrap-file', root.id, selected.id, 'contains'),
+    edge('bootstrap-function-member', selected.id, configured.id, 'contains'),
+    edge('bootstrap-repository-member', selected.id, repo.id, 'contains'),
+    edge('bootstrap-file-import', root.id, 'symbol:session', 'imports'),
+    edge('bootstrap-file-import-two', root.id, 'symbol:login', 'imports'),
+    edge('bootstrap-calls', selected.id, repo.id, 'calls'),
+  );
+  const scoped = scopedMotifReadContext(input, [selected.id, root.id]);
+  const source = deriveMotifs(input, selected);
+  assert.ok(source.some(item => item.kind === 'composition-root'));
+  assert.deepEqual(deriveMotifs(input, selected, scoped), source,
+    'scoping may reduce index allocation, not change motif interpretation or proof');
+  assert.deepEqual(deriveMotifs(input, root, scoped), deriveMotifs(input, root));
 });
