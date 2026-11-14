@@ -263,13 +263,17 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   const limit = Math.max(1, Math.min(options.limit ?? 12, operationalLimit));
   const groups = new Map<string, CandidateGroup>();
   const nodeScope = new Map<string, string>();
+  const sourceOnlyNodeIds = new Set<string>();
 
   for (const node of graph.nodes) {
     if ((node.layer ?? 'structural') === 'semantic') continue;
     // Source conditions and effects are real technical proof premises, not
     // independent product-capability votes. Their graph presence must not
     // inflate/rename semantic candidates or trigger repeated semantic scoring.
-    if (nodeTraits(node.kind).includes('source-control')) continue;
+    if (nodeTraits(node.kind).includes('source-control')) {
+      sourceOnlyNodeIds.add(node.id);
+      continue;
+    }
     if (node.tags?.includes('operational') || node.tags?.includes('source-unavailable')) continue;
     const file = sourceFile(node.locator);
     if (!file) continue;
@@ -293,7 +297,9 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     if (edge.status !== 'resolved') continue;
     // Keep source-only path requirements out of semantic proposal topology.
     // This is a typed graph contract, not a project- or name-based exception.
-    if (relationshipKindContract(edge.kind).proof === 'source-conditional') continue;
+    if (relationshipKindContract(edge.kind).proof === 'source-conditional'
+      || (edge.from && sourceOnlyNodeIds.has(edge.from))
+      || (edge.to && sourceOnlyNodeIds.has(edge.to))) continue;
     const scopes: string[] = [];
     if (edge.from) {
       const scope = nodeScope.get(edge.from);

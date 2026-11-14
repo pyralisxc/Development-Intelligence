@@ -622,6 +622,9 @@ test('source-control graph growth does not manufacture product semantic candidat
     edge('condition-source', 'symbol:session', 'condition:session', 'has-condition'),
     edge('effect-source', 'symbol:session', 'effect:session', 'has-effect'),
     edge('guard-source', 'effect:session', 'condition:session', 'requires-condition'),
+    edge('contains-summary', 'file:auth-session', 'control:session', 'contains'),
+    edge('contains-condition', 'file:auth-session', 'condition:session', 'contains'),
+    edge('contains-effect', 'file:auth-session', 'effect:session', 'contains'),
   );
   const after = bootstrapSemanticCandidates(base, { limit: 20 });
   const keep = (items: typeof before.candidates) => items.map(c => ({
@@ -633,7 +636,7 @@ test('source-control graph growth does not manufacture product semantic candidat
   assert.deepEqual(keep(after.candidates), keep(before.candidates),
     'independently source-proven control facts must be available in W without becoming product intent');
   assert.equal(base.nodes.length, 11, 'the facts remain available in the canonical source graph');
-  assert.equal(base.edges.length, 10, 'source guard links remain available to technical graph queries');
+  assert.equal(base.edges.length, 13, 'source guard and containment links remain available for technical graph queries');
 });
 
 
