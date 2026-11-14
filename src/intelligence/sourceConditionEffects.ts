@@ -354,10 +354,27 @@ function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode):
   const branchNodes = context.outgoing(symbol.id).filter(edge =>
     edge.kind === 'has-condition' && edge.status === 'resolved' && Boolean(edge.to))
     .map(edge => context.node(edge.to!));
+  // The full competing evidence remains in the canonical graph. Do not
+  // silently turn two equally grounded contradictory source facts into a
+  // supported answer based on insertion order; fall back to exact source.
+  if (summary.tags?.includes('source-fact-contested')
+    || branchNodes.some(node => node?.tags?.includes('source-fact-contested'))) return null;
   const effectNodes = context.outgoing(symbol.id).filter(edge =>
     edge.kind === 'has-effect' && edge.status === 'resolved' && Boolean(edge.to))
     .map(edge => context.node(edge.to!));
-  if (branchNodes.length !== scope.branchTotal || effectNodes.length !== scope.effectTotal) return null;
+  if (branchNodes.length !== scope.branchTotal || effectNodes.length !== scope.effectTotal
+    || effectNodes.some(node => node?.tags?.includes('source-fact-contested'))) return null;
+  const derivedExecutionEstablished = effectNodes.filter(node => {
+    const v = node?.value;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    const conclusion = (v as Record<string, unknown>).derivedExecution;
+    return Boolean(conclusion && typeof conclusion === 'object'
+      && (conclusion as Record<string, unknown>).status === 'established');
+  }).length;
+  const conflictedIds = new Set([...branchNodes, ...effectNodes]
+    .filter((node): node is GraphNode => Boolean(node)).map(node => node.id));
+  const disagreements = graph.explicitValueConflicts.filter(item =>
+    conflictedIds.has(item.entityId) && item.key === 'value');
   const branches: SourceCondition[] = [];
   for (const node of branchNodes) {
     if (node?.kind !== 'source-condition' || !node.value
@@ -369,7 +386,7 @@ function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode):
     // Return the public source-lens shape: graph ownership/proof metadata is
     // real but not part of the branch data contract.
     const { functionId: _owner, sourceOnly: _source, runtimeObserved: _runtime,
-      proofRule: _proofRule, ...sourceBranch } = branch;
+      proofRule: _proofRule, sourceTruth: _sourceTruth, sourceSha256: _sha, ...sourceBranch } = branch;
     branches.push(sourceBranch as unknown as SourceCondition);
   }
   const effects: SourceEffect[] = [];
@@ -381,7 +398,8 @@ function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode):
       || typeof effect.expressionSha256 !== 'string'
       || !Array.isArray(effect.requiredConditions)) return null;
     const { functionId: _owner, sourceOnly: _source,
-      proofRule: _proofRule, ...sourceEffect } = effect;
+      proofRule: _proofRule, derivedExecution: _derived, sourceSha256: _sha,
+      ...sourceEffect } = effect;
     effects.push(sourceEffect as unknown as SourceEffect);
   }
   // A source guard may have multiple truth requirements. The exact requirements
@@ -419,6 +437,21 @@ function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode):
       callerMayCheckSourceSpans: true, allPossibleExecutionPathsProven: false,
       transitiveCallEffectsProven: false, testReplacementProven: false,
       noSecondGraphOrSemanticHistory: true,
+      // Positive source-derived execution is a fact *about this code path*,
+      // not a runtime-witness claim. Stronger eligible evidence may corroborate
+      // or supersede a weaker claim without erasing the disagreement.
+      sourceDerivedExecution: {
+        status: derivedExecutionEstablished === effects.length && effects.length
+          ? 'established' : 'partially-established',
+        establishedEffectFacts: derivedExecutionEstablished,
+        totalEffectFacts: effects.length,
+        scope: 'selected-exact-source-and-necessary-guard-requirements',
+        runtimeWitnessRequiredForSourceFact: false,
+        runtimeObserved: false,
+        disagreements: disagreements.map(item => ({
+          entityId: item.entityId, resolution: item.resolution ?? 'contested',
+        })),
+      },
     },
   };
 }
