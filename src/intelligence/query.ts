@@ -498,7 +498,13 @@ async function adaptiveCurrentSearch(
     return { result: null, reason: 'broad-empty-query-requires-full-canonical', loadMs: 0, selectedBuckets: 0 };
   }
 
-  const loaded = await loadCurrentQueryArtifacts(input.project, queries, input.graphId);
+  // A historic pinned graph remains readable even if the current branch or
+  // current query pointer is unavailable. Selection must fall back to its
+  // exact source/revision graph rather than failing in the optimization plane.
+  const loaded = input.graphId
+    ? await loadCurrentQueryArtifacts(input.project, queries, input.graphId).catch(() => null)
+    : await loadCurrentQueryArtifacts(input.project, queries);
+  if (!loaded) return { result: null, reason: 'pinned-current-query-generation-unavailable', loadMs: 0, selectedBuckets: 0 };
   if (loaded.state !== 'hit' || !loaded.index) {
     return {
       result: null,
@@ -792,7 +798,10 @@ async function adaptiveCurrentTrace(
     return { result: null, reason: 'explicit-ref-requires-exact-source-canonical', loadMs: 0, selectedBuckets: 0 };
   }
 
-  const loaded = await loadCurrentQueryArtifacts(input.project, [query], input.graphId);
+  const loaded = input.graphId
+    ? await loadCurrentQueryArtifacts(input.project, [query], input.graphId).catch(() => null)
+    : await loadCurrentQueryArtifacts(input.project, [query]);
+  if (!loaded) return { result: null, reason: 'pinned-current-query-generation-unavailable', loadMs: 0, selectedBuckets: 0 };
   if (loaded.state !== 'hit' || !loaded.index || !loaded.pointer) {
     return {
       result: null,
@@ -1289,7 +1298,8 @@ async function indexedGraphEvidence(input: {
   node?: string; edge?: string; evidenceIds?: string[];
 }): Promise<Record<string, unknown> | null> {
   if (input.ref || !(input.node || input.edge || input.evidenceIds?.length)) return null;
-  const loaded = await loadCurrentQueryArtifacts(input.project, [], input.graphId);
+  const loaded = await loadCurrentQueryArtifacts(input.project, [], input.graphId).catch(() => null);
+  if (!loaded) return null;
   if (loaded.state !== 'hit' || !loaded.index || !loaded.pointer
     || !Array.isArray(loaded.index.evidenceBucketById)
     || !queryArtifactEnvelopeComplete(loaded.index)) return null;
