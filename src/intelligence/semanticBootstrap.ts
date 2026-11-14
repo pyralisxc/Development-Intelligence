@@ -272,6 +272,9 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   const groups = new Map<string, CandidateGroup>();
   const nodeScope = new Map<string, string>();
   const sourceOnlyNodeIds = new Set<string>();
+  // Every observation in one file shares the same path-to-scope decision.
+  // This lives only for this pure projection, not in graph authority.
+  const scopeByFile = new Map<string, ReturnType<typeof scopeForPath>>();
 
   for (const node of graph.nodes) {
     if ((node.layer ?? 'structural') === 'semantic') continue;
@@ -285,7 +288,11 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     if (node.tags?.includes('operational') || node.tags?.includes('source-unavailable')) continue;
     const file = sourceFile(node.locator);
     if (!file) continue;
-    const scoped = scopeForPath(file);
+    let scoped = scopeByFile.get(file);
+    if (scoped === undefined && !scopeByFile.has(file)) {
+      scoped = scopeForPath(file);
+      scopeByFile.set(file, scoped);
+    }
     if (!scoped) continue;
     const current = groups.get(scoped.scope) ?? {
       scope: scoped.scope,
