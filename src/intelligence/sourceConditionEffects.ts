@@ -373,7 +373,7 @@ function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode):
   }).length;
   const conflictedIds = new Set([...branchNodes, ...effectNodes]
     .filter((node): node is GraphNode => Boolean(node)).map(node => node.id));
-  const disagreements = graph.explicitValueConflicts.filter(item =>
+  const disagreements = (graph.explicitValueConflicts ?? []).filter(item =>
     conflictedIds.has(item.entityId) && item.key === 'value');
   const branches: SourceCondition[] = [];
   for (const node of branchNodes) {

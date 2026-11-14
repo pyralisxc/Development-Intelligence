@@ -211,6 +211,17 @@ export function reconcileCanonicalSourceFact(left: GraphNode, right: GraphNode):
   return { outcome: 'contested', reason: 'incomparable-or-equally-grounded-source-evidence' };
 }
 
+/**
+ * Technical source facts remain positive graph truth in their own modality.
+ * "realizationEligible" applies to product/capability realization traversal;
+ * it is NOT an assertion that a source-derived condition or effect is unusable.
+ */
+export function sourceDerivedTechnicalEdge(edge: GraphEdge): boolean {
+  return edge.status === 'resolved'
+    && relationshipKindContract(edge.kind).proof === 'source-conditional'
+    && Boolean(edge.from && edge.to);
+}
+
 export function observedRelationshipContracts(graph: IntelligenceGraph): RelationshipKindContract[] {
   return [...new Set(graph.edges.map(edge => edge.kind))].sort()
     .map(relationshipKindContract);

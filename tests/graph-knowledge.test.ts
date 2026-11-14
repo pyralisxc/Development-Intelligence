@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
 import { nodeTraits, relationshipKindContract, inspectRelationshipShape,
-  sourceCapabilityCoverage, nodeKindsForFacet } from '../src/intelligence/graphKnowledge.js';
+  sourceCapabilityCoverage, nodeKindsForFacet, reconcileCanonicalSourceFact,
+  sourceDerivedTechnicalEdge } from '../src/intelligence/graphKnowledge.js';
 import { buildCanonicalQueryArtifacts, materializeQueryBuckets,
   queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
 import { reachMechanism } from '../src/intelligence/reach.js';
@@ -108,4 +109,64 @@ test('revision-bound query artifacts address specific evidence by ID without dup
   const bucket = record?.[1]!;
   assert.ok(materializeQueryBuckets(artifact, [bucket]).evidence.some(x => x.id === 'evidence:1'));
   assert.equal(artifact.index.graphId, graph.graphId);
+});
+
+
+test('source-derived execution is established technical truth without runtime realization', () => {
+  const sourceSha256 = 'b'.repeat(64);
+  const established = {
+    id: 'fact:effect:one', sourceId: 'repo:src/guards.ts',
+    kind: 'source-effect', name: 'Source return in guarded',
+    locator: 'src/guards.ts:8:effect-offset-90',
+    value: {
+      functionId: 'symbol:src/guards.ts#function:guarded',
+      sourceOnly: true, runtimeObserved: false, sourceSha256,
+      expression: 'return route(...)', proofRule: 'typescript-source-control-graph.v1',
+      derivedExecution: {
+        status: 'established', proposition: 'source-conditional-effect',
+        evidenceGrade: 'exact-source-derivation', sourceSha256,
+        scope: 'selected-source-revision', proofRule: 'typescript-source-control-graph.v1',
+        requiredConditions: [{ conditionId: 'src/guards.ts:condition:20', expectedTruth: false }],
+        predicateSatisfiabilityProven: false, runtimeObserved: false,
+      },
+    }, raw: 'fixture', evidenceIds: ['evidence:exact'], layer: 'structural',
+  } satisfies GraphNode;
+  const lower = {
+    ...established, evidenceIds: ['evidence:inferred'],
+    value: {
+      functionId: established.value.functionId,
+      sourceOnly: true, runtimeObserved: false,
+      expression: 'return unrelated(...)',
+      proofRule: 'heuristic-proposal',
+    },
+  } satisfies GraphNode;
+  assert.deepEqual(reconcileCanonicalSourceFact(lower, established), {
+    outcome: 'stronger-right',
+    reason: 'exact-source-derived-proof-over-unqualified-assertion',
+  });
+  assert.equal(reconcileCanonicalSourceFact(established, lower).outcome, 'stronger-left');
+  assert.equal(reconcileCanonicalSourceFact(established, established).outcome, 'identical');
+  const opposingExact = {
+    ...established,
+    value: { ...established.value, expression: 'return different(...)' },
+  };
+  assert.equal(reconcileCanonicalSourceFact(established, opposingExact).outcome, 'contested',
+    'two equally source-qualified contradictory claims must not be silently selected');
+  const differentSourceRevision = {
+    ...established,
+    value: { ...established.value, sourceSha256: 'c'.repeat(64),
+      derivedExecution: { ...established.value.derivedExecution, sourceSha256: 'c'.repeat(64) } },
+  };
+  assert.equal(reconcileCanonicalSourceFact(established, differentSourceRevision).outcome, 'contested',
+    'source facts from different content identities cannot overrule one another');
+  const guard: GraphEdge = {
+    id: 'edge:guard', kind: 'requires-condition', from: established.id,
+    to: 'condition:id', status: 'resolved', confidence: 1,
+    strategy: 'source-condition-false', evidence: [established.locator],
+  };
+  assert.equal(sourceDerivedTechnicalEdge(guard), true,
+    'verified conditional source premises must be valid facts');
+  assert.equal(relationshipKindContract(guard.kind).realizationEligible, false,
+    'source proof must not become a runtime or product-realization assertion');
+  assert.equal(sourceDerivedTechnicalEdge({ ...guard, status: 'unresolved' }), false);
 });

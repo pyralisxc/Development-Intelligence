@@ -103,6 +103,11 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     assert.equal(compiledControl.result.coverage.branchTotal, 1);
     assert.equal(compiledControl.result.coverage.effectTotal, 2);
     assert.equal(compiledControl.result.proof.returnOrCallRuntimeObserved, false);
+    assert.equal(compiledControl.result.proof.sourceDerivedExecution.status, 'established',
+      'source-derived conditional effects are established facts without a runtime witness');
+    assert.equal(compiledControl.result.proof.sourceDerivedExecution.establishedEffectFacts, 2);
+    assert.equal(compiledControl.result.proof.sourceDerivedExecution.runtimeWitnessRequiredForSourceFact, false);
+    assert.equal(compiledControl.result.proof.sourceDerivedExecution.runtimeObserved, false);
     assert.match(compiledControl.answer, /not whether the conditions are true/);
     const ordinaryCalls = await queryWorkbench({ ...input,
       text: 'What does ownerStored call?' }) as any;
