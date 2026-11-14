@@ -1,6 +1,7 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { deriveMotifs, type DerivedMotifKind } from './motifs.js';
+import { nodeTraits, relationshipKindContract } from './graphKnowledge.js';
 
 export type SemanticCandidateKind = 'feature' | 'capability' | 'surface' | 'domain';
 export type SemanticProposalOrigin = 'intrinsic-derivation' | 'ai-model' | 'human' | 'repository-declaration' | 'imported-assertion';
@@ -264,6 +265,10 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
 
   for (const node of graph.nodes) {
     if ((node.layer ?? 'structural') === 'semantic') continue;
+    // Source conditions and effects are real technical proof premises, not
+    // independent product-capability votes. Their graph presence must not
+    // inflate/rename semantic candidates or trigger repeated semantic scoring.
+    if (nodeTraits(node.kind).includes('source-control')) continue;
     if (node.tags?.includes('operational') || node.tags?.includes('source-unavailable')) continue;
     const file = sourceFile(node.locator);
     if (!file) continue;
@@ -285,6 +290,9 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
 
   for (const edge of graph.edges) {
     if (edge.status !== 'resolved') continue;
+    // Keep source-only path requirements out of semantic proposal topology.
+    // This is a typed graph contract, not a project- or name-based exception.
+    if (relationshipKindContract(edge.kind).proof === 'source-conditional') continue;
     const scopes: string[] = [];
     if (edge.from) {
       const scope = nodeScope.get(edge.from);

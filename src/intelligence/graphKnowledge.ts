@@ -13,7 +13,7 @@ export type KnowledgeMechanism = 'composition-context' | 'dependency'
   | 'execution' | 'identity-resolution' | 'surface' | 'persistence'
   | 'provider' | 'authority' | 'other';
 export type NodeTrait = 'container' | 'callable' | 'symbol' | 'source-site'
-  | 'predicate' | 'effect' | 'resource' | 'boundary' | 'technical-concept';
+  | 'predicate' | 'effect' | 'resource' | 'boundary' | 'technical-concept' | 'source-control';
 export type RealizationFacet = 'human' | 'agent' | 'transport'
   | 'implementation' | 'persistence' | 'provider';
 
@@ -43,10 +43,11 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'component-prop-binding': ['source-site'],
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
   'rpc-call': ['source-site', 'boundary'], 'navigation-call': ['source-site'],
-  'source-try-return': ['source-site', 'effect'], 'source-catch-return': ['source-site', 'effect'],
-  'source-control-summary': ['source-site'],
-  'source-condition': ['source-site', 'predicate'],
-  'source-effect': ['source-site', 'effect'],
+  'source-try-return': ['source-site', 'effect', 'source-control'],
+  'source-catch-return': ['source-site', 'effect', 'source-control'],
+  'source-control-summary': ['source-site', 'source-control'],
+  'source-condition': ['source-site', 'predicate', 'source-control'],
+  'source-effect': ['source-site', 'effect', 'source-control'],
   'state-write': ['source-site', 'effect'], 'state-binding': ['resource'],
   'sql-table': ['resource'], 'sql-reference': ['resource'],
   'ui-element': ['source-site', 'boundary'], 'mcp-tool': ['boundary'],

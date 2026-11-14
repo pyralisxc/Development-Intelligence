@@ -602,3 +602,35 @@ test('external modules with unavailable source are not fabricated into local sem
   assert.equal(result.capacity.groupedScopeCount, 1);
   assert.ok(result.capacity.excludedScopes.items.some(item => item.scope === 'src/interop'));
 });
+
+
+test('source-control graph growth does not manufacture product semantic candidates', () => {
+  const base = graph();
+  const before = bootstrapSemanticCandidates(base, { limit: 20 });
+  const controlNodes = [
+    { ...node('control:session', 'source-control-summary', 'src/authentication/session.ts:3'),
+      raw: 'persist storage api http provider', value: { sourceOnly: true } },
+    { ...node('condition:session', 'source-condition', 'src/authentication/session.ts:4'),
+      raw: 'supabase database redis', value: { predicate: 'unknown', runtimeObserved: false } },
+    { ...node('effect:session', 'source-effect', 'src/authentication/session.ts:5'),
+      raw: 'api storage provider write', value: { expression: 'perform(...)', runtimeObserved: false } },
+  ];
+  base.nodes.push(...controlNodes);
+  base.edges.push(
+    edge('summary-source', 'symbol:session', 'control:session', 'has-source-control'),
+    edge('condition-source', 'symbol:session', 'condition:session', 'has-condition'),
+    edge('effect-source', 'symbol:session', 'effect:session', 'has-effect'),
+    edge('guard-source', 'effect:session', 'condition:session', 'requires-condition'),
+  );
+  const after = bootstrapSemanticCandidates(base, { limit: 20 });
+  const keep = (items: typeof before.candidates) => items.map(c => ({
+    id: c.id, scope: c.scope, proposal: c.proposal,
+    evidenceFamilies: c.provenance.evidenceFamilies,
+    nodeIds: c.provenance.nodeIds, edgeIds: c.provenance.edgeIds,
+    nodeCount: c.support.nodeCount, edgeCount: c.support.resolvedEdgeCount,
+  }));
+  assert.deepEqual(keep(after.candidates), keep(before.candidates),
+    'independently source-proven control facts must be available in W without becoming product intent');
+  assert.equal(base.nodes.length, 11, 'the facts remain available in the canonical source graph');
+  assert.equal(base.edges.length, 10, 'source guard links remain available to technical graph queries');
+});
