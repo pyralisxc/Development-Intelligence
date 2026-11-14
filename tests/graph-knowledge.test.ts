@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
 import { nodeTraits, relationshipKindContract, inspectRelationshipShape,
   sourceCapabilityCoverage, nodeKindsForFacet, reconcileCanonicalSourceFact,
-  sourceDerivedTechnicalEdge } from '../src/intelligence/graphKnowledge.js';
+  sourceDerivedTechnicalEdge, canonicalSourceFactProofEstablished } from '../src/intelligence/graphKnowledge.js';
 import { buildCanonicalQueryArtifacts, materializeQueryBuckets,
   queryBucketForSource } from '../src/intelligence/queryArtifacts.js';
 import { reachMechanism } from '../src/intelligence/reach.js';
@@ -132,6 +132,8 @@ test('source-derived execution is established technical truth without runtime re
       },
     }, raw: 'fixture', evidenceIds: ['evidence:exact'], layer: 'structural',
   } satisfies GraphNode;
+  assert.equal(canonicalSourceFactProofEstablished(established), true);
+  assert.equal(canonicalSourceFactProofEstablished({ ...established, evidenceIds: [] }), false);
   const lower = {
     ...established, evidenceIds: ['evidence:inferred'],
     value: {
@@ -146,6 +148,7 @@ test('source-derived execution is established technical truth without runtime re
     reason: 'exact-source-derived-proof-over-unqualified-assertion',
   });
   assert.equal(reconcileCanonicalSourceFact(established, lower).outcome, 'stronger-left');
+  assert.equal(canonicalSourceFactProofEstablished(lower), false);
   assert.equal(reconcileCanonicalSourceFact(established, established).outcome, 'identical');
   const opposingExact = {
     ...established,
@@ -153,6 +156,9 @@ test('source-derived execution is established technical truth without runtime re
   };
   assert.equal(reconcileCanonicalSourceFact(established, opposingExact).outcome, 'contested',
     'two equally source-qualified contradictory claims must not be silently selected');
+  assert.equal(canonicalSourceFactProofEstablished({
+    ...established, tags: ['source-fact-contested'],
+  }), false, 'a tied conflict must remain visible without claiming undisputed proof');
   const differentSourceRevision = {
     ...established,
     value: { ...established.value, sourceSha256: 'c'.repeat(64),

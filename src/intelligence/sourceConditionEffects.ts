@@ -11,7 +11,7 @@ import { analyzeSourceConditionStatements,
   type SourceCondition, type SourceEffect, type SourceRequirement } from './sourceConditionFacts.js';
 export type { SourceCondition, SourceEffect, SourceRequirement } from './sourceConditionFacts.js';
 import { graphQueryContext } from './queryContext.js';
-import { sourceDerivedTechnicalEdge } from './graphKnowledge.js';
+import { sourceDerivedTechnicalEdge, canonicalSourceFactProofEstablished } from './graphKnowledge.js';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
 
@@ -365,13 +365,9 @@ export function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: Grap
     .map(edge => context.node(edge.to!));
   if (branchNodes.length !== scope.branchTotal || effectNodes.length !== scope.effectTotal
     || effectNodes.some(node => node?.tags?.includes('source-fact-contested'))) return null;
-  const derivedExecutionEstablished = effectNodes.filter(node => {
-    const v = node?.value;
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
-    const conclusion = (v as Record<string, unknown>).derivedExecution;
-    return Boolean(conclusion && typeof conclusion === 'object'
-      && (conclusion as Record<string, unknown>).status === 'established');
-  }).length;
+  const derivedExecutionEstablished = effectNodes.filter(
+    (node): node is GraphNode => Boolean(node && canonicalSourceFactProofEstablished(node)),
+  ).length;
   const conflictedIds = new Set([...branchNodes, ...effectNodes]
     .filter((node): node is GraphNode => Boolean(node)).map(node => node.id));
   const disagreements = (graph.explicitValueConflicts ?? []).filter(item =>

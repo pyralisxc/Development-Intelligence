@@ -185,6 +185,13 @@ function qualifiesExactSourceProof(node: GraphNode): boolean {
     && /^[a-f0-9]{64}$/u.test(data.sourceSha256)
     && data.sourceSha256 === v.sourceSha256;
 }
+/** Positive proof of a source occurrence, not a witnessed runtime event. */
+export function canonicalSourceFactProofEstablished(node: GraphNode): boolean {
+  return isCanonicalSourceFact(node)
+    && !node.tags?.includes('source-fact-contested')
+    && qualifiesExactSourceProof(node);
+}
+
 export function reconcileCanonicalSourceFact(left: GraphNode, right: GraphNode): SourceFactReconciliation {
   if (!isCanonicalSourceFact(left) || left.kind !== right.kind
     || left.id !== right.id || left.sourceId !== right.sourceId) {
