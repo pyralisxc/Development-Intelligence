@@ -30,6 +30,11 @@ export interface GraphQueryContext {
 
 const CACHE = new WeakMap<IntelligenceGraph, GraphQueryContext>();
 
+/** Read an already-built exact-graph index without allocating a new one. */
+export function existingGraphQueryContext(graph: IntelligenceGraph): GraphQueryContext | undefined {
+  return CACHE.get(graph);
+}
+
 export function graphQueryContext(graph: IntelligenceGraph): GraphQueryContext {
   const cached = CACHE.get(graph);
   if (cached) return cached;

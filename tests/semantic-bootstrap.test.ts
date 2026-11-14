@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
 import { bootstrapSemanticCandidates } from '../src/intelligence/semanticBootstrap.js';
 import { deriveMotifs, scopedMotifReadContext } from '../src/intelligence/motifs.js';
-import { graphQueryContext } from '../src/intelligence/queryContext.js';
+import { graphQueryContext, existingGraphQueryContext } from '../src/intelligence/queryContext.js';
 
 function node(id: string, kind: string, locator: string, name?: string, layer: 'structural' | 'representation' = 'structural'): GraphNode {
   return {
@@ -665,10 +665,18 @@ test('scoped canonical motif adjacency exactly preserves full-index motif proof'
     edge('bootstrap-calls', selected.id, repo.id, 'calls'),
   );
   const scoped = scopedMotifReadContext(input, [selected.id, root.id]);
+  assert.equal(existingGraphQueryContext(input), undefined,
+    'a direct motif read must not eagerly create a global index');
   const source = deriveMotifs(input, selected);
+  assert.equal(existingGraphQueryContext(input), undefined,
+    'cold isolated motif reads stay scoped');
   assert.ok(source.some(item => item.kind === 'composition-root'));
-  assert.deepEqual(deriveMotifs(input, selected, graphQueryContext(input)), source,
+  const shared = graphQueryContext(input);
+  assert.strictEqual(existingGraphQueryContext(input), shared);
+  assert.deepEqual(deriveMotifs(input, selected, shared), source,
     'scoped default must preserve canonical full-index motif evidence');
+  assert.deepEqual(deriveMotifs(input, selected), source,
+    'warm motif reads must reuse an existing shared index without changing evidence');
   assert.deepEqual(deriveMotifs(input, selected, scoped), source,
     'scoping may reduce index allocation, not change motif interpretation or proof');
   assert.deepEqual(deriveMotifs(input, root, scoped), deriveMotifs(input, root));
