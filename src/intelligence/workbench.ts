@@ -1661,6 +1661,7 @@ export async function scopeOrientation(input: {
   semanticDepth?: SemanticQueryDepth | undefined;
   limit?: number | undefined;
   orientationReuse?: OrientationQueryReuse | undefined;
+  semanticSummaryOnly?: boolean | undefined;
 }): Promise<Record<string, unknown>> {
   // Reuse is valid only for an exact graph identity selected by the caller.
   // A ref selector needs fresh resolution: never infer ref equivalence from
@@ -1703,6 +1704,43 @@ export async function scopeOrientation(input: {
       summary: 'No graph scope matching "' + String(selected.value) + '" was observed.',
       coverage: compactCoverage(graph),
       policy: { subjectiveImportanceScore: false, persisted: false },
+    };
+  }
+
+  // Ordinary repository-description questions need the source-backed semantic
+  // explanation, not a complete ranking of every structural node in W.
+  // Direct orient_scope still returns full ranked entities and boundaries.
+  if (selected.kind === 'repository' && input.semanticSummaryOnly) {
+    const semanticStarted = Date.now();
+    const understanding = await repositorySemanticUnderstanding(
+      input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable);
+    phaseMs.semanticUnderstanding = Date.now() - semanticStarted;
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: false,
+      scope: { kind: 'repository', value: selected.value,
+        nodeCount: selected.ids.size, resolvedBoundaryCount: 0 },
+      rankBy,
+      summary: understanding.summary,
+      semanticUnderstanding: understanding,
+      projection: { kind: 'repository-semantic-summary',
+        structuralOrientationMaterialized: false, detailTool: 'orient_scope' },
+      observability: {
+        owner: 'di-query-orientation', graphId: graph.graphId,
+        revision: graph.repositoryRevision, phaseMs,
+        totalMeasuredMs: Date.now() - orientationStarted,
+        ephemeral: true,
+        note: 'Request-local timings; no source content, credentials or question text are logged or retained.',
+      },
+      coverage: compactCoverage(graph),
+      policy: {
+        subjectiveImportanceScore: false, rankFacet: rankBy,
+        evidenceLinked: true, summaryInfersProductIntent: false,
+        persisted: false,
+        note: 'Semantic summary selects current graph evidence; detailed structural ranking is available through orient_scope.',
+      },
     };
   }
 
@@ -3046,6 +3084,8 @@ export async function queryWorkbench(input: {
     }
     const requestedScope = target.ambiguous ? '' : (target.scope ?? '');
     const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
+    const semanticSummaryOnly = !requestedScope
+      && /^what does (?:this|the|our) (?:project|repository|repo|codebase) do(?:\?|$)/u.test(lower);
     const result = await scopeOrientation({
       project: input.project,
       scope: requestedScope || undefined,
@@ -3054,11 +3094,13 @@ export async function queryWorkbench(input: {
       rankBy: input.rankBy,
       semanticDepth,
       orientationReuse: input.orientationReuse,
+      semanticSummaryOnly,
     });
     return {
       intent: 'orientation',
       subject: requestedScope ? { query: requestedScope } : null,
-      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file', semanticDepth },
+      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file', semanticDepth,
+        ...(semanticSummaryOnly ? { projection: 'repository-semantic-summary' } : {}) },
       answer: String((result as any).summary ?? 'Scoped orientation complete.'),
       result,
     };

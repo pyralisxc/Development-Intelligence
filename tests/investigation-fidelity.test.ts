@@ -6,7 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { clearGraphCache } from '../src/intelligence/service.js';
-import { queryWorkbench } from '../src/intelligence/workbench.js';
+import { queryWorkbench, scopeOrientation } from '../src/intelligence/workbench.js';
 import { callTool } from '../src/mcp.js';
 
 test('investigation keeps callable identity, call direction and unknown-symbol boundaries', async () => {
@@ -111,10 +111,23 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
       'source argument edges may not masquerade as executed calls');
     const orientation = await queryWorkbench({ ...input, text: 'What does this project do?' }) as any;
     assert.equal(orientation.intent, 'orientation');
+    assert.equal(orientation.routing.projection, 'repository-semantic-summary');
+    assert.equal(orientation.result.projection.structuralOrientationMaterialized, false);
+    const detailedOrientation = await scopeOrientation({
+      ...input, semanticDepth: 'nucleus',
+    }) as any;
+    assert.deepEqual(orientation.result.semanticUnderstanding,
+      detailedOrientation.semanticUnderstanding,
+      'semantic summary must preserve the complete current-revision semantic answer');
+    assert.equal(orientation.result.summary, detailedOrientation.summary);
+    assert.ok(detailedOrientation.keyEntities?.length > 0,
+      'explicit structural orientation must retain its full graph-ranked projection');
     const timings = orientation.result.observability;
     assert.equal(timings.owner, 'di-query-orientation');
     assert.equal(timings.revision, sha);
     assert.equal(timings.ephemeral, true);
+    assert.equal(timings.phaseMs.rankingAndRoles, 0,
+      'a semantic summary must not compute an unused whole-repository structural ranking');
     assert.ok(Object.values(timings.phaseMs).every((ms: any) =>
       typeof ms === 'number' && ms >= 0 && Number.isFinite(ms)));
     assert.ok(timings.totalMeasuredMs >= 0);
