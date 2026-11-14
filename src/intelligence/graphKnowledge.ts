@@ -37,6 +37,9 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'constructor': ['callable', 'symbol'] as NodeTrait[],
   'sql-function': ['callable', 'resource'], 'sql-procedure': ['callable', 'resource'],
   'import-binding': ['symbol'], 'call-reference': ['source-site'],
+  'css-class-reference': ['source-site'], 'css-selector': ['resource'],
+  'component-prop-handler': ['source-site', 'boundary'],
+  'component-prop-binding': ['source-site'],
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
   'rpc-call': ['source-site', 'boundary'], 'navigation-call': ['source-site'],
   'source-try-return': ['source-site', 'effect'], 'source-catch-return': ['source-site', 'effect'],
@@ -76,11 +79,23 @@ function define(kinds: readonly string[], family: KnowledgeFamily,
     kind, family, mechanism, realizationEligible, proof, fromTraits, toTraits,
   });
 }
-define(['contains', 'declares', 'declares-module', 'declares-state',
+define(['contains', 'declares', 'declares-module',
   'reexports', 'member-of', 'part-of'], 'composition', 'composition-context', false, 'syntax');
-define(['imports', 'imports-file', 'targets-module', 'references-symbol',
-  'resolves_to', 'binds_to', 'depends-on', 'links_to',
+// An established state declaration is a positive technical realization fact,
+// even though it is not evidence that state was changed in a runtime session.
+define(['declares-state'], 'state', 'persistence', true, 'syntax');
+define(['imports', 'imports-file', 'targets-module', 'resolves_to',
   'uses', 'requires'], 'reference', 'dependency', false, 'bound-source');
+// Actual bound references/dependencies contributed to accepted technical
+// realization before this registry; preserve their factual reach.
+define(['references-symbol', 'depends-on', 'links_to'],
+  'reference', 'dependency', true, 'bound-source');
+define(['binds_to', 'bound_by'], 'surface', 'surface', true, 'bound-source');
+define(['uses_classes'], 'surface', 'surface', true, 'syntax', ['callable'], ['source-site']);
+define(['styled_by'], 'surface', 'surface', true, 'bound-source', ['source-site'], ['resource']);
+define(['composes', 'uses-feature'], 'reference', 'dependency', true, 'bound-source', ['boundary'], ['technical-concept']);
+define(['handles-method'], 'realization', 'execution', true, 'bound-source', ['boundary'], ['callable']);
+define(['registered-as'], 'realization', 'surface', true, 'bound-source', ['boundary'], ['boundary']);
 // A resolved technical connection can carry a capability to an API or other
 // concrete realization. Preserve the already-proven traversal contract.
 define(['connected-to'], 'reference', 'dependency', true, 'bound-source');

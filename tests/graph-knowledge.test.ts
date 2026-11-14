@@ -55,10 +55,18 @@ test('one vocabulary is used for reach and proof, not name-pattern guesses', () 
   assert.ok(nodeKindsForFacet('implementation').includes('method'));
   assert.equal(relationshipKindContract('calls').family, 'invocation');
   assert.equal(relationshipKindContract('calls').proof, 'bound-source');
+  assert.equal(relationshipKindContract('uses_classes').proof, 'syntax');
   assert.equal(relationshipKindContract('constructs').family, 'invocation');
   assert.equal(reachMechanism('calls'), 'execution');
   assert.equal(relationshipKindContract('same_observed_name').realizationEligible, false);
   assert.equal(relationshipKindContract('connected-to').realizationEligible, true);
+  for (const kind of ['references-symbol', 'depends-on', 'links_to',
+    'declares-state', 'binds_to', 'bound_by', 'uses_classes', 'styled_by',
+    'composes', 'uses-feature', 'handles-method', 'registered-as']) {
+    assert.equal(relationshipKindContract(kind).realizationEligible, true,
+      kind + ' must retain established proof reach');
+    assert.notEqual(relationshipKindContract(kind).proof, 'not-established');
+  }
   assert.equal(relationshipKindContract('contains').realizationEligible, false);
   assert.equal(relationshipKindContract('mysterious-project-relation').realizationEligible, false);
 });
