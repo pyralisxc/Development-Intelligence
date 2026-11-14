@@ -50,6 +50,8 @@ test('a complete Go structural file does not imply call emission or absence', ()
 });
 test('one vocabulary is used for reach and proof, not name-pattern guesses', () => {
   assert.ok(nodeTraits('method').includes('callable'));
+  assert.deepEqual(nodeTraits('toString'), []);
+  assert.deepEqual(nodeTraits('__proto__'), []);
   assert.ok(nodeKindsForFacet('implementation').includes('method'));
   assert.equal(relationshipKindContract('calls').family, 'invocation');
   assert.equal(relationshipKindContract('calls').proof, 'bound-source');

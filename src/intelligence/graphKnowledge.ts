@@ -58,7 +58,10 @@ const FACET_KINDS: Record<RealizationFacet, readonly string[]> = {
   provider: ['provider'],
 };
 export function nodeTraits(kind: string): readonly NodeTrait[] {
-  return NODE_TRAITS[kind] ?? [];
+  // Node kinds originate in heterogeneous sources. Never resolve names such
+  // as "toString" through inherited Object prototype properties.
+  return Object.prototype.hasOwnProperty.call(NODE_TRAITS, kind)
+    ? NODE_TRAITS[kind]! : [];
 }
 export function nodeKindsForFacet(facet: RealizationFacet): readonly string[] {
   return FACET_KINDS[facet];
