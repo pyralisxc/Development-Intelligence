@@ -69,7 +69,20 @@ const canonicalColdStarted = process.hrtime.bigint();
 const canonicalCold = await graphStatus(project);
 const canonicalColdWallMs = Number(process.hrtime.bigint() - canonicalColdStarted) / 1_000_000;
 if (canonicalCold.observability?.persistence?.saveState !== 'stored' || !canonicalCold.observability?.coldBuild) {
-  throw new Error('CardForge canonical benchmark expected the first default-revision read to build and persist the graph');
+  // Status-only diagnostics: no persistence error body, access token, source
+  // data, request payload or owner identity leaks into CI logs.
+  const observation = canonicalCold.observability ?? {};
+  const persistence = observation.persistence ?? {};
+  const build = observation.coldBuild ?? null;
+  throw new Error('CardForge canonical benchmark expected the first default-revision read to build and persist the graph'
+    + ' [loadState=' + String(persistence.loadState ?? 'unknown')
+    + ', saveState=' + String(persistence.saveState ?? 'unknown')
+    + ', durable=' + String(persistence.durable ?? 'unknown')
+    + ', built=' + String(Boolean(build))
+    + ', buildStrategy=' + String(build?.strategy ?? 'not-observed')
+    + ', graphBuildMs=' + String(build?.graphBuildMs ?? 'not-observed')
+    + ', queryArtifactState=' + String(observation.queryArtifacts?.state ?? 'not-observed')
+    + ']');
 }
 const canonicalHitDurations = [];
 const canonicalLoadDurations = [];
