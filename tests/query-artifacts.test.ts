@@ -173,7 +173,7 @@ test('exact evidence queries use existing canonical indexes without a new-genera
   value.nodes[0]!.evidenceIds = ['proof:panel'];
   value.edges[0]!.evidenceIds = ['proof:panel'];
   const artifacts = buildCanonicalQueryArtifacts(value);
-  const oldGeneration = { ...artifacts.index, evidenceBucketById: undefined };
+  const oldGeneration = { nodeSearch: artifacts.index.nodeSearch, edgeSearch: artifacts.index.edgeSearch };
   const panelBucket = queryBucketForSource('repo:src/a.ts');
   const otherBucket = queryBucketForSource('repo:src/other.ts');
   assert.deepEqual(exactEvidenceQueryBuckets(oldGeneration, { node: 'node:panel' }), [panelBucket]);
