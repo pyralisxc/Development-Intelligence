@@ -354,24 +354,48 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
     affectedIds: [conflict.entityId],
     proof: proof(graph, 'evidence.explicit-conflict', graph.nodes.filter(node => node.id === conflict.entityId), [], 'audit'),
   }));
-  const context = graphQueryContext(graph);
-  const relationshipEdges: readonly GraphEdge[] = affectedIds
-    ? [...new Map([...affectedIds].flatMap(id =>
-      context.incident(id).map(edge => [edge.id, edge] as const))).values()]
-    : graph.edges;
-  if (includes('relationship')) for (const edge of relationshipEdges.filter(item => item.status === 'unresolved')) findings.push(finding(graph, {
-    ruleId: `relationship.${edge.status}`, category: 'relationship', status: 'attention',
-    summary: `${edge.kind} relationship remains ${edge.status}; it cannot satisfy a proof requiring resolved evidence.`,
-    affectedIds: [edge.from, edge.to].filter((id): id is string => Boolean(id)),
-    proof: proof(graph, 'relationship.' + edge.status, graph.nodes.filter(node => node.id === edge.from || node.id === edge.to), [edge], 'audit'),
-  }));
-  if (includes('realization')) for (const node of graph.nodes.filter(item => item.layer === 'semantic' && ['capability', 'action'].includes(item.kind) && (!affectedIds || affectedIds.has(item.id)))) {
-    const incident = context.incident(node.id);
-    if (!incident.some(edge => edgeAdmissible(edge, 'realization'))) findings.push(finding(graph, {
-      ruleId: 'realization.disconnected', category: 'realization', status: 'attention',
-      summary: `${node.name ?? node.id} has no resolved realization relationship. This is an observed disconnection, not a product-level defect unless a caller contract requires realization.`,
-      affectedIds: [node.id], proof: proof(graph, 'realization.disconnected', [node], incident, 'audit'),
+  if (includes('relationship')) {
+    // Only exact-scoped relationship audits need native neighborhood traversal;
+    // the default repository audit already owns a complete edge collection.
+    const relationshipEdges: readonly GraphEdge[] = affectedIds
+      ? [...new Map([...affectedIds].flatMap(id =>
+        graphQueryContext(graph).incident(id).map(edge => [edge.id, edge] as const))).values()]
+      : graph.edges;
+    for (const edge of relationshipEdges.filter(item => item.status === 'unresolved')) findings.push(finding(graph, {
+      ruleId: `relationship.${edge.status}`, category: 'relationship', status: 'attention',
+      summary: `${edge.kind} relationship remains ${edge.status}; it cannot satisfy a proof requiring resolved evidence.`,
+      affectedIds: [edge.from, edge.to].filter((id): id is string => Boolean(id)),
+      proof: proof(graph, 'relationship.' + edge.status, graph.nodes.filter(node => node.id === edge.from || node.id === edge.to), [edge], 'audit'),
     }));
+  }
+  if (includes('realization')) {
+    // A finite capability-disconnection census is a one-pass fact filter, not
+    // a graph traversal. Avoid materializing native adjacency for a full
+    // repository just to inspect a few exact semantic node IDs.
+    const subjects = graph.nodes.filter(item => item.layer === 'semantic'
+      && ['capability', 'action'].includes(item.kind) && (!affectedIds || affectedIds.has(item.id)));
+    const subjectIds = new Set(subjects.map(item => item.id));
+    const incidentBySubject = new Map<string, GraphEdge[]>();
+    for (const edge of graph.edges) {
+      if (edge.from && subjectIds.has(edge.from)) {
+        const bucket = incidentBySubject.get(edge.from) ?? [];
+        bucket.push(edge);
+        incidentBySubject.set(edge.from, bucket);
+      }
+      if (edge.to && edge.to !== edge.from && subjectIds.has(edge.to)) {
+        const bucket = incidentBySubject.get(edge.to) ?? [];
+        bucket.push(edge);
+        incidentBySubject.set(edge.to, bucket);
+      }
+    }
+    for (const node of subjects) {
+      const incident = incidentBySubject.get(node.id) ?? [];
+      if (!incident.some(edge => edgeAdmissible(edge, 'realization'))) findings.push(finding(graph, {
+        ruleId: 'realization.disconnected', category: 'realization', status: 'attention',
+        summary: `${node.name ?? node.id} has no resolved realization relationship. This is an observed disconnection, not a product-level defect unless a caller contract requires realization.`,
+        affectedIds: [node.id], proof: proof(graph, 'realization.disconnected', [node], incident, 'audit'),
+      }));
+    }
   }
   return findings.sort((a, b) => a.ruleId.localeCompare(b.ruleId) || a.id.localeCompare(b.id));
 }

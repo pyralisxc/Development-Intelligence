@@ -51,8 +51,22 @@ export function graphQueryContext(graph: IntelligenceGraph): GraphQueryContext {
   // Graphology is the sole adjacency index for source-complete, directed edges.
   // This remains a disposable per-W query view: DI node/edge IDs and evidence
   // stay authoritative in the exact revision graph, never in Graphology.
-  const topology = new MultiDirectedGraph();
-  for (const node of graph.nodes) topology.addNode(node.id);
+  // Construct native adjacency only for investigations that actually traverse.
+  // Index-only audit/coverage queries should not instantiate an entire second
+  // in-memory topology just to read graph facts by kind or ID.
+  let topology: MultiDirectedGraph | undefined;
+  function nativeTopology(): MultiDirectedGraph {
+    if (topology) return topology;
+    const built = new MultiDirectedGraph();
+    for (const node of graph.nodes) built.addNode(node.id);
+    for (const edge of graph.edges) {
+      if (edge.from && edge.to && built.hasNode(edge.from) && built.hasNode(edge.to)) {
+        built.addDirectedEdgeWithKey(edge.id, edge.from, edge.to);
+      }
+    }
+    topology = built;
+    return built;
+  }
 
   const edgesById = new Map<string, GraphEdge>();
   const edgesByKind = new Map<string, GraphEdge[]>();
@@ -68,8 +82,7 @@ export function graphQueryContext(graph: IntelligenceGraph): GraphQueryContext {
     sourceOrder.set(edge.id, position);
     append(edgesByKind, edge.kind, edge);
     append(edgesByStatus, edge.status, edge);
-    if (edge.from && edge.to && topology.hasNode(edge.from) && topology.hasNode(edge.to)) {
-      topology.addDirectedEdgeWithKey(edge.id, edge.from, edge.to);
+    if (edge.from && edge.to && nodesById.has(edge.from) && nodesById.has(edge.to)) {
       continue;
     }
     if (edge.from) {
@@ -96,9 +109,10 @@ export function graphQueryContext(graph: IntelligenceGraph): GraphQueryContext {
       : mode === 'outbound' ? outboundCache : incidentCache;
     const cached = cache.get(id);
     if (cached) return cached;
-    const ids = !topology.hasNode(id) ? []
-      : mode === 'inbound' ? topology.inEdges(id)
-        : mode === 'outbound' ? topology.outEdges(id) : topology.edges(id);
+    const native = nodesById.has(id) ? nativeTopology() : undefined;
+    const ids = !native ? []
+      : mode === 'inbound' ? native.inEdges(id)
+        : mode === 'outbound' ? native.outEdges(id) : native.edges(id);
     const partial = mode === 'inbound' ? partialIncoming
       : mode === 'outbound' ? partialOutgoing : partialIncident;
     const results: GraphEdge[] = [];

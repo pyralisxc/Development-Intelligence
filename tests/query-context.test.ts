@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IntelligenceGraph } from '../src/types.js';
 import { graphQueryContext } from '../src/intelligence/queryContext.js';
+import { auditGraph } from '../src/intelligence/assessment.js';
 
 function graph(): IntelligenceGraph {
   return {
@@ -73,4 +74,30 @@ test('Graphology query adjacency preserves parallel, loop, unresolved and half-e
     'native traversal must preserve canonical edge object/evidence identity');
   assert.deepEqual(context.incident('absent'), []);
   assert.equal(graphQueryContext(input), context, 'exact revision context is cached once');
+});
+
+test('repository realization census reads source facts without traversal-only authority', () => {
+  const input = graph();
+  input.nodes.push(
+    { id: 'feature:cap', sourceId: 'repo:cap.ts', kind: 'capability', locator: 'cap.ts:1',
+      name: 'cap', value: 'cap', raw: 'cap', layer: 'semantic' },
+    { id: 'feature:unused', sourceId: 'repo:unused.ts', kind: 'action', locator: 'unused.ts:1',
+      name: 'unused', value: 'unused', raw: 'unused', layer: 'semantic' },
+  );
+  input.edges.push(
+    { id: 'e8', from: 'feature:cap', to: 'a', kind: 'implemented-by',
+      strategy: 'source', confidence: 1, status: 'resolved',
+      evidence: [], layer: 'semantic' },
+    { id: 'e9', from: 'feature:unused', to: null, kind: 'invokes',
+      strategy: 'unresolved', confidence: null, status: 'unresolved',
+      evidence: ['unknown receiver'], layer: 'semantic' },
+  );
+  const before = input.edges.map(edge => edge.id);
+  const findings = auditGraph(input, undefined, new Set(['realization']));
+  assert.deepEqual(findings.map(item => item.affectedIds), [['feature:unused']],
+    'only the capability without a proven realization relation is disconnected');
+  assert.deepEqual(findings[0]?.proof.edgeIds, ['e9'],
+    'unproven source edges remain visible as audit evidence without being realization proof');
+  assert.deepEqual(input.edges.map(edge => edge.id), before,
+    'auditing must not mutate canonical source order');
 });
