@@ -1,6 +1,6 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
-import { deriveMotifs, type DerivedMotifKind } from './motifs.js';
+import { deriveMotifs, scopedMotifReadContext, type MotifReadContext, type DerivedMotifKind } from './motifs.js';
 import { nodeTraits, relationshipKindContract } from './graphKnowledge.js';
 
 export type SemanticCandidateKind = 'feature' | 'capability' | 'surface' | 'domain';
@@ -214,7 +214,17 @@ function nodeSearchText(node: GraphNode): string {
   return [node.kind, node.name ?? '', node.locator, node.raw].join(' ').toLowerCase();
 }
 
-function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph): { families: SemanticEvidenceFamily[]; motifs: DerivedMotifKind[] } {
+const motifIdentityHint = /(?:bootstrap|composition root|lifetime scope|service registration|service installer|startup|state machine|adapter|bridge|relay|translator|mapper|pipeline|workflow|processing chain|repository|store|persistence|storage|database|\bdao\b)/iu;
+function motifSubjects(group: CandidateGroup): GraphNode[] {
+  return group.nodes
+    .filter(node => (node.layer ?? 'structural') === 'structural'
+      && ['file', 'class', 'function', 'declaration'].includes(node.kind)
+      && motifIdentityHint.test([node.name ?? '', node.locator].join(' ')))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, 6);
+}
+function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph,
+  motifContext: MotifReadContext | null): { families: SemanticEvidenceFamily[]; motifs: DerivedMotifKind[] } {
   const families = new Set<SemanticEvidenceFamily>();
   if (group.files.size > 0) families.add('structure');
   const resolvedEdges = group.edges.filter(edge => edge.status === 'resolved');
@@ -231,17 +241,8 @@ function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph): { fami
   // lookups. Only invoke it when the entity identity can satisfy one of the current
   // deterministic motif predicates; do not run motif detection speculatively across
   // every node in every semantic candidate group.
-  const motifIdentityHint = /(?:bootstrap|composition root|lifetime scope|service registration|service installer|startup|state machine|adapter|bridge|relay|translator|mapper|pipeline|workflow|processing chain|repository|store|persistence|storage|database|\bdao\b)/iu;
-  const motifSubjects = group.nodes
-    .filter(node =>
-      (node.layer ?? 'structural') === 'structural'
-      && ['file', 'class', 'function', 'declaration'].includes(node.kind)
-      && motifIdentityHint.test([node.name ?? '', node.locator].join(' '))
-    )
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .slice(0, 6);
-  for (const node of motifSubjects) {
-    for (const motif of deriveMotifs(graph, node)) motifKinds.add(motif.kind);
+  for (const node of motifSubjects(group)) {
+    for (const motif of deriveMotifs(graph, node, motifContext ?? undefined)) motifKinds.add(motif.kind);
   }
   if (motifKinds.size > 0) families.add('motif');
   return { families: [...families].sort(), motifs: [...motifKinds].sort() };
@@ -305,6 +306,9 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     for (const scope of scopes) groups.get(scope)?.edges.push(edge);
   }
 
+  const motifIds = [...new Set([...groups.values()].flatMap(group =>
+    motifSubjects(group).map(node => node.id)))];
+  const motifContext = motifIds.length ? scopedMotifReadContext(graph, motifIds) : null;
   const candidates: SemanticCandidate[] = [];
   const excludedScopes: ExcludedSemanticScope[] = [];
   const rejectionReasons = {
@@ -313,7 +317,7 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     genericSupportScope: 0,
   };
   for (const group of groups.values()) {
-    const { families, motifs } = familyEvidence(group, graph);
+    const { families, motifs } = familyEvidence(group, graph, motifContext);
     const strongFamily = families.some(family => ['interface', 'api', 'persistence', 'motif', 'state'].includes(family));
     const excludedReason: ExcludedSemanticScope['reason'] | null =
       group.scopeRole === 'direct' && SUPPORT_SEGMENTS.has(group.token.toLowerCase())

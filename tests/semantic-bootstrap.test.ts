@@ -634,3 +634,11 @@ test('source-control graph growth does not manufacture product semantic candidat
   assert.equal(base.nodes.length, 11, 'the facts remain available in the canonical source graph');
   assert.equal(base.edges.length, 10, 'source guard links remain available to technical graph queries');
 });
+
+
+test('scoped motif retrieval is deterministic without manufacturing product evidence', () => {
+  const source = graph();
+  const first = bootstrapSemanticCandidates(source, { limit: 20 });
+  const second = bootstrapSemanticCandidates(source, { limit: 20 });
+  assert.deepEqual(second.candidates, first.candidates);
+});
