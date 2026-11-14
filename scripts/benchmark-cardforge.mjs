@@ -380,7 +380,10 @@ async function generalSemanticQuestion(question, expectedDepth, options = {}) {
   if (options.requireExhausted && understanding.completeness?.semanticCandidateUniverseExhausted !== true) {
     throw new Error(`CardForge exhaustive semantic query did not exhaust the evidence-qualified candidate census: ${question}`);
   }
-  if (elapsedMs > 2000) throw new Error(`CardForge general semantic question exceeded 2000 ms budget: ${question} → ${elapsedMs.toFixed(2)} ms`);
+  if (elapsedMs > 2000) {
+    const timings = result?.result?.observability ?? null;
+    throw new Error(`CardForge general semantic question exceeded 2000 ms budget: ${question} → ${elapsedMs.toFixed(2)} ms; orientationStages=${JSON.stringify(timings)}`);
+  }
   return {
     question,
     answer: result.answer,

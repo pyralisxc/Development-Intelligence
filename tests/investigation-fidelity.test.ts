@@ -109,6 +109,17 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     assert.deepEqual(ordinaryCalls.routing.relationshipKinds, ['calls']);
     assert.ok(!ordinaryCalls.result.edges.some((edge: any) => edge.kind === 'callback-argument'),
       'source argument edges may not masquerade as executed calls');
+    const orientation = await queryWorkbench({ ...input, text: 'What does this project do?' }) as any;
+    assert.equal(orientation.intent, 'orientation');
+    const timings = orientation.result.observability;
+    assert.equal(timings.owner, 'di-query-orientation');
+    assert.equal(timings.revision, sha);
+    assert.equal(timings.ephemeral, true);
+    assert.ok(Object.values(timings.phaseMs).every((ms: any) =>
+      typeof ms === 'number' && ms >= 0 && Number.isFinite(ms)));
+    assert.ok(timings.totalMeasuredMs >= 0);
+    assert.equal(JSON.stringify(timings).includes('What does this project do'), false,
+      'timing diagnostics must not log question text');
     const incoming = await queryWorkbench({ ...input, text: 'What calls target?' }) as any;
     assert.equal(incoming.subject.id, outgoing.subject.id);
     assert.equal(incoming.routing.direction, 'inbound');

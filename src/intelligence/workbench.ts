@@ -1669,15 +1669,21 @@ export async function scopeOrientation(input: {
   // Reuse is valid only for an exact graph identity selected by the caller.
   // A ref selector needs fresh resolution: never infer ref equivalence from
   // project identity or carry indexes from an unrelated graph snapshot.
+  const orientationStarted = Date.now();
+  // Request-local timings: no second graph, persisted trace or question text.
+  const phaseMs = { graphAccess: 0, scopeSelection: 0, adjacencyIndex: 0,
+    rankingAndRoles: 0, semanticUnderstanding: 0 };
   const candidateReuse = input.orientationReuse;
   const reusable = candidateReuse && candidateReuse.graph.project === input.project
     && !input.ref
     && input.graphId === candidateReuse.graph.graphId
     ? candidateReuse : undefined;
   const graph = reusable?.graph ?? await currentGraph(input.project, input.ref, input.graphId);
+  phaseMs.graphAccess = Date.now() - orientationStarted;
   const rankBy = input.rankBy ?? 'cross-file';
   const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
   const selected = scopeNodeIds(graph, input.scope);
+  phaseMs.scopeSelection = Date.now() - orientationStarted - phaseMs.graphAccess;
 
   if (selected.kind === 'ambiguous') {
     return {
@@ -1746,6 +1752,8 @@ export async function scopeOrientation(input: {
     if (reusable) reusable.incidentByNode = incidentByNode;
   }
 
+  phaseMs.adjacencyIndex = Date.now() - orientationStarted
+    - phaseMs.graphAccess - phaseMs.scopeSelection;
   // The ranked list and role summaries inspect the same scoped nodes at the
   // same graph revision/rank criterion. Reuse metrics per node within this
   // single orientation, never across revisions or distinct graph contexts.
@@ -1867,9 +1875,13 @@ export async function scopeOrientation(input: {
     .slice(0, Math.min(limit, 10))
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
+  phaseMs.rankingAndRoles = Date.now() - orientationStarted
+    - phaseMs.graphAccess - phaseMs.scopeSelection - phaseMs.adjacencyIndex;
+  const semanticStarted = Date.now();
   const semanticUnderstanding = selected.kind === 'repository'
     ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable)
     : null;
+  phaseMs.semanticUnderstanding = Date.now() - semanticStarted;
 
   return {
     project: input.project,
@@ -1889,6 +1901,15 @@ export async function scopeOrientation(input: {
         ? responsibilities.slice(0, 3).map(item => item.statement).join(' ')
         : String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; no stronger bounded responsibility synthesis was available.',
     semanticUnderstanding,
+    observability: {
+      owner: 'di-query-orientation',
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      phaseMs,
+      totalMeasuredMs: Date.now() - orientationStarted,
+      ephemeral: true,
+      note: 'Request-local timings; no source content, credentials or question text are logged or retained.',
+    },
     responsibilities,
     roleGroups,
     dependencies,
