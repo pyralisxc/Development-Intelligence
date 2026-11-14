@@ -246,3 +246,22 @@ test('assessment phase diagnostics remain request-local and do not alter semanti
   assert.equal(JSON.stringify(timed).includes('assessmentPhases'), false,
     'timing receipts cannot become semantic results');
 });
+
+
+test('exact graph symbol identity resolves directly, never through broad fuzzy source text', () => {
+  const graph = specimen();
+  const rival: GraphNode = {
+    ...go, id: 'symbol:other.go#method:other.Engine.ServeHTTP',
+    sourceId: 'repo:other.go', locator: 'other.go:400',
+  };
+  graph.nodes.push(rival);
+  const exact = assessGraph(graph, go.id) as any;
+  assert.equal(exact.realization?.root?.id, go.id,
+    'an exact symbol ID must preserve its #method separator');
+  assert.equal(exact.ambiguous, false);
+  assert.equal(exact.candidates.length, 1);
+  const missing = assessGraph(graph, 'symbol:unknown.go#method:NoSuchMethod') as any;
+  assert.equal(missing.realization, null);
+  assert.equal(missing.candidates.length, 0,
+    'unknown exact IDs must not resolve to unrelated symbol text');
+});

@@ -1,6 +1,6 @@
 import type { EvidenceRecord, GraphCoverageStatus, GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
-import { graphQueryContext } from './queryContext.js';
+import { graphQueryContext, existingGraphQueryContext } from './queryContext.js';
 import { nodeKindsForFacet, relationshipKindContract, canonicalSourceFactProofEstablished, sourceDerivedTechnicalEdge } from './graphKnowledge.js';
 import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
@@ -184,15 +184,26 @@ function searchableText(value: string): string {
 }
 
 function candidates(graph: IntelligenceGraph, query: string): GraphNode[] {
+  // Exact graph identities are authority, not a fuzzy text-search hint. Check
+  // the already-built exact index if present, avoiding a full graph scan.
+  const exact = existingGraphQueryContext(graph)?.node(query)
+    ?? graph.nodes.find(node => node.id === query);
+  if (exact) return [exact];
+  // An explicitly supplied stable identity that is missing must not silently
+  // match a different symbol because it happens to share words or source text.
+  if (/^(?:symbol:|file:|feature:|capability:|mcp:|provider:|surface:|route:|api:)[^\s?]+$/u.test(query)) return [];
   const needle = searchableText(query);
   if (!needle) return [];
-  const exact = graph.nodes.find(node => node.id === query);
-  if (exact) return [exact];
   const named = graph.nodes.filter(node => node.name && searchableText(node.name) === needle);
   return (named.length ? named : graph.nodes.filter(node => searchableText(nodeText(node)).includes(needle))).slice(0, 20);
 }
 
 function subjectFromQuestion(question: string): string {
+  const literal = question.trim();
+  // Do not strip '#' from graph identities (e.g. #function:qualifiedName).
+  // Otherwise an exact request degrades into an expensive and misleading
+  // whole-repository fuzzy search over every node's structured JSON.
+  if (/^(?:symbol:|file:|feature:|capability:|mcp:|provider:|surface:|route:|api:)[^\s?]+$/u.test(literal)) return literal;
   return question
     .replace(/\b(?:can\s+(?:we|you)\s+)?(?:rule|ruled)\s+out\b/giu, ' ')
     .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|evidence|supports?|supporting|depends?|dependency|dependencies|used|uses|callers?|called|connect(?:ed|s|ion)?|relationships?|related|show|inspect|what|where|the|for|of|in|on|to|by|exists?|existence|works?|working|whether|hypothesis|hypotheses|and|also|it|this|that)\b/giu, ' ')
