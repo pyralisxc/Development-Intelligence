@@ -228,3 +228,32 @@ test('bounded implementation views retain resolved direct effects when source-co
       'existing direct-effect evidence must not vanish behind new source-control relation volume');
   }
 });
+
+
+test('bounded mechanism answers preserve a relevant handler’s three direct writes among competing state writers', () => {
+  const controls = Array.from({ length: 90 }, (_, i) => ({
+    edgeId: 'guard-' + i, kind: 'has-condition',
+    from: { id: 'function:unrelated', name: 'unrelatedSource' },
+    to: { kind: 'source-condition' },
+  }));
+  const otherWrites = Array.from({ length: 40 }, (_, i) => ({
+    edgeId: 'other-state-' + i, kind: 'invokes',
+    from: { id: 'function:other-' + i, name: 'renderOtherState' },
+    to: { kind: 'state-write' },
+  }));
+  const handlerWrites = ['bulkDataInput', 'lastGeneratedCards', 'pendingRevision'].map(name => ({
+    edgeId: 'write-' + name, kind: 'invokes',
+    from: { id: 'function:handleDataInputChange', name: 'handleDataInputChange' },
+    to: { kind: 'state-write' },
+  }));
+  const selected = selectBoundedMechanismRelations(
+    [...controls, ...otherWrites, ...handlerWrites], 50, ['handle', 'chang', 'reset']);
+  assert.equal(selected.length, 50);
+  assert.equal(new Set(selected.map(item => item.edgeId)).size, 50);
+  for (const item of handlerWrites) {
+    assert.ok(selected.some(edge => edge.edgeId === item.edgeId),
+      'all source-proven direct consequences of the relevant handler should stay visible');
+  }
+  assert.ok(selected.some(edge => edge.kind === 'has-condition'),
+    'relevant handler priority may not erase every non-effect fact family');
+});

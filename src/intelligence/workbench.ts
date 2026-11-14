@@ -922,10 +922,51 @@ function rankedMechanismSourceFiles(
  * This only chooses a bounded view of W; it never alters the graph/proof.
  */
 export function selectBoundedMechanismRelations<T extends {
-  edgeId: string; kind: string; to: { kind: string } | null;
-}>(ranked: readonly T[], max = 50): T[] {
+  edgeId: string; kind: string;
+  from?: { id: string; name: string } | null;
+  to: { kind: string } | null;
+}>(ranked: readonly T[], max = 50, queryTerms: readonly string[] = []): T[] {
   const limit = Math.max(1, Math.min(250, Math.floor(max)));
   if (ranked.length <= limit) return [...ranked];
+  const result: T[] = [];
+  const chosen = new Set<string>();
+  const append = (edge: T): void => {
+    if (result.length < limit && !chosen.has(edge.edgeId)) {
+      result.push(edge);
+      chosen.add(edge.edgeId);
+    }
+  };
+
+  // The original global top-N discarded established sibling effects when
+  // newly abundant source-control links filled the projection. An actual
+  // handler's direct writes are a related evidence cluster, not unrelated
+  // one-off edges. Reserve bounded space for source-ranked handler clusters
+  // before sampling the remaining relationship families.
+  const directWrites = new Map<string, {
+    items: T[]; callerHits: number; firstRank: number;
+  }>();
+  for (const [rank, edge] of ranked.entries()) {
+    if (edge.kind !== 'invokes' || edge.to?.kind !== 'state-write' || !edge.from?.id) continue;
+    const key = edge.from.id;
+    const existing = directWrites.get(key);
+    if (existing) { existing.items.push(edge); continue; }
+    const name = edge.from.name.toLowerCase();
+    const callerHits = queryTerms.filter(term => name.includes(term.toLowerCase())).length;
+    directWrites.set(key, { items: [edge], callerHits, firstRank: rank });
+  }
+  const clusters = [...directWrites.values()].sort((a, b) =>
+    b.callerHits - a.callerHits || a.firstRank - b.firstRank);
+  const effectBudget = Math.min(limit, Math.max(4, Math.floor(limit / 2)));
+  for (const cluster of clusters) {
+    if (result.length >= effectBudget) break;
+    // Keep multiple proven effects of a relevant callable together. This is
+    // bounded *presentation*; unreturned effects remain in canonical W.
+    for (const edge of cluster.items.slice(0, 12)) {
+      if (result.length >= effectBudget) break;
+      append(edge);
+    }
+  }
+
   const groups = new Map<string, T[]>();
   for (const edge of ranked) {
     const key = edge.kind + ':' + (edge.to?.kind ?? 'unresolved-target');
@@ -933,24 +974,18 @@ export function selectBoundedMechanismRelations<T extends {
     if (group) group.push(edge);
     else groups.set(key, [edge]);
   }
-  const result: T[] = [];
-  const chosen = new Set<string>();
-  // Four passes preserve multiple same-kind consequences, not only a sample
-  // from whichever new fact family happens to dominate a whole-file graph.
+  // Retain representative coverage of other fact families, then use
+  // original query relevance for the remaining slots.
   for (let round = 0; round < 4 && result.length < limit; round += 1) {
     for (const group of groups.values()) {
       const item = group[round];
-      if (!item || chosen.has(item.edgeId)) continue;
-      result.push(item);
-      chosen.add(item.edgeId);
+      if (item) append(item);
       if (result.length === limit) break;
     }
   }
   for (const edge of ranked) {
     if (result.length === limit) break;
-    if (chosen.has(edge.edgeId)) continue;
-    result.push(edge);
-    chosen.add(edge.edgeId);
+    append(edge);
   }
   return result;
 }
@@ -1217,12 +1252,12 @@ async function implementationMechanismProjection(input: {
       },
       files,
       keyEntities,
-      relationships: selectBoundedMechanismRelations(resolved, 50),
+      relationships: selectBoundedMechanismRelations(resolved, 50, queryTerms),
       relationshipProjection: {
         totalResolved: resolved.length,
         returned: Math.min(resolved.length, 50),
         omitted: Math.max(0, resolved.length - 50),
-        selection: 'ranked-relation-kind-diversity-with-four-per-kind-first',
+        selection: 'relevant-direct-state-write-handler-clusters-then-kind-diversity',
         complete: resolved.length <= 50,
       },
       decisionEvidence,
