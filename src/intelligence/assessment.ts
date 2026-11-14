@@ -1,6 +1,7 @@
 import type { EvidenceRecord, GraphCoverageStatus, GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { graphQueryContext } from './queryContext.js';
+import { nodeKindsForFacet, relationshipKindContract } from './graphKnowledge.js';
 import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
 import { projectOrientation } from './orientation.js';
@@ -78,24 +79,13 @@ export interface AuditFinding {
 }
 
 const FACET_KINDS: Record<RealizationFacet, Set<string>> = {
-  human: new Set(['surface', 'ui-element', 'component-prop-handler', 'component-prop-binding']),
-  agent: new Set(['mcp', 'tool']),
-  transport: new Set(['api', 'route', 'http-call', 'rpc-call', 'navigation-call']),
-  implementation: new Set(['feature', 'function', 'method', 'class', 'sql-function']),
-  persistence: new Set(['sql-table', 'sql-reference', 'state-binding', 'state-write']),
-  provider: new Set(['provider']),
+  human: new Set(nodeKindsForFacet('human')),
+  agent: new Set(nodeKindsForFacet('agent')),
+  transport: new Set(nodeKindsForFacet('transport')),
+  implementation: new Set(nodeKindsForFacet('implementation')),
+  persistence: new Set(nodeKindsForFacet('persistence')),
+  provider: new Set(nodeKindsForFacet('provider')),
 };
-
-const NON_REALIZATION_PROOF_KINDS = new Set([
-  'contains',
-  'declares',
-  'imports',
-  'reexports',
-  'resolves_to',
-  'same_observed_name',
-  'same_observed_value',
-  'similar_identifier',
-]);
 
 function graphCoverage(graph: IntelligenceGraph): AssessmentCoverage | null {
   if (!graph.coverage) return null;
@@ -148,7 +138,7 @@ function coverageForClaim(graph: IntelligenceGraph, nodes: readonly GraphNode[],
 function edgeAdmissible(edge: GraphEdge, purpose: ProofPurpose): boolean {
   if (purpose === 'audit') return true;
   if (edge.status !== 'resolved') return false;
-  if ((purpose === 'realization' || purpose === 'contract') && NON_REALIZATION_PROOF_KINDS.has(edge.kind)) return false;
+  if ((purpose === 'realization' || purpose === 'contract') && !relationshipKindContract(edge.kind).realizationEligible) return false;
   return true;
 }
 

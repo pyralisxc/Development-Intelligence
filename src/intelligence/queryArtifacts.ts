@@ -72,6 +72,8 @@ export interface CanonicalQueryIndexArtifact {
   buckets: Record<string, CanonicalQueryBucketSummary>;
   semanticNodes: CanonicalQuerySemanticNode[];
   semanticEdges: CanonicalQuerySemanticEdge[];
+  /** Exact evidence ID to its source bucket; a disposable index, not a proof owner. */
+  evidenceBucketById?: Array<[id: string, bucket: string]>;
   coverage: {
     available: boolean;
     completeForEligibleSources: boolean;
@@ -336,6 +338,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
       }])),
       semanticNodes,
       semanticEdges,
+      evidenceBucketById: graph.evidence.map(item => [item.id, queryBucketForSource(item.sourceId)] as [string, string]).sort((a, b) => a[0].localeCompare(b[0])),
       coverage: coverageSummary(graph),
       explicitValueConflicts: graph.explicitValueConflicts,
       counts: {

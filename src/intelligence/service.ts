@@ -649,6 +649,7 @@ async function publishCurrentQueryArtifactPointer(
 export async function loadCurrentQueryArtifacts(
   project: string,
   queries: string[],
+  expectedGraphId?: string,
 ): Promise<QueryArtifactShadowLoad> {
   const revision = await resolveProjectRevision(project);
   const pointerLoad = await loadCanonicalQueryArtifactPointer({
@@ -667,6 +668,9 @@ export async function loadCurrentQueryArtifacts(
     };
   }
   const pointer = pointerLoad.pointer;
+  if (expectedGraphId && pointer.graphId !== expectedGraphId) {
+    return { state: 'miss', loadMs: pointerLoad.loadMs, bucketIds: [], index: null, shards: {}, reason: 'requested-graph-id-does-not-match-current-query-generation' };
+  }
   if (pointer.analyzerVersion !== ANALYZER_VERSION || pointer.graphSchemaVersion !== 2) {
     return {
       state: 'invalid',
