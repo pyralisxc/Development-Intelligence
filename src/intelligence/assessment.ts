@@ -335,7 +335,12 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
   }));
   if (includes('conflict')) for (const conflict of graph.explicitValueConflicts.filter(item => !affectedIds || affectedIds.has(item.entityId))) findings.push(finding(graph, {
     ruleId: 'evidence.explicit-conflict', category: 'conflict', status: 'attention',
-    summary: `Conflicting observed values for ${conflict.entityId}.${conflict.key}.`, affectedIds: [conflict.entityId],
+    summary: conflict.resolution === 'higher-source-proof-preferred'
+      ? `Competing evidence for ${conflict.entityId}.${conflict.key}: exact source-derived proof takes precedence over a weaker assertion, and the disagreement remains recorded.`
+      : conflict.resolution === 'contested'
+        ? `Competing equally grounded or incomparable evidence for ${conflict.entityId}.${conflict.key} remains contested; inspect exact source and scope.`
+        : `Conflicting observed values for ${conflict.entityId}.${conflict.key}.`,
+    affectedIds: [conflict.entityId],
     proof: proof(graph, 'evidence.explicit-conflict', graph.nodes.filter(node => node.id === conflict.entityId), [], 'audit'),
   }));
   const context = graphQueryContext(graph);

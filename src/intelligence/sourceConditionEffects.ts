@@ -339,7 +339,7 @@ export async function projectTwoHopSourceQuestion(input: {
  * that now runs during graph construction. No checkout, reparse or new graph.
  * An incomplete/mismatched record falls through to the exact source path.
  */
-function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode): Record<string, unknown> | null {
+export function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode): Record<string, unknown> | null {
   const context = graphQueryContext(graph);
   const summaryEdges = context.outgoing(symbol.id).filter(edge =>
     edge.kind === 'has-source-control' && edge.status === 'resolved' && Boolean(edge.to));
@@ -404,8 +404,25 @@ function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode):
   }
   // A source guard may have multiple truth requirements. The exact requirements
   // remain owned by each effect fact; the graph's edges navigate their predicates.
-  const branchIds = new Set(branches.map(branch => branch.id));
-  if (effects.some(effect => effect.requiredConditions.some(req => !branchIds.has(req.conditionId)))) return null;
+  const branchById = new Map(branches.map((branch, index) =>
+    [branch.id, branchNodes[index]?.id] as const));
+  if (effects.some(effect => effect.requiredConditions.some(req => !branchById.has(req.conditionId)))) return null;
+  // A positive derived execution fact needs every source-premise edge with
+  // the exact TRUE/FALSE polarity from its owning expression. A lost or
+  // contradictory edge cannot be turned into proof merely from a node label.
+  for (const [index, effect] of effects.entries()) {
+    const effectId = effectNodes[index]?.id;
+    if (!effectId) return null;
+    const observed = context.outgoing(effectId).filter(edge =>
+      edge.kind === 'requires-condition' && edge.status === 'resolved');
+    const expectedKeys = effect.requiredConditions.map(req => {
+      const target = branchById.get(req.conditionId);
+      return target + ':' + (req.expectedTruth ? 'source-condition-true' : 'source-condition-false');
+    });
+    const actualKeys = observed.map(edge => edge.to + ':' + edge.strategy);
+    if (expectedKeys.length !== actualKeys.length
+      || expectedKeys.some(key => !actualKeys.includes(key))) return null;
+  }
   branches.sort((a, b) => (a.sourceOffset ?? 0) - (b.sourceOffset ?? 0));
   effects.sort((a, b) => (a.sourceOffset ?? 0) - (b.sourceOffset ?? 0));
   const maxRows = MAX_PREVIEW_ROWS;
