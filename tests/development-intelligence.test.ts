@@ -1156,7 +1156,19 @@ test('sequential semantic orientation batch matches standalone pinned-depth outp
     assert.deepEqual(batch.items.map((item: any) => item.routing.semanticDepth), ['nucleus', 'expanded', 'exhaustive']);
     for (let index = 0; index < questions.length; index += 1) {
       const standalone = await queryWorkbench({ project: fixture.project, graphId: graph.graphId, text: questions[index]! }) as any;
-      assert.deepEqual(batch.items[index].result, standalone.result, 'batch structural reuse must preserve the full per-depth semantic result');
+      // Operational durations are per request and intentionally differ.
+      // Compare the semantic projection exactly, not its ephemeral timing receipt.
+      const { observability: batchTiming, ...batchSemantics } = batch.items[index].result;
+      const { observability: singleTiming, ...standaloneSemantics } = standalone.result;
+      for (const diagnostic of [batchTiming, singleTiming]) {
+        assert.equal(diagnostic?.owner, 'di-query-orientation');
+        assert.equal(diagnostic?.graphId, graph.graphId);
+        assert.equal(diagnostic?.ephemeral, true);
+        assert.ok(Object.values(diagnostic?.phaseMs ?? {}).every((ms: any) =>
+          typeof ms === 'number' && ms >= 0 && Number.isFinite(ms)));
+      }
+      assert.deepEqual(batchSemantics, standaloneSemantics,
+        'batch structural reuse must preserve the full semantic result independently of per-request timing');
       assert.equal(batch.items[index].intent, standalone.intent);
     }
   } finally {
