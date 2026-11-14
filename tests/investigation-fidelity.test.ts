@@ -108,6 +108,22 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     assert.equal(compiledControl.result.proof.sourceDerivedExecution.establishedEffectFacts, 2);
     assert.equal(compiledControl.result.proof.sourceDerivedExecution.runtimeWitnessRequiredForSourceFact, false);
     assert.equal(compiledControl.result.proof.sourceDerivedExecution.runtimeObserved, false);
+    const sourceAssessment = await callTool('query_intelligence', {
+      ...input, question: 'What does guarded do?',
+    }) as any;
+    assert.equal(sourceAssessment.answerStatus, 'supported');
+    assert.equal(sourceAssessment.conditionEffects.mode, 'canonical-source-condition-effects');
+    assert.equal(sourceAssessment.claims.length, 1);
+    const established = sourceAssessment.claims[0];
+    assert.equal(established.type, 'source-derived-execution');
+    assert.equal(established.status, 'supported');
+    assert.equal(established.proof.ruleId, 'source.conditional-effect.exact-revision.v1');
+    assert.equal(established.proof.admissibility.purpose, 'existence',
+      'source fact is proof of a technical occurrence, not a capability realization');
+    assert.ok(established.proof.evidence.some((item: any) => item.kind === 'source-effect-syntax'));
+    assert.ok(established.proof.edgeIds.length >= 2);
+    assert.match(established.statement, /Predicate satisfiability, actual runtime execution/u);
+    assert.equal(sourceAssessment.policy.sourceSyntaxNotRuntime, true);
     assert.match(compiledControl.answer, /not whether the conditions are true/);
     const ordinaryCalls = await queryWorkbench({ ...input,
       text: 'What does ownerStored call?' }) as any;

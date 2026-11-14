@@ -1,7 +1,7 @@
 import type { EvidenceRecord, GraphCoverageStatus, GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { graphQueryContext } from './queryContext.js';
-import { nodeKindsForFacet, relationshipKindContract } from './graphKnowledge.js';
+import { nodeKindsForFacet, relationshipKindContract, canonicalSourceFactProofEstablished, sourceDerivedTechnicalEdge } from './graphKnowledge.js';
 import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
 import { projectOrientation } from './orientation.js';
@@ -60,7 +60,7 @@ export interface RealizationHypothesis {
 
 export interface IntelligenceClaim {
   id: string;
-  type: 'entity-exists' | 'relationship-resolved' | 'facet-observed' | 'contract-facet' | 'hypothesis-ruled-out';
+  type: 'entity-exists' | 'relationship-resolved' | 'facet-observed' | 'contract-facet' | 'hypothesis-ruled-out' | 'source-derived-execution';
   status: AssessmentStatus;
   statement: string;
   subjectId: string | null;
@@ -630,24 +630,75 @@ export function assessGraph(graph: IntelligenceGraph, question: string,
   };
 }
 
+/**
+ * Reuse canonical source facts as ordinary intelligence claims. A conditional
+ * source path is a positive, evidence-qualified technical fact. It is NOT a
+ * runtime event, unconditional path guarantee, or feature-realization path.
+ * Return bounded explicit evidence while the canonical projection validates
+ * the complete selected function's source premises.
+ */
+function sourceDerivedExecutionClaims(graph: IntelligenceGraph,
+  conditional: Record<string, unknown>): IntelligenceClaim[] {
+  if (conditional.mode !== 'canonical-source-condition-effects'
+    || conditional.status !== 'supported') return [];
+  const derived = (conditional.proof as any)?.sourceDerivedExecution;
+  const functionId = (conditional.identity as any)?.functionId;
+  const count = Number(derived?.establishedEffectFacts ?? 0);
+  if (derived?.status !== 'established' || !Number.isSafeInteger(count)
+    || count < 1 || typeof functionId !== 'string') return [];
+  const context = graphQueryContext(graph);
+  const subject = context.node(functionId);
+  if (!subject) return [];
+  const effectPairs = context.outgoing(subject.id)
+    .filter(edge => edge.kind === 'has-effect' && edge.status === 'resolved' && Boolean(edge.to))
+    .map(edge => ({ edge, node: context.node(edge.to!) }))
+    .filter((pair): pair is {edge: GraphEdge; node: GraphNode} =>
+      Boolean(pair.node && canonicalSourceFactProofEstablished(pair.node)));
+  if (effectPairs.length !== count) return [];
+  const selected = effectPairs.slice(0, 12);
+  const guardEdges = selected.flatMap(pair => context.outgoing(pair.node.id)
+    .filter(edge => edge.kind === 'requires-condition' && sourceDerivedTechnicalEdge(edge)));
+  const guardNodes = guardEdges.map(edge => edge.to ? context.node(edge.to) : undefined)
+    .filter((node): node is GraphNode => Boolean(node));
+  const linked = [subject, ...selected.map(pair => pair.node), ...guardNodes];
+  const edges = [...selected.map(pair => pair.edge), ...guardEdges];
+  const sampleCount = selected.length;
+  return [claim({
+    type: 'source-derived-execution',
+    status: 'supported',
+    subjectId: subject.id,
+    statement: 'Exact source revision ' + graph.repositoryRevision + ' establishes '
+      + count + ' direct source-defined effect occurrence(s) in '
+      + (subject.name ?? subject.id) + ' under recorded necessary guard conditions. '
+      + 'This claim includes ' + sampleCount + ' bounded source-evidence sample(s). '
+      + 'Predicate satisfiability, actual runtime execution and external effects are separate claims.',
+    proof: proof(graph, 'source.conditional-effect.exact-revision.v1',
+      linked, edges, 'existence'),
+  })];
+}
+
 export async function queryIntelligence(input: { project: string; question: string; ref?: string; graphId?: string; requiredFacets?: RealizationFacet[] }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   if (!(input.requiredFacets?.length)) {
     const conditionalSource = await querySourceConditionEffects({
       graph, project: input.project, question: input.question,
     });
-    if (conditionalSource) return {
+    if (conditionalSource) {
+      const sourceClaims = sourceDerivedExecutionClaims(graph, conditionalSource);
+      return {
       project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
       analyzerVersion: graph.analyzerVersion, question: input.question,
       mode: 'source-condition-effects',
       answerStatus: conditionalSource.status === 'supported' ? 'supported' : 'unproven',
       answer: sourceConditionsAnswer(conditionalSource),
       conditionEffects: conditionalSource,
-      // AST source observations are not authenticated execution/behavior claims.
-      claims: [], findings: [], realization: null,
+      // A graph-backed source fact can be an established claim without
+      // claiming authentication, runtime behavior or product realization.
+      claims: sourceClaims, findings: [], realization: null,
       policy: { sourceSyntaxNotRuntime: true, expectedValueNotProven: true,
         testReplacementNotProven: true, graphAuthorityUnchanged: true },
-    };
+      };
+    }
   }
   return assessGraph(graph, input.question, input.requiredFacets);
 }
