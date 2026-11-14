@@ -59,7 +59,13 @@ export function buildSourceConditionGraphFacts(input: {
       sourceId, kind: 'source-condition', locator: at,
       name: 'Condition in ' + (owner.name ?? owner.id),
       value: { ...branch, functionId: owner.id, sourceOnly: true,
-        runtimeObserved: false, proofRule },
+        runtimeObserved: false, proofRule, sourceSha256,
+        sourceTruth: {
+          status: 'established', proposition: 'source-condition-occurrence',
+          evidenceGrade: 'exact-source-derivation',
+          sourceSha256, proofRule, scope: 'selected-source-revision',
+          predicateSatisfiabilityProven: false, runtimeObserved: false,
+        } },
       layer: 'structural', checkpoint: false, evidenceIds: [proof.id],
     });
     evidence.push(proof);observations.push(node);byCondition.set(branch.id,node);
@@ -87,7 +93,19 @@ export function buildSourceConditionGraphFacts(input: {
       sourceId, kind: 'source-effect', locator: at,
       name: 'Source ' + effect.kind + ' in ' + (owner.name ?? owner.id),
       value: { ...effect, functionId: owner.id, sourceOnly: true,
-        proofRule },
+        proofRule, sourceSha256,
+        // The condition/effect occurrence and its necessary source premises
+        // are established. The premises' satisfiability and a runtime
+        // witness are separate propositions, not prerequisites for this fact.
+        derivedExecution: {
+          status: 'established',
+          proposition: 'source-conditional-effect',
+          evidenceGrade: 'exact-source-derivation',
+          sourceSha256, proofRule, scope: 'selected-source-revision',
+          requiredConditions: [...effect.requiredConditions],
+          predicateSatisfiabilityProven: false,
+          runtimeObserved: false,
+        } },
       layer: 'structural', checkpoint: false, evidenceIds: [proof.id],
     });
     evidence.push(proof);observations.push(node);

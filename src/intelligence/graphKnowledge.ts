@@ -151,6 +151,66 @@ export function relationshipKindContract(kind: string): RelationshipKindContract
     proof: 'not-established', fromTraits: [], toTraits: [],
   };
 }
+/**
+ * Resolve competing observations of the SAME technical source occurrence.
+ * This does not rank unrelated runtime observations against possible paths:
+ * different revisions, owners and claim types are incomparable. The weaker
+ * record remains evidence of a disagreement, never silently disappears.
+ */
+export type SourceFactReconciliation = {
+  outcome: 'identical' | 'stronger-left' | 'stronger-right' | 'contested';
+  reason: string;
+};
+const EXACT_SOURCE_FACT_KINDS = new Set(['source-condition', 'source-effect']);
+export function isCanonicalSourceFact(node: GraphNode): boolean {
+  return EXACT_SOURCE_FACT_KINDS.has(node.kind);
+}
+function sourceFactData(node: GraphNode): Record<string, unknown> | null {
+  return node.value && typeof node.value === 'object' && !Array.isArray(node.value)
+    ? node.value as Record<string, unknown> : null;
+}
+function qualifiesExactSourceProof(node: GraphNode): boolean {
+  const v = sourceFactData(node);
+  const proof = v?.[node.kind === 'source-condition' ? 'sourceTruth' : 'derivedExecution'];
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return false;
+  const data = proof as Record<string, unknown>;
+  return node.sourceId.startsWith('repo:') && (node.evidenceIds?.length ?? 0) > 0
+    && v?.sourceOnly === true && v.runtimeObserved === false
+    && data.status === 'established'
+    && data.evidenceGrade === 'exact-source-derivation'
+    && data.scope === 'selected-source-revision'
+    && data.runtimeObserved === false
+    && data.proofRule === 'typescript-source-control-graph.v1'
+    && typeof data.sourceSha256 === 'string'
+    && /^[a-f0-9]{64}$/u.test(data.sourceSha256)
+    && data.sourceSha256 === v.sourceSha256;
+}
+export function reconcileCanonicalSourceFact(left: GraphNode, right: GraphNode): SourceFactReconciliation {
+  if (!isCanonicalSourceFact(left) || left.kind !== right.kind
+    || left.id !== right.id || left.sourceId !== right.sourceId) {
+    return { outcome: 'contested', reason: 'identity-or-fact-scope-mismatch' };
+  }
+  const l = sourceFactData(left), r = sourceFactData(right);
+  if (!l || !r || l.functionId !== r.functionId || typeof l.functionId !== 'string') {
+    return { outcome: 'contested', reason: 'source-owner-not-comparable' };
+  }
+  const leftSha = typeof l.sourceSha256 === 'string' ? l.sourceSha256 : null;
+  const rightSha = typeof r.sourceSha256 === 'string' ? r.sourceSha256 : null;
+  if (leftSha && rightSha && leftSha !== rightSha) {
+    return { outcome: 'contested', reason: 'different-exact-source-bytes' };
+  }
+  if (JSON.stringify(l) === JSON.stringify(r)) {
+    return { outcome: 'identical', reason: 'same-fact-and-source-scope' };
+  }
+  const leftEstablished = qualifiesExactSourceProof(left);
+  const rightEstablished = qualifiesExactSourceProof(right);
+  if (leftEstablished !== rightEstablished) {
+    return { outcome: leftEstablished ? 'stronger-left' : 'stronger-right',
+      reason: 'exact-source-derived-proof-over-unqualified-assertion' };
+  }
+  return { outcome: 'contested', reason: 'incomparable-or-equally-grounded-source-evidence' };
+}
+
 export function observedRelationshipContracts(graph: IntelligenceGraph): RelationshipKindContract[] {
   return [...new Set(graph.edges.map(edge => edge.kind))].sort()
     .map(relationshipKindContract);

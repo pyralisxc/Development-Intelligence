@@ -177,6 +177,9 @@ export interface ExplicitValueConflict {
   key: string;
   leftValue: unknown;
   rightValue: unknown;
+  /** Explicit same-claim reconciliation, not silent evidence deletion. */
+  resolution?: 'higher-source-proof-preferred' | 'contested';
+  preferredEvidenceIds?: string[];
 }
 
 export type GraphCoverageStatus = 'complete' | 'partial' | 'unsupported' | 'skipped' | 'failed';
