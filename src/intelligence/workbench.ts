@@ -499,8 +499,9 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
 function orientationMetric(
   node: GraphNode,
   byId: ReadonlyMap<string, GraphNode>,
-  incident: GraphEdge[],
+  incident: readonly GraphEdge[],
   rankBy: ScopeRankBy,
+  neighborLocation: (node: GraphNode) => { file: string | null; area: string | null },
 ): {
   fanIn: number;
   fanOut: number;
@@ -515,21 +516,25 @@ function orientationMetric(
   callees: number;
   rankValue: number;
 } {
-  const resolved = incident.filter(edge => edge.status === 'resolved');
+  // One incident-edge pass, not separate resolved/candidate/inbound/outbound
+  // filters plus repeated locator parsing for both incident endpoints.
   const neighborFiles = new Set<string>();
   const neighborAreas = new Set<string>();
-  let semanticLinks = 0;
-  let representationLinks = 0;
-  let callers = 0;
-  let callees = 0;
-
-  for (const edge of resolved) {
+  const resolvedKinds = new Set<string>();
+  let fanIn = 0, fanOut = 0, candidate = 0, unresolved = 0;
+  let semanticLinks = 0, representationLinks = 0, callers = 0, callees = 0;
+  for (const edge of incident) {
+    if (edge.status === 'candidate') { candidate += 1; continue; }
+    if (edge.status === 'unresolved') { unresolved += 1; continue; }
+    if (edge.status !== 'resolved') continue;
+    resolvedKinds.add(edge.kind);
+    if (edge.to === node.id) fanIn += 1;
+    if (edge.from === node.id) fanOut += 1;
     const neighborId = edge.from === node.id ? edge.to : edge.from;
     const neighbor = neighborId ? byId.get(neighborId) : undefined;
     if (neighbor) {
-      const file = sourceFile(neighbor.locator);
+      const { file, area } = neighborLocation(neighbor);
       if (file) neighborFiles.add(file);
-      const area = graphArea(neighbor);
       if (area) neighborAreas.add(area);
       if (neighbor.layer === 'semantic') semanticLinks += 1;
       if (neighbor.layer === 'representation') representationLinks += 1;
@@ -539,19 +544,10 @@ function orientationMetric(
       if (edge.from === node.id) callees += 1;
     }
   }
-
   const metrics = {
-    fanIn: resolved.filter(edge => edge.to === node.id).length,
-    fanOut: resolved.filter(edge => edge.from === node.id).length,
-    crossFileReach: neighborFiles.size,
-    crossAreaReach: neighborAreas.size,
-    relationshipDiversity: new Set(resolved.map(edge => edge.kind)).size,
-    candidate: incident.filter(edge => edge.status === 'candidate').length,
-    unresolved: incident.filter(edge => edge.status === 'unresolved').length,
-    semanticLinks,
-    representationLinks,
-    callers,
-    callees,
+    fanIn, fanOut, crossFileReach: neighborFiles.size,
+    crossAreaReach: neighborAreas.size, relationshipDiversity: resolvedKinds.size,
+    candidate, unresolved, semanticLinks, representationLinks, callers, callees,
   };
   const rankValue = rankBy === 'fan-in' ? metrics.fanIn
     : rankBy === 'fan-out' ? metrics.fanOut
@@ -1763,10 +1759,25 @@ export async function scopeOrientation(input: {
   }
   const metricCache = reusable?.metrics ?? new Map<string, ReturnType<typeof orientationMetric>>();
   if (reusable) reusable.metrics = metricCache;
+  // Node locations are stable inside the same exact-revision graph. Derive
+  // path/area once rather than parsing the same neighbor locator for each edge.
+  const sourceLocationById = new Map<string, { file: string | null; area: string | null }>();
+  const neighborLocation = (node: GraphNode) => {
+    const cached = sourceLocationById.get(node.id);
+    if (cached) return cached;
+    const file = sourceFile(node.locator);
+    const area = file ? (() => {
+      const parts = file.replace(/^\\.\\//u, '').split('/');
+      return parts[0] === 'src' && parts[1] ? 'src/' + parts[1] : parts[0] ?? null;
+    })() : null;
+    const location = { file, area };
+    sourceLocationById.set(node.id, location);
+    return location;
+  };
   const scopedMetrics = (node: GraphNode): ReturnType<typeof orientationMetric> => {
     const existing = metricCache.get(node.id);
     if (existing) return existing;
-    const calculated = orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy);
+    const calculated = orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy, neighborLocation);
     metricCache.set(node.id, calculated);
     return calculated;
   };
@@ -1808,8 +1819,16 @@ export async function scopeOrientation(input: {
   });
 
   const roleOrder: OrientationRole[] = ['semantic', 'interface', 'implementation', 'effects', 'integration', 'representation', 'structural'];
+  const roleMembers = new Map<OrientationRole, GraphNode[]>();
+  // Group once, in original graph order so stable tied rankings remain exact.
+  for (const node of nodes) {
+    const role = orientationRole(node);
+    const members = roleMembers.get(role);
+    if (members) members.push(node);
+    else roleMembers.set(role, [node]);
+  }
   const roleGroups = roleOrder.flatMap(role => {
-    const members = nodes.filter(node => orientationRole(node) === role);
+    const members = roleMembers.get(role) ?? [];
     if (!members.length) return [];
     const sorted = members
       .map(node => ({ node, metrics: scopedMetrics(node) }))
