@@ -1,5 +1,4 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
-import { graphQueryContext } from './queryContext.js';
 
 export type DerivedMotifKind = 'composition-root' | 'state-machine' | 'adapter' | 'pipeline' | 'persistence-owner';
 export type MotifConfidence = 'medium' | 'high';
@@ -164,7 +163,9 @@ function motif(
 export function deriveMotifs(graph: IntelligenceGraph, selected: GraphNode,
   suppliedContext?: MotifReadContext): DerivedMotif[] {
   if ((selected.layer ?? 'structural') === 'semantic') return [];
-  const context = suppliedContext ?? graphQueryContext(graph);
+  // Individual motif questions should not allocate every global query index.
+  // A multi-entity semantic bootstrap can pass its shared scoped context.
+  const context = suppliedContext ?? scopedMotifReadContext(graph, [selected.id]);
   const file = containingFile(context, selected);
   const localMembers = members(context, selected);
   const fileMembers = file && file.id !== selected.id ? members(context, file) : localMembers;

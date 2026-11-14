@@ -4,6 +4,7 @@ import test from 'node:test';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
 import { bootstrapSemanticCandidates } from '../src/intelligence/semanticBootstrap.js';
 import { deriveMotifs, scopedMotifReadContext } from '../src/intelligence/motifs.js';
+import { graphQueryContext } from '../src/intelligence/queryContext.js';
 
 function node(id: string, kind: string, locator: string, name?: string, layer: 'structural' | 'representation' = 'structural'): GraphNode {
   return {
@@ -666,6 +667,8 @@ test('scoped canonical motif adjacency exactly preserves full-index motif proof'
   const scoped = scopedMotifReadContext(input, [selected.id, root.id]);
   const source = deriveMotifs(input, selected);
   assert.ok(source.some(item => item.kind === 'composition-root'));
+  assert.deepEqual(deriveMotifs(input, selected, graphQueryContext(input)), source,
+    'scoped default must preserve canonical full-index motif evidence');
   assert.deepEqual(deriveMotifs(input, selected, scoped), source,
     'scoping may reduce index allocation, not change motif interpretation or proof');
   assert.deepEqual(deriveMotifs(input, root, scoped), deriveMotifs(input, root));
