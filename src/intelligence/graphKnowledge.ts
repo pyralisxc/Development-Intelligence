@@ -34,7 +34,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   class: ['container', 'symbol'], struct: ['container', 'symbol'],
   interface: ['symbol'], type: ['symbol'], declaration: ['symbol'],
   function: ['callable', 'container', 'symbol'], method: ['callable', 'container', 'symbol'],
-  constructor: ['callable', 'symbol'],
+  'constructor': ['callable', 'symbol'] as NodeTrait[],
   'sql-function': ['callable', 'resource'], 'sql-procedure': ['callable', 'resource'],
   'import-binding': ['symbol'], 'call-reference': ['source-site'],
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
