@@ -44,6 +44,9 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
   'rpc-call': ['source-site', 'boundary'], 'navigation-call': ['source-site'],
   'source-try-return': ['source-site', 'effect'], 'source-catch-return': ['source-site', 'effect'],
+  'source-control-summary': ['source-site'],
+  'source-condition': ['source-site', 'predicate'],
+  'source-effect': ['source-site', 'effect'],
   'state-write': ['source-site', 'effect'], 'state-binding': ['resource'],
   'sql-table': ['resource'], 'sql-reference': ['resource'],
   'ui-element': ['source-site', 'boundary'], 'mcp-tool': ['boundary'],
@@ -113,6 +116,12 @@ define(['callback-argument'], 'reference', 'dependency', false, 'syntax',
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
   'automated-by', 'constructs'], 'invocation', 'execution', true, 'bound-source');
+define(['has-source-control'], 'condition', 'composition-context', false, 'source-conditional',
+  ['callable'], ['source-site']);
+define(['has-condition'], 'condition', 'composition-context', false, 'source-conditional',
+  ['callable'], ['predicate']);
+define(['has-effect'], 'effect', 'composition-context', false, 'source-conditional',
+  ['callable'], ['effect']);
 define(['try-returns'], 'effect', 'execution', false, 'source-conditional',
   ['callable'], ['source-site']);
 define(['catch-returns'], 'effect', 'execution', false, 'source-conditional',

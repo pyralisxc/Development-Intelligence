@@ -3,6 +3,7 @@ import type { AnalyzeContext, AnalyzeResult } from '../model.js';
 import { evidenceRecord, observation, redactSensitiveValue, resolution, semanticEntity, semanticRelationship } from '../model.js';
 import type { EvidenceRecord, Observation } from '../../types.js';
 import { callbackIdentifier, callLeafName, destructuredParameterNames, templateTarget } from './typescriptBehavior.js';
+import { buildSourceConditionGraphFacts } from '../sourceConditionGraph.js';
 
 const UI_TAGS = new Set(['button', 'a', 'input', 'select', 'textarea', 'form', 'label']);
 const SEMANTIC_DECLARATION_FIELD = 'developmentIntelligence';
@@ -802,6 +803,25 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       }
     }
 
+    // Compile condition/effect facts while the file's AST is already available.
+    // A callback's body belongs to its OWN callable, not its enclosing creator.
+    if (pushedFunction) {
+      const owner = functionOwner();
+      const body = ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)
+        ? node.body
+        : ts.isVariableDeclaration(node)
+          ? variableFunctionExpression(node.initializer)?.body
+          : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) ? node.body : undefined;
+      if (owner && body && ts.isBlock(body)) {
+        const facts = buildSourceConditionGraphFacts({
+          parsed: sourceFile, sourcePath: context.locatorBase, sourceText: context.text,
+          sourceId: context.source.id, owner, statements: body.statements,
+        });
+        observations.push(...facts.observations);
+        resolutions.push(...facts.resolutions);
+        evidence.push(...(facts.evidence ?? []));
+      }
+    }
     ts.forEachChild(node, visit);
     if (pushedFunction) functionStack.pop();
     if (pushedScope) scopeStack.pop();
