@@ -7,15 +7,16 @@ import { composeTwoHopSourceEffects } from './twoHopSourceComposition.js';
 import { projectRpcSqlSourceCandidates } from './rpcSqlSourceCandidates.js';
 import { parseRpcDiscoveryQuestion, projectRpcDiscoveryQuestion, rpcDiscoveryAnswer } from './rpcDiscoveryQuestion.js';
 import type { GraphNode, IntelligenceGraph } from '../types.js';
+import { analyzeSourceConditionStatements,
+  type SourceCondition, type SourceEffect, type SourceRequirement } from './sourceConditionFacts.js';
+export type { SourceCondition, SourceEffect, SourceRequirement } from './sourceConditionFacts.js';
 import { graphQueryContext } from './queryContext.js';
+import { sourceDerivedTechnicalEdge, canonicalSourceFactProofEstablished } from './graphKnowledge.js';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
 
 export const CONDITION_EFFECT_LENS = 'typescript-ast-condition-effect-source.v1';
 const MAX_FILE_BYTES = 1_000_000;
-const MAX_BRANCHES = 256;
-const MAX_EFFECTS = 512;
-const MAX_DEPTH = 24;
 const MAX_PREVIEW_ROWS = 80;
 const SOURCE_SUBJECT_SYNTAX: readonly RegExp[] = [
   /\bunder what conditions does\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/iu,
@@ -59,30 +60,6 @@ export function isConditionEffectQuestion(question: string): boolean {
     || parseTwoHopSourceQuestion(question) !== null || explicitCallableSubject(question) !== null;
 }
 
-export interface SourceRequirement {
-  conditionId: string;
-  expectedTruth: boolean;
-}
-export interface SourceEffect {
-  kind: 'return' | 'return-call' | 'throw' | 'call' | 'write' | 'initializer-call';
-  sourceLine: number;
-  expression: string;
-  expressionSha256: string;
-  requiredConditions: SourceRequirement[];
-  /** Syntax presence is established; runtime execution is not. */
-  runtimeObserved: false;
-}
-export interface SourceCondition {
-  id: string;
-  sourceLine: number;
-  predicate: string;
-  predicateSha256: string;
-  priorRequirements: SourceRequirement[];
-  trueBranchTerminates: boolean;
-  falseBranchTerminates: boolean;
-  conditionsAreSourceSyntaxOnly: true;
-}
-
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -107,51 +84,6 @@ function scriptKind(source: string): ts.ScriptKind {
   if (/\.(?:tsx|jsx)$/iu.test(source)) return ts.ScriptKind.TSX;
   if (/\.(?:mjs|cjs|js)$/iu.test(source)) return ts.ScriptKind.JS;
   return ts.ScriptKind.TS;
-}
-function expression(node: ts.Node | undefined, depth = 0): string {
-  if (!node || depth > 8) return '[expression]';
-  if (ts.isIdentifier(node)) return node.text;
-  if (node.kind === ts.SyntaxKind.ThisKeyword) return 'this';
-  if (ts.isPropertyAccessExpression(node)) return expression(node.expression, depth + 1) + '.' + node.name.text;
-  if (ts.isElementAccessExpression(node)) return expression(node.expression, depth + 1) + '[index]';
-  if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) return '[string-literal]';
-  if (ts.isNumericLiteral(node)) return '[number-literal]';
-  if (node.kind === ts.SyntaxKind.TrueKeyword) return 'true';
-  if (node.kind === ts.SyntaxKind.FalseKeyword) return 'false';
-  if (node.kind === ts.SyntaxKind.NullKeyword) return 'null';
-  if (ts.isParenthesizedExpression(node)) return '(' + expression(node.expression, depth + 1) + ')';
-  if (ts.isPrefixUnaryExpression(node)) return (ts.tokenToString(node.operator) ?? '[unary]') + expression(node.operand, depth + 1);
-  if (ts.isBinaryExpression(node)) {
-    const allowed = new Set([ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken,
-      ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
-      ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken,
-      ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.LessThanToken,
-      ts.SyntaxKind.GreaterThanToken]);
-    return allowed.has(node.operatorToken.kind)
-      ? expression(node.left, depth + 1) + ' ' + (ts.tokenToString(node.operatorToken.kind) ?? '?') + ' ' + expression(node.right, depth + 1)
-      : '[binary-expression]';
-  }
-  if (ts.isCallExpression(node)) return expression(node.expression, depth + 1) + '(...)';
-  if (ts.isAwaitExpression(node)) return 'await ' + expression(node.expression, depth + 1);
-  if (ts.isNewExpression(node)) return 'new ' + expression(node.expression, depth + 1) + '(...)';
-  if (ts.isConditionalExpression(node)) return '[conditional-expression]';
-  return '[' + (ts.SyntaxKind[node.kind] ?? 'unsupported-expression') + ']';
-}
-function returnCall(node: ts.Expression | undefined): boolean {
-  return Boolean(node && (ts.isCallExpression(node) || (ts.isAwaitExpression(node) && ts.isCallExpression(node.expression))));
-}
-function definitelyTerminates(node: ts.Statement): boolean {
-  if (ts.isReturnStatement(node) || ts.isThrowStatement(node)) return true;
-  if (ts.isBlock(node)) {
-    const parts = [...node.statements];
-    // A terminating final statement prevents normal fallthrough even when
-    // earlier nested if statements may themselves return or throw.
-    return parts.length > 0 && definitelyTerminates(parts[parts.length - 1]!);
-  }
-  if (ts.isIfStatement(node)) return Boolean(node.elseStatement
-    && definitelyTerminates(node.thenStatement)
-    && definitelyTerminates(node.elseStatement));
-  return false;
 }
 function callableBodies(parsed: ts.SourceFile, name: string, line: number): ts.Statement[] | null {
   const matches: ts.Statement[][] = [];
@@ -195,75 +127,8 @@ export function projectSourceConditionEffects(input: {
     parseErrors, branches: [], effects: [], sourceOnly: true, currentRuntimeObserved: false,
   };
 
-  const branches: SourceCondition[] = [];
-  const effects: SourceEffect[] = [];
-  const unknownConstructs: Array<{ line: number; kind: string }> = [];
-  let boundedOut = false;
-  const lineOf = (node: ts.Node) => parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
-  const recordEffect = (kind: SourceEffect['kind'], node: ts.Node, rendered: string, requires: SourceRequirement[]) => {
-    if (effects.length >= MAX_EFFECTS) { boundedOut = true; return; }
-    effects.push({ kind, sourceLine: lineOf(node), expression: rendered.slice(0, 180),
-      expressionSha256: digest(node.getText(parsed)),
-      requiredConditions: [...requires], runtimeObserved: false });
-  };
-  const scan = (list: ts.Statement[], requirements: SourceRequirement[], depth: number): void => {
-    if (depth > MAX_DEPTH) { boundedOut = true; return; }
-    const active = [...requirements];
-    for (const stmt of list) {
-      if (boundedOut) return;
-      if (ts.isIfStatement(stmt)) {
-        if (branches.length >= MAX_BRANCHES) { boundedOut = true; return; }
-        const id = sourcePath + ':condition:' + stmt.expression.getStart(parsed);
-        const branch: SourceCondition = {
-          id, sourceLine: lineOf(stmt.expression),
-          predicate: expression(stmt.expression).slice(0, 220),
-          predicateSha256: digest(stmt.expression.getText(parsed)),
-          priorRequirements: [...active],
-          trueBranchTerminates: definitelyTerminates(stmt.thenStatement),
-          falseBranchTerminates: Boolean(stmt.elseStatement && definitelyTerminates(stmt.elseStatement)),
-          conditionsAreSourceSyntaxOnly: true,
-        };
-        branches.push(branch);
-        const thenNodes = ts.isBlock(stmt.thenStatement) ? [...stmt.thenStatement.statements] : [stmt.thenStatement];
-        scan(thenNodes, [...active, { conditionId: id, expectedTruth: true }], depth + 1);
-        if (stmt.elseStatement) {
-          const elseNodes = ts.isBlock(stmt.elseStatement) ? [...stmt.elseStatement.statements] : [stmt.elseStatement];
-          scan(elseNodes, [...active, { conditionId: id, expectedTruth: false }], depth + 1);
-        }
-        if (branch.trueBranchTerminates && branch.falseBranchTerminates) return;
-        if (branch.trueBranchTerminates) active.push({ conditionId: id, expectedTruth: false });
-        else if (branch.falseBranchTerminates) active.push({ conditionId: id, expectedTruth: true });
-      } else if (ts.isReturnStatement(stmt)) {
-        recordEffect(returnCall(stmt.expression) ? 'return-call' : 'return',
-          stmt, expression(stmt.expression), active);
-        return;
-      } else if (ts.isThrowStatement(stmt)) {
-        recordEffect('throw', stmt, expression(stmt.expression), active);
-        return;
-      } else if (ts.isBlock(stmt)) scan([...stmt.statements], active, depth + 1);
-      else if (ts.isExpressionStatement(stmt)) {
-        const e = stmt.expression;
-        if (ts.isCallExpression(e) || (ts.isAwaitExpression(e) && ts.isCallExpression(e.expression))) {
-          recordEffect('call', stmt, expression(e), active);
-        } else if (ts.isBinaryExpression(e) &&
-          e.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && e.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
-          recordEffect('write', stmt, expression(e.left), active);
-        }
-      } else if (ts.isVariableStatement(stmt)) {
-        for (const decl of stmt.declarationList.declarations) {
-          if (decl.initializer && (ts.isCallExpression(decl.initializer)
-            || (ts.isAwaitExpression(decl.initializer) && ts.isCallExpression(decl.initializer.expression)))) {
-            recordEffect('initializer-call', decl, expression(decl.initializer), active);
-          }
-        }
-      } else if (ts.isTryStatement(stmt) || ts.isSwitchStatement(stmt)
-        || ts.isForStatement(stmt) || ts.isForInStatement(stmt) || ts.isForOfStatement(stmt)
-        || ts.isWhileStatement(stmt) || ts.isDoStatement(stmt)) {
-        unknownConstructs.push({ line: lineOf(stmt), kind: ts.SyntaxKind[stmt.kind] ?? 'control-flow' });
-      }
-    }
-  };
-  scan(statements, [], 0);
+  const { branches, effects, unknownConstructs, boundedOut, completeForSupportedStatements } =
+    analyzeSourceConditionStatements(parsed, sourcePath, statements);
   const maxRows = Math.max(1, Math.min(MAX_PREVIEW_ROWS, Math.floor(input.maxRows ?? MAX_PREVIEW_ROWS)));
   return {
     status: branches.length || effects.length ? 'supported' : 'unproven',
@@ -274,7 +139,7 @@ export function projectSourceConditionEffects(input: {
       sourcePath, sourceLine: declaredLine, sourceSha256: digest(source), lens: CONDITION_EFFECT_LENS },
     coverage: {
       parseDiagnostics: parseErrors, branchTotal: branches.length, effectTotal: effects.length,
-      unknownConstructs, boundedOut, completeForSupportedStatements: !boundedOut && unknownConstructs.length === 0,
+      unknownConstructs, boundedOut, completeForSupportedStatements,
       presentationTruncated: branches.length > maxRows || effects.length > maxRows,
     },
     branches: branches.slice(0, maxRows), effects: effects.slice(0, maxRows),
@@ -355,21 +220,36 @@ export async function projectTwoHopSourceQuestion(input: {
     return unavailable('source-coverage-or-language-incomplete', {
       callerId: caller.node.id, calleeId: callee.id });
   }
-  const readStarted = performance.now();
-  const texts = await Promise.all(paths.map(p => input.readSource(p!)));
-  const sourceReadMs = performance.now() - readStarted;
-  if (texts.some(v => !v || v.includes('\0'))) {
-    return unavailable('exact-source-unavailable', { callerId: caller.node.id,
-      calleeId: callee.id });
+  // Both callables may already carry the exact same AST facts in canonical W.
+  // If so, compose those facts without resolving Git, rereading source, or
+  // duplicating source parsing in the question path. Older graphs still work.
+  const compiledCaller = projectBuiltSourceControl(graph, caller.node);
+  const compiledCallee = projectBuiltSourceControl(graph, callee);
+  const compiled = compiledCaller?.status === 'supported' && compiledCallee?.status === 'supported';
+  let sourceReadMs = 0;
+  let lensMs = 0;
+  let callerLens: Record<string, unknown>;
+  let calleeLens: Record<string, unknown>;
+  if (compiled) {
+    callerLens = compiledCaller!;
+    calleeLens = compiledCallee!;
+  } else {
+    const readStarted = performance.now();
+    const texts = await Promise.all(paths.map(p => input.readSource(p!)));
+    sourceReadMs = performance.now() - readStarted;
+    if (texts.some(v => !v || v.includes('\0'))) {
+      return unavailable('exact-source-unavailable', { callerId: caller.node.id,
+        calleeId: callee.id });
+    }
+    const lensStarted = performance.now();
+    callerLens = projectSourceConditionEffects({
+      graph, sourcePath: callerPath!, symbol: caller.node, source: texts[0]!,
+    });
+    calleeLens = projectSourceConditionEffects({
+      graph, sourcePath: calleePath!, symbol: callee, source: texts[1]!,
+    });
+    lensMs = performance.now() - lensStarted;
   }
-  const lensStarted = performance.now();
-  const callerLens = projectSourceConditionEffects({
-    graph, sourcePath: callerPath!, symbol: caller.node, source: texts[0]!,
-  });
-  const calleeLens = projectSourceConditionEffects({
-    graph, sourcePath: calleePath!, symbol: callee, source: texts[1]!,
-  });
-  const lensMs = performance.now() - lensStarted;
   if (callerLens.status !== 'supported' || calleeLens.status !== 'supported') {
     return unavailable('source-lens-unavailable', { callerId: caller.node.id,
       calleeId: callee.id });
@@ -427,7 +307,8 @@ export async function projectTwoHopSourceQuestion(input: {
     || !(callerLens.coverage as {completeForSupportedStatements:boolean}).completeForSupportedStatements
     || !(calleeLens.coverage as {completeForSupportedStatements:boolean}).completeForSupportedStatements;
   return {
-    ...base, status: qualified ? 'supported' : 'unproven',
+    ...base, mode: compiled ? 'canonical-source-two-hop-conditions' : base.mode,
+    status: qualified ? 'supported' : 'unproven',
     reason: qualified ? 'exact-two-hop-source-conditions'
       : Object.keys(reasons)[0] ?? 'no-composable-direct-return-call',
     identity: { project: graph.project, graphId: graph.graphId,
@@ -453,6 +334,141 @@ export async function projectTwoHopSourceQuestion(input: {
   };
 }
 
+
+/**
+ * Canonical graph-native projection of the SAME source condition/effect lens
+ * that now runs during graph construction. No checkout, reparse or new graph.
+ * An incomplete/mismatched record falls through to the exact source path.
+ */
+export function projectBuiltSourceControl(graph: IntelligenceGraph, symbol: GraphNode): Record<string, unknown> | null {
+  const context = graphQueryContext(graph);
+  const summaryEdges = context.outgoing(symbol.id).filter(edge =>
+    edge.kind === 'has-source-control' && edge.status === 'resolved' && Boolean(edge.to));
+  if (summaryEdges.length !== 1) return null;
+  const summary = context.node(summaryEdges[0]!.to!);
+  if (summary?.kind !== 'source-control-summary' || !summary.value
+    || typeof summary.value !== 'object' || Array.isArray(summary.value)) return null;
+  const scope = summary.value as Record<string, unknown>;
+  if (scope.functionId !== symbol.id || scope.sourceOnly !== true
+    || scope.runtimeObserved !== false || typeof scope.sourceSha256 !== 'string'
+    || !Array.isArray(scope.unknownConstructs)) return null;
+  const branchNodes = context.outgoing(symbol.id).filter(edge =>
+    edge.kind === 'has-condition' && edge.status === 'resolved' && Boolean(edge.to))
+    .map(edge => context.node(edge.to!));
+  // The full competing evidence remains in the canonical graph. Do not
+  // silently turn two equally grounded contradictory source facts into a
+  // supported answer based on insertion order; fall back to exact source.
+  if (summary.tags?.includes('source-fact-contested')
+    || branchNodes.some(node => node?.tags?.includes('source-fact-contested'))) return null;
+  const effectNodes = context.outgoing(symbol.id).filter(edge =>
+    edge.kind === 'has-effect' && edge.status === 'resolved' && Boolean(edge.to))
+    .map(edge => context.node(edge.to!));
+  if (branchNodes.length !== scope.branchTotal || effectNodes.length !== scope.effectTotal
+    || effectNodes.some(node => node?.tags?.includes('source-fact-contested'))) return null;
+  const derivedExecutionEstablished = effectNodes.filter(
+    (node): node is GraphNode => Boolean(node && canonicalSourceFactProofEstablished(node)),
+  ).length;
+  const conflictedIds = new Set([...branchNodes, ...effectNodes]
+    .filter((node): node is GraphNode => Boolean(node)).map(node => node.id));
+  const disagreements = (graph.explicitValueConflicts ?? []).filter(item =>
+    conflictedIds.has(item.entityId) && item.key === 'value');
+  const branches: SourceCondition[] = [];
+  for (const node of branchNodes) {
+    if (node?.kind !== 'source-condition' || !node.value
+      || typeof node.value !== 'object' || Array.isArray(node.value)) return null;
+    const branch = node.value as Record<string, unknown>;
+    if (branch.functionId !== symbol.id || branch.runtimeObserved !== false
+      || branch.conditionsAreSourceSyntaxOnly !== true
+      || typeof branch.id !== 'string' || typeof branch.predicateSha256 !== 'string') return null;
+    // Return the public source-lens shape: graph ownership/proof metadata is
+    // real but not part of the branch data contract.
+    const { functionId: _owner, sourceOnly: _source, runtimeObserved: _runtime,
+      proofRule: _proofRule, sourceTruth: _sourceTruth, sourceSha256: _sha, ...sourceBranch } = branch;
+    branches.push(sourceBranch as unknown as SourceCondition);
+  }
+  const effects: SourceEffect[] = [];
+  for (const node of effectNodes) {
+    if (node?.kind !== 'source-effect' || !node.value
+      || typeof node.value !== 'object' || Array.isArray(node.value)) return null;
+    const effect = node.value as Record<string, unknown>;
+    if (effect.functionId !== symbol.id || effect.runtimeObserved !== false
+      || typeof effect.expressionSha256 !== 'string'
+      || !Array.isArray(effect.requiredConditions)) return null;
+    const { functionId: _owner, sourceOnly: _source,
+      proofRule: _proofRule, derivedExecution: _derived, sourceSha256: _sha,
+      ...sourceEffect } = effect;
+    effects.push(sourceEffect as unknown as SourceEffect);
+  }
+  // A source guard may have multiple truth requirements. The exact requirements
+  // remain owned by each effect fact; the graph's edges navigate their predicates.
+  const branchById = new Map(branches.map((branch, index) =>
+    [branch.id, branchNodes[index]?.id] as const));
+  if (effects.some(effect => effect.requiredConditions.some(req => !branchById.has(req.conditionId)))) return null;
+  // A positive derived execution fact needs every source-premise edge with
+  // the exact TRUE/FALSE polarity from its owning expression. A lost or
+  // contradictory edge cannot be turned into proof merely from a node label.
+  for (const [index, effect] of effects.entries()) {
+    const effectId = effectNodes[index]?.id;
+    if (!effectId) return null;
+    const observed = context.outgoing(effectId).filter(edge =>
+      edge.kind === 'requires-condition' && sourceDerivedTechnicalEdge(edge));
+    const expectedKeys = effect.requiredConditions.map(req => {
+      const target = branchById.get(req.conditionId);
+      return target + ':' + (req.expectedTruth ? 'source-condition-true' : 'source-condition-false');
+    });
+    const actualKeys = observed.map(edge => edge.to + ':' + edge.strategy);
+    if (expectedKeys.length !== actualKeys.length
+      || expectedKeys.some(key => !actualKeys.includes(key))) return null;
+  }
+  branches.sort((a, b) => (a.sourceOffset ?? 0) - (b.sourceOffset ?? 0));
+  effects.sort((a, b) => (a.sourceOffset ?? 0) - (b.sourceOffset ?? 0));
+  const maxRows = MAX_PREVIEW_ROWS;
+  const truncated = branches.length > maxRows || effects.length > maxRows;
+  return {
+    status: branches.length || effects.length ? 'supported' : 'unproven',
+    mode: 'canonical-source-condition-effects',
+    reason: scope.boundedOut ? 'bounded-canonical-source-control'
+      : branches.length || effects.length ? 'canonical-source-control-graph-facts'
+        : 'no-supported-source-effects',
+    identity: {
+      project: graph.project, graphId: graph.graphId,
+      sourceRevision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
+      functionId: symbol.id, functionName: symbol.name,
+      sourcePath: canonicalPath(symbol), sourceLine: Number(/:(\d+)(?::|$)/u.exec(symbol.locator)?.[1]),
+      sourceSha256: scope.sourceSha256, lens: CONDITION_EFFECT_LENS,
+    },
+    coverage: {
+      parseDiagnostics: 0, branchTotal: branches.length, effectTotal: effects.length,
+      unknownConstructs: scope.unknownConstructs, boundedOut: scope.boundedOut,
+      completeForSupportedStatements: scope.completeForSupportedStatements,
+      presentationTruncated: truncated,
+    },
+    branches: branches.slice(0, maxRows), effects: effects.slice(0, maxRows),
+    proof: {
+      actualSourceSyntaxLocated: true, predicateSatisfiabilityProven: false,
+      returnOrCallRuntimeObserved: false,
+      conditionsAndEffectsIndependentlyVerifiedAtRuntime: false,
+      callerMayCheckSourceSpans: true, allPossibleExecutionPathsProven: false,
+      transitiveCallEffectsProven: false, testReplacementProven: false,
+      noSecondGraphOrSemanticHistory: true,
+      // Positive source-derived execution is a fact *about this code path*,
+      // not a runtime-witness claim. Stronger eligible evidence may corroborate
+      // or supersede a weaker claim without erasing the disagreement.
+      sourceDerivedExecution: {
+        status: derivedExecutionEstablished === effects.length && effects.length
+          ? 'established' : 'partially-established',
+        establishedEffectFacts: derivedExecutionEstablished,
+        totalEffectFacts: effects.length,
+        scope: 'selected-exact-source-and-necessary-guard-requirements',
+        runtimeWitnessRequiredForSourceFact: false,
+        runtimeObserved: false,
+        disagreements: disagreements.map(item => ({
+          entityId: item.entityId, resolution: item.resolution ?? 'contested',
+        })),
+      },
+    },
+  };
+}
 
 function projectBuiltSourceReturns(graph: IntelligenceGraph, symbol: GraphNode, question: string): Record<string, unknown> | null {
   const context = graphQueryContext(graph);
@@ -531,8 +547,22 @@ export async function querySourceConditionEffects(input: {
       return { status: 'unproven', reason: 'graph-missing-exact-revision',
         project: input.project, graphId: input.graph.graphId, paths: [] };
     }
-    // Source acquisition belongs to the question path, not graph construction.
-    // Keep it separate from the pure already-built-graph projection measurements.
+    // A graph with independently compiled caller and callee control facts can
+    // compose their conditions immediately. Fail-open to exact Git only when
+    // the selected revision's graph cannot supply both source lenses.
+    const builtPair = await projectTwoHopSourceQuestion({
+      graph: input.graph, project: input.project, question: input.question,
+      ...(input.scope ? { scope: input.scope } : {}),
+      readSource: async () => null,
+    });
+    if (builtPair?.mode === 'canonical-source-two-hop-conditions') {
+      return { ...builtPair, timing: {
+        ...(builtPair.timing as Record<string, unknown>),
+        graphConstructionIncluded: false, sourceCheckoutRequired: false,
+      } };
+    }
+    // Older snapshots and unsupported paths retain exact Git source analysis.
+    // Keep this separate from pure graph-only projection measurements.
     const started = performance.now();
     const revision = await resolveProjectRevision(input.project,
       'commit:' + input.graph.repositoryRevision);
@@ -583,6 +613,8 @@ export async function querySourceConditionEffects(input: {
   // A proved, versioned graph observation needs no new checkout or AST pass.
   const builtFact = projectBuiltSourceReturns(input.graph, symbol, input.question);
   if (builtFact) return builtFact;
+  const compiledFacts = projectBuiltSourceControl(input.graph, symbol);
+  if (compiledFacts) return compiledFacts;
   const revision = await resolveProjectRevision(input.project, 'commit:' + input.graph.repositoryRevision);
   if (revision.sha !== input.graph.repositoryRevision) throw new Error('Source condition read did not resolve exact graph revision');
   return await withResolvedProjectCheckout(revision, async checkout => {
@@ -646,7 +678,8 @@ export function sourceConditionsAnswer(result: Record<string, unknown>): string 
       + 'branch feasibility, transaction completion, and runtime execution '
       + 'are not established by these source declarations.';
   }
-  if (result.mode === 'two-hop-conditional-source') {
+  if (result.mode === 'two-hop-conditional-source'
+    || result.mode === 'canonical-source-two-hop-conditions') {
     const identity = result.identity as { functionName: string; calleeName: string } | undefined;
     const summary = result.counts as { qualified: number; rejected: number;
       omitted: number; incomplete: boolean } | undefined;

@@ -13,7 +13,7 @@ export type KnowledgeMechanism = 'composition-context' | 'dependency'
   | 'execution' | 'identity-resolution' | 'surface' | 'persistence'
   | 'provider' | 'authority' | 'other';
 export type NodeTrait = 'container' | 'callable' | 'symbol' | 'source-site'
-  | 'predicate' | 'effect' | 'resource' | 'boundary' | 'technical-concept';
+  | 'predicate' | 'effect' | 'resource' | 'boundary' | 'technical-concept' | 'source-control';
 export type RealizationFacet = 'human' | 'agent' | 'transport'
   | 'implementation' | 'persistence' | 'provider';
 
@@ -43,7 +43,11 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'component-prop-binding': ['source-site'],
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
   'rpc-call': ['source-site', 'boundary'], 'navigation-call': ['source-site'],
-  'source-try-return': ['source-site', 'effect'], 'source-catch-return': ['source-site', 'effect'],
+  'source-try-return': ['source-site', 'effect', 'source-control'],
+  'source-catch-return': ['source-site', 'effect', 'source-control'],
+  'source-control-summary': ['source-site', 'source-control'],
+  'source-condition': ['source-site', 'predicate', 'source-control'],
+  'source-effect': ['source-site', 'effect', 'source-control'],
   'state-write': ['source-site', 'effect'], 'state-binding': ['resource'],
   'sql-table': ['resource'], 'sql-reference': ['resource'],
   'ui-element': ['source-site', 'boundary'], 'mcp-tool': ['boundary'],
@@ -113,6 +117,12 @@ define(['callback-argument'], 'reference', 'dependency', false, 'syntax',
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
   'automated-by', 'constructs'], 'invocation', 'execution', true, 'bound-source');
+define(['has-source-control'], 'condition', 'composition-context', false, 'source-conditional',
+  ['callable'], ['source-site']);
+define(['has-condition'], 'condition', 'composition-context', false, 'source-conditional',
+  ['callable'], ['predicate']);
+define(['has-effect'], 'effect', 'composition-context', false, 'source-conditional',
+  ['callable'], ['effect']);
 define(['try-returns'], 'effect', 'execution', false, 'source-conditional',
   ['callable'], ['source-site']);
 define(['catch-returns'], 'effect', 'execution', false, 'source-conditional',
@@ -141,6 +151,87 @@ export function relationshipKindContract(kind: string): RelationshipKindContract
     proof: 'not-established', fromTraits: [], toTraits: [],
   };
 }
+/**
+ * Resolve competing observations of the SAME technical source occurrence.
+ * This does not rank unrelated runtime observations against possible paths:
+ * different revisions, owners and claim types are incomparable. The weaker
+ * record remains evidence of a disagreement, never silently disappears.
+ */
+export type SourceFactReconciliation = {
+  outcome: 'identical' | 'stronger-left' | 'stronger-right' | 'contested';
+  reason: string;
+};
+const EXACT_SOURCE_FACT_KINDS = new Set(['source-condition', 'source-effect']);
+export function isCanonicalSourceFact(node: GraphNode): boolean {
+  return EXACT_SOURCE_FACT_KINDS.has(node.kind);
+}
+function sourceFactData(node: GraphNode): Record<string, unknown> | null {
+  return node.value && typeof node.value === 'object' && !Array.isArray(node.value)
+    ? node.value as Record<string, unknown> : null;
+}
+function qualifiesExactSourceProof(node: GraphNode): boolean {
+  const v = sourceFactData(node);
+  const proof = v?.[node.kind === 'source-condition' ? 'sourceTruth' : 'derivedExecution'];
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return false;
+  const data = proof as Record<string, unknown>;
+  return node.sourceId.startsWith('repo:') && (node.evidenceIds?.length ?? 0) > 0
+    && v?.sourceOnly === true && v.runtimeObserved === false
+    && data.status === 'established'
+    && data.evidenceGrade === 'exact-source-derivation'
+    && data.scope === 'selected-source-revision'
+    && data.runtimeObserved === false
+    && data.proofRule === 'typescript-source-control-graph.v1'
+    && typeof data.sourceSha256 === 'string'
+    && /^[a-f0-9]{64}$/u.test(data.sourceSha256)
+    && data.sourceSha256 === v.sourceSha256;
+}
+/** Positive proof of a source occurrence, not a witnessed runtime event. */
+export function canonicalSourceFactProofEstablished(node: GraphNode): boolean {
+  return isCanonicalSourceFact(node)
+    && !node.tags?.includes('source-fact-contested')
+    && qualifiesExactSourceProof(node);
+}
+
+export function reconcileCanonicalSourceFact(left: GraphNode, right: GraphNode): SourceFactReconciliation {
+  if (!isCanonicalSourceFact(left) || left.kind !== right.kind
+    || left.id !== right.id || left.sourceId !== right.sourceId) {
+    return { outcome: 'contested', reason: 'identity-or-fact-scope-mismatch' };
+  }
+  const l = sourceFactData(left), r = sourceFactData(right);
+  if (!l || !r || l.functionId !== r.functionId || typeof l.functionId !== 'string') {
+    return { outcome: 'contested', reason: 'source-owner-not-comparable' };
+  }
+  const leftSha = typeof l.sourceSha256 === 'string' ? l.sourceSha256 : null;
+  const rightSha = typeof r.sourceSha256 === 'string' ? r.sourceSha256 : null;
+  if (leftSha && rightSha && leftSha !== rightSha) {
+    return { outcome: 'contested', reason: 'different-exact-source-bytes' };
+  }
+  if (JSON.stringify(l) === JSON.stringify(r)) {
+    return { outcome: 'identical', reason: 'same-fact-and-source-scope' };
+  }
+  const leftEstablished = qualifiesExactSourceProof(left);
+  const rightEstablished = qualifiesExactSourceProof(right);
+  if (leftEstablished !== rightEstablished) {
+    return { outcome: leftEstablished ? 'stronger-left' : 'stronger-right',
+      reason: 'exact-source-derived-proof-over-unqualified-assertion' };
+  }
+  return { outcome: 'contested', reason: 'incomparable-or-equally-grounded-source-evidence' };
+}
+
+/**
+ * Technical source facts remain positive graph truth in their own modality.
+ * "realizationEligible" applies to product/capability realization traversal;
+ * it is NOT an assertion that a source-derived condition or effect is unusable.
+ */
+export function sourceDerivedTechnicalEdge(edge: GraphEdge): boolean {
+  // The source-conditional vocabulary describes modality; the actual source
+  // occurrence and its evidence must also be present for positive proof.
+  return edge.status === 'resolved' && edge.confidence === 1
+    && relationshipKindContract(edge.kind).proof === 'source-conditional'
+    && (edge.evidenceIds?.length ?? 0) > 0
+    && Boolean(edge.from && edge.to);
+}
+
 export function observedRelationshipContracts(graph: IntelligenceGraph): RelationshipKindContract[] {
   return [...new Set(graph.edges.map(edge => edge.kind))].sort()
     .map(relationshipKindContract);

@@ -1,7 +1,7 @@
 import type { EvidenceRecord, GraphCoverageStatus, GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
-import { graphQueryContext } from './queryContext.js';
-import { nodeKindsForFacet, relationshipKindContract } from './graphKnowledge.js';
+import { graphQueryContext, existingGraphQueryContext } from './queryContext.js';
+import { nodeKindsForFacet, relationshipKindContract, canonicalSourceFactProofEstablished, sourceDerivedTechnicalEdge } from './graphKnowledge.js';
 import { projectTypedReach } from './reach.js';
 import { currentGraph } from './service.js';
 import { projectOrientation } from './orientation.js';
@@ -60,7 +60,7 @@ export interface RealizationHypothesis {
 
 export interface IntelligenceClaim {
   id: string;
-  type: 'entity-exists' | 'relationship-resolved' | 'facet-observed' | 'contract-facet' | 'hypothesis-ruled-out';
+  type: 'entity-exists' | 'relationship-resolved' | 'facet-observed' | 'contract-facet' | 'hypothesis-ruled-out' | 'source-derived-execution';
   status: AssessmentStatus;
   statement: string;
   subjectId: string | null;
@@ -184,15 +184,26 @@ function searchableText(value: string): string {
 }
 
 function candidates(graph: IntelligenceGraph, query: string): GraphNode[] {
+  // Exact graph identities are authority, not a fuzzy text-search hint. Check
+  // the already-built exact index if present, avoiding a full graph scan.
+  const exact = existingGraphQueryContext(graph)?.node(query)
+    ?? graph.nodes.find(node => node.id === query);
+  if (exact) return [exact];
+  // An explicitly supplied stable identity that is missing must not silently
+  // match a different symbol because it happens to share words or source text.
+  if (/^(?:symbol:|file:|feature:|capability:|mcp:|provider:|surface:|route:|api:)[^\s?]+$/u.test(query)) return [];
   const needle = searchableText(query);
   if (!needle) return [];
-  const exact = graph.nodes.find(node => node.id === query);
-  if (exact) return [exact];
   const named = graph.nodes.filter(node => node.name && searchableText(node.name) === needle);
   return (named.length ? named : graph.nodes.filter(node => searchableText(nodeText(node)).includes(needle))).slice(0, 20);
 }
 
 function subjectFromQuestion(question: string): string {
+  const literal = question.trim();
+  // Do not strip '#' from graph identities (e.g. #function:qualifiedName).
+  // Otherwise an exact request degrades into an expensive and misleading
+  // whole-repository fuzzy search over every node's structured JSON.
+  if (/^(?:symbol:|file:|feature:|capability:|mcp:|provider:|surface:|route:|api:)[^\s?]+$/u.test(literal)) return literal;
   return question
     .replace(/\b(?:can\s+(?:we|you)\s+)?(?:rule|ruled)\s+out\b/giu, ' ')
     .replace(/\b(audit|assess|findings?|problems?|risks?|how|is|are|does|do|implemented|implementation|realized|realization|capability|proof|prove|evidence|supports?|supporting|depends?|dependency|dependencies|used|uses|callers?|called|connect(?:ed|s|ion)?|relationships?|related|show|inspect|what|where|the|for|of|in|on|to|by|exists?|existence|works?|working|whether|hypothesis|hypotheses|and|also|it|this|that)\b/giu, ' ')
@@ -335,7 +346,12 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
   }));
   if (includes('conflict')) for (const conflict of graph.explicitValueConflicts.filter(item => !affectedIds || affectedIds.has(item.entityId))) findings.push(finding(graph, {
     ruleId: 'evidence.explicit-conflict', category: 'conflict', status: 'attention',
-    summary: `Conflicting observed values for ${conflict.entityId}.${conflict.key}.`, affectedIds: [conflict.entityId],
+    summary: conflict.resolution === 'higher-source-proof-preferred'
+      ? `Competing evidence for ${conflict.entityId}.${conflict.key}: exact source-derived proof takes precedence over a weaker assertion, and the disagreement remains recorded.`
+      : conflict.resolution === 'contested'
+        ? `Competing equally grounded or incomparable evidence for ${conflict.entityId}.${conflict.key} remains contested; inspect exact source and scope.`
+        : `Conflicting observed values for ${conflict.entityId}.${conflict.key}.`,
+    affectedIds: [conflict.entityId],
     proof: proof(graph, 'evidence.explicit-conflict', graph.nodes.filter(node => node.id === conflict.entityId), [], 'audit'),
   }));
   const context = graphQueryContext(graph);
@@ -360,7 +376,20 @@ export function auditGraph(graph: IntelligenceGraph, affectedIds?: ReadonlySet<s
   return findings.sort((a, b) => a.ruleId.localeCompare(b.ruleId) || a.id.localeCompare(b.id));
 }
 
-export function assessGraph(graph: IntelligenceGraph, question: string, requiredFacets: RealizationFacet[] = []): Record<string, unknown> {
+/** Optional request-local benchmark stages; never persisted graph authority. */
+export interface AssessmentPhaseDiagnostics {
+  phaseMs: Record<string, number>;
+}
+export function assessGraph(graph: IntelligenceGraph, question: string,
+  requiredFacets: RealizationFacet[] = [],
+  diagnostics?: AssessmentPhaseDiagnostics): Record<string, unknown> {
+  let phaseStart = diagnostics ? performance.now() : 0;
+  const markPhase = (phase: string): void => {
+    if (!diagnostics) return;
+    const now = performance.now();
+    diagnostics.phaseMs[phase] = Number((now - phaseStart).toFixed(3));
+    phaseStart = now;
+  };
   // Caller-owned realization facet expectations retain their existing assessment
   // path; source-reference proof alone cannot establish those facets.
   const testQuestion = requiredFacets.length ? null : parseTestSourceQuestion(question);
@@ -485,6 +514,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
         ? semanticRoots[0]
         : undefined;
   const ambiguous = matches.length > 1 && !selected;
+  markPhase('subjectAndCandidates');
   const claims: IntelligenceClaim[] = [];
   let realization: Record<string, unknown> | null = null;
   let reach: ReturnType<typeof projectTypedReach> | null = null;
@@ -576,6 +606,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
     }
   }
 
+  markPhase('claimsTraversalAndReach');
   const globalAudit = mode === 'audit' && (!subject || /^(?:all|global|graph|project|repository)$/u.test(searchableText(subject)));
   const auditNeighborhood = selected && mode === 'audit' ? resolvedNeighborhood(graph, selected, 2) : null;
   const findingScope = auditNeighborhood ? new Set(auditNeighborhood.nodes.map(node => node.id)) : undefined;
@@ -587,6 +618,7 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   const findingSummary = summarizeFindings(graph, findings, selected && auditNeighborhood
     ? { rootId: selected.id, resolvedDepth: 2, nodeCount: auditNeighborhood.nodes.length }
     : null);
+  markPhase('auditAndCoverage');
   const hypothesisScope = globalAudit
     ? undefined
     : auditNeighborhood
@@ -597,7 +629,9 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
           ? new Set([selected.id])
           : new Set<string>();
   const hypotheses = candidateHypotheses(graph, hypothesisScope);
+  markPhase('candidateHypotheses');
   const orientation = projectOrientation(graph, selected, matches, ambiguous, claims);
+  markPhase('orientationAndMotifs');
   return {
     project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision, analyzerVersion: graph.analyzerVersion,
     question, mode, interpretedSubject: subject || null, ambiguous, candidates: matches.map(node => ({ id: node.id, name: node.name ?? node.id, kind: node.kind })),
@@ -607,24 +641,97 @@ export function assessGraph(graph: IntelligenceGraph, question: string, required
   };
 }
 
+/**
+ * Reuse canonical source facts as ordinary intelligence claims. A conditional
+ * source path is a positive, evidence-qualified technical fact. It is NOT a
+ * runtime event, unconditional path guarantee, or feature-realization path.
+ * Return bounded explicit evidence while the canonical projection validates
+ * the complete selected function's source premises.
+ */
+function sourceDerivedExecutionClaims(graph: IntelligenceGraph,
+  conditional: Record<string, unknown>): IntelligenceClaim[] {
+  if (conditional.mode !== 'canonical-source-condition-effects'
+    || conditional.status !== 'supported') return [];
+  const derived = (conditional.proof as any)?.sourceDerivedExecution;
+  const functionId = (conditional.identity as any)?.functionId;
+  const count = Number(derived?.establishedEffectFacts ?? 0);
+  if (derived?.status !== 'established' || !Number.isSafeInteger(count)
+    || count < 1 || typeof functionId !== 'string') return [];
+  const context = graphQueryContext(graph);
+  const subject = context.node(functionId);
+  if (!subject) return [];
+  const effectPairs = context.outgoing(subject.id)
+    .filter(edge => edge.kind === 'has-effect' && edge.status === 'resolved' && Boolean(edge.to))
+    .map(edge => ({ edge, node: context.node(edge.to!) }))
+    .filter((pair): pair is {edge: GraphEdge; node: GraphNode} =>
+      Boolean(pair.node && canonicalSourceFactProofEstablished(pair.node)));
+  if (effectPairs.length !== count) return [];
+  const selected = effectPairs.slice(0, 12);
+  const guardEdges = selected.flatMap(pair => context.outgoing(pair.node.id)
+    .filter(edge => edge.kind === 'requires-condition' && sourceDerivedTechnicalEdge(edge)));
+  const guardNodes = guardEdges.map(edge => edge.to ? context.node(edge.to) : undefined)
+    .filter((node): node is GraphNode => Boolean(node));
+  const linked = [subject, ...selected.map(pair => pair.node), ...guardNodes];
+  const edges = [...selected.map(pair => pair.edge), ...guardEdges];
+  const sampleCount = selected.length;
+  return [claim({
+    type: 'source-derived-execution',
+    status: 'supported',
+    subjectId: subject.id,
+    statement: 'Exact source revision ' + graph.repositoryRevision + ' establishes '
+      + count + ' direct source-defined effect occurrence(s) in '
+      + (subject.name ?? subject.id) + ' under recorded necessary guard conditions. '
+      + 'This claim includes ' + sampleCount + ' bounded source-evidence sample(s). '
+      + 'Predicate satisfiability, actual runtime execution and external effects are separate claims.',
+    proof: proof(graph, 'source.conditional-effect.exact-revision.v1',
+      linked, edges, 'existence'),
+  })];
+}
+
+/**
+ * Common graph-backed evidence evaluator for source/conditional questions.
+ * Workbench and query_intelligence must not disagree about established facts
+ * just because a wording route selected a different presentation entry point.
+ */
+export async function evaluateSourceQuestionEvidence(input: {
+  project: string; graph: IntelligenceGraph; question: string; scope?: string;
+}): Promise<{
+  source: Record<string, unknown>;
+  answer: string;
+  answerStatus: 'supported' | 'unproven';
+  claims: IntelligenceClaim[];
+} | null> {
+  const source = await querySourceConditionEffects(input);
+  if (!source) return null;
+  return {
+    source,
+    answer: sourceConditionsAnswer(source),
+    answerStatus: source.status === 'supported' ? 'supported' : 'unproven',
+    claims: sourceDerivedExecutionClaims(input.graph, source),
+  };
+}
+
 export async function queryIntelligence(input: { project: string; question: string; ref?: string; graphId?: string; requiredFacets?: RealizationFacet[] }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   if (!(input.requiredFacets?.length)) {
-    const conditionalSource = await querySourceConditionEffects({
+    const evaluated = await evaluateSourceQuestionEvidence({
       graph, project: input.project, question: input.question,
     });
-    if (conditionalSource) return {
+    if (evaluated) {
+      return {
       project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
       analyzerVersion: graph.analyzerVersion, question: input.question,
       mode: 'source-condition-effects',
-      answerStatus: conditionalSource.status === 'supported' ? 'supported' : 'unproven',
-      answer: sourceConditionsAnswer(conditionalSource),
-      conditionEffects: conditionalSource,
-      // AST source observations are not authenticated execution/behavior claims.
-      claims: [], findings: [], realization: null,
+      answerStatus: evaluated.answerStatus,
+      answer: evaluated.answer,
+      conditionEffects: evaluated.source,
+      // A graph-backed source fact can be an established claim without
+      // claiming authentication, runtime behavior or product realization.
+      claims: evaluated.claims, findings: [], realization: null,
       policy: { sourceSyntaxNotRuntime: true, expectedValueNotProven: true,
         testReplacementNotProven: true, graphAuthorityUnchanged: true },
-    };
+      };
+    }
   }
   return assessGraph(graph, input.question, input.requiredFacets);
 }

@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../src/types.js';
 import { bootstrapSemanticCandidates } from '../src/intelligence/semanticBootstrap.js';
+import { deriveMotifs, scopedMotifReadContext } from '../src/intelligence/motifs.js';
+import { graphQueryContext, existingGraphQueryContext } from '../src/intelligence/queryContext.js';
 
 function node(id: string, kind: string, locator: string, name?: string, layer: 'structural' | 'representation' = 'structural'): GraphNode {
   return {
@@ -601,4 +603,81 @@ test('external modules with unavailable source are not fabricated into local sem
   assert.equal(result.candidates.some(item => item.scope === 'csharp:System.IO'), false);
   assert.equal(result.capacity.groupedScopeCount, 1);
   assert.ok(result.capacity.excludedScopes.items.some(item => item.scope === 'src/interop'));
+});
+
+
+test('source-control graph growth does not manufacture product semantic candidates', () => {
+  const base = graph();
+  const before = bootstrapSemanticCandidates(base, { limit: 20 });
+  const controlNodes = [
+    { ...node('control:session', 'source-control-summary', 'src/authentication/session.ts:3'),
+      raw: 'persist storage api http provider', value: { sourceOnly: true } },
+    { ...node('condition:session', 'source-condition', 'src/authentication/session.ts:4'),
+      raw: 'supabase database redis', value: { predicate: 'unknown', runtimeObserved: false } },
+    { ...node('effect:session', 'source-effect', 'src/authentication/session.ts:5'),
+      raw: 'api storage provider write', value: { expression: 'perform(...)', runtimeObserved: false } },
+  ];
+  base.nodes.push(...controlNodes);
+  base.edges.push(
+    edge('summary-source', 'symbol:session', 'control:session', 'has-source-control'),
+    edge('condition-source', 'symbol:session', 'condition:session', 'has-condition'),
+    edge('effect-source', 'symbol:session', 'effect:session', 'has-effect'),
+    edge('guard-source', 'effect:session', 'condition:session', 'requires-condition'),
+    edge('contains-summary', 'file:auth-session', 'control:session', 'contains'),
+    edge('contains-condition', 'file:auth-session', 'condition:session', 'contains'),
+    edge('contains-effect', 'file:auth-session', 'effect:session', 'contains'),
+  );
+  const after = bootstrapSemanticCandidates(base, { limit: 20 });
+  const keep = (items: typeof before.candidates) => items.map(c => ({
+    id: c.id, scope: c.scope, proposal: c.proposal,
+    evidenceFamilies: c.provenance.evidenceFamilies,
+    nodeIds: c.provenance.nodeIds, edgeIds: c.provenance.edgeIds,
+    nodeCount: c.support.nodeCount, edgeCount: c.support.resolvedEdgeCount,
+  }));
+  assert.deepEqual(keep(after.candidates), keep(before.candidates),
+    'independently source-proven control facts must be available in W without becoming product intent');
+  assert.equal(base.nodes.length, 11, 'the facts remain available in the canonical source graph');
+  assert.equal(base.edges.length, 13, 'source guard and containment links remain available for technical graph queries');
+});
+
+
+test('scoped motif retrieval is deterministic without manufacturing product evidence', () => {
+  const source = graph();
+  const first = bootstrapSemanticCandidates(source, { limit: 20 });
+  const second = bootstrapSemanticCandidates(source, { limit: 20 });
+  assert.deepEqual(second.candidates, first.candidates);
+});
+
+
+test('scoped canonical motif adjacency exactly preserves full-index motif proof', () => {
+  const input = graph();
+  const root = node('file:bootstrap', 'file', 'src/authentication/bootstrap.ts', 'bootstrap');
+  const selected = node('symbol:bootstrap', 'function', 'src/authentication/bootstrap.ts:2', 'bootstrap');
+  const configured = node('symbol:configure', 'function', 'src/authentication/bootstrap.ts:3', 'configure');
+  const repo = node('symbol:save', 'function', 'src/authentication/bootstrap.ts:4', 'save');
+  input.nodes.push(root, selected, configured, repo);
+  input.edges.push(
+    edge('bootstrap-file', root.id, selected.id, 'contains'),
+    edge('bootstrap-function-member', selected.id, configured.id, 'contains'),
+    edge('bootstrap-repository-member', selected.id, repo.id, 'contains'),
+    edge('bootstrap-file-import', root.id, 'symbol:session', 'imports'),
+    edge('bootstrap-file-import-two', root.id, 'symbol:login', 'imports'),
+    edge('bootstrap-calls', selected.id, repo.id, 'calls'),
+  );
+  const scoped = scopedMotifReadContext(input, [selected.id, root.id]);
+  assert.equal(existingGraphQueryContext(input), undefined,
+    'a direct motif read must not eagerly create a global index');
+  const source = deriveMotifs(input, selected);
+  assert.equal(existingGraphQueryContext(input), undefined,
+    'cold isolated motif reads stay scoped');
+  assert.ok(source.some(item => item.kind === 'composition-root'));
+  const shared = graphQueryContext(input);
+  assert.strictEqual(existingGraphQueryContext(input), shared);
+  assert.deepEqual(deriveMotifs(input, selected, shared), source,
+    'scoped default must preserve canonical full-index motif evidence');
+  assert.deepEqual(deriveMotifs(input, selected), source,
+    'warm motif reads must reuse an existing shared index without changing evidence');
+  assert.deepEqual(deriveMotifs(input, selected, scoped), source,
+    'scoping may reduce index allocation, not change motif interpretation or proof');
+  assert.deepEqual(deriveMotifs(input, root, scoped), deriveMotifs(input, root));
 });

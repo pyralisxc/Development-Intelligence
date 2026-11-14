@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IntelligenceGraph, GraphNode } from '../src/types.js';
+import { analyzeByTechnology } from '../src/intelligence/analyzers/index.js';
 import {
   projectSourceConditionEffects, querySourceConditionEffects,
-  sourceConditionsAnswer,
+  projectBuiltSourceControl, sourceConditionsAnswer,
 } from '../src/intelligence/sourceConditionEffects.js';
 
 const path = 'src/auth/middleware.ts';
@@ -117,4 +118,58 @@ test('nested source branches and exception paths preserve requirements without r
   assert.ok(result.effects.some((x: any) => /authorize\(/u.test(x.expression)));
   assert.equal(result.proof.allPossibleExecutionPathsProven, false);
   assert.equal(result.proof.transitiveCallEffectsProven, false);
+});
+
+
+test('graph-built derived execution is an established conditional fact, with exact guard polarity', () => {
+  const analyzed = analyzeByTechnology({
+    source: { id: 'repo:' + path, kind: 'repository-file', locator: path,
+      revision: 'c'.repeat(40), observedAt: '2026-11-14T00:00:00Z', available: true },
+    text: source, locatorBase: path,
+  });
+  const owner = analyzed.observations.find(item => item.kind === 'function' && item.name === 'middleware');
+  assert.ok(owner, 'the source analyzer must identify the callable');
+  const built: IntelligenceGraph = {
+    ...graph(analyzed.observations),
+    nodes: analyzed.observations,
+    edges: analyzed.resolutions,
+    evidence: analyzed.evidence ?? [],
+    explicitValueConflicts: [],
+  };
+  const out = projectBuiltSourceControl(built, owner) as any;
+  assert.equal(out.status, 'supported');
+  assert.equal(out.mode, 'canonical-source-condition-effects');
+  assert.equal(out.coverage.branchTotal, 2);
+  assert.equal(out.coverage.effectTotal, 3);
+  assert.equal(out.proof.sourceDerivedExecution.status, 'established');
+  assert.equal(out.proof.sourceDerivedExecution.establishedEffectFacts, 3);
+  const facts = built.nodes.filter(node =>
+    node.kind === 'source-condition' || node.kind === 'source-effect');
+  assert.ok(facts.length >= 5);
+  assert.ok(facts.every(node => typeof node.raw === 'string'
+    && node.raw.length <= 220
+    && !node.raw.includes('"derivedExecution"')),
+    'searchable raw text must not reserialize the full evidence/proof value');
+  assert.ok(facts.every(node => node.value && typeof node.value === 'object'),
+    'compact raw text must preserve the rich canonical structured source fact');
+  assert.equal(out.proof.sourceDerivedExecution.runtimeWitnessRequiredForSourceFact, false);
+  assert.equal(out.proof.sourceDerivedExecution.runtimeObserved, false);
+  assert.equal(out.proof.predicateSatisfiabilityProven, false);
+  const withMissingGuard = {
+    ...built,
+    edges: built.edges.filter(edge => edge.kind !== 'requires-condition'),
+  };
+  assert.equal(projectBuiltSourceControl(withMissingGuard, owner), null,
+    'missing source guard relationships must not become positive derived execution proof');
+  const firstGuard = built.edges.find(edge => edge.kind === 'requires-condition');
+  assert.ok(firstGuard);
+  const withWrongPolarity = {
+    ...built,
+    edges: built.edges.map(edge => edge.id === firstGuard.id
+      ? { ...edge, strategy: edge.strategy === 'source-condition-true'
+        ? 'source-condition-false' : 'source-condition-true' }
+      : edge),
+  };
+  assert.equal(projectBuiltSourceControl(withWrongPolarity, owner), null,
+    'opposing source guard polarity must remain a conflict rather than be silently accepted');
 });

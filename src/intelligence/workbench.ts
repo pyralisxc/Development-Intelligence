@@ -10,8 +10,8 @@ import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenc
 import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
 import { parseSourceExecutionQuestion, sourceExecutionQuestionAnswer, SOURCE_EXECUTION_TEST_SUFFIXES } from './sourceExecutionQuestion.js';
 import { queryTestClaimReport } from './testClaimQuery.js';
-import { isConditionEffectQuestion, querySourceConditionEffects, sourceConditionsAnswer } from './sourceConditionEffects.js';
-import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
+import { isConditionEffectQuestion } from './sourceConditionEffects.js';
+import { assessGraph, auditGraph, queryIntelligence, evaluateSourceQuestionEvidence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
@@ -499,8 +499,9 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
 function orientationMetric(
   node: GraphNode,
   byId: ReadonlyMap<string, GraphNode>,
-  incident: GraphEdge[],
+  incident: readonly GraphEdge[],
   rankBy: ScopeRankBy,
+  neighborLocation: (node: GraphNode) => { file: string | null; area: string | null },
 ): {
   fanIn: number;
   fanOut: number;
@@ -515,21 +516,25 @@ function orientationMetric(
   callees: number;
   rankValue: number;
 } {
-  const resolved = incident.filter(edge => edge.status === 'resolved');
+  // One incident-edge pass, not separate resolved/candidate/inbound/outbound
+  // filters plus repeated locator parsing for both incident endpoints.
   const neighborFiles = new Set<string>();
   const neighborAreas = new Set<string>();
-  let semanticLinks = 0;
-  let representationLinks = 0;
-  let callers = 0;
-  let callees = 0;
-
-  for (const edge of resolved) {
+  const resolvedKinds = new Set<string>();
+  let fanIn = 0, fanOut = 0, candidate = 0, unresolved = 0;
+  let semanticLinks = 0, representationLinks = 0, callers = 0, callees = 0;
+  for (const edge of incident) {
+    if (edge.status === 'candidate') { candidate += 1; continue; }
+    if (edge.status === 'unresolved') { unresolved += 1; continue; }
+    if (edge.status !== 'resolved') continue;
+    resolvedKinds.add(edge.kind);
+    if (edge.to === node.id) fanIn += 1;
+    if (edge.from === node.id) fanOut += 1;
     const neighborId = edge.from === node.id ? edge.to : edge.from;
     const neighbor = neighborId ? byId.get(neighborId) : undefined;
     if (neighbor) {
-      const file = sourceFile(neighbor.locator);
+      const { file, area } = neighborLocation(neighbor);
       if (file) neighborFiles.add(file);
-      const area = graphArea(neighbor);
       if (area) neighborAreas.add(area);
       if (neighbor.layer === 'semantic') semanticLinks += 1;
       if (neighbor.layer === 'representation') representationLinks += 1;
@@ -539,19 +544,10 @@ function orientationMetric(
       if (edge.from === node.id) callees += 1;
     }
   }
-
   const metrics = {
-    fanIn: resolved.filter(edge => edge.to === node.id).length,
-    fanOut: resolved.filter(edge => edge.from === node.id).length,
-    crossFileReach: neighborFiles.size,
-    crossAreaReach: neighborAreas.size,
-    relationshipDiversity: new Set(resolved.map(edge => edge.kind)).size,
-    candidate: incident.filter(edge => edge.status === 'candidate').length,
-    unresolved: incident.filter(edge => edge.status === 'unresolved').length,
-    semanticLinks,
-    representationLinks,
-    callers,
-    callees,
+    fanIn, fanOut, crossFileReach: neighborFiles.size,
+    crossAreaReach: neighborAreas.size, relationshipDiversity: resolvedKinds.size,
+    candidate, unresolved, semanticLinks, representationLinks, callers, callees,
   };
   const rankValue = rankBy === 'fan-in' ? metrics.fanIn
     : rankBy === 'fan-out' ? metrics.fanOut
@@ -918,6 +914,82 @@ function rankedMechanismSourceFiles(
       || a.file.localeCompare(b.file))
     .slice(0, Math.max(1, limit));
 }
+/**
+ * An output bound must not let a single prolific relation kind erase every
+ * other established kind from an answer. Ranked source relevance still
+ * selects representatives; round-robin over distinct relation/target kinds
+ * retains multiple independently established direct consequences.
+ * This only chooses a bounded view of W; it never alters the graph/proof.
+ */
+export function selectBoundedMechanismRelations<T extends {
+  edgeId: string; kind: string;
+  from?: { id: string; name: string } | null;
+  to: { kind: string } | null;
+}>(ranked: readonly T[], max = 50, queryTerms: readonly string[] = []): T[] {
+  const limit = Math.max(1, Math.min(250, Math.floor(max)));
+  if (ranked.length <= limit) return [...ranked];
+  const result: T[] = [];
+  const chosen = new Set<string>();
+  const append = (edge: T): void => {
+    if (result.length < limit && !chosen.has(edge.edgeId)) {
+      result.push(edge);
+      chosen.add(edge.edgeId);
+    }
+  };
+
+  // The original global top-N discarded established sibling effects when
+  // newly abundant source-control links filled the projection. An actual
+  // handler's direct writes are a related evidence cluster, not unrelated
+  // one-off edges. Reserve bounded space for source-ranked handler clusters
+  // before sampling the remaining relationship families.
+  const directWrites = new Map<string, {
+    items: T[]; callerHits: number; firstRank: number;
+  }>();
+  for (const [rank, edge] of ranked.entries()) {
+    if (edge.kind !== 'invokes' || edge.to?.kind !== 'state-write' || !edge.from?.id) continue;
+    const key = edge.from.id;
+    const existing = directWrites.get(key);
+    if (existing) { existing.items.push(edge); continue; }
+    const name = edge.from.name.toLowerCase();
+    const callerHits = queryTerms.filter(term => name.includes(term.toLowerCase())).length;
+    directWrites.set(key, { items: [edge], callerHits, firstRank: rank });
+  }
+  const clusters = [...directWrites.values()].sort((a, b) =>
+    b.callerHits - a.callerHits || a.firstRank - b.firstRank);
+  const effectBudget = Math.min(limit, Math.max(4, Math.floor(limit / 2)));
+  for (const cluster of clusters) {
+    if (result.length >= effectBudget) break;
+    // Keep multiple proven effects of a relevant callable together. This is
+    // bounded *presentation*; unreturned effects remain in canonical W.
+    for (const edge of cluster.items.slice(0, 12)) {
+      if (result.length >= effectBudget) break;
+      append(edge);
+    }
+  }
+
+  const groups = new Map<string, T[]>();
+  for (const edge of ranked) {
+    const key = edge.kind + ':' + (edge.to?.kind ?? 'unresolved-target');
+    const group = groups.get(key);
+    if (group) group.push(edge);
+    else groups.set(key, [edge]);
+  }
+  // Retain representative coverage of other fact families, then use
+  // original query relevance for the remaining slots.
+  for (let round = 0; round < 4 && result.length < limit; round += 1) {
+    for (const group of groups.values()) {
+      const item = group[round];
+      if (item) append(item);
+      if (result.length === limit) break;
+    }
+  }
+  for (const edge of ranked) {
+    if (result.length === limit) break;
+    append(edge);
+  }
+  return result;
+}
+
 async function implementationMechanismProjection(input: {
   project: string;
   text: string;
@@ -1180,7 +1252,14 @@ async function implementationMechanismProjection(input: {
       },
       files,
       keyEntities,
-      relationships: resolved.slice(0, 50),
+      relationships: selectBoundedMechanismRelations(resolved, 50, queryTerms),
+      relationshipProjection: {
+        totalResolved: resolved.length,
+        returned: Math.min(resolved.length, 50),
+        omitted: Math.max(0, resolved.length - 50),
+        selection: 'relevant-direct-state-write-handler-clusters-then-kind-diversity',
+        complete: resolved.length <= 50,
+      },
       decisionEvidence,
       uncertainty: {
         candidateRelationships: unresolved.filter(item => item.status === 'candidate').length,
@@ -1665,19 +1744,26 @@ export async function scopeOrientation(input: {
   semanticDepth?: SemanticQueryDepth | undefined;
   limit?: number | undefined;
   orientationReuse?: OrientationQueryReuse | undefined;
+  semanticSummaryOnly?: boolean | undefined;
 }): Promise<Record<string, unknown>> {
   // Reuse is valid only for an exact graph identity selected by the caller.
   // A ref selector needs fresh resolution: never infer ref equivalence from
   // project identity or carry indexes from an unrelated graph snapshot.
+  const orientationStarted = Date.now();
+  // Request-local timings: no second graph, persisted trace or question text.
+  const phaseMs = { graphAccess: 0, scopeSelection: 0, adjacencyIndex: 0,
+    rankingAndRoles: 0, semanticUnderstanding: 0 };
   const candidateReuse = input.orientationReuse;
   const reusable = candidateReuse && candidateReuse.graph.project === input.project
     && !input.ref
     && input.graphId === candidateReuse.graph.graphId
     ? candidateReuse : undefined;
   const graph = reusable?.graph ?? await currentGraph(input.project, input.ref, input.graphId);
+  phaseMs.graphAccess = Date.now() - orientationStarted;
   const rankBy = input.rankBy ?? 'cross-file';
   const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
   const selected = scopeNodeIds(graph, input.scope);
+  phaseMs.scopeSelection = Date.now() - orientationStarted - phaseMs.graphAccess;
 
   if (selected.kind === 'ambiguous') {
     return {
@@ -1701,6 +1787,43 @@ export async function scopeOrientation(input: {
       summary: 'No graph scope matching "' + String(selected.value) + '" was observed.',
       coverage: compactCoverage(graph),
       policy: { subjectiveImportanceScore: false, persisted: false },
+    };
+  }
+
+  // Ordinary repository-description questions need the source-backed semantic
+  // explanation, not a complete ranking of every structural node in W.
+  // Direct orient_scope still returns full ranked entities and boundaries.
+  if (selected.kind === 'repository' && input.semanticSummaryOnly) {
+    const semanticStarted = Date.now();
+    const understanding = await repositorySemanticUnderstanding(
+      input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable);
+    phaseMs.semanticUnderstanding = Date.now() - semanticStarted;
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: false,
+      scope: { kind: 'repository', value: selected.value,
+        nodeCount: selected.ids.size, resolvedBoundaryCount: 0 },
+      rankBy,
+      summary: understanding.summary,
+      semanticUnderstanding: understanding,
+      projection: { kind: 'repository-semantic-summary',
+        structuralOrientationMaterialized: false, detailTool: 'orient_scope' },
+      observability: {
+        owner: 'di-query-orientation', graphId: graph.graphId,
+        revision: graph.repositoryRevision, phaseMs,
+        totalMeasuredMs: Date.now() - orientationStarted,
+        ephemeral: true,
+        note: 'Request-local timings; no source content, credentials or question text are logged or retained.',
+      },
+      coverage: compactCoverage(graph),
+      policy: {
+        subjectiveImportanceScore: false, rankFacet: rankBy,
+        evidenceLinked: true, summaryInfersProductIntent: false,
+        persisted: false,
+        note: 'Semantic summary selects current graph evidence; detailed structural ranking is available through orient_scope.',
+      },
     };
   }
 
@@ -1746,6 +1869,8 @@ export async function scopeOrientation(input: {
     if (reusable) reusable.incidentByNode = incidentByNode;
   }
 
+  phaseMs.adjacencyIndex = Date.now() - orientationStarted
+    - phaseMs.graphAccess - phaseMs.scopeSelection;
   // The ranked list and role summaries inspect the same scoped nodes at the
   // same graph revision/rank criterion. Reuse metrics per node within this
   // single orientation, never across revisions or distinct graph contexts.
@@ -1755,10 +1880,25 @@ export async function scopeOrientation(input: {
   }
   const metricCache = reusable?.metrics ?? new Map<string, ReturnType<typeof orientationMetric>>();
   if (reusable) reusable.metrics = metricCache;
+  // Node locations are stable inside the same exact-revision graph. Derive
+  // path/area once rather than parsing the same neighbor locator for each edge.
+  const sourceLocationById = new Map<string, { file: string | null; area: string | null }>();
+  const neighborLocation = (node: GraphNode) => {
+    const cached = sourceLocationById.get(node.id);
+    if (cached) return cached;
+    const file = sourceFile(node.locator);
+    const area = file ? (() => {
+      const parts = (file.startsWith('./') ? file.slice(2) : file).split('/');
+      return parts[0] === 'src' && parts[1] ? 'src/' + parts[1] : parts[0] ?? null;
+    })() : null;
+    const location = { file, area };
+    sourceLocationById.set(node.id, location);
+    return location;
+  };
   const scopedMetrics = (node: GraphNode): ReturnType<typeof orientationMetric> => {
     const existing = metricCache.get(node.id);
     if (existing) return existing;
-    const calculated = orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy);
+    const calculated = orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy, neighborLocation);
     metricCache.set(node.id, calculated);
     return calculated;
   };
@@ -1800,8 +1940,16 @@ export async function scopeOrientation(input: {
   });
 
   const roleOrder: OrientationRole[] = ['semantic', 'interface', 'implementation', 'effects', 'integration', 'representation', 'structural'];
+  const roleMembers = new Map<OrientationRole, GraphNode[]>();
+  // Group once, in original graph order so stable tied rankings remain exact.
+  for (const node of nodes) {
+    const role = orientationRole(node);
+    const members = roleMembers.get(role);
+    if (members) members.push(node);
+    else roleMembers.set(role, [node]);
+  }
   const roleGroups = roleOrder.flatMap(role => {
-    const members = nodes.filter(node => orientationRole(node) === role);
+    const members = roleMembers.get(role) ?? [];
     if (!members.length) return [];
     const sorted = members
       .map(node => ({ node, metrics: scopedMetrics(node) }))
@@ -1867,9 +2015,13 @@ export async function scopeOrientation(input: {
     .slice(0, Math.min(limit, 10))
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
+  phaseMs.rankingAndRoles = Date.now() - orientationStarted
+    - phaseMs.graphAccess - phaseMs.scopeSelection - phaseMs.adjacencyIndex;
+  const semanticStarted = Date.now();
   const semanticUnderstanding = selected.kind === 'repository'
     ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable)
     : null;
+  phaseMs.semanticUnderstanding = Date.now() - semanticStarted;
 
   return {
     project: input.project,
@@ -1889,6 +2041,15 @@ export async function scopeOrientation(input: {
         ? responsibilities.slice(0, 3).map(item => item.statement).join(' ')
         : String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; no stronger bounded responsibility synthesis was available.',
     semanticUnderstanding,
+    observability: {
+      owner: 'di-query-orientation',
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      phaseMs,
+      totalMeasuredMs: Date.now() - orientationStarted,
+      ephemeral: true,
+      note: 'Request-local timings; no source content, credentials or question text are logged or retained.',
+    },
     responsibilities,
     roleGroups,
     dependencies,
@@ -2723,14 +2884,15 @@ export async function queryWorkbench(input: {
       result: rendered.result,
     };
   }
-  const conditionalSource = !input.sourceId && isConditionEffectQuestion(text)
-    ? await querySourceConditionEffects({
+  const sourceEvidence = !input.sourceId && isConditionEffectQuestion(text)
+    ? await evaluateSourceQuestionEvidence({
         graph: await currentGraph(input.project, input.ref, input.graphId),
         project: input.project, question: text,
         ...(input.scope ? { scope: input.scope } : {}),
       }) : null;
-  if (conditionalSource) {
-    const status = conditionalSource.status === 'supported' ? 'established-source-syntax' : 'unproven';
+  if (sourceEvidence) {
+    const conditionalSource = sourceEvidence.source;
+    const status = sourceEvidence.answerStatus === 'supported' ? 'established-source-syntax' : 'unproven';
     const identity = conditionalSource.identity as { functionId?: string; functionName?: string } | undefined;
     const graphBuilt = String(conditionalSource.mode ?? '').startsWith('canonical-source-');
     return {
@@ -2741,8 +2903,9 @@ export async function queryWorkbench(input: {
         projection: graphBuilt ? 'source-control-return' : 'condition-and-direct-effect',
         questionPlan: { ...plan, lane: 'trace',
           proofMode: 'evidence', subjectStrategy: 'entity-or-query' } },
-      answer: sourceConditionsAnswer(conditionalSource),
+      answer: sourceEvidence.answer,
       answerClassification: status,
+      claims: sourceEvidence.claims,
       result: conditionalSource,
     };
   }
@@ -3006,6 +3169,8 @@ export async function queryWorkbench(input: {
     }
     const requestedScope = target.ambiguous ? '' : (target.scope ?? '');
     const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
+    const semanticSummaryOnly = !requestedScope
+      && /^what does (?:this|the|our) (?:project|repository|repo|codebase) do(?:\?|$)/u.test(lower);
     const result = await scopeOrientation({
       project: input.project,
       scope: requestedScope || undefined,
@@ -3014,11 +3179,13 @@ export async function queryWorkbench(input: {
       rankBy: input.rankBy,
       semanticDepth,
       orientationReuse: input.orientationReuse,
+      semanticSummaryOnly,
     });
     return {
       intent: 'orientation',
       subject: requestedScope ? { query: requestedScope } : null,
-      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file', semanticDepth },
+      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file', semanticDepth,
+        ...(semanticSummaryOnly ? { projection: 'repository-semantic-summary' } : {}) },
       answer: String((result as any).summary ?? 'Scoped orientation complete.'),
       result,
     };

@@ -1,8 +1,50 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
-import { graphQueryContext } from './queryContext.js';
+import { existingGraphQueryContext } from './queryContext.js';
 
 export type DerivedMotifKind = 'composition-root' | 'state-machine' | 'adapter' | 'pipeline' | 'persistence-owner';
 export type MotifConfidence = 'medium' | 'high';
+
+/**
+ * Read only the relationships needed for selected motif subjects and their
+ * containing files. This is a disposable adjacency view of canonical W,
+ * not a new graph or knowledge authority.
+ */
+export interface MotifReadContext {
+  node(id: string): GraphNode | undefined;
+  incoming(id: string): readonly GraphEdge[];
+  outgoing(id: string): readonly GraphEdge[];
+}
+const NO_EDGES: readonly GraphEdge[] = Object.freeze([]);
+export function scopedMotifReadContext(graph: IntelligenceGraph,
+  selectedIds: readonly string[]): MotifReadContext {
+  const wanted = new Set(selectedIds);
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const fileIds = new Set<string>();
+  for (const id of wanted) if (byId.get(id)?.kind === 'file') fileIds.add(id);
+  for (const edge of graph.edges) {
+    if (edge.status === 'resolved' && edge.kind === 'contains'
+      && edge.to && wanted.has(edge.to) && edge.from
+      && byId.get(edge.from)?.kind === 'file') fileIds.add(edge.from);
+  }
+  const outward = new Set([...wanted, ...fileIds]);
+  const inbound = new Map<string, GraphEdge[]>(), outbound = new Map<string, GraphEdge[]>();
+  for (const edge of graph.edges) {
+    if (edge.from && outward.has(edge.from)) {
+      const group = outbound.get(edge.from) ?? [];
+      group.push(edge);outbound.set(edge.from, group);
+    }
+    if (edge.to && wanted.has(edge.to)) {
+      const group = inbound.get(edge.to) ?? [];
+      group.push(edge);inbound.set(edge.to, group);
+    }
+  }
+  return {
+    node: id => byId.get(id),
+    incoming: id => inbound.get(id) ?? NO_EDGES,
+    outgoing: id => outbound.get(id) ?? NO_EDGES,
+  };
+}
+
 
 export interface MotifSignal {
   family: 'identity' | 'member' | 'relationship' | 'dependency' | 'persistence';
@@ -50,9 +92,8 @@ function resolved(edges: readonly GraphEdge[]): GraphEdge[] {
   return edges.filter(edge => edge.status === 'resolved');
 }
 
-function containingFile(graph: IntelligenceGraph, selected: GraphNode): GraphNode | undefined {
+function containingFile(context: MotifReadContext, selected: GraphNode): GraphNode | undefined {
   if (selected.kind === 'file') return selected;
-  const context = graphQueryContext(graph);
   for (const edge of resolved(context.incoming(selected.id))) {
     if (edge.kind !== 'contains' || !edge.from) continue;
     const source = context.node(edge.from);
@@ -61,29 +102,25 @@ function containingFile(graph: IntelligenceGraph, selected: GraphNode): GraphNod
   return undefined;
 }
 
-function members(graph: IntelligenceGraph, selected: GraphNode): GraphNode[] {
-  const context = graphQueryContext(graph);
+function members(context: MotifReadContext, selected: GraphNode): GraphNode[] {
   return resolved(context.outgoing(selected.id))
     .filter(edge => edge.kind === 'contains' && edge.to)
     .map(edge => context.node(edge.to!))
     .filter((node): node is GraphNode => Boolean(node));
 }
 
-function fileDependencies(graph: IntelligenceGraph, file: GraphNode | undefined): GraphEdge[] {
+function fileDependencies(context: MotifReadContext, file: GraphNode | undefined): GraphEdge[] {
   if (!file) return [];
-  const context = graphQueryContext(graph);
   return resolved(context.outgoing(file.id))
     .filter(edge => ['imports', 'imports-file', 'targets-module', 'resolves_to'].includes(edge.kind));
 }
 
-function directExecutionEdges(graph: IntelligenceGraph, selected: GraphNode): GraphEdge[] {
-  const context = graphQueryContext(graph);
+function directExecutionEdges(context: MotifReadContext, selected: GraphNode): GraphEdge[] {
   return resolved(context.outgoing(selected.id))
     .filter(edge => ['calls', 'invokes', 'dispatches', 'writes', 'reads', 'state-write'].includes(edge.kind));
 }
 
-function targetText(graph: IntelligenceGraph, edge: GraphEdge): string {
-  const context = graphQueryContext(graph);
+function targetText(context: MotifReadContext, edge: GraphEdge): string {
   return nodeText(edge.to ? context.node(edge.to) : undefined);
 }
 
@@ -124,14 +161,23 @@ function motif(
   };
 }
 
-export function deriveMotifs(graph: IntelligenceGraph, selected: GraphNode): DerivedMotif[] {
+export function deriveMotifs(graph: IntelligenceGraph, selected: GraphNode,
+  suppliedContext?: MotifReadContext): DerivedMotif[] {
   if ((selected.layer ?? 'structural') === 'semantic') return [];
-  const file = containingFile(graph, selected);
-  const localMembers = members(graph, selected);
-  const fileMembers = file && file.id !== selected.id ? members(graph, file) : localMembers;
-  const memberPool = selected.kind === 'file' ? localMembers : localMembers;
-  const dependencyEdges = fileDependencies(graph, file);
-  const executionEdges = directExecutionEdges(graph, selected);
+  // Individual motif questions should not allocate every global query index.
+  // A multi-entity semantic bootstrap can pass its shared scoped context.
+  // Reuse the exact selected W's existing shared adjacency when another
+  // query (such as assessment) has already built it; only materialize a
+  // scoped view if no shared index exists. This is lookup reuse, never
+  // a second graph or an authority/acceptance cache.
+  const context = suppliedContext ?? existingGraphQueryContext(graph)
+    ?? scopedMotifReadContext(graph, [selected.id]);
+  const file = containingFile(context, selected);
+  const localMembers = members(context, selected);
+  const fileMembers = file && file.id !== selected.id ? members(context, file) : localMembers;
+  const memberPool = localMembers;
+  const dependencyEdges = fileDependencies(context, file);
+  const executionEdges = directExecutionEdges(context, selected);
   const identity = searchable([selected.name ?? '', locatorPath(selected.locator)].join(' '));
   const output: DerivedMotif[] = [];
 
@@ -213,8 +259,8 @@ export function deriveMotifs(graph: IntelligenceGraph, selected: GraphNode): Der
   const persistenceMembers = (selected.kind === 'file' ? fileMembers : [selected, ...memberPool])
     .filter(node => /(save|load|read|write|fetch|get|list|count|insert|update|delete|upsert|persist|store)/u.test(nodeText(node)));
   const persistenceEdges = [
-    ...dependencyEdges.filter(edge => /(database|supabase|sql|postgres|mongo|redis|storage)/u.test(targetText(graph, edge))),
-    ...executionEdges.filter(edge => ['writes', 'reads', 'state-write'].includes(edge.kind) || /(database|supabase|sql|postgres|mongo|redis|storage)/u.test(targetText(graph, edge))),
+    ...dependencyEdges.filter(edge => /(database|supabase|sql|postgres|mongo|redis|storage)/u.test(targetText(context, edge))),
+    ...executionEdges.filter(edge => ['writes', 'reads', 'state-write'].includes(edge.kind) || /(database|supabase|sql|postgres|mongo|redis|storage)/u.test(targetText(context, edge))),
   ];
   if (persistenceIdentity && persistenceMembers.length && persistenceEdges.length) {
     output.push(motif(

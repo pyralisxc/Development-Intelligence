@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "ignoreCommand": "p=$VERCEL_GIT_PREVIOUS_SHA;c=$VERCEL_GIT_COMMIT_SHA;[ -n \"$p\" ]&&[ \"$p\" != \"$c\" ]&&git diff --quiet \"$p\" \"$c\" -- src package.json package-lock.json tsconfig.json tsconfig.runtime.json Dockerfile.vercel vercel.json .dockerignore",
+  "ignoreCommand": "p=$VERCEL_GIT_PREVIOUS_SHA;c=$VERCEL_GIT_COMMIT_SHA;if [ -z \"$p\" ] || [ \"$p\" = \"$c\" ] || ! git cat-file -e \"$p^{commit}\" 2>/dev/null || ! git cat-file -e \"$c^{commit}\" 2>/dev/null; then exit 1; fi; git diff --quiet \"$p\" \"$c\" -- src package.json package-lock.json tsconfig.json tsconfig.runtime.json Dockerfile.vercel vercel.json .dockerignore ; status=$?; if [ \"$status\" -eq 0 ]; then exit 0; fi; exit 1",
   "git": {
     "deploymentEnabled": {
       "work/**": false

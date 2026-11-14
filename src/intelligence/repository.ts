@@ -13,9 +13,10 @@ import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './
 import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS, TYPESCRIPT_COMPILER_MAX_FILES } from './typescriptCompilerLens.js';
+import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.23.0-source-callback-argument-facts';
+export const ANALYZER_VERSION = '2.25.0-scoped-derived-execution-evidence';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -214,7 +215,8 @@ function semanticConflicts(left: GraphNode, right: GraphNode): ExplicitValueConf
     }));
 }
 
-function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts: ExplicitValueConflict[] } {
+/** Deterministic evidence reconciliation inside canonical graph construction. */
+export function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts: ExplicitValueConflict[] } {
   const byId = new Map<string, GraphNode>();
   const conflicts: ExplicitValueConflict[] = [];
   for (const node of nodes) {
@@ -223,10 +225,31 @@ function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts: Explic
       byId.set(node.id, node);
       continue;
     }
-    const discovered = semanticConflicts(current, node);
+    const sameSourceFact = isCanonicalSourceFact(current) && current.kind === node.kind;
+    const factDiffers = sameSourceFact
+      && (!equivalentValue(current.value, node.value) || current.sourceId !== node.sourceId);
+    const sourceDecision = factDiffers ? reconcileCanonicalSourceFact(current, node) : null;
+    // A stronger exact-source derivation can determine the effective value of
+    // the SAME fact on the selected revision. A disagreement still remains an
+    // inspectable conflict; independent paths/observations are not overwritten.
+    const sourceConflict: ExplicitValueConflict[] = factDiffers ? [{
+      entityId: current.id, leftSourceId: current.sourceId, rightSourceId: node.sourceId,
+      key: 'value', leftValue: current.value, rightValue: node.value,
+      resolution: sourceDecision?.outcome === 'stronger-left' || sourceDecision?.outcome === 'stronger-right'
+        ? 'higher-source-proof-preferred' : 'contested',
+      ...(sourceDecision?.outcome === 'stronger-left' ? { preferredEvidenceIds: current.evidenceIds ?? [] } : {}),
+      ...(sourceDecision?.outcome === 'stronger-right' ? { preferredEvidenceIds: node.evidenceIds ?? [] } : {}),
+    }] : [];
+    const discovered = [...semanticConflicts(current, node), ...sourceConflict];
     conflicts.push(...discovered);
     let preferred: GraphNode;
-    if (current.layer === 'semantic' && node.layer === 'semantic') {
+    if (sourceDecision) {
+      if (sourceDecision.outcome === 'stronger-left') preferred = current;
+      else if (sourceDecision.outcome === 'stronger-right') preferred = node;
+      else preferred = [current, node].sort((a, b) =>
+        `${a.sourceId}\0${a.locator}\0${JSON.stringify(a.value)}`
+          .localeCompare(`${b.sourceId}\0${b.locator}\0${JSON.stringify(b.value)}`))[0]!;
+    } else if (current.layer === 'semantic' && node.layer === 'semantic') {
       preferred = [current, node].sort((a, b) => `${a.sourceId}\0${a.locator}`.localeCompare(`${b.sourceId}\0${b.locator}`))[0]!;
     } else {
       preferred = current.layer === 'semantic' ? current : node.layer === 'semantic' ? node : current;
@@ -234,7 +257,11 @@ function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts: Explic
     const conflicted = discovered.length > 0 || current.tags?.includes('conflicted') || node.tags?.includes('conflicted');
     byId.set(node.id, {
       ...preferred,
-      tags: [...new Set([...(current.tags ?? []), ...(node.tags ?? []), ...(conflicted ? ['conflicted'] : [])])].sort(),
+      tags: [...new Set([...(current.tags ?? []), ...(node.tags ?? []),
+        ...(conflicted ? ['conflicted'] : []),
+        ...(sourceDecision?.outcome === 'contested' ? ['source-fact-contested'] : []),
+        ...(sourceDecision && sourceDecision.outcome.startsWith('stronger-') ? ['weaker-source-assertion-overruled'] : []),
+      ])].sort(),
       evidenceIds: [...new Set([...(current.evidenceIds ?? []), ...(node.evidenceIds ?? [])])].sort(),
       checkpoint: Boolean(current.checkpoint || node.checkpoint),
     });

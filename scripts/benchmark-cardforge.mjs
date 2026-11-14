@@ -69,7 +69,23 @@ const canonicalColdStarted = process.hrtime.bigint();
 const canonicalCold = await graphStatus(project);
 const canonicalColdWallMs = Number(process.hrtime.bigint() - canonicalColdStarted) / 1_000_000;
 if (canonicalCold.observability?.persistence?.saveState !== 'stored' || !canonicalCold.observability?.coldBuild) {
-  throw new Error('CardForge canonical benchmark expected the first default-revision read to build and persist the graph');
+  // Status-only diagnostics: no persistence error body, access token, source
+  // data, request payload or owner identity leaks into CI logs.
+  const observation = canonicalCold.observability ?? {};
+  const persistence = observation.persistence ?? {};
+  const build = observation.coldBuild ?? null;
+  throw new Error('CardForge canonical benchmark expected the first default-revision read to build and persist the graph'
+    + ' [loadState=' + String(persistence.loadState ?? 'unknown')
+    + ', saveState=' + String(persistence.saveState ?? 'unknown')
+    + ', durable=' + String(persistence.durable ?? 'unknown')
+    + ', built=' + String(Boolean(build))
+    + ', buildStrategy=' + String(build?.strategy ?? 'not-observed')
+    + ', graphBuildMs=' + String(build?.graphBuildMs ?? 'not-observed')
+    + ', queryArtifactState=' + String(observation.queryArtifacts?.state ?? 'not-observed')
+    + ', persistenceFailureClass='
+    + (String(persistence.error ?? '').startsWith('Canonical graph record exceeds the bounded storage size')
+      ? 'canonical-size-budget' : persistence.saveState === 'error' ? 'other-persistence-error' : 'none')
+    + ']');
 }
 const canonicalHitDurations = [];
 const canonicalLoadDurations = [];
@@ -380,7 +396,10 @@ async function generalSemanticQuestion(question, expectedDepth, options = {}) {
   if (options.requireExhausted && understanding.completeness?.semanticCandidateUniverseExhausted !== true) {
     throw new Error(`CardForge exhaustive semantic query did not exhaust the evidence-qualified candidate census: ${question}`);
   }
-  if (elapsedMs > 2000) throw new Error(`CardForge general semantic question exceeded 2000 ms budget: ${question} → ${elapsedMs.toFixed(2)} ms`);
+  if (elapsedMs > 2000) {
+    const timings = result?.result?.observability ?? null;
+    throw new Error(`CardForge general semantic question exceeded 2000 ms budget: ${question} → ${elapsedMs.toFixed(2)} ms; orientationStages=${JSON.stringify(timings)}`);
+  }
   return {
     question,
     answer: result.answer,
@@ -537,7 +556,8 @@ if (!pipelineSubject || !persistenceSubject) throw new Error('CardForge benchmar
 
 assessGraph(graph, pipelineSubject.id);
 const pipelineMotifStarted = process.hrtime.bigint();
-const pipelineMotifAssessment = assessGraph(graph, pipelineSubject.id);
+const pipelineMotifPhases = { phaseMs: {} };
+const pipelineMotifAssessment = assessGraph(graph, pipelineSubject.id, [], pipelineMotifPhases);
 const pipelineMotifElapsedMs = Number(process.hrtime.bigint() - pipelineMotifStarted) / 1_000_000;
 const pipelineMotif = pipelineMotifAssessment.orientation?.certainty?.derived?.find(item => item.kind === 'pipeline');
 const pipelineUnresolvedTransfers = graph.edges.filter(edge => edge.from === pipelineSubject.id && edge.kind === 'invokes' && edge.status === 'unresolved');
@@ -549,7 +569,7 @@ const persistenceMotifElapsedMs = Number(process.hrtime.bigint() - persistenceMo
 const persistenceMotif = persistenceMotifAssessment.orientation?.certainty?.derived?.find(item => item.kind === 'persistence-owner');
 if (!persistenceMotif || persistenceMotif.confidence !== 'high' || persistenceMotif.signals.length < 3 || persistenceMotif.proofEligible !== false) throw new Error('CardForge profile store persistence-owner motif was not conservatively derived');
 if (Math.max(pipelineMotifElapsedMs, persistenceMotifElapsedMs) > 1000) {
-  throw new Error(`CardForge motif query exceeded 1000 ms acceptance budget: pipeline ${pipelineMotifElapsedMs.toFixed(2)} ms / persistence ${persistenceMotifElapsedMs.toFixed(2)} ms`);
+  throw new Error(`CardForge motif query exceeded 1000 ms acceptance budget: pipeline ${pipelineMotifElapsedMs.toFixed(2)} ms / persistence ${persistenceMotifElapsedMs.toFixed(2)} ms; assessmentPhases=${JSON.stringify(pipelineMotifPhases.phaseMs)}`);
 }
 
 const assessmentStarted = Date.now();

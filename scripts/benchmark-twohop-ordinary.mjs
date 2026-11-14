@@ -36,7 +36,9 @@ const callee=kind==='di'?'authorize':'cardforgeMiddleware';
 const question='What happens when '+caller+' calls '+callee+'?';
 assert.equal(isConditionEffectQuestion(question),true);
 const scope=kind==='di'?'src/auth.ts':'src/proxy.ts';
+let sourceReadCount=0;
 const readSource=async relative=>{
+  sourceReadCount++;
   const target=path.resolve(root,relative);
   const canonical=path.relative(root,target).split(path.sep).join('/');
   assert.equal(canonical,relative,'source must remain within exact checkout');
@@ -52,13 +54,17 @@ for(let i=0;i<4;i++){
   warmDurations.push(performance.now()-start);
   assert.equal(result?.status,'supported',
     'real source graph must contain exact conditional call path: '+JSON.stringify(result));
-  assert.equal(result?.mode,'two-hop-conditional-source');
+  assert.equal(result?.mode,'canonical-source-two-hop-conditions',
+    'fully compiled current-revision controls must compose from the graph');
+  assert.equal(result.timing.sourceReadMs,0,'graph-only composition cannot reopen source');
+  assert.equal(result.timing.sourceLensMs,0,'graph-only composition cannot rerun AST');
   assert.ok(result.counts.qualified>=1);
   assert.equal(result.counts.omitted,0);
   assert.equal(result.proof.jointPredicateSatisfiabilityProven,false);
   assert.equal(result.proof.argumentMappingProven,false);
   assert.equal(result.proof.runtimeExecutionObserved,false);
   assert.equal(result.timing.graphBuildIncluded,false);
+  assert.equal(sourceReadCount,0,'graph-compiled conditional facts avoid repeated source reads');
   assert.match(sourceConditionsAnswer(result),/runtime behavior are not proven/u);
 }
 const values=result.paths.map(p=>p.expression);
@@ -91,6 +97,7 @@ const report={
     lastBreakdown:result.timing,
     paths:result.counts,
     noGraphRebuildInLoop:true,
+    sourceReadCount,
   },
   negativeControls:['unknown-target','unknown-feasibility','unknown-runtime'],
 };
