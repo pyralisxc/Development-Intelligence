@@ -55,44 +55,75 @@ export function qualifyDatabaseCapture(input: {
   if (!SHA.test(source.revision) || !SHA.test(source.treeSha)) {
     throw new Error('Qualifying source must have exact immutable Git identity');
   }
-  const reasons: string[] = [];
-  if (!run) reasons.push('qualifying-run-unavailable');
+  // Source/environment observation qualification is independent of an
+  // optional post-CI collection/release gate. A failed or absent test cannot
+  // invalidate an otherwise coherent historical catalog observation.
+  const testPolicyReasons: string[] = [];
+  const deploymentReasons: string[] = [];
+  const catalogReasons: string[] = [];
+  if (!run) testPolicyReasons.push('qualifying-run-unavailable');
   else {
-    if (run.source !== 'provider-authenticated') reasons.push('run-not-provider-authenticated');
-    if (run.sourceRevision !== source.revision || run.sourceTreeSha !== source.treeSha) reasons.push('run-source-identity-mismatch');
+    if (run.source !== 'provider-authenticated') testPolicyReasons.push('run-not-provider-authenticated');
+    if (run.sourceRevision !== source.revision || run.sourceTreeSha !== source.treeSha) testPolicyReasons.push('run-source-identity-mismatch');
     if (!run.jobs.length || !run.jobs.some(j => j.required)
-      || run.jobs.some(j => j.required && j.status !== 'success')) reasons.push('required-run-jobs-not-green');
-    if (!run.casesComplete) reasons.push('test-case-population-not-complete');
-    if (timestamp(run.finishedAt) === null) reasons.push('invalid-run-timestamp');
+      || run.jobs.some(j => j.required && j.status !== 'success')) testPolicyReasons.push('required-run-jobs-not-green');
+    if (!run.casesComplete) testPolicyReasons.push('test-case-population-not-complete');
+    if (timestamp(run.finishedAt) === null) testPolicyReasons.push('invalid-run-timestamp');
     if (new Set(run.jobs.map(j => j.id)).size !== run.jobs.length
-      || run.jobs.some(j => !j.id)) reasons.push('ambiguous-run-job-identity');
+      || run.jobs.some(j => !j.id)) testPolicyReasons.push('ambiguous-run-job-identity');
   }
-  if (!deployment) reasons.push('deployment-binding-unavailable');
+  if (!deployment) deploymentReasons.push('deployment-binding-unavailable');
   else {
-    if (deployment.source !== 'provider-authenticated') reasons.push('deployment-not-provider-authenticated');
-    if (deployment.gitRevision !== source.revision) reasons.push('deployment-source-mismatch');
-    if (!['READY','ACTIVE'].includes(deployment.status)) reasons.push('deployment-not-ready');
+    if (deployment.source !== 'provider-authenticated') deploymentReasons.push('deployment-not-provider-authenticated');
+    if (deployment.gitRevision !== source.revision) deploymentReasons.push('deployment-source-mismatch');
+    if (!['READY','ACTIVE'].includes(deployment.status)) deploymentReasons.push('deployment-not-ready');
     if (!deployment.deploymentId || !deployment.environmentId
       || !deployment.databaseEnvironmentId || !deployment.configurationSha256
-      || !DIGEST.test(deployment.configurationSha256)) reasons.push('deployment-configuration-or-database-identity-missing');
+      || !DIGEST.test(deployment.configurationSha256)) deploymentReasons.push('deployment-configuration-or-database-identity-missing');
   }
-  if (!catalog) reasons.push('database-observation-unavailable');
+  if (!catalog) catalogReasons.push('database-observation-unavailable');
   else {
-    if (catalog.source !== 'provider-authenticated') reasons.push('catalog-not-provider-authenticated');
-    if (!catalog.observationId || !catalog.environmentId || !DIGEST.test(catalog.catalogSha256)) reasons.push('catalog-identity-invalid');
-    if (catalog.consistency !== 'consistent') reasons.push('catalog-not-consistent');
-    if (!catalog.metadataOnly || !catalog.sanitized) reasons.push('catalog-not-safe-metadata');
+    if (catalog.source !== 'provider-authenticated') catalogReasons.push('catalog-not-provider-authenticated');
+    if (!catalog.observationId || !catalog.environmentId || !DIGEST.test(catalog.catalogSha256)) catalogReasons.push('catalog-identity-invalid');
+    if (catalog.consistency !== 'consistent') catalogReasons.push('catalog-not-consistent');
+    if (!catalog.metadataOnly || !catalog.sanitized) catalogReasons.push('catalog-not-safe-metadata');
     const captureTime=timestamp(catalog.capturedAt);
-    if (captureTime === null) reasons.push('catalog-timestamp-invalid');
+    if (captureTime === null) catalogReasons.push('catalog-timestamp-invalid');
     if (run && captureTime !== null && timestamp(run.finishedAt) !== null
-      && captureTime < timestamp(run.finishedAt)!) reasons.push('catalog-captured-before-qualifying-tests-finished');
-    if (deployment && catalog.environmentId !== deployment.databaseEnvironmentId) reasons.push('catalog-environment-differs-from-deployment');
+      && captureTime < timestamp(run.finishedAt)!) testPolicyReasons.push('catalog-captured-before-qualifying-tests-finished');
+    if (deployment && catalog.environmentId !== deployment.databaseEnvironmentId) deploymentReasons.push('catalog-environment-differs-from-deployment');
   }
+  const reasons = [...testPolicyReasons, ...deploymentReasons, ...catalogReasons];
+  const catalogObservationQualifiedByReceipts = catalogReasons.length === 0;
+  const environmentAssociationQualifiedByReceipts = catalogObservationQualifiedByReceipts
+    && deploymentReasons.length === 0;
+  // Backwards-compatible post-CI collection policy, not historical truth.
   const captureReady = reasons.length === 0;
   return {
     version: QUALIFY_CAPTURE_PROOF,
     source: {revision:source.revision, treeSha:source.treeSha, graphId:source.graphId},
     captureReady,
+    // This is based on caller-supplied provider receipts; upstream adapters
+    // must verify their authenticity. These fields are not live observations.
+    catalogObservation: {
+      qualifiedByUpstreamReceipts: catalogObservationQualifiedByReceipts,
+      reasons: catalogReasons,
+      observationId: catalog?.observationId ?? null,
+      capturedAt: catalog?.capturedAt ?? null,
+      historicalValidityRequiresGreenTests: false as const,
+      currentEnvironmentEstablished: false as const,
+    },
+    environmentAssociation: {
+      qualifiedByUpstreamReceipts: environmentAssociationQualifiedByReceipts,
+      reasons: [...deploymentReasons, ...catalogReasons],
+      currentEnvironmentEstablished: false as const,
+    },
+    postCiCollectionPolicy: {
+      ready: captureReady,
+      requiresQualifiedGreenRun: true as const,
+      reasons: [...testPolicyReasons, ...deploymentReasons, ...catalogReasons],
+      testReasons: testPolicyReasons,
+    },
     databaseObservationId: catalog?.observationId ?? null,
     deploymentId:deployment?.deploymentId ?? null,
     reasons,
@@ -101,6 +132,8 @@ export function qualifyDatabaseCapture(input: {
       noRecurringScheduleRequired:true,
       providerReceiptsMustBeAuthenticatedUpstream:true,
       greenTestDoesNotProveDatabaseWasUsedByRun:true,
+      historicalCatalogQualificationIndependentOfTests:true,
+      postCiCollectionGateNotCatalogTruth:true,
       qualifiedCaptureDoesNotProveRuntimeBehavior:true,
       captureHistoricalTruthDoesNotExpire:true,
       canonicalGraphUnchanged:true,

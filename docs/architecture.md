@@ -74,6 +74,14 @@ Certainty survives every lens. For example, a direct provider import may resolve
 
 Relationship certainty and claim proof are deliberately separate. `resolved` means DI proved that graph relationship under its relationship rule; it does not mean the edge is admissible for every downstream claim. Assessment proof applies a declared purpose (`existence`, `realization`, `contract`, or `audit`). Realization/contract proof rejects structural declaration, containment, import/re-export, resolution, and naming-correlation edges even when those edges are themselves resolved. Candidate relationships remain hypotheses for follow-up inspection and never become findings or proof merely because they are nearby.
 
+### Canonical source-control facts
+
+DI's supported TypeScript/JavaScript source-control interpreter is a **single bounded parser rule**, shared by graph construction and historical source-only projections. During the source analyzer's existing AST pass it compiles source-located guards and effects into **the same revision-bound W graph**: `source-control-summary`, `source-condition` and `source-effect` nodes, with `has-source-control`, `has-condition`, `has-effect` and `requires-condition` relationships. Each supported condition/effect has an independent source occurrence identity (including offset) and source evidence. Effect values retain **which guard is required and whether its true or false branch is required**. These are not separate answer cards, a second graph, or persisted source-analysis authority outside W.
+
+The summary states the interpreter's source file hash, observed branch/effect population, unmodeled syntax and bounded/exhaustive status **within the supported statement subset**. Function and callback bodies have distinct ownership. The graph's source syntax may prove that a conditional branch, return, throw, call or assignment is written and where it is located; it does **not** prove that a guard is satisfied, that all possible paths were modeled, that the call or effect executed, or that a provider or database changed. `resolved` edges for these facts are *not* realization/execution proof. Unsupported loops, switches and exception/finally constructs remain explicit scope limitations rather than fabricated absence.
+
+Ordinary exact-function behavioral questions project those same compiled graph facts, including source path assumptions and omissions, **without another Git checkout/AST pass when the selected graph contains the complete source lens**. Supported two-hop questions may compose distinct caller/callee source facts over existing resolved call relationships, while not asserting argument binding, joint predicate satisfiability or runtime completion. Older generations and unsupported/missing graph premises preserve the exact-revision source fallback. The code-defined rule is shared; query composition is not a competing knowledge authority.
+
 ### Coverage
 
 Coverage is part of the truth model. Eligible sources are described as:
@@ -341,6 +349,12 @@ No provider-specific graph database query language or public cache-management to
 ## Runtime observation boundary
 
 Runtime URLs must use operator-allowlisted HTTP(S) origins. Redirects are revalidated. Authenticated redirects remain on the originally requested origin. Requests are GET-only and bounded by timeout/size. Credentials come from server-side environment-backed headers and never enter accepted checkpoints.
+
+A runtime URL is not proof that the inspected Git ref is deployed. Before fetching it, DI now requires an operator-authorized deployment-state source to report exactly one ready/active deployment whose full immutable Git SHA matches the selected revision and whose deployed origin matches an allowlisted runtime origin. A live GET then contributes a bounded, ephemeral response/deployment observation link. Unknown, mismatched, stale-branch, ambiguous, or unconfigured deployments yield no runtime observation; arbitrary Git branches are not privileged or forbidden by name. The provider report proves a deployment/source correspondence, not that any specific source function executed. URL query/fragment credentials and cross-origin redirects are rejected; HTML scripts/form values and untrusted JSON row data are sanitized before graph projection.
+
+External technical-source data is sanitized before constructing normalized evidence, graph IDs or outward query results. Arbitrary provider row contents, nested secrets, request/response bodies, credentials and personal identifiers are not returned by default; the envelope reports redaction/truncation counts and retains bounded technical metadata only. Source discovery exposes provider origins rather than credential-bearing query/path details. Such observations remain ephemeral, never accepted graph truth.
+
+The provider-neutral database-schema projection also represents schema-qualified tables, safe column types, reported RLS state, foreign-key relationships, migration versions and serverless function identity. Source correlations require an exact unique tracked migration version, function entrypoint, or unambiguous SQL table; matching migration version IDs is not proof of schema equivalence or runtime database writes. All provider metadata remains a sanitized ephemeral observation with explicit source, environment and time boundaries.
 
 ## Human visualization
 

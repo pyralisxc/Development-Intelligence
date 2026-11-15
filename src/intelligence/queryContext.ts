@@ -12,6 +12,7 @@ function append<K, V>(map: Map<K, V[]>, key: K, value: V): void {
 export interface GraphQueryContext {
   readonly graph: IntelligenceGraph;
   readonly nodesById: ReadonlyMap<string, GraphNode>;
+  readonly edgesById: ReadonlyMap<string, GraphEdge>;
   readonly nodesByKind: ReadonlyMap<string, readonly GraphNode[]>;
   readonly nodesByLayer: ReadonlyMap<string, readonly GraphNode[]>;
   readonly nodesBySource: ReadonlyMap<string, readonly GraphNode[]>;
@@ -28,6 +29,11 @@ export interface GraphQueryContext {
 }
 
 const CACHE = new WeakMap<IntelligenceGraph, GraphQueryContext>();
+
+/** Read an already-built exact-graph index without allocating a new one. */
+export function existingGraphQueryContext(graph: IntelligenceGraph): GraphQueryContext | undefined {
+  return CACHE.get(graph);
+}
 
 export function graphQueryContext(graph: IntelligenceGraph): GraphQueryContext {
   const cached = CACHE.get(graph);
@@ -47,9 +53,11 @@ export function graphQueryContext(graph: IntelligenceGraph): GraphQueryContext {
   const inboundByNode = new Map<string, GraphEdge[]>();
   const outboundByNode = new Map<string, GraphEdge[]>();
   const incidentByNode = new Map<string, GraphEdge[]>();
+  const edgesById = new Map<string, GraphEdge>();
   const edgesByKind = new Map<string, GraphEdge[]>();
   const edgesByStatus = new Map<RelationshipStatus, GraphEdge[]>();
   for (const edge of graph.edges) {
+    edgesById.set(edge.id, edge);
     append(edgesByKind, edge.kind, edge);
     append(edgesByStatus, edge.status, edge);
     if (edge.from) {
@@ -65,6 +73,7 @@ export function graphQueryContext(graph: IntelligenceGraph): GraphQueryContext {
   const context: GraphQueryContext = {
     graph,
     nodesById,
+    edgesById,
     nodesByKind,
     nodesByLayer,
     nodesBySource,

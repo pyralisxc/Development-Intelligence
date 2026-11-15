@@ -153,9 +153,14 @@ test('Vercel container builds are skipped for runtime-neutral repository changes
   const { promises: fs } = await import('node:fs');
   const config = JSON.parse(await fs.readFile('vercel.json', 'utf8')) as any;
   assert.equal(typeof config.ignoreCommand, 'string');
-  assert.match(config.ignoreCommand, /VERCEL_GIT_PREVIOUS_SHA/);
-  assert.match(config.ignoreCommand, /VERCEL_GIT_COMMIT_SHA/);
-  assert.match(config.ignoreCommand, /git diff --quiet/);
+  assert.ok(config.ignoreCommand.length <= 256, 'Vercel schema imposes 256-character ignore command limit');
+  assert.equal(config.ignoreCommand, 'sh scripts/vercel-ignore-command.sh');
+  // Check the actual policy owner rather than assuming it remains inline in
+  // Vercel configuration. The native Git fixture exercises its behavior.
+  const policy = await fs.readFile('scripts/vercel-ignore-command.sh', 'utf8');
+  assert.match(policy, /VERCEL_GIT_PREVIOUS_SHA/);
+  assert.match(policy, /VERCEL_GIT_COMMIT_SHA/);
+  assert.match(policy, /git diff --quiet/);
   for (const required of [
     'src',
     'package.json',
@@ -165,10 +170,11 @@ test('Vercel container builds are skipped for runtime-neutral repository changes
     'Dockerfile.vercel',
     'vercel.json',
     '.dockerignore',
+    'scripts/vercel-ignore-command.sh',
   ]) {
-    assert.match(config.ignoreCommand, new RegExp(`(?:^| )${required.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')}(?: |$)`));
+    assert.ok(policy.includes(required), 'runtime skip policy must inspect ' + required);
   }
-  for (const runtimeNeutral of ['.github', 'docs', 'tests', 'scripts', 'benchmark', 'action.yml']) {
-    assert.doesNotMatch(config.ignoreCommand, new RegExp(`(?:^| )${runtimeNeutral.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')}(?: |$)`));
+  for (const runtimeNeutral of ['.github', 'docs', 'tests', 'benchmark', 'action.yml']) {
+    assert.ok(!policy.includes(runtimeNeutral), 'runtime-neutral path must not trigger builds: ' + runtimeNeutral);
   }
 });

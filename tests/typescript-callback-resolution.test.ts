@@ -194,6 +194,19 @@ export async function ownerUnknownDuplicate() { return await missing({ execute: 
     assert.equal(reachable(graph, ownerA, writeB), false, 'shared wrapper must not pool another call site callback');
     assert.equal(reachable(graph, ownerB, writeA), false, 'call-site isolation must be symmetric');
     assert.equal(reachable(graph, ownerUnused, writeUnused), false, 'passed-but-not-called callback must remain disconnected');
+    const callbackArgs = (caller: string) => graph.edges.filter(edge =>
+      edge.from === caller && edge.kind === 'callback-argument' && edge.status === 'resolved');
+    assert.equal(callbackArgs(ownerUnused).length, 1,
+      'the known-unused callback still has an independent source argument fact');
+    assert.equal(callbackArgs(ownerStored).length, 1,
+      'a stored callback has a source relationship even when invocation is unproven');
+    assert.equal(callbackArgs(ownerA).length, 1);
+    assert.equal(callbackArgs(ownerB).length, 1);
+    assert.notEqual(callbackArgs(ownerA)[0]?.to, callbackArgs(ownerB)[0]?.to);
+    const storedProofId = callbackArgs(ownerStored)[0]?.evidenceIds?.[0];
+    const storedProof = graph.evidence.find(item => item.id === storedProofId);
+    assert.equal(storedProof?.kind, 'source-callback-argument');
+    assert.equal((storedProof?.value as { runtimeObserved?: boolean })?.runtimeObserved, false);
     assert.equal(reachable(graph, ownerStored, writeStored), false, 'stored callback transfer must not become resolved execution');
     assert.equal(reachable(graph, ownerForwarded, writeForwarded), true, 'resolved wrapper forwarding through an invoked inline adapter must preserve execution');
     assert.equal(reachable(graph, ownerReassigned, writeReassigned), false, 'reassignment must break original callback identity');
@@ -220,6 +233,10 @@ export async function ownerUnknownDuplicate() { return await missing({ execute: 
     assert.equal(reachable(graph, ownerNestedUnused, writeNestedUnused), false, 'outer call must not reclassify a proven-unused nested-call callback');
     assert.equal(graph.edges.some(edge => edge.from === ownerNestedUnused && edge.kind === 'invokes'), false, 'proven-unused nested callback must have no invocation edge');
     assert.equal(reachable(graph, ownerUnknownDuplicate, writeUnknownOld), false, 'overwritten callback for unknown callee must remain non-transferred');
+    assert.equal(callbackArgs(ownerUnknownDuplicate).length, 2,
+      'both distinct expressions exist in source even though only one object property is effective');
+    assert.equal(new Set(callbackArgs(ownerUnknownDuplicate).map(edge => edge.id)).size, 2,
+      'source occurrence IDs must not collapse distinct callback arguments');
     assert.equal(reachable(graph, ownerUnknownDuplicate, writeUnknownNew), false, 'effective callback for unknown callee must remain unresolved');
     assert.equal(graph.edges.filter(edge => edge.from === ownerUnknownDuplicate && edge.kind === 'invokes' && edge.status === 'unresolved').length, 1, 'unknown duplicate call must emit only the effective unresolved transfer');
 

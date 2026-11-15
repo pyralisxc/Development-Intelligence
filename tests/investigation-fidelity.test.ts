@@ -6,7 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runChecked } from '../src/util/process.js';
 import { clearGraphCache } from '../src/intelligence/service.js';
-import { queryWorkbench } from '../src/intelligence/workbench.js';
+import { queryWorkbench, scopeOrientation, selectBoundedMechanismRelations } from '../src/intelligence/workbench.js';
 import { callTool } from '../src/mcp.js';
 
 test('investigation keeps callable identity, call direction and unknown-symbol boundaries', async () => {
@@ -23,6 +23,9 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
       'export function leaf() { return 1; }',
       'export function target() { return leaf(); }',
       'export function caller() { return target(); }',
+      'export function guarded(owner: boolean) { if (owner) return target(); return leaf(); }',
+      'export function ignore(_callback: () => number) { return 0; }',
+      'export function ownerStored() { return ignore(() => 42); }',
       ''
     ].join('\n'));
     await fs.writeFile(path.join(source, 'src', 'consumer.ts'),
@@ -78,6 +81,85 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     assert.deepEqual(outgoing.routing.relationshipKinds, ['calls']);
     assert.equal(outgoing.answerClassification, 'established-bounded');
     assert.match(outgoing.answer, /leaf/u);
+    const callbackQuestion = await queryWorkbench({ ...input,
+      text: 'Which callbacks does ownerStored pass?' }) as any;
+    assert.equal(callbackQuestion.intent, 'trace');
+    assert.equal(callbackQuestion.routing.tool, 'trace_path');
+    assert.deepEqual(callbackQuestion.routing.relationshipKinds, ['callback-argument']);
+    assert.equal(callbackQuestion.answerClassification, 'established-bounded');
+    assert.match(callbackQuestion.answer, /src\/workbench\.ts/u);
+    assert.match(callbackQuestion.answer, /not proof of effective delivery/u);
+    const argument = callbackQuestion.result.edges.find((edge: any) =>
+      edge.kind === 'callback-argument' && edge.status === 'resolved');
+    assert.ok(argument, 'ordinary questions must select the existing source argument relationship');
+    const callbackEvidence = await callTool('get_evidence', { ...input, edge: argument.id }) as any;
+    assert.ok(callbackEvidence.evidence.some((item: any) => item.kind === 'source-callback-argument'));
+    const compiledControl = await queryWorkbench({ ...input,
+      text: 'What does guarded do?' }) as any;
+    assert.equal(compiledControl.intent, 'source-condition-effects');
+    assert.equal(compiledControl.routing.tool, 'canonical-graph-relationships',
+      'ordinary source behavior must use already compiled graph facts');
+    assert.equal(compiledControl.result.mode, 'canonical-source-condition-effects');
+    assert.equal(compiledControl.result.coverage.branchTotal, 1);
+    assert.equal(compiledControl.result.coverage.effectTotal, 2);
+    assert.equal(compiledControl.result.proof.returnOrCallRuntimeObserved, false);
+    assert.equal(compiledControl.result.proof.sourceDerivedExecution.status, 'established',
+      'source-derived conditional effects are established facts without a runtime witness');
+    assert.equal(compiledControl.result.proof.sourceDerivedExecution.establishedEffectFacts, 2);
+    assert.equal(compiledControl.result.proof.sourceDerivedExecution.runtimeWitnessRequiredForSourceFact, false);
+    assert.equal(compiledControl.result.proof.sourceDerivedExecution.runtimeObserved, false);
+    const sourceAssessment = await callTool('query_intelligence', {
+      ...input, question: 'What does guarded do?',
+    }) as any;
+    assert.equal(sourceAssessment.answerStatus, 'supported');
+    assert.equal(sourceAssessment.conditionEffects.mode, 'canonical-source-condition-effects');
+    assert.equal(sourceAssessment.claims.length, 1);
+    assert.equal(compiledControl.answer, sourceAssessment.answer,
+      'ordinary and formal question entrypoints must compose one semantic answer');
+    assert.deepEqual(compiledControl.result, sourceAssessment.conditionEffects,
+      'different question entrypoints must select identical canonical source facts');
+    assert.deepEqual(compiledControl.claims, sourceAssessment.claims,
+      'source-derived technical claims must be independent of the question route');
+    const established = sourceAssessment.claims[0];
+    assert.equal(established.type, 'source-derived-execution');
+    assert.equal(established.status, 'supported');
+    assert.equal(established.proof.ruleId, 'source.conditional-effect.exact-revision.v1');
+    assert.equal(established.proof.admissibility.purpose, 'existence',
+      'source fact is proof of a technical occurrence, not a capability realization');
+    assert.ok(established.proof.evidence.some((item: any) => item.kind === 'source-effect-syntax'));
+    assert.ok(established.proof.edgeIds.length >= 2);
+    assert.match(established.statement, /Predicate satisfiability, actual runtime execution/u);
+    assert.equal(sourceAssessment.policy.sourceSyntaxNotRuntime, true);
+    assert.match(compiledControl.answer, /not whether the conditions are true/);
+    const ordinaryCalls = await queryWorkbench({ ...input,
+      text: 'What does ownerStored call?' }) as any;
+    assert.deepEqual(ordinaryCalls.routing.relationshipKinds, ['calls']);
+    assert.ok(!ordinaryCalls.result.edges.some((edge: any) => edge.kind === 'callback-argument'),
+      'source argument edges may not masquerade as executed calls');
+    const orientation = await queryWorkbench({ ...input, text: 'What does this project do?' }) as any;
+    assert.equal(orientation.intent, 'orientation');
+    assert.equal(orientation.routing.projection, 'repository-semantic-summary');
+    assert.equal(orientation.result.projection.structuralOrientationMaterialized, false);
+    const detailedOrientation = await scopeOrientation({
+      ...input, semanticDepth: 'nucleus',
+    }) as any;
+    assert.deepEqual(orientation.result.semanticUnderstanding,
+      detailedOrientation.semanticUnderstanding,
+      'semantic summary must preserve the complete current-revision semantic answer');
+    assert.equal(orientation.result.summary, detailedOrientation.summary);
+    assert.ok(detailedOrientation.keyEntities?.length > 0,
+      'explicit structural orientation must retain its full graph-ranked projection');
+    const timings = orientation.result.observability;
+    assert.equal(timings.owner, 'di-query-orientation');
+    assert.equal(timings.revision, sha);
+    assert.equal(timings.ephemeral, true);
+    assert.equal(timings.phaseMs.rankingAndRoles, 0,
+      'a semantic summary must not compute an unused whole-repository structural ranking');
+    assert.ok(Object.values(timings.phaseMs).every((ms: any) =>
+      typeof ms === 'number' && ms >= 0 && Number.isFinite(ms)));
+    assert.ok(timings.totalMeasuredMs >= 0);
+    assert.equal(JSON.stringify(timings).includes('What does this project do'), false,
+      'timing diagnostics must not log question text');
     const incoming = await queryWorkbench({ ...input, text: 'What calls target?' }) as any;
     assert.equal(incoming.subject.id, outgoing.subject.id);
     assert.equal(incoming.routing.direction, 'inbound');
@@ -124,4 +206,54 @@ test('investigation keeps callable identity, call direction and unknown-symbol b
     clearGraphCache();
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+
+test('bounded implementation views retain resolved direct effects when source-control links dominate', () => {
+  const controls = Array.from({ length: 90 }, (_, i) => ({
+    edgeId: 'condition-' + i,
+    kind: 'has-condition',
+    to: { kind: 'source-condition' },
+  }));
+  const effects = ['bulkDataInput', 'lastGeneratedCards', 'pendingRevision'].map(name => ({
+    edgeId: 'state-' + name,
+    kind: 'invokes',
+    to: { kind: 'state-write' },
+  }));
+  const picked = selectBoundedMechanismRelations([...controls, ...effects], 50);
+  assert.equal(picked.length, 50);
+  assert.equal(new Set(picked.map(edge => edge.edgeId)).size, 50);
+  for (const effect of effects) {
+    assert.ok(picked.some(item => item.edgeId === effect.edgeId),
+      'existing direct-effect evidence must not vanish behind new source-control relation volume');
+  }
+});
+
+
+test('bounded mechanism answers preserve a relevant handler’s three direct writes among competing state writers', () => {
+  const controls = Array.from({ length: 90 }, (_, i) => ({
+    edgeId: 'guard-' + i, kind: 'has-condition',
+    from: { id: 'function:unrelated', name: 'unrelatedSource' },
+    to: { kind: 'source-condition' },
+  }));
+  const otherWrites = Array.from({ length: 40 }, (_, i) => ({
+    edgeId: 'other-state-' + i, kind: 'invokes',
+    from: { id: 'function:other-' + i, name: 'renderOtherState' },
+    to: { kind: 'state-write' },
+  }));
+  const handlerWrites = ['bulkDataInput', 'lastGeneratedCards', 'pendingRevision'].map(name => ({
+    edgeId: 'write-' + name, kind: 'invokes',
+    from: { id: 'function:handleDataInputChange', name: 'handleDataInputChange' },
+    to: { kind: 'state-write' },
+  }));
+  const selected = selectBoundedMechanismRelations(
+    [...controls, ...otherWrites, ...handlerWrites], 50, ['handle', 'chang', 'reset']);
+  assert.equal(selected.length, 50);
+  assert.equal(new Set(selected.map(item => item.edgeId)).size, 50);
+  for (const item of handlerWrites) {
+    assert.ok(selected.some(edge => edge.edgeId === item.edgeId),
+      'all source-proven direct consequences of the relevant handler should stay visible');
+  }
+  assert.ok(selected.some(edge => edge.kind === 'has-condition'),
+    'relevant handler priority may not erase every non-effect fact family');
 });

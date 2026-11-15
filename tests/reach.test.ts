@@ -48,6 +48,8 @@ test('typed reach reports dimensions and shortest resolved paths without a globa
   const fixture = graph();
   const root = fixture.nodes.find(item => item.id === 'capability:checkout')!;
   const reach = projectTypedReach(fixture, root, { depth: 4 });
+  assert.deepEqual(projectTypedReach(fixture, root, { depth: 4 }), reach,
+    'indexed warm traversal preserves complete typed reach semantics');
 
   assert.equal(reach.dimensions.human.observed, true);
   assert.equal(reach.dimensions.agent.observed, true);

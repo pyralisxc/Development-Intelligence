@@ -1,6 +1,7 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
-import { deriveMotifs, type DerivedMotifKind } from './motifs.js';
+import { deriveMotifs, scopedMotifReadContext, type MotifReadContext, type DerivedMotifKind } from './motifs.js';
+import { nodeTraits, relationshipKindContract } from './graphKnowledge.js';
 
 export type SemanticCandidateKind = 'feature' | 'capability' | 'surface' | 'domain';
 export type SemanticProposalOrigin = 'intrinsic-derivation' | 'ai-model' | 'human' | 'repository-declaration' | 'imported-assertion';
@@ -213,34 +214,43 @@ function nodeSearchText(node: GraphNode): string {
   return [node.kind, node.name ?? '', node.locator, node.raw].join(' ').toLowerCase();
 }
 
-function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph): { families: SemanticEvidenceFamily[]; motifs: DerivedMotifKind[] } {
+const motifIdentityHint = /(?:bootstrap|composition root|lifetime scope|service registration|service installer|startup|state machine|adapter|bridge|relay|translator|mapper|pipeline|workflow|processing chain|repository|store|persistence|storage|database|\bdao\b)/iu;
+function motifSubjects(group: CandidateGroup): GraphNode[] {
+  return group.nodes
+    .filter(node => (node.layer ?? 'structural') === 'structural'
+      && ['file', 'class', 'function', 'declaration'].includes(node.kind)
+      && motifIdentityHint.test([node.name ?? '', node.locator].join(' ')))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, 6);
+}
+function familyEvidence(group: CandidateGroup, graph: IntelligenceGraph,
+  motifContext: MotifReadContext | null, selectedMotifs: readonly GraphNode[]): { families: SemanticEvidenceFamily[]; motifs: DerivedMotifKind[] } {
   const families = new Set<SemanticEvidenceFamily>();
   if (group.files.size > 0) families.add('structure');
   const resolvedEdges = group.edges.filter(edge => edge.status === 'resolved');
   if (resolvedEdges.length > 0) families.add('relationship');
 
-  const text = group.nodes.map(nodeSearchText).join('\n');
+  // A bounded evidence-family question only needs one matching observation.
+  // Eagerly concatenating every raw node value on each semantic projection
+  // repeatedly materialized huge strings in large codebases. Each node is
+  // already a canonical observation; short-circuiting preserves the same
+  // word-boundary matching without scanning unrelated later nodes.
+  const hasSourceText = (pattern: RegExp): boolean =>
+    group.nodes.some(node => pattern.test(nodeSearchText(node)));
   if (group.nodes.some(node => /(?:ui-element|component-prop|navigation-call|html-element|css-class-reference|route)/u.test(node.kind))) families.add('interface');
   if (group.nodes.some(node => /state/u.test(node.kind)) || resolvedEdges.some(edge => /^(?:state-write|reads|writes)$/u.test(edge.kind))) families.add('state');
-  if (group.nodes.some(node => /(?:api|http-call|rpc)/u.test(node.kind)) || /\b(?:api|http|endpoint|route|request|response)\b/u.test(text)) families.add('api');
-  if (group.nodes.some(node => /(?:sql-|database|storage|persistence)/u.test(node.kind)) || /\b(?:database|storage|persist|supabase|postgres|redis|sql)\b/u.test(text)) families.add('persistence');
+  if (group.nodes.some(node => /(?:api|http-call|rpc)/u.test(node.kind))
+    || hasSourceText(/\b(?:api|http|endpoint|route|request|response)\b/u)) families.add('api');
+  if (group.nodes.some(node => /(?:sql-|database|storage|persistence)/u.test(node.kind))
+    || hasSourceText(/\b(?:database|storage|persist|supabase|postgres|redis|sql)\b/u)) families.add('persistence');
 
   const motifKinds = new Set<DerivedMotifKind>();
   // Motif projection is comparatively expensive because it performs graph-neighborhood
   // lookups. Only invoke it when the entity identity can satisfy one of the current
   // deterministic motif predicates; do not run motif detection speculatively across
   // every node in every semantic candidate group.
-  const motifIdentityHint = /(?:bootstrap|composition root|lifetime scope|service registration|service installer|startup|state machine|adapter|bridge|relay|translator|mapper|pipeline|workflow|processing chain|repository|store|persistence|storage|database|\bdao\b)/iu;
-  const motifSubjects = group.nodes
-    .filter(node =>
-      (node.layer ?? 'structural') === 'structural'
-      && ['file', 'class', 'function', 'declaration'].includes(node.kind)
-      && motifIdentityHint.test([node.name ?? '', node.locator].join(' '))
-    )
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .slice(0, 6);
-  for (const node of motifSubjects) {
-    for (const motif of deriveMotifs(graph, node)) motifKinds.add(motif.kind);
+  for (const node of selectedMotifs) {
+    for (const motif of deriveMotifs(graph, node, motifContext ?? undefined)) motifKinds.add(motif.kind);
   }
   if (motifKinds.size > 0) families.add('motif');
   return { families: [...families].sort(), motifs: [...motifKinds].sort() };
@@ -261,13 +271,28 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   const limit = Math.max(1, Math.min(options.limit ?? 12, operationalLimit));
   const groups = new Map<string, CandidateGroup>();
   const nodeScope = new Map<string, string>();
+  const sourceOnlyNodeIds = new Set<string>();
+  // Every observation in one file shares the same path-to-scope decision.
+  // This lives only for this pure projection, not in graph authority.
+  const scopeByFile = new Map<string, ReturnType<typeof scopeForPath>>();
 
   for (const node of graph.nodes) {
     if ((node.layer ?? 'structural') === 'semantic') continue;
+    // Source conditions and effects are real technical proof premises, not
+    // independent product-capability votes. Their graph presence must not
+    // inflate/rename semantic candidates or trigger repeated semantic scoring.
+    if (nodeTraits(node.kind).includes('source-control')) {
+      sourceOnlyNodeIds.add(node.id);
+      continue;
+    }
     if (node.tags?.includes('operational') || node.tags?.includes('source-unavailable')) continue;
     const file = sourceFile(node.locator);
     if (!file) continue;
-    const scoped = scopeForPath(file);
+    let scoped = scopeByFile.get(file);
+    if (scoped === undefined && !scopeByFile.has(file)) {
+      scoped = scopeForPath(file);
+      scopeByFile.set(file, scoped);
+    }
     if (!scoped) continue;
     const current = groups.get(scoped.scope) ?? {
       scope: scoped.scope,
@@ -285,6 +310,11 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
 
   for (const edge of graph.edges) {
     if (edge.status !== 'resolved') continue;
+    // Keep source-only path requirements out of semantic proposal topology.
+    // This is a typed graph contract, not a project- or name-based exception.
+    if (relationshipKindContract(edge.kind).proof === 'source-conditional'
+      || (edge.from && sourceOnlyNodeIds.has(edge.from))
+      || (edge.to && sourceOnlyNodeIds.has(edge.to))) continue;
     const scopes: string[] = [];
     if (edge.from) {
       const scope = nodeScope.get(edge.from);
@@ -297,6 +327,13 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     for (const scope of scopes) groups.get(scope)?.edges.push(edge);
   }
 
+  // Selection is a pure function of each existing source scope; reuse it
+  // across the scoped adjacency build and its motif evidence projection.
+  const motifSubjectsByScope = new Map([...groups.values()].map(group =>
+    [group.scope, motifSubjects(group)] as const));
+  const motifIds = [...new Set([...motifSubjectsByScope.values()].flatMap(group =>
+    group.map(node => node.id)))];
+  const motifContext = motifIds.length ? scopedMotifReadContext(graph, motifIds) : null;
   const candidates: SemanticCandidate[] = [];
   const excludedScopes: ExcludedSemanticScope[] = [];
   const rejectionReasons = {
@@ -305,7 +342,8 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
     genericSupportScope: 0,
   };
   for (const group of groups.values()) {
-    const { families, motifs } = familyEvidence(group, graph);
+    const { families, motifs } = familyEvidence(group, graph, motifContext,
+      motifSubjectsByScope.get(group.scope) ?? []);
     const strongFamily = families.some(family => ['interface', 'api', 'persistence', 'motif', 'state'].includes(family));
     const excludedReason: ExcludedSemanticScope['reason'] | null =
       group.scopeRole === 'direct' && SUPPORT_SEGMENTS.has(group.token.toLowerCase())

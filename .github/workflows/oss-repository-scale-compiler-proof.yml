@@ -1,0 +1,154 @@
+name: oss-repository-scale-compiler-proof
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "src/intelligence/typescriptCompilerLens.ts"
+      - "src/intelligence/repository.ts"
+      - "scripts/benchmark-oss-compiler-capacity.mjs"
+      - "tests/typescript-compiler-lens.test.ts"
+      - ".github/workflows/oss-repository-scale-compiler-proof.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: di-oss-compiler-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-large-source-oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - name: Install and compile exact TypeScript backend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Measure 1,650 real source files and 3,205 true TypeChecker callsites
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --max-old-space-size=4096 scripts/benchmark-oss-compiler-capacity.mjs --fixture | tee "fixture-native-compiler-capacity.json"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const r = JSON.parse(fs.readFileSync('fixture-native-compiler-capacity.json', 'utf8'));
+          assert.ok(r.eligibleFiles > 1600);
+          assert.equal(r.generatedCallsExpected, 3205);
+          assert.equal(r.positiveSitesAllRecovered, true);
+          assert.equal(r.oldLimitWouldRejectAll, true);
+          assert.equal(r.invalidSameNameOrImportOnlyLinks, 0);
+          assert.ok(r.compilerEdges > 0);
+          assert.ok(r.uniqueSourceSites >= 3205);
+          assert.ok(r.rssBytes > 0 && r.elapsedMs > 0);
+          console.log('Native exact-source compiler capacity accepted; RSS=' + r.rssBytes + ' elapsedMs=' + r.elapsedMs);
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: di-oss-compiler-large-source-receipt
+          path: fixture-native-compiler-capacity.json
+          retention-days: 3
+          if-no-files-found: error
+
+  actual-development-intelligence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Measure native evidence on this exact DI source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          DI_SHA="$(git rev-parse HEAD)"
+          node --max-old-space-size=4096 scripts/benchmark-oss-compiler-capacity.mjs \
+            --repo-path . --project Development-Intelligence --expected-sha "$DI_SHA" --min-sites 30 \
+            --compare-legacy --min-legacy-new-sites 0 \
+            | tee di-repository-compiler-capacity.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const r = JSON.parse(fs.readFileSync('di-repository-compiler-capacity.json', 'utf8'));
+          assert.ok(r.uniqueSourceSites >= 30);
+          assert.ok(r.sampledSourceSpanValidation > 0);
+          assert.equal(r.legacyBaseline.formerlyAvailableSitesLost, 0);
+          assert.equal(r.legacyBaseline.newUniqueSourceSites, r.uniqueSourceSites);
+          assert.equal(r.compilerFactIsStaticNotRuntime, true);
+          assert.equal(r.fullSuiteBehaviorProven, false);
+          console.log(r);
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: di-native-repository-compiler-receipt
+          path: di-repository-compiler-capacity.json
+          retention-days: 3
+          if-no-files-found: error
+
+  pinned-cardforge-source-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Read-only exact pinned CardForge source, never modify it
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084
+          path: benchmark/cardforge
+          persist-credentials: false
+      - name: Measure real CardForge compiler evidence without source writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --max-old-space-size=4096 scripts/benchmark-oss-compiler-capacity.mjs \
+            --repo-path benchmark/cardforge --project CardForge \
+            --expected-sha bd2ed93f7746df6fcc1fc7b88f63f5ee798a4084 \
+            --min-sites 300 --compare-legacy --min-legacy-new-sites 1000 | tee cardforge-source-compiler-capacity.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const r = JSON.parse(fs.readFileSync('cardforge-source-compiler-capacity.json', 'utf8'));
+          assert.ok(r.uniqueSourceSites >= 300);
+          assert.ok(r.sampledSourceSpanValidation >= 16);
+          assert.equal(r.legacyBaseline.formerlyAvailableSitesLost, 0);
+          assert.ok(r.legacyBaseline.newlyAvailableCompilerSourceSites >= 1000,
+            'source-proven new capacity must be measurably useful at the same CardForge SHA');
+          assert.equal(r.compilerFactIsStaticNotRuntime, true);
+          assert.equal(r.fullSuiteBehaviorProven, false);
+          console.log(r);
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: di-pinned-cardforge-compiler-receipt
+          path: cardforge-source-compiler-capacity.json
+          retention-days: 3
+          if-no-files-found: error

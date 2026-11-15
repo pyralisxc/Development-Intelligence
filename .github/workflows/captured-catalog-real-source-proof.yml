@@ -1,0 +1,53 @@
+name: captured-catalog-real-source-proof
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "src/intelligence/capturedCatalogReconciliation.ts"
+      - "tests/captured-catalog-reconciliation.test.ts"
+      - "scripts/benchmark-captured-catalog-source.mjs"
+      - ".github/workflows/captured-catalog-real-source-proof.yml"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: di-catalog-real-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  real-existing-graph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [di, cardforge]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Pin CardForge immutable source without writes
+        if: matrix.source == 'cardforge'
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: 0e86857cedfc14cf7c3d12ce4df00d20909c637c
+          path: benchmark/cardforge
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build:server
+      - name: Separate cold graph construction from captured metadata comparison
+        shell: bash
+        env:
+          SOURCE_KIND: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE_KIND" = "di" ]; then
+            node scripts/benchmark-captured-catalog-source.mjs --source di --repo-root .
+          else
+            node scripts/benchmark-captured-catalog-source.mjs --source cardforge --repo-root benchmark/cardforge --expected-sha 0e86857cedfc14cf7c3d12ce4df00d20909c637c
+          fi

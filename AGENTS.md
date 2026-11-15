@@ -8,12 +8,12 @@ Development Intelligence owns **one intrinsic evidence graph**. Source inspectio
 
 Development Intelligence provides technical evidence. It does not decide product intent or development workflow and must not depend on custom agent methodologies.
 
-`docs/product-direction.md` is the living authority for product identity, intended direction, current product position, and enduring non-goals. Read it before material product or architecture work. Source/provider state remains authoritative for implementation and operational fact.
+The [DI Confluence blueprint](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/720897) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable DI product identity, intended direction, public milestones and enduring product boundaries. Read them before material product or architecture decisions. `docs/product-direction.md` is the revision-bound technical/product-interface context at this source commit, not a second vision owner. Immutable Git, CI and actual provider/runtime evidence establish what is implemented and observed.
 
 ## Documentation ownership
 
 - `README.md` — concise entry point and usage orientation.
-- `docs/product-direction.md` — identity, direction, current product position, decision filter, and non-goals.
+- **Confluence DI blueprint and roadmap** — cross-version product intent and milestone acceptance; `docs/product-direction.md` — revision-bound product-interface description, current implementation constraints and technical decision context.
 - `docs/architecture.md` — system design, graph semantics, lifecycle, and technical boundaries.
 - `ORCHESTRATION.md` — project-local branch, seal, preview, provider, evidence, and human-gate execution policy; it points to the operational owners rather than duplicating them.
 - `docs/operations.md` — deployment, configuration, authentication, recovery, and production operation.

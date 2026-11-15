@@ -116,6 +116,23 @@ There is no required durable `DEVINT_DATA_DIR` or graph database. Local/single-i
 
 Process memory is an accelerator rather than authority. Cache entry counts remain hard upper bounds, while `DEVINT_GRAPH_CACHE_MAX_RECORDS` adds one shared weight budget across canonical graphs and runtime snapshots so a handful of large graphs cannot be treated like a handful of tiny graphs. Record weight counts the graph's retained source, evidence, node, edge, conflict, divergence, coverage, and unresolved-reference records; it is a deterministic retention proxy, not a byte estimate. The currently requested graph survives pruning even when it alone exceeds the budget. Unrelated cold builds pass through a bounded process-local gate, while requests for the same immutable project/SHA continue sharing one in-flight build promise.
 
+## Observability ownership and log correlation
+
+DI has multiple operational evidence owners. None is a second source of graph or semantic authority.
+
+| Owner | Evidence / inspection | Limit |
+|---|---|---|
+| DI application | `project_status` and `project_statistics` expose exact-revision graph/cache/build measurements and a scoped, volatile last-tool duration; `orient_scope` / `investigate` return query-phase timings | In-process timing is not a durable log; it does not certify runtime execution |
+| GitHub Actions | Exact SHA + workflow run/job log + pinned benchmark artifacts | Distinct runners and samples are not causal performance comparisons; preserve failed runs |
+| Vercel | Exact deployment source revision, build logs and HTTP runtime request logs | Deployment READY or /mcp HTTP 200 alone does not prove authenticated semantic answer acceptance |
+| Managed Windows trial | Protected local rotating service stdout/stderr and separate native installer/operator receipts | 1 MiB with four retained files per stream; uncertain MSI state is not resolved by missing log lines |
+
+**Correlate before attributing:** project/access scope, exact Git SHA, analyzer version and graphId for DI source; workflow run/job ID for CI; deployment ID and request timestamp for Vercel. A universal cross-provider request identifier and durable cross-platform trace join are **not** currently established; report them as gaps, not working features.
+
+Repository-level orientation now includes a bounded request-local `observability` projection recording durations for `graphAccess`, `scopeSelection`, `adjacencyIndex`, `rankingAndRoles`, and `semanticUnderstanding`, tied to exact graphId/revision. The CardForge benchmark prints these timings when the ordinary semantic-question budget fails. A high-level `What does this project do?` question now selects the same full current-source semantic explanation directly and reports `projection.kind=repository-semantic-summary`; it does not compute a large unused structural ranking. Explicit `orient_scope` still exposes ranked structural entities, boundaries, roles and uncertainty. Omitted structural detail is marked as not materialized, never misreported as absent. These measurements are not cumulative across independent requests and are separate from cold graph construction and full MCP/HTTP response time. No budget is relaxed.
+
+Never log raw question text, source bodies, cookies, auth headers, bearer tokens or provider secrets in tracing metadata. Maintain each existing platform's access control and retention. A successful log entry is operational observation, not graph proof.
+
 ## Project access registry
 
 The registry may define only operational access:

@@ -188,6 +188,8 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number, ind
     edgeIds: string[];
     evidenceIds: Set<string>;
     areas: Map<string, number>;
+    knownEndpointCount: number;
+    unknownCallbackExecutionCount: number;
     samples: Array<{ id: string; from: string | null; to: string | null; evidence: string[] }>;
   }>();
   for (const edge of graph.edges) {
@@ -200,9 +202,16 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number, ind
       edgeIds: [],
       evidenceIds: new Set<string>(),
       areas: new Map<string, number>(),
+      knownEndpointCount: 0,
+      unknownCallbackExecutionCount: 0,
       samples: [],
     };
     group.count += 1;
+    const knownEndpoints = Boolean(edge.from && edge.to
+      && indexes.nodes.has(edge.from) && indexes.nodes.has(edge.to));
+    if (knownEndpoints) group.knownEndpointCount += 1;
+    if (knownEndpoints && edge.kind === 'invokes' && edge.status === 'unresolved'
+      && edge.strategy === 'callback-transfer-unresolved') group.unknownCallbackExecutionCount += 1;
     if (group.edgeIds.length < 20) group.edgeIds.push(edge.id);
     for (const id of edge.evidenceIds ?? []) if (group.evidenceIds.size < 30) group.evidenceIds.add(id);
     if (group.samples.length < 3) group.samples.push({ id: edge.id, from: edge.from, to: edge.to, evidence: edge.evidence.slice(0, 2) });
@@ -220,6 +229,10 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number, ind
       status: group.status,
       kind: group.kind,
       count: group.count,
+      knownEndpointCount: group.knownEndpointCount,
+      uncertainty: group.count > 0 && group.unknownCallbackExecutionCount === group.count
+        ? 'callback-invocation-unproven-with-known-participants' as const
+        : 'unresolved-relationship' as const,
       edgeIds: group.edgeIds,
       evidenceIds: [...group.evidenceIds].sort(),
       areas: [...group.areas.entries()]
@@ -228,9 +241,11 @@ function relationshipConcentrations(graph: IntelligenceGraph, limit: number, ind
         .slice(0, 5),
       fixSurface: fixSurface(indexes, [...new Set(group.samples.flatMap(item => [item.from, item.to].filter((id): id is string => Boolean(id))))]),
       samples: group.samples,
-      nextEvidence: group.status === 'unresolved'
-        ? 'Resolve target identity or supply the missing source/runtime/provider evidence before using these relationships as proof.'
-        : 'Strengthen deterministic binding evidence before promoting these candidate relationships into proof.',
+      nextEvidence: group.count > 0 && group.unknownCallbackExecutionCount === group.count
+        ? 'Both callback participants are identified. Inspect receiver behavior to prove invocation; source-located callback arguments are not execution proof.'
+        : group.status === 'unresolved'
+          ? 'Resolve target identity or supply the missing source/runtime/provider evidence before using these relationships as proof.'
+          : 'Strengthen deterministic binding evidence before promoting these candidate relationships into proof.',
     }))
     .sort((a, b) => {
       const statusOrder = (value: AuditRelationshipStatus) => value === 'unresolved' ? 0 : 1;
@@ -263,6 +278,76 @@ function coverageBlockers(graph: IntelligenceGraph, limit: number) {
     .slice(0, limit);
 }
 
+/** A detected precision boundary is a reason to improve DI, not a defect in the inspected product. */
+function analyzerPrecisionLimits(graph: IntelligenceGraph) {
+  const seen = new Set<string>();
+  const signals: Array<{ sourceId: string; observation: string; status: 'observed-precision-boundary' }> = [];
+  for (const source of graph.sources) {
+    for (const warning of source.warnings ?? []) {
+      if (typeof warning !== 'string'
+        || !/^(?:Optional TypeScript compiler symbol evidence)/u.test(warning)) continue;
+      const observation = warning.slice(0, 400);
+      const key = source.id + '\u0000' + observation;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      signals.push({ sourceId: source.id, observation, status: 'observed-precision-boundary' });
+    }
+  }
+  return signals.sort((x,y) => x.sourceId.localeCompare(y.sourceId)
+    || x.observation.localeCompare(y.observation));
+}
+
+/** Recommendations remain investigation hypotheses; no inferred bug or product decision. */
+function triageInvestigationTarget(item: Record<string, unknown>) {
+  const kind = String(item.kind ?? '');
+  if (kind === 'analyzer-precision') return {
+    route: 'strengthen-di-understanding',
+    confidence: 'observed-limitation',
+    developerDecisionRequired: false,
+    why: 'The analyzer reported a bounded or incomplete precision pass; that is not a source-code defect.',
+  };
+  if (kind === 'coverage') return {
+    route: 'evaluate-analyzer-support',
+    confidence: 'observed-coverage',
+    developerDecisionRequired: false,
+    why: 'Unsupported files do not establish a defect. First determine whether these files matter to the requested behavior, then improve coverage where useful.',
+  };
+  if (kind === 'relationship') {
+    const relation = item.evidence && typeof item.evidence === 'object'
+      ? item.evidence as Record<string, unknown> : {};
+    if (relation.uncertainty === 'callback-invocation-unproven-with-known-participants') return {
+      route: 'investigate-higher-order-invocation',
+      confidence: 'identified-source-participants',
+      developerDecisionRequired: false,
+      why: 'Both callback identities are known. Check receiver execution, not missing targets; source argument syntax is a separate established fact.',
+    };
+    return {
+    route: 'investigate-binding-or-missing-evidence',
+    confidence: 'candidate-cause',
+    developerDecisionRequired: false,
+    why: 'An unresolved or candidate relationship can reflect a missing static binding, dynamic dispatch, or absent evidence, not necessarily incorrect source code.',
+    };
+  }
+  if (kind === 'architecture-boundary') return {
+    route: 'developer-judgment-after-evidence',
+    confidence: 'investigation-signal',
+    developerDecisionRequired: null,
+    why: 'Bidirectional dependencies may be intentional. A developer decides whether ownership and layering meet product constraints after inspecting the contracts.',
+  };
+  if (kind === 'finding') return {
+    route: 'evaluate-evidence-and-project-intent',
+    confidence: 'finding-requires-interpretation',
+    developerDecisionRequired: null,
+    why: 'DI established a graph finding; whether it is an actionable product defect depends on the actual conflicting evidence and project-owned expectations.',
+  };
+  return {
+    route: 'check-revision-and-provider-evidence',
+    confidence: 'observed-context',
+    developerDecisionRequired: null,
+    why: 'Version or provider currentness must be reconciled before an engineering conclusion.',
+  };
+}
+
 function staleDimensions(currentness: GraphCurrentness | null | undefined): string[] {
   if (!currentness) return [];
   return [
@@ -284,6 +369,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
   const blockers = coverageBlockers(graph, limit);
   const architectureBoundaries = bidirectionalArchitectureBoundaries(graph, limit, indexes);
   const stale = staleDimensions(options.currentness);
+  const precisionLimits = analyzerPrecisionLimits(graph);
   const targets: Array<Record<string, unknown>> = [];
 
   if (options.acceptedPresent === true && stale.length) targets.push({
@@ -294,6 +380,16 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     evidence: { dimensions: stale, checkpointError: options.currentness?.checkpointError ?? null },
     fixSurface: { paths: [], areas: [] },
     nextEvidence: 'Reconcile the accepted checkpoint/current analyzer state for the exact candidate before treating accepted semantics as current.',
+  });
+
+  for (const signal of precisionLimits) targets.push({
+    kind: 'analyzer-precision',
+    basis: 'observed',
+    count: 1,
+    summary: 'DI compiler precision is incomplete: ' + signal.observation,
+    evidence: { sourceId: signal.sourceId, observation: signal.observation },
+    fixSurface: { paths: [], areas: [] },
+    nextEvidence: 'Measure which source bindings were omitted or truncated and whether bounded incremental/partitioned compiler analysis recovers useful results on this exact revision. Do not turn this into a source defect or silently remove safety budgets.',
   });
 
   for (const blocker of blockers) targets.push({
@@ -311,7 +407,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     basis: 'observed',
     count: group.count,
     summary: `${group.count} ${group.kind} relationship(s) remain ${group.status}.`,
-    evidence: { status: group.status, kind: group.kind, edgeIds: group.edgeIds, evidenceIds: group.evidenceIds, areas: group.areas, samples: group.samples },
+    evidence: { status: group.status, kind: group.kind, uncertainty: group.uncertainty, knownEndpointCount: group.knownEndpointCount, edgeIds: group.edgeIds, evidenceIds: group.evidenceIds, areas: group.areas, samples: group.samples },
     fixSurface: group.fixSurface,
     nextEvidence: group.nextEvidence,
   });
@@ -355,7 +451,21 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     relationshipConcentrations: relationships,
     coverageBlockers: blockers,
     architectureBoundaries,
-    investigationTargets: targets.slice(0, limit),
+    investigationTargets: targets.slice(0, limit).map(item => ({
+      ...item, triage: triageInvestigationTarget(item),
+    })),
+    selfDiagnosis: {
+      version: 'evidence-based-bottleneck-triage.v1',
+      observedAnalyzerPrecisionLimits: precisionLimits.length,
+      sourceWarnings: precisionLimits,
+      // Counts are diagnostic signals, not a number of bugs or failed product features.
+      unresolvedRelationshipGroups: relationships.filter(item => item.status === 'unresolved').length,
+      sourceCallbackArgumentFacts: graph.edges.filter(edge => edge.kind === 'callback-argument'
+        && edge.status === 'resolved' && edge.strategy === 'typescript-source-callback-argument').length,
+      developerDefectsProvenByTheseSignals: false,
+      selfImprovementBeforeBlamingSource: true,
+      independentExecutionOrRuntimeProof: false,
+    },
     policy: {
       projection: 'audit-only',
       persisted: false,

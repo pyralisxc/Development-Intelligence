@@ -8,7 +8,7 @@ The canonical programmatic surface is **MCP**. The **Development Intelligence Wo
 
 Development Intelligence is built first for a solo software owner working with agents across many repositories, with enterprise-grade evidence discipline but without requiring team administration or process governance. It observes and explains; it does not own product intent, write inspected repositories, or become a development methodology.
 
-Read [Product direction](docs/product-direction.md) for the authoritative product identity, current truth, direction, decision filter, and non-goals. External tools can improve what Development Intelligence observes, but they do not own its graph model, lifecycle, query semantics, storage, or hosting.
+The [Development Intelligence Confluence blueprint](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/720897) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable product identity, cross-version vision, and milestone acceptance. [Product direction — revision-bound implementation context](docs/product-direction.md) describes the product shape and technical boundaries recorded by this source revision; [Documentation and Evidence Guide](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4030466) explains the authority split. Source code, exact Git revisions, CI, and actual deployment/provider evidence—not the live wiki—establish what is implemented or observed. External tools can improve what DI observes, but do not own its graph model, lifecycle, query semantics, storage, or hosting.
 
 ## Core rules
 

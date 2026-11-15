@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import type { AnalyzeContext, AnalyzeResult } from '../model.js';
 import { evidenceRecord, observation, redactSensitiveValue, resolution, semanticEntity, semanticRelationship } from '../model.js';
 import type { EvidenceRecord, Observation } from '../../types.js';
 import { callbackIdentifier, callLeafName, destructuredParameterNames, templateTarget } from './typescriptBehavior.js';
+import { buildSourceConditionGraphFacts } from '../sourceConditionGraph.js';
 
 const UI_TAGS = new Set(['button', 'a', 'input', 'select', 'textarea', 'form', 'label']);
 const SEMANTIC_DECLARATION_FIELD = 'developmentIntelligence';
@@ -99,6 +101,7 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     true,
     context.locatorBase.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+  const sourceSha256 = createHash('sha256').update(context.text).digest('hex');
   const observations: Observation[] = [];
   const resolutions = [] as ReturnType<typeof resolution>[];
   const evidence: EvidenceRecord[] = [];
@@ -107,6 +110,13 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const identityCollisions = new Map<string, number>();
   const pendingHandlers: Array<{ ui: Observation; handler: string; line: number; ownerId: string | null }> = [];
   const pendingReferences: Array<{ from: Observation; targetName: string; kind: string; line: number }> = [];
+  // An inline function expression occurs in source even when its recipient
+  // never invokes it. Do not infer receiver behavior from the argument site.
+  const pendingCallbackArguments: Array<{
+    owner: Observation; callStart: number; callLine: number;
+    callbackStart: number; callbackLine: number; argumentIndex: number;
+    property: string | null; registeredHandlerId: string | null;
+  }> = [];
   const functionStack: Observation[] = [];
   const scopeStack: string[] = [];
   const componentPropsByOwner = new Map<string, Set<string>>();
@@ -217,6 +227,147 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   };
 
   const functionOwner = () => functionStack.at(-1) ?? null;
+
+  // Source-verified local catch returns become ordinary structural graph facts.
+  // This observes a literal return, NOT a guarantee that catch runs, reaches
+  // that statement, or produces any external provider effect.
+  // Both try- and catch-return facts use the same fail-closed literal predicate.
+  // Only scalar non-string properties are written to the canonical graph.
+  const literalReturnOutcome = (last: ts.ReturnStatement): Record<string, number | boolean | null> | null => {
+    const returned = unwrap(last.expression);
+    if (!returned || !ts.isObjectLiteralExpression(returned)
+      || returned.properties.length < 1 || returned.properties.length > 12) return null;
+    const outcome: Record<string, number | boolean | null> = {};
+    for (const property of returned.properties) {
+      if (!ts.isPropertyAssignment(property)) return null;
+      const name = propertyName(property.name);
+      if (!name || Object.hasOwn(outcome, name)) return null;
+      const value = scalar(property.initializer);
+      if (value === undefined || typeof value === 'string'
+        || (value !== null && typeof value === 'object')) return null;
+      outcome[name] = redactSensitiveValue(name, value).value as number | boolean | null;
+    }
+    return outcome;
+  };
+
+  const emitCatchReturn = (statement: ts.TryStatement, owner: Observation): void => {
+    if (!statement.catchClause || statement.finallyBlock) return;
+    // Never promote positive proof from an AST recovered through parse errors.
+    const parsed = sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+    if (parsed.parseDiagnostics?.length) return;
+    const catchStatements = statement.catchClause.block.statements;
+    const last = catchStatements.at(-1);
+    if (!last || !ts.isReturnStatement(last)) return;
+    const outcome = literalReturnOutcome(last);
+    if (!outcome) return;
+    const where = locator(last, ':catch-return');
+    const proof = evidenceRecord({
+      sourceId: context.source.id,
+      kind: 'direct-catch-return-source',
+      locator: where,
+      field: 'offset:' + String(last.getStart(sourceFile)),
+      message: 'Final direct catch statement returns a literal object; catch reachability and external effects are not proven.',
+      value: { functionId: owner.id, outcome },
+    });
+    evidence.push(proof);
+    const fact = observation({
+      identity: [context.source.id, 'source-catch-return', owner.id, last.getStart(sourceFile)],
+      sourceId: context.source.id,
+      kind: 'source-catch-return',
+      locator: where,
+      name: 'Catch return in ' + (owner.name ?? 'callable'),
+      field: 'catch-return',
+      value: {
+        functionId: owner.id,
+        catchLine: lineOf(statement.catchClause),
+        returnLine: lineOf(last),
+        outcome,
+        sourceOnly: true,
+        guaranteedOnCatchEntry: false,
+        runtimeObserved: false,
+        exceptionCauseEstablished: false,
+        finallyAbsent: true,
+        proofRule: 'typescript-ast-direct-catch-return.v1',
+      },
+      layer: 'structural',
+      checkpoint: false,
+      evidenceIds: [proof.id],
+    });
+    observations.push(fact);
+    resolutions.push(resolution({
+      from: owner.id,
+      to: fact.id,
+      kind: 'catch-returns',
+      strategy: 'typescript-ast-direct-catch-return.v1',
+      confidence: 1,
+      status: 'resolved',
+      evidence: [where],
+      evidenceIds: [proof.id],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  };
+
+
+  // This is only a literal return statement INSIDE a try block. Earlier
+  // statements can throw, a catch may run instead, and no runtime path is proven.
+  // The already-established catch-return fact is deliberately independent.
+  const emitTryReturn = (statement: ts.TryStatement, owner: Observation): void => {
+    if (!statement.catchClause || statement.finallyBlock) return;
+    const parsed = sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+    if (parsed.parseDiagnostics?.length) return;
+    const last = statement.tryBlock.statements.at(-1);
+    if (!last || !ts.isReturnStatement(last)) return;
+    const outcome = literalReturnOutcome(last);
+    if (!outcome) return;
+    const where = locator(last, ':try-return');
+    const proofRule = 'typescript-ast-direct-try-return.v1';
+    const proof = evidenceRecord({
+      sourceId: context.source.id,
+      kind: 'direct-try-return-source',
+      locator: where,
+      field: 'offset:' + String(last.getStart(sourceFile)),
+      message: 'Final direct try statement returns a literal object; try completion, catch behavior and provider effects are not proven.',
+      value: { functionId: owner.id, outcome },
+    });
+    evidence.push(proof);
+    const fact = observation({
+      identity: [context.source.id, 'source-try-return', owner.id, last.getStart(sourceFile)],
+      sourceId: context.source.id,
+      kind: 'source-try-return',
+      locator: where,
+      name: 'Try return in ' + (owner.name ?? 'callable'),
+      field: 'try-return',
+      value: {
+        functionId: owner.id,
+        tryLine: lineOf(statement.tryBlock),
+        returnLine: lineOf(last),
+        outcome,
+        sourceOnly: true,
+        guaranteedOnTryEntry: false,
+        runtimeObserved: false,
+        tryCompletionProven: false,
+        finallyAbsent: true,
+        proofRule,
+      },
+      layer: 'structural',
+      checkpoint: false,
+      evidenceIds: [proof.id],
+    });
+    observations.push(fact);
+    resolutions.push(resolution({
+      from: owner.id,
+      to: fact.id,
+      kind: 'try-returns',
+      strategy: proofRule,
+      confidence: 1,
+      status: 'resolved',
+      evidence: [where],
+      evidenceIds: [proof.id],
+      layer: 'structural',
+      checkpoint: false,
+    }));
+  };
 
   const parseSemanticDeclaration = (outer: ts.ObjectLiteralExpression): void => {
     const outerProps = objectProperties(outer);
@@ -537,6 +688,36 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     if (ts.isCallExpression(node)) {
       const owner = functionOwner();
       const expressionText = node.expression.getText(sourceFile);
+      // Recovered parse trees cannot establish an exact source fact.
+      const parsed = sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+      if (owner && !parsed.parseDiagnostics?.length) {
+        for (const [argumentIndex, argument] of node.arguments.entries()) {
+          const unwrapped = unwrap(argument) ?? argument;
+          const capture = (callback: ts.ArrowFunction | ts.FunctionExpression, property: string | null): void => {
+            pendingCallbackArguments.push({
+              owner, callStart: node.getStart(sourceFile), callLine: lineOf(node),
+              callbackStart: callback.getStart(sourceFile), callbackLine: lineOf(callback),
+              argumentIndex, property,
+              registeredHandlerId: expressionText.endsWith('.registerTool') && argumentIndex === 2
+                ? `symbol:${context.locatorBase}#function:mcp-handler-${lineOf(node)}-${node.getStart(sourceFile)}`
+                : null,
+            });
+          };
+          if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+            capture(unwrapped, null);
+          } else if (ts.isObjectLiteralExpression(unwrapped)) {
+            for (const property of unwrapped.properties) {
+              if (!ts.isPropertyAssignment(property)) continue;
+              const value = unwrap(property.initializer) ?? property.initializer;
+              if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+                // Duplicate keys, computed keys and later spreads may change
+                // effective delivery. This is source syntax only.
+                capture(value, propertyName(property.name) ?? null);
+              }
+            }
+          }
+        }
+      }
       if (expressionText === 'fetch' && node.arguments.length >= 1) {
         const target = templateTarget(node.arguments[0], sourceFile);
         if (target) {
@@ -616,12 +797,76 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       if (owner && ts.isIdentifier(node.expression)) pendingReferences.push({ from: owner, targetName: node.expression.text, kind: 'calls', line: lineOf(node) });
     }
 
+    if (ts.isTryStatement(node)) {
+      const owner = functionOwner();
+      if (owner) {
+        emitCatchReturn(node, owner);
+        emitTryReturn(node, owner);
+      }
+    }
+
+    // Compile condition/effect facts while the file's AST is already available.
+    // A callback's body belongs to its OWN callable, not its enclosing creator.
+    if (pushedFunction) {
+      const owner = functionOwner();
+      const body = ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)
+        ? node.body
+        : ts.isVariableDeclaration(node)
+          ? variableFunctionExpression(node.initializer)?.body
+          : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) ? node.body : undefined;
+      if (owner && body && ts.isBlock(body)) {
+        const facts = buildSourceConditionGraphFacts({
+          parsed: sourceFile, sourcePath: context.locatorBase, sourceSha256,
+          sourceId: context.source.id, owner, statements: body.statements,
+        });
+        observations.push(...facts.observations);
+        resolutions.push(...facts.resolutions);
+        evidence.push(...(facts.evidence ?? []));
+      }
+    }
     ts.forEachChild(node, visit);
     if (pushedFunction) functionStack.pop();
     if (pushedScope) scopeStack.pop();
   };
 
   visit(sourceFile);
+
+  const observationsById = new Map(observations.map(item => [item.id, item]));
+  for (const argument of pendingCallbackArguments) {
+    const callbackPrefix = `symbol:${context.locatorBase}#function:`;
+    const callback = [
+      argument.registeredHandlerId,
+      callbackPrefix + 'callback-' + argument.callbackStart,
+      callbackPrefix + 'isolated-callback-' + argument.callbackStart,
+    ].filter((id): id is string => typeof id === 'string')
+      .map(id => observationsById.get(id)).find(item => item?.kind === 'function');
+    if (!callback || callback.id === argument.owner.id) continue;
+    const where = `${context.locatorBase}:${argument.callLine}:argument-${argument.argumentIndex}:offset-${argument.callStart}`;
+    const proof = evidenceRecord({
+      sourceId: context.source.id,
+      kind: 'source-callback-argument',
+      locator: where,
+      field: argument.property ?? `argument-${argument.argumentIndex}`,
+      message: 'A literal function expression occurs within this call argument; effective delivery, invocation and runtime effects are not established.',
+      value: {
+        callerId: argument.owner.id, callbackId: callback.id,
+        callOffset: argument.callStart, callbackOffset: argument.callbackStart,
+        argumentIndex: argument.argumentIndex, property: argument.property,
+        sourceSyntaxOnly: true, effectiveDeliveryProven: false,
+        invokedByReceiverProven: false, runtimeObserved: false,
+      },
+    });
+    evidence.push(proof);
+    resolutions.push(resolution({
+      identity: [context.source.id, 'callback-argument', argument.callStart,
+        argument.argumentIndex, argument.property, argument.callbackStart],
+      from: argument.owner.id, to: callback.id, kind: 'callback-argument',
+      strategy: 'typescript-source-callback-argument', confidence: 1,
+      status: 'resolved',
+      evidence: [where, `${context.locatorBase}:${argument.callbackLine}:callback-offset-${argument.callbackStart}`],
+      evidenceIds: [proof.id], layer: 'structural', checkpoint: false,
+    }));
+  }
 
   for (const pending of pendingHandlers) {
     const targets = symbols.get(pending.handler) ?? [];

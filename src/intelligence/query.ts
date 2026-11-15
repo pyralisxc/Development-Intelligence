@@ -8,6 +8,8 @@ import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 import { normalizeName } from './model.js';
 import { deriveQueryCorrelations } from './resolver.js';
+import { exactEvidenceQueryBuckets } from './queryArtifacts.js';
+import { observedRelationshipContracts, sourceCapabilityCoverage } from './graphKnowledge.js';
 
 function nodeText(node: GraphNode): string {
   return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ');
@@ -490,14 +492,20 @@ async function adaptiveCurrentSearch(
   input: SearchGraphInput,
   queries: string[],
 ): Promise<{ result: Record<string, unknown> | null; reason: string; loadMs: number; selectedBuckets: number }> {
-  if (input.ref || input.graphId) {
-    return { result: null, reason: 'explicit-graph-context-requires-full-canonical', loadMs: 0, selectedBuckets: 0 };
+  if (input.ref) {
+    return { result: null, reason: 'explicit-ref-requires-exact-source-canonical', loadMs: 0, selectedBuckets: 0 };
   }
   if (!queries.length || queries.some(query => !query.trim())) {
     return { result: null, reason: 'broad-empty-query-requires-full-canonical', loadMs: 0, selectedBuckets: 0 };
   }
 
-  const loaded = await loadCurrentQueryArtifacts(input.project, queries);
+  // A historic pinned graph remains readable even if the current branch or
+  // current query pointer is unavailable. Selection must fall back to its
+  // exact source/revision graph rather than failing in the optimization plane.
+  const loaded = input.graphId
+    ? await loadCurrentQueryArtifacts(input.project, queries, input.graphId).catch(() => null)
+    : await loadCurrentQueryArtifacts(input.project, queries);
+  if (!loaded) return { result: null, reason: 'pinned-current-query-generation-unavailable', loadMs: 0, selectedBuckets: 0 };
   if (loaded.state !== 'hit' || !loaded.index) {
     return {
       result: null,
@@ -787,11 +795,14 @@ async function adaptiveCurrentTrace(
   input: TraceGraphInput,
   query: string,
 ): Promise<{ result: Record<string, unknown> | null; reason: string; loadMs: number; selectedBuckets: number }> {
-  if (input.ref || input.graphId) {
-    return { result: null, reason: 'explicit-graph-context-requires-full-canonical', loadMs: 0, selectedBuckets: 0 };
+  if (input.ref) {
+    return { result: null, reason: 'explicit-ref-requires-exact-source-canonical', loadMs: 0, selectedBuckets: 0 };
   }
 
-  const loaded = await loadCurrentQueryArtifacts(input.project, [query]);
+  const loaded = input.graphId
+    ? await loadCurrentQueryArtifacts(input.project, [query], input.graphId).catch(() => null)
+    : await loadCurrentQueryArtifacts(input.project, [query]);
+  if (!loaded) return { result: null, reason: 'pinned-current-query-generation-unavailable', loadMs: 0, selectedBuckets: 0 };
   if (loaded.state !== 'hit' || !loaded.index || !loaded.pointer) {
     return {
       result: null,
@@ -1074,6 +1085,8 @@ export async function graphSchema(project: string, ref?: string, graphId?: strin
     analyzerVersion: graph.analyzerVersion,
     nodeKinds: [...new Set(graph.nodes.map(node => node.kind))].sort(),
     relationshipKinds: [...new Set(graph.edges.map(edge => edge.kind))].sort(),
+    relationshipContracts: observedRelationshipContracts(graph),
+    sourceCapabilityCoverage: sourceCapabilityCoverage(graph),
     relationshipStatuses: ['resolved', 'candidate', 'unresolved'],
     layers: ['semantic', 'structural', 'representation'],
     coverageStatuses: ['complete', 'partial', 'unsupported', 'skipped', 'failed'],
@@ -1094,6 +1107,7 @@ export async function graphCoverage(project: string, ref?: string, graphId?: str
     graphId: graph.graphId,
     revision: graph.repositoryRevision,
     coverage: graph.coverage ? { ...graph.coverage, files } : null,
+    sourceCapabilityCoverage: sourceCapabilityCoverage(graph),
     summary: coverageSummary(graph),
     unavailableSourceIds: graph.unavailableSourceIds,
   };
@@ -1275,6 +1289,52 @@ export function nodeArea(node: GraphNode): string {
   return path.dirname(file);
 }
 
+/**
+ * Exact revision-bound evidence lookup from canonical query artifacts. Nothing
+ * here invents an evidence record or treats an index miss as source absence.
+ * Fuzzy identities and historic generations retain the full-graph path.
+ */
+async function indexedGraphEvidence(input: {
+  project: string; ref?: string | undefined; graphId?: string;
+  node?: string; edge?: string; evidenceIds?: string[];
+}): Promise<Record<string, unknown> | null> {
+  if (input.ref || !(input.node || input.edge || input.evidenceIds?.length)) return null;
+  const loaded = await loadCurrentQueryArtifacts(input.project, [], input.graphId).catch(() => null);
+  if (!loaded) return null;
+  if (loaded.state !== 'hit' || !loaded.index || !loaded.pointer
+    || !queryArtifactEnvelopeComplete(loaded.index)) return null;
+  const index = loaded.index;
+  const buckets = exactEvidenceQueryBuckets(index, input);
+  if (!buckets?.length || buckets.length > 32) return null;
+  const detail = await loadCurrentQueryArtifactBuckets(loaded, [...buckets]);
+  if (detail.state !== 'hit' || !detail.index || detail.index.graphId !== index.graphId
+    || detail.index.revision !== index.revision) return null;
+  const nodes = new Map<string, GraphNode>(), edges = new Map<string, GraphEdge>();
+  const evidence = new Map<string, EvidenceRecord>();
+  for (const shard of Object.values(detail.shards)) {
+    for (const record of shard.nodes) nodes.set(record.id, record);
+    for (const record of shard.edges) edges.set(record.id, record);
+    for (const record of shard.evidence) evidence.set(record.id, record);
+  }
+  const node = input.node ? nodes.get(input.node) : undefined;
+  const edge = input.edge ? edges.get(input.edge) : undefined;
+  if ((input.node && !node) || (input.edge && !edge)) return null;
+  const ids = new Set([
+    ...(input.evidenceIds ?? []), ...(node?.evidenceIds ?? []), ...(edge?.evidenceIds ?? []),
+  ]);
+  if ([...ids].some(id => !evidence.has(id))) return null;
+  return {
+    project: input.project, graphId: index.graphId, revision: index.revision,
+    coverage: queryArtifactCoverage(index), ambiguous: false,
+    node: node ?? null, edge: edge ?? null,
+    evidence: [...ids].map(id => evidence.get(id)!),
+    queryPlane: { mode: 'adaptive', authoritative: true,
+      selectedBuckets: buckets.length, bucketIds: buckets,
+      loadMs: loaded.loadMs + detail.loadMs,
+      reason: 'exact-identity-evidence-index-no-full-canonical-materialization' },
+  };
+}
+
 export async function graphEvidence(input: {
   project: string;
   ref?: string | undefined;
@@ -1283,6 +1343,8 @@ export async function graphEvidence(input: {
   edge?: string;
   evidenceIds?: string[];
 }): Promise<Record<string, unknown>> {
+  const indexed = await indexedGraphEvidence(input);
+  if (indexed) return indexed;
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const ids = new Set(input.evidenceIds ?? []);
   let node: GraphNode | undefined;

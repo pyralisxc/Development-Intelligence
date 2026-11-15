@@ -41,6 +41,7 @@ export interface TechnicalEvidenceCorrelation {
 }
 
 export interface TechnicalEvidenceEnvelope {
+  sanitization: import('./intelligence/externalSanitization.js').RedactionSummary;
   source: {
     id: string;
     label: string;
@@ -176,6 +177,9 @@ export interface ExplicitValueConflict {
   key: string;
   leftValue: unknown;
   rightValue: unknown;
+  /** Explicit same-claim reconciliation, not silent evidence deletion. */
+  resolution?: 'higher-source-proof-preferred' | 'contested';
+  preferredEvidenceIds?: string[];
 }
 
 export type GraphCoverageStatus = 'complete' | 'partial' | 'unsupported' | 'skipped' | 'failed';

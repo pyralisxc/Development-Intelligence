@@ -82,5 +82,66 @@ test('repository audit stays bounded, evidence-linked, and non-authoritative', (
   assert.equal(audit.policy.persisted, false);
   assert.equal(audit.policy.modifiesRepository, false);
   assert.equal(audit.policy.createsWorkItems, false);
+  assert.equal(audit.selfDiagnosis.developerDefectsProvenByTheseSignals,false);
+  assert.ok(audit.investigationTargets.every((item: any) =>
+    item.triage && typeof item.triage.route === 'string'));
+  const unresolved = audit.investigationTargets.find((item: any) =>
+    item.kind === 'relationship' && item.evidence.kind === 'uses-script');
+  assert.equal(unresolved.triage.route,'investigate-binding-or-missing-evidence');
+  const architecture = audit.investigationTargets.find((item: any) =>
+    item.kind === 'architecture-boundary');
+  assert.equal(architecture.triage.developerDecisionRequired,null);
   assert.ok(audit.investigationTargets.length <= 10);
+});
+
+test('a compiler precision ceiling becomes an explicit DI self-improvement target, not a source bug',()=>{
+  const graph = {
+    project:'Example', graphId:'repo-a', repositoryRevision:'a'.repeat(40),
+    analyzerVersion:'source-lens', role:'W',
+    sources:[{id:'repository',warnings:[
+      'Optional TypeScript compiler symbol evidence completed: Binding limit reached; compiler evidence is non-exhaustive',
+    ]}],
+    nodes:[],edges:[], unavailableSourceIds:[], explicitValueConflicts:[],
+    coverage:{trackedFiles:1,eligibleFiles:1,analyzedFiles:1,completeFiles:1,
+      partialFiles:0,failedFiles:0,skippedFiles:0,unsupportedFiles:0,
+      files:[{path:'src/a.ts',status:'complete'}]},
+  } as unknown as IntelligenceGraph;
+  const audit=synthesizeRepositoryAudit(graph,{limit:5}) as any;
+  assert.equal(audit.selfDiagnosis.observedAnalyzerPrecisionLimits,1);
+  const limit=audit.investigationTargets.find((x:any)=>x.kind==='analyzer-precision');
+  assert.equal(limit.triage.route,'strengthen-di-understanding');
+  assert.equal(limit.triage.developerDecisionRequired,false);
+  assert.equal(audit.selfDiagnosis.developerDefectsProvenByTheseSignals,false);
+});
+
+
+test('a known source callback argument does not resolve its invocation', () => {
+  const caller = node('function:caller', 'function', 'structural', 'src/caller.ts:2');
+  const callback = node('function:callback', 'function', 'structural', 'src/caller.ts:3');
+  const graph = {
+    project: 'Fixture', graphId: 'repo-callback', repositoryRevision: 'a'.repeat(40),
+    analyzerVersion: 'fixture', role: 'W', sources: [source],
+    nodes: [caller, callback], evidence: [],
+    edges: [
+      { id: 'source-argument', from: caller.id, to: callback.id, kind: 'callback-argument',
+        status: 'resolved', strategy: 'typescript-source-callback-argument', confidence: 1,
+        evidence: ['src/caller.ts:2'], layer: 'structural' },
+      { id: 'execution-unknown', from: caller.id, to: callback.id, kind: 'invokes',
+        status: 'unresolved', strategy: 'callback-transfer-unresolved', confidence: null,
+        evidence: ['src/caller.ts:2'], layer: 'structural' },
+    ],
+    unavailableSourceIds: [], explicitValueConflicts: [], namingDivergences: [],
+    coverage: { trackedFiles: 1, eligibleFiles: 1, analyzedFiles: 1, completeFiles: 1,
+      partialFiles: 0, unsupportedFiles: 0, skippedFiles: 0, failedFiles: 0,
+      files: [{ path: 'src/caller.ts', status: 'complete' }] },
+  } as unknown as IntelligenceGraph;
+  const report = synthesizeRepositoryAudit(graph, { limit: 10 }) as any;
+  const group = report.relationshipConcentrations.find((item: any) => item.kind === 'invokes');
+  assert.equal(group.knownEndpointCount, 1);
+  assert.equal(group.uncertainty, 'callback-invocation-unproven-with-known-participants');
+  assert.match(group.nextEvidence, /receiver behavior/);
+  const target = report.investigationTargets.find((item: any) => item.kind === 'relationship');
+  assert.equal(target.triage.route, 'investigate-higher-order-invocation');
+  assert.equal(target.triage.developerDecisionRequired, false);
+  assert.equal(report.selfDiagnosis.sourceCallbackArgumentFacts, 1);
 });

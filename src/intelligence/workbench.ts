@@ -8,8 +8,10 @@ import { diffAcceptedToWorking, findGraphNodeCandidates, graphCoverage, parityLe
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { parseSourceReferenceQuestion, sourceReferenceProjection, sourceReferenceAnswer, parseFileOutboundQuestion, fileOutboundProjection, fileOutboundAnswer } from './sourceReferenceQuestion.js';
 import { parseTestSourceQuestion, testSourceProjection, testSourceAnswer } from './testSourceQuestion.js';
-import { isConditionEffectQuestion, querySourceConditionEffects, sourceConditionsAnswer } from './sourceConditionEffects.js';
-import { assessGraph, auditGraph, queryIntelligence, type AuditFinding } from './assessment.js';
+import { parseSourceExecutionQuestion, sourceExecutionQuestionAnswer, SOURCE_EXECUTION_TEST_SUFFIXES } from './sourceExecutionQuestion.js';
+import { queryTestClaimReport } from './testClaimQuery.js';
+import { isConditionEffectQuestion } from './sourceConditionEffects.js';
+import { assessGraph, auditGraph, queryIntelligence, evaluateSourceQuestionEvidence, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
 import { semanticReviewSurface } from './semanticWorkflow.js';
 import { auditSemanticCandidates } from './semanticAudit.js';
@@ -178,13 +180,15 @@ export async function semanticAudit(input: {
   const candidateLimit = Math.min(Math.max(input.candidateLimit ?? 200, 1), 1000);
   const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
   const audit = auditSemanticCandidates(graph, bootstrap, { limit: input.limit ?? 30 });
-  const reviewed = audit.items.length;
+  const audited = audit.counts.audited;
+  const displayed = audit.items.length;
   const core = audit.counts.coreCandidates;
   const needsReview = audit.counts.factualityNeedsReview;
   return {
     project: input.project,
     graphId: graph.graphId,
-    summary: `${audit.candidateUniverse.eligible} evidence-qualified semantic candidate(s); ${core} of ${reviewed} audited candidate(s) satisfy the explicit core-candidate facets and ${needsReview} require factuality review.`,
+    // Total evaluated and bounded detail presentation are different populations.
+    summary: `${audit.candidateUniverse.eligible} evidence-qualified semantic candidate(s); ${audited} audited, ${core} meeting the explicit core-candidate facets and ${needsReview} requiring factuality review; ${displayed} detailed item(s) displayed. ${audit.candidateUniverse.truncated ? 'The eligible candidate population is truncated by the requested source-candidate budget.' : 'The eligible candidate population is complete for this request.'}`,
     ...audit,
     coverage: compactCoverage(graph),
     policyNote: 'Core/supporting is an evidence-grounded audit classification, not semantic authority. Acceptance and verification remain separate.',
@@ -495,8 +499,9 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
 function orientationMetric(
   node: GraphNode,
   byId: ReadonlyMap<string, GraphNode>,
-  incident: GraphEdge[],
+  incident: readonly GraphEdge[],
   rankBy: ScopeRankBy,
+  neighborLocation: (node: GraphNode) => { file: string | null; area: string | null },
 ): {
   fanIn: number;
   fanOut: number;
@@ -511,21 +516,25 @@ function orientationMetric(
   callees: number;
   rankValue: number;
 } {
-  const resolved = incident.filter(edge => edge.status === 'resolved');
+  // One incident-edge pass, not separate resolved/candidate/inbound/outbound
+  // filters plus repeated locator parsing for both incident endpoints.
   const neighborFiles = new Set<string>();
   const neighborAreas = new Set<string>();
-  let semanticLinks = 0;
-  let representationLinks = 0;
-  let callers = 0;
-  let callees = 0;
-
-  for (const edge of resolved) {
+  const resolvedKinds = new Set<string>();
+  let fanIn = 0, fanOut = 0, candidate = 0, unresolved = 0;
+  let semanticLinks = 0, representationLinks = 0, callers = 0, callees = 0;
+  for (const edge of incident) {
+    if (edge.status === 'candidate') { candidate += 1; continue; }
+    if (edge.status === 'unresolved') { unresolved += 1; continue; }
+    if (edge.status !== 'resolved') continue;
+    resolvedKinds.add(edge.kind);
+    if (edge.to === node.id) fanIn += 1;
+    if (edge.from === node.id) fanOut += 1;
     const neighborId = edge.from === node.id ? edge.to : edge.from;
     const neighbor = neighborId ? byId.get(neighborId) : undefined;
     if (neighbor) {
-      const file = sourceFile(neighbor.locator);
+      const { file, area } = neighborLocation(neighbor);
       if (file) neighborFiles.add(file);
-      const area = graphArea(neighbor);
       if (area) neighborAreas.add(area);
       if (neighbor.layer === 'semantic') semanticLinks += 1;
       if (neighbor.layer === 'representation') representationLinks += 1;
@@ -535,19 +544,10 @@ function orientationMetric(
       if (edge.from === node.id) callees += 1;
     }
   }
-
   const metrics = {
-    fanIn: resolved.filter(edge => edge.to === node.id).length,
-    fanOut: resolved.filter(edge => edge.from === node.id).length,
-    crossFileReach: neighborFiles.size,
-    crossAreaReach: neighborAreas.size,
-    relationshipDiversity: new Set(resolved.map(edge => edge.kind)).size,
-    candidate: incident.filter(edge => edge.status === 'candidate').length,
-    unresolved: incident.filter(edge => edge.status === 'unresolved').length,
-    semanticLinks,
-    representationLinks,
-    callers,
-    callees,
+    fanIn, fanOut, crossFileReach: neighborFiles.size,
+    crossAreaReach: neighborAreas.size, relationshipDiversity: resolvedKinds.size,
+    candidate, unresolved, semanticLinks, representationLinks, callers, callees,
   };
   const rankValue = rankBy === 'fan-in' ? metrics.fanIn
     : rankBy === 'fan-out' ? metrics.fanOut
@@ -914,6 +914,82 @@ function rankedMechanismSourceFiles(
       || a.file.localeCompare(b.file))
     .slice(0, Math.max(1, limit));
 }
+/**
+ * An output bound must not let a single prolific relation kind erase every
+ * other established kind from an answer. Ranked source relevance still
+ * selects representatives; round-robin over distinct relation/target kinds
+ * retains multiple independently established direct consequences.
+ * This only chooses a bounded view of W; it never alters the graph/proof.
+ */
+export function selectBoundedMechanismRelations<T extends {
+  edgeId: string; kind: string;
+  from?: { id: string; name: string } | null;
+  to: { kind: string } | null;
+}>(ranked: readonly T[], max = 50, queryTerms: readonly string[] = []): T[] {
+  const limit = Math.max(1, Math.min(250, Math.floor(max)));
+  if (ranked.length <= limit) return [...ranked];
+  const result: T[] = [];
+  const chosen = new Set<string>();
+  const append = (edge: T): void => {
+    if (result.length < limit && !chosen.has(edge.edgeId)) {
+      result.push(edge);
+      chosen.add(edge.edgeId);
+    }
+  };
+
+  // The original global top-N discarded established sibling effects when
+  // newly abundant source-control links filled the projection. An actual
+  // handler's direct writes are a related evidence cluster, not unrelated
+  // one-off edges. Reserve bounded space for source-ranked handler clusters
+  // before sampling the remaining relationship families.
+  const directWrites = new Map<string, {
+    items: T[]; callerHits: number; firstRank: number;
+  }>();
+  for (const [rank, edge] of ranked.entries()) {
+    if (edge.kind !== 'invokes' || edge.to?.kind !== 'state-write' || !edge.from?.id) continue;
+    const key = edge.from.id;
+    const existing = directWrites.get(key);
+    if (existing) { existing.items.push(edge); continue; }
+    const name = edge.from.name.toLowerCase();
+    const callerHits = queryTerms.filter(term => name.includes(term.toLowerCase())).length;
+    directWrites.set(key, { items: [edge], callerHits, firstRank: rank });
+  }
+  const clusters = [...directWrites.values()].sort((a, b) =>
+    b.callerHits - a.callerHits || a.firstRank - b.firstRank);
+  const effectBudget = Math.min(limit, Math.max(4, Math.floor(limit / 2)));
+  for (const cluster of clusters) {
+    if (result.length >= effectBudget) break;
+    // Keep multiple proven effects of a relevant callable together. This is
+    // bounded *presentation*; unreturned effects remain in canonical W.
+    for (const edge of cluster.items.slice(0, 12)) {
+      if (result.length >= effectBudget) break;
+      append(edge);
+    }
+  }
+
+  const groups = new Map<string, T[]>();
+  for (const edge of ranked) {
+    const key = edge.kind + ':' + (edge.to?.kind ?? 'unresolved-target');
+    const group = groups.get(key);
+    if (group) group.push(edge);
+    else groups.set(key, [edge]);
+  }
+  // Retain representative coverage of other fact families, then use
+  // original query relevance for the remaining slots.
+  for (let round = 0; round < 4 && result.length < limit; round += 1) {
+    for (const group of groups.values()) {
+      const item = group[round];
+      if (item) append(item);
+      if (result.length === limit) break;
+    }
+  }
+  for (const edge of ranked) {
+    if (result.length === limit) break;
+    append(edge);
+  }
+  return result;
+}
+
 async function implementationMechanismProjection(input: {
   project: string;
   text: string;
@@ -1176,7 +1252,14 @@ async function implementationMechanismProjection(input: {
       },
       files,
       keyEntities,
-      relationships: resolved.slice(0, 50),
+      relationships: selectBoundedMechanismRelations(resolved, 50, queryTerms),
+      relationshipProjection: {
+        totalResolved: resolved.length,
+        returned: Math.min(resolved.length, 50),
+        omitted: Math.max(0, resolved.length - 50),
+        selection: 'relevant-direct-state-write-handler-clusters-then-kind-diversity',
+        complete: resolved.length <= 50,
+      },
       decisionEvidence,
       uncertainty: {
         candidateRelationships: unresolved.filter(item => item.status === 'candidate').length,
@@ -1269,13 +1352,19 @@ export function planInvestigationQuestion(input: {
   const implementationClaimIntent = /\b(write|writes|writing|mutate|mutates|mutation|persist|persists|persistence|write back|accepted graph|accepted checkpoint)\b/u.test(lower);
   const codeIntent = /\b(code|source|implementation|implemented)\b/u.test(lower);
   const traceIntent = /\b(depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|route)\b/u.test(lower);
+  const callbackArgumentIntent = /\bcallbacks?\b/u.test(lower)
+    && /\b(pass(?:es|ed|ing)?|suppl(?:y|ies|ied)|arguments?|provid(?:e|es|ed|ing))\b/u.test(lower);
   const evidenceIntent = /\b(evidence|supports?|supporting|audit|finding|problem|risk|realiz\w*|capability|proof|prove)\b/u.test(lower);
   const claimIntent = /\b(no|none|not|only|second|absent|missing|without|actually|whether|cannot|can't)\b/u.test(lower);
   const statisticsIntent =
     /\b(?:project|repository|repo|codebase|graph)\b[^?.!]{0,60}\b(?:size|stats|statistics|capacity|footprint|limits?|big|large|resource pressure|storage usage)\b/u.test(lower)
     || /\b(?:how (?:big|large) is (?:this|the) (?:project|repository|repo|codebase)|general (?:project )?stats|project stats|capacity profile|how many (?:files|nodes|edges|semantic concepts)|near (?:our )?capacity|close to (?:our )?capacity)\b/u.test(lower);
+  const directInvestigationAuditIntent =
+    /^(?:audit|review|assess)\s+[^?]{1,110}\b(?:areas?|developer|investigat\w*|bottlenecks?|blind spots?|weaknesses?|limitations?|risks?)\b/iu.test(text)
+    || (/\b(?:bottlenecks?|blind spots?|precision limits?|understanding gaps?|struggl\w*)\b/u.test(lower)
+      && /\b(?:code|source|analysis|understanding|analyzer|compiler|indexer|graph|repository|repo|codebase|di|development intelligence)\b/u.test(lower));
   const repositoryAuditIntent =
-    (
+    directInvestigationAuditIntent || (
       /\b(?:this|the|our)\s+(?:project|repository|repo|codebase|system)\b/u.test(lower)
       || /\b(?:itself|ourselves|self[- ]audit|repository-wide|project-wide|overall)\b/u.test(lower)
       || /\bwhich\s+(?:current\s+)?(?:failures?|warnings?)\b/u.test(lower)
@@ -1307,9 +1396,11 @@ export function planInvestigationQuestion(input: {
   else if (/\bcoverage\b/u.test(lower)) lane = 'coverage';
   else if (/\bparity\b/u.test(lower)) lane = 'parity';
   else if (implementationClaimIntent) lane = 'implementation-claim';
+  // Evidence-backed whole-repository diagnosis beats a generic 'code' keyword.
+  else if (repositoryAuditIntent) lane = 'repository-audit';
+  else if (callbackArgumentIntent) lane = 'trace';
   else if (codeIntent) lane = 'code';
   else if (semanticAuditIntent) lane = 'semantic-audit';
-  else if (repositoryAuditIntent) lane = 'repository-audit';
   else if (orientationIntent) lane = 'orientation';
   else if (traceIntent) lane = 'trace';
   else if (evidenceIntent) lane = 'evidence';
@@ -1317,7 +1408,8 @@ export function planInvestigationQuestion(input: {
   else lane = 'entity';
 
   const proofMode: InvestigationQuestionProofMode =
-    lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
+    lane === 'trace' && callbackArgumentIntent ? 'evidence'
+      : lane === 'implementation-claim' || (lane === 'evidence' && claimIntent)
       ? 'claim'
       : lane === 'evidence'
         ? 'evidence'
@@ -1610,17 +1702,25 @@ function repositoryAuditAnswer(result: Record<string, any>): string {
   const findings = Array.isArray(result.findings) ? result.findings : [];
   const blockers = Array.isArray(result.coverageBlockers) ? result.coverageBlockers : [];
   const targets = Array.isArray(result.investigationTargets) ? result.investigationTargets : [];
-  if (findings.length === 0 && blockers.length === 0) {
-    return targets.length
-      ? `No deterministic repository defects or coverage blockers were found on the pinned revision. DI did surface ${targets.length} investigation target(s); those are evidence-backed areas worth inspecting, not proven defects.`
-      : 'No deterministic repository defects or coverage blockers were found on the pinned revision.';
+  if (!targets.length && !findings.length && !blockers.length) {
+    return 'No evidence-backed investigation targets were found on this pinned graph. '
+      + 'That is not proof that the repository has no defects or remaining analyzer limits.';
   }
-  const summaries = findings
-    .slice(0, 3)
-    .map((item: any) => String(item.summary ?? item.message ?? '').trim())
-    .filter(Boolean);
-  const detail = summaries.length ? ` Leading findings: ${summaries.join(' ')}` : '';
-  return `Repository audit found ${findings.length} deterministic finding(s) and ${blockers.length} coverage blocker(s) on the pinned revision.${detail}`;
+  const leading = targets.slice(0, 4).map((item: any) => {
+    const summary = String(item.summary ?? '').slice(0, 230);
+    const route = String(item.triage?.route ?? 'inspect-further').replaceAll('-', ' ');
+    const next = String(item.nextEvidence ?? '').slice(0, 230);
+    return summary + ' [Investigation: ' + route + ']' + (next ? ' Next: ' + next : '');
+  });
+  const precision = Number(result.selfDiagnosis?.observedAnalyzerPrecisionLimits ?? 0);
+  return 'Revision-bound DI investigation: ' + findings.length
+    + ' deterministic finding(s), ' + blockers.length
+    + ' coverage blocker group(s), ' + precision
+    + ' explicitly reported analyzer precision limit(s), and ' + targets.length
+    + ' bounded investigation target(s). '
+    + 'These are not all confirmed software defects. Leading evidence and next checks: '
+    + leading.join(' | ')
+    + ' Developer intervention is warranted only after the relevant source, provider evidence, and project intent establish an actionable concern.';
 }
 
 // Per-investigation, revision-pinned orientation work. Never shared globally:
@@ -1644,19 +1744,26 @@ export async function scopeOrientation(input: {
   semanticDepth?: SemanticQueryDepth | undefined;
   limit?: number | undefined;
   orientationReuse?: OrientationQueryReuse | undefined;
+  semanticSummaryOnly?: boolean | undefined;
 }): Promise<Record<string, unknown>> {
   // Reuse is valid only for an exact graph identity selected by the caller.
   // A ref selector needs fresh resolution: never infer ref equivalence from
   // project identity or carry indexes from an unrelated graph snapshot.
+  const orientationStarted = Date.now();
+  // Request-local timings: no second graph, persisted trace or question text.
+  const phaseMs = { graphAccess: 0, scopeSelection: 0, adjacencyIndex: 0,
+    rankingAndRoles: 0, semanticUnderstanding: 0 };
   const candidateReuse = input.orientationReuse;
   const reusable = candidateReuse && candidateReuse.graph.project === input.project
     && !input.ref
     && input.graphId === candidateReuse.graph.graphId
     ? candidateReuse : undefined;
   const graph = reusable?.graph ?? await currentGraph(input.project, input.ref, input.graphId);
+  phaseMs.graphAccess = Date.now() - orientationStarted;
   const rankBy = input.rankBy ?? 'cross-file';
   const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
   const selected = scopeNodeIds(graph, input.scope);
+  phaseMs.scopeSelection = Date.now() - orientationStarted - phaseMs.graphAccess;
 
   if (selected.kind === 'ambiguous') {
     return {
@@ -1680,6 +1787,43 @@ export async function scopeOrientation(input: {
       summary: 'No graph scope matching "' + String(selected.value) + '" was observed.',
       coverage: compactCoverage(graph),
       policy: { subjectiveImportanceScore: false, persisted: false },
+    };
+  }
+
+  // Ordinary repository-description questions need the source-backed semantic
+  // explanation, not a complete ranking of every structural node in W.
+  // Direct orient_scope still returns full ranked entities and boundaries.
+  if (selected.kind === 'repository' && input.semanticSummaryOnly) {
+    const semanticStarted = Date.now();
+    const understanding = await repositorySemanticUnderstanding(
+      input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable);
+    phaseMs.semanticUnderstanding = Date.now() - semanticStarted;
+    return {
+      project: input.project,
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      ambiguous: false,
+      scope: { kind: 'repository', value: selected.value,
+        nodeCount: selected.ids.size, resolvedBoundaryCount: 0 },
+      rankBy,
+      summary: understanding.summary,
+      semanticUnderstanding: understanding,
+      projection: { kind: 'repository-semantic-summary',
+        structuralOrientationMaterialized: false, detailTool: 'orient_scope' },
+      observability: {
+        owner: 'di-query-orientation', graphId: graph.graphId,
+        revision: graph.repositoryRevision, phaseMs,
+        totalMeasuredMs: Date.now() - orientationStarted,
+        ephemeral: true,
+        note: 'Request-local timings; no source content, credentials or question text are logged or retained.',
+      },
+      coverage: compactCoverage(graph),
+      policy: {
+        subjectiveImportanceScore: false, rankFacet: rankBy,
+        evidenceLinked: true, summaryInfersProductIntent: false,
+        persisted: false,
+        note: 'Semantic summary selects current graph evidence; detailed structural ranking is available through orient_scope.',
+      },
     };
   }
 
@@ -1725,6 +1869,8 @@ export async function scopeOrientation(input: {
     if (reusable) reusable.incidentByNode = incidentByNode;
   }
 
+  phaseMs.adjacencyIndex = Date.now() - orientationStarted
+    - phaseMs.graphAccess - phaseMs.scopeSelection;
   // The ranked list and role summaries inspect the same scoped nodes at the
   // same graph revision/rank criterion. Reuse metrics per node within this
   // single orientation, never across revisions or distinct graph contexts.
@@ -1734,10 +1880,25 @@ export async function scopeOrientation(input: {
   }
   const metricCache = reusable?.metrics ?? new Map<string, ReturnType<typeof orientationMetric>>();
   if (reusable) reusable.metrics = metricCache;
+  // Node locations are stable inside the same exact-revision graph. Derive
+  // path/area once rather than parsing the same neighbor locator for each edge.
+  const sourceLocationById = new Map<string, { file: string | null; area: string | null }>();
+  const neighborLocation = (node: GraphNode) => {
+    const cached = sourceLocationById.get(node.id);
+    if (cached) return cached;
+    const file = sourceFile(node.locator);
+    const area = file ? (() => {
+      const parts = (file.startsWith('./') ? file.slice(2) : file).split('/');
+      return parts[0] === 'src' && parts[1] ? 'src/' + parts[1] : parts[0] ?? null;
+    })() : null;
+    const location = { file, area };
+    sourceLocationById.set(node.id, location);
+    return location;
+  };
   const scopedMetrics = (node: GraphNode): ReturnType<typeof orientationMetric> => {
     const existing = metricCache.get(node.id);
     if (existing) return existing;
-    const calculated = orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy);
+    const calculated = orientationMetric(node, byId, incidentByNode.get(node.id) ?? [], rankBy, neighborLocation);
     metricCache.set(node.id, calculated);
     return calculated;
   };
@@ -1779,8 +1940,16 @@ export async function scopeOrientation(input: {
   });
 
   const roleOrder: OrientationRole[] = ['semantic', 'interface', 'implementation', 'effects', 'integration', 'representation', 'structural'];
+  const roleMembers = new Map<OrientationRole, GraphNode[]>();
+  // Group once, in original graph order so stable tied rankings remain exact.
+  for (const node of nodes) {
+    const role = orientationRole(node);
+    const members = roleMembers.get(role);
+    if (members) members.push(node);
+    else roleMembers.set(role, [node]);
+  }
   const roleGroups = roleOrder.flatMap(role => {
-    const members = nodes.filter(node => orientationRole(node) === role);
+    const members = roleMembers.get(role) ?? [];
     if (!members.length) return [];
     const sorted = members
       .map(node => ({ node, metrics: scopedMetrics(node) }))
@@ -1846,9 +2015,13 @@ export async function scopeOrientation(input: {
     .slice(0, Math.min(limit, 10))
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
+  phaseMs.rankingAndRoles = Date.now() - orientationStarted
+    - phaseMs.graphAccess - phaseMs.scopeSelection - phaseMs.adjacencyIndex;
+  const semanticStarted = Date.now();
   const semanticUnderstanding = selected.kind === 'repository'
     ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable)
     : null;
+  phaseMs.semanticUnderstanding = Date.now() - semanticStarted;
 
   return {
     project: input.project,
@@ -1868,6 +2041,15 @@ export async function scopeOrientation(input: {
         ? responsibilities.slice(0, 3).map(item => item.statement).join(' ')
         : String(nodes.length) + ' graph entities are in the selected ' + selected.kind + ' scope; no stronger bounded responsibility synthesis was available.',
     semanticUnderstanding,
+    observability: {
+      owner: 'di-query-orientation',
+      graphId: graph.graphId,
+      revision: graph.repositoryRevision,
+      phaseMs,
+      totalMeasuredMs: Date.now() - orientationStarted,
+      ephemeral: true,
+      note: 'Request-local timings; no source content, credentials or question text are logged or retained.',
+    },
     responsibilities,
     roleGroups,
     dependencies,
@@ -2449,7 +2631,7 @@ function subjectMarkersForLane(lane: InvestigationQuestionLane): RegExp[] {
     case 'orientation':
       return [/\b(what|which|show|find|main|major|moving parts|wide view|around|important|most connected|call hubs?|orientation|orient|functions?|dependencies|does|do|uses|use|rely on|under|in|the|this|page|file|module|feature|area)\b/gi];
     case 'trace':
-      return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a)\b/gi];
+      return [/\b(what|which|show|find|how|is|are|does|do|depend(?:s)? on|dependency|dependencies|used by|uses|callers?|called by|calls?|constructs?|consumers?|connect(?:ed|s|ion)?|relationships?|related|exposed|exposes|through|route|of|for|to|on|the|an|a|callbacks?|arguments?|pass(?:es|ed|ing)?|suppl(?:y|ies|ied)|provid(?:e|es|ed|ing))\b/gi];
     case 'evidence':
       return [/\b(what|which|show|find|inspect|evidence|supports?|supporting|audit|assess|finding|findings|problem|problems|risk|risks|realiz\w*|capability|proof|prove|for|of|is|are|does|do|the|exists?|existence|whether|and|also|it|this|that)\b/gi];
     case 'entity':
@@ -2673,30 +2855,66 @@ export async function queryWorkbench(input: {
     ...(input.sourceId ? { sourceId: input.sourceId } : {}),
     ...(input.semanticDepth ? { semanticDepth: input.semanticDepth } : {}),
   });
-  const conditionalSource = !input.sourceId && isConditionEffectQuestion(text)
-    ? await querySourceConditionEffects({
+  const executionQuestion = !input.sourceId ? parseSourceExecutionQuestion(text) : null;
+  if (executionQuestion) {
+    const graph = executionQuestion.mode === 'file' || executionQuestion.mode === 'repository'
+      ? await currentGraph(input.project, input.ref, input.graphId) : null;
+    const sourcePrefixes = executionQuestion.mode === 'file'
+      ? [executionQuestion.path] : ['tests/', 'scripts/'];
+    const sourceSuffixes = executionQuestion.mode === 'file'
+      ? [...SOURCE_EXECUTION_TEST_SUFFIXES] : ['.test.ts', '.test.mjs'];
+    const report = graph ? await queryTestClaimReport({
+      project: input.project, graphId: graph.graphId, sourcePrefixes, sourceSuffixes,
+      pageSize: 500, populationDetail: 'summary',
+    }) : undefined;
+    const rendered = sourceExecutionQuestionAnswer(executionQuestion, report as any);
+    return {
+      intent: 'source-execution-facts',
+      subject: executionQuestion.mode === 'file' && rendered.status === 'supported'
+        ? { id: 'file:' + executionQuestion.path, name: executionQuestion.path, kind: 'file' }
+        : null,
+      routing: {
+        tool: report ? 'get_test_claim_report' : 'none',
+        projection: 'source-execution-facts',
+        questionPlan: { ...plan, lane: 'evidence', proofMode: 'evidence',
+          subjectStrategy: executionQuestion.mode === 'file' ? 'scope-or-entity' : 'repository' },
+      },
+      answer: rendered.answer,
+      answerClassification: rendered.status === 'supported' ? 'established-bounded' : 'evidence-only',
+      result: rendered.result,
+    };
+  }
+  const sourceEvidence = !input.sourceId && isConditionEffectQuestion(text)
+    ? await evaluateSourceQuestionEvidence({
         graph: await currentGraph(input.project, input.ref, input.graphId),
         project: input.project, question: text,
         ...(input.scope ? { scope: input.scope } : {}),
       }) : null;
-  if (conditionalSource) {
-    const status = conditionalSource.status === 'supported' ? 'established-source-syntax' : 'unproven';
+  if (sourceEvidence) {
+    const conditionalSource = sourceEvidence.source;
+    const status = sourceEvidence.answerStatus === 'supported' ? 'established-source-syntax' : 'unproven';
     const identity = conditionalSource.identity as { functionId?: string; functionName?: string } | undefined;
+    const graphBuilt = String(conditionalSource.mode ?? '').startsWith('canonical-source-');
     return {
       intent: 'source-condition-effects',
       subject: identity?.functionId ? { id: identity.functionId, name: identity.functionName, kind: 'function' } : null,
-      routing: { tool: 'exact-git-typescript-ast', direction: 'source-control-path',
-        projection: 'condition-and-direct-effect', questionPlan: { ...plan, lane: 'trace',
+      routing: { tool: graphBuilt ? 'canonical-graph-relationships' : 'exact-git-typescript-ast',
+        direction: graphBuilt ? 'canonical-evidence' : 'source-control-path',
+        projection: graphBuilt ? 'source-control-return' : 'condition-and-direct-effect',
+        questionPlan: { ...plan, lane: 'trace',
           proofMode: 'evidence', subjectStrategy: 'entity-or-query' } },
-      answer: sourceConditionsAnswer(conditionalSource),
+      answer: sourceEvidence.answer,
       answerClassification: status,
+      claims: sourceEvidence.claims,
       result: conditionalSource,
     };
   }
   const testQuestion = !input.sourceId ? parseTestSourceQuestion(text) : null;
   if (testQuestion) {
     const graph = await currentGraph(input.project, input.ref, input.graphId);
-    const observed = testSourceProjection(graph, testQuestion, input.scope);
+    const visibleTestFiles = input.semanticDepth === 'exhaustive' ? 200
+      : input.semanticDepth === 'expanded' ? 100 : 20;
+    const observed = testSourceProjection(graph, testQuestion, input.scope, visibleTestFiles);
     return {
       intent: 'test-source-links',
       subject: observed.targetNodeId
@@ -2951,6 +3169,8 @@ export async function queryWorkbench(input: {
     }
     const requestedScope = target.ambiguous ? '' : (target.scope ?? '');
     const semanticDepth = semanticDepthForQuestion(text, input.semanticDepth);
+    const semanticSummaryOnly = !requestedScope
+      && /^what does (?:this|the|our) (?:project|repository|repo|codebase) do(?:\?|$)/u.test(lower);
     const result = await scopeOrientation({
       project: input.project,
       scope: requestedScope || undefined,
@@ -2959,11 +3179,13 @@ export async function queryWorkbench(input: {
       rankBy: input.rankBy,
       semanticDepth,
       orientationReuse: input.orientationReuse,
+      semanticSummaryOnly,
     });
     return {
       intent: 'orientation',
       subject: requestedScope ? { query: requestedScope } : null,
-      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file', semanticDepth },
+      routing: { tool: 'orient_scope', rankBy: input.rankBy ?? 'cross-file', semanticDepth,
+        ...(semanticSummaryOnly ? { projection: 'repository-semantic-summary' } : {}) },
       answer: String((result as any).summary ?? 'Scoped orientation complete.'),
       result,
     };
@@ -2980,25 +3202,48 @@ export async function queryWorkbench(input: {
       const inboundCall = /^\s*(?:what|who|which)\s+(?:functions?\s+)?calls?\b/u.test(lower)
         || /\b(?:callers?|called by)\b/u.test(lower);
       const isCallQuestion = outboundCall || inboundCall;
-      const direction = outboundCall ? 'outbound' : inboundCall ? 'inbound'
+      const isCallbackArgumentQuestion = /\bcallbacks?\b/u.test(lower)
+        && /\b(pass(?:es|ed|ing)?|suppl(?:y|ies|ied)|arguments?|provid(?:e|es|ed|ing))\b/u.test(lower);
+      const directedKinds = isCallbackArgumentQuestion ? ['callback-argument']
+        : isCallQuestion ? ['calls'] : null;
+      const direction = isCallbackArgumentQuestion ? 'outbound'
+        : outboundCall ? 'outbound' : inboundCall ? 'inbound'
         : /used by|consumers?|^\s*what\s+depends?\s+on\b|^\s*which\b[^?]*\bdepends?\s+on\b|\bwhich\b.*\buses?\b|\bwhat\b.*\bconstructs?\b/u.test(lower)
           ? 'inbound'
           : /depend(?:s)? on|uses/u.test(lower) ? 'outbound' : 'both';
       const result = await traceGraph({
         project: input.project, ref: input.ref, graphId: input.graphId,
-        node: subject, direction, depth: isCallQuestion ? 1 : 2,
-        ...(isCallQuestion ? { relationshipKinds: ['calls'] } : {}),
+        node: subject, direction, depth: isCallQuestion || isCallbackArgumentQuestion ? 1 : 2,
+        ...(directedKinds ? { relationshipKinds: directedKinds } : {}),
         statuses: ['resolved'], limit: 250,
       }) as any;
       const callEdges = isCallQuestion && !result.ambiguous
         ? (result.edges ?? []).filter((edge: any) => edge.kind === 'calls'
           && (direction === 'outbound' ? edge.from === subject : edge.to === subject))
         : [];
+      const nodeById = new Map<string, any>((result.nodes ?? []).map((node: any) => [node.id, node]));
+      const callbackEdges = isCallbackArgumentQuestion && !result.ambiguous
+        ? (result.edges ?? []).filter((edge: any) => edge.kind === 'callback-argument'
+          && edge.status === 'resolved' && edge.from === subject)
+        : [];
+      const callbackSites = [...new Set<string>(callbackEdges.map((edge: any) => {
+        const target = nodeById.get(edge.to);
+        const loc = (edge.evidence ?? []).find((item: string) => item.includes('callback-offset-'))
+          ?? target?.locator ?? String(edge.to);
+        return (target?.name === 'unresolved callback' ? 'callback expression' : target?.name ?? 'callback')
+          + ' at ' + loc;
+      }))].sort();
       const names = new Map<string, string>((result.nodes ?? []).map((node: any) => [node.id, node.name || node.id]));
       const observed = [...new Set<string>(callEdges.map((edge: any) =>
         names.get(direction === 'outbound' ? edge.to : edge.from) ?? String(direction === 'outbound' ? edge.to : edge.from)))].sort();
       const answer = result.ambiguous
         ? 'The requested graph subject is ambiguous; choose an exact entity.'
+        : isCallbackArgumentQuestion
+          ? callbackSites.length
+            ? 'Source-located callback argument(s) of “' + displayName(resolved.node ?? undefined, subject)
+              + '”: ' + callbackSites.join(', ')
+              + '. These are source syntax facts, not proof of effective delivery, receiver invocation or runtime effects.'
+            : 'No source-located callback argument relationship was observed for this subject; this does not prove callback absence.'
         : isCallQuestion
           ? observed.length
             ? 'Observed resolved direct ' + (direction === 'outbound' ? 'callees' : 'callers')
@@ -3010,9 +3255,11 @@ export async function queryWorkbench(input: {
       return {
         intent: 'trace',
         subject: subjectDescriptor(resolved.node, resolved.query),
-        routing: { tool: 'trace_path', direction, ...(isCallQuestion ? { relationshipKinds: ['calls'] } : {}) },
+        routing: { tool: 'trace_path', direction, ...(directedKinds ? { relationshipKinds: directedKinds } : {}) },
         answer,
-        answerClassification: result.ambiguous ? 'unresolved-input' : isCallQuestion && observed.length ? 'established-bounded' : 'evidence-only',
+        answerClassification: result.ambiguous ? 'unresolved-input'
+          : isCallbackArgumentQuestion && callbackSites.length ? 'established-bounded'
+          : isCallQuestion && observed.length ? 'established-bounded' : 'evidence-only',
         result,
       };
     }

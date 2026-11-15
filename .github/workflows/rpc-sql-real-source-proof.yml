@@ -1,0 +1,45 @@
+name: rpc-sql-real-source-proof
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "src/intelligence/rpcSqlSourceCandidates.ts"
+      - "src/intelligence/sourceConditionEffects.ts"
+      - "scripts/benchmark-rpc-sql-source.mjs"
+      - ".github/workflows/rpc-sql-real-source-proof.yml"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: di-rpc-sql-real-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  exact-cardforge-rpc-sql:
+    name: pinned CardForge RPC to historical SQL source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: 0e86857cedfc14cf7c3d12ce4df00d20909c637c
+          path: benchmark/cardforge
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.4"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build:server
+      - name: Verify source RPC and all SQL definition candidates
+        run: node --max-old-space-size=4096 scripts/benchmark-rpc-sql-source.mjs benchmark/cardforge
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpc-sql-real-source-receipt
+          path: rpc-sql-real-source-evidence.json
+          retention-days: 7
+          if-no-files-found: error

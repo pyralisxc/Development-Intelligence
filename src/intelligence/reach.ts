@@ -1,7 +1,9 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
+import { graphQueryContext } from './queryContext.js';
+import { relationshipKindContract, nodeKindsForFacet, type KnowledgeMechanism } from './graphKnowledge.js';
 
 export type ReachDimension = 'implementation' | 'human' | 'agent' | 'transport' | 'persistence' | 'provider' | 'cross-feature';
-export type ReachMechanism = 'composition-context' | 'dependency' | 'execution' | 'identity-resolution' | 'surface' | 'persistence' | 'provider' | 'authority' | 'other';
+export type ReachMechanism = KnowledgeMechanism;
 
 export interface TypedReachPath {
   dimension: ReachDimension;
@@ -40,24 +42,15 @@ export interface TypedReachProjection {
 
 const DIMENSIONS: ReachDimension[] = ['implementation', 'human', 'agent', 'transport', 'persistence', 'provider', 'cross-feature'];
 
-const HUMAN_KINDS = new Set(['surface', 'ui-element', 'component-prop-handler', 'component-prop-binding']);
-const AGENT_KINDS = new Set(['mcp', 'tool', 'mcp-tool']);
-const TRANSPORT_KINDS = new Set(['api', 'route', 'http-call', 'rpc-call', 'navigation-call']);
-const IMPLEMENTATION_KINDS = new Set(['feature', 'function', 'method', 'class', 'sql-function']);
-const PERSISTENCE_KINDS = new Set(['sql-table', 'sql-reference', 'state-binding', 'state-write']);
+const HUMAN_KINDS = new Set(nodeKindsForFacet('human'));
+const AGENT_KINDS = new Set(nodeKindsForFacet('agent'));
+const TRANSPORT_KINDS = new Set(nodeKindsForFacet('transport'));
+const IMPLEMENTATION_KINDS = new Set(nodeKindsForFacet('implementation'));
+const PERSISTENCE_KINDS = new Set(nodeKindsForFacet('persistence'));
 const CROSS_FEATURE_KINDS = new Set(['feature', 'capability', 'action']);
 
 export function reachMechanism(kind: string): ReachMechanism {
-  const value = kind.toLowerCase();
-  if (/same_observed_|similar_identifier|equivalent|variant|canonical|identity/u.test(value)) return 'identity-resolution';
-  if (/contains|declares|member|parent|child|owned?|part[-_ ]?of|context|nested|includes|reexports/u.test(value)) return 'composition-context';
-  if (/imports|depends|requires|uses|references|resolves_to|connected-to|links?-to/u.test(value)) return 'dependency';
-  if (/calls?|handled_by|implemented-by|automated-by|dispatch|invoke|trigger|responds|transitions|navigation|executes|routes?-to/u.test(value)) return 'execution';
-  if (/exposed-on|available-on-surface|renders|presented|binds/u.test(value)) return 'surface';
-  if (/writes?|reads?|persists?|state|stores?|loads?|sql/u.test(value)) return 'persistence';
-  if (/integrates-with|provider/u.test(value)) return 'provider';
-  if (/authority|auth|permission/u.test(value)) return 'authority';
-  return 'other';
+  return relationshipKindContract(kind).mechanism;
 }
 
 function nodeDimensions(root: GraphNode, target: GraphNode): ReachDimension[] {
@@ -83,16 +76,10 @@ export function projectTypedReach(
 ): TypedReachProjection {
   const depth = Math.min(Math.max(options.depth ?? 4, 0), 10);
   const maxNodes = Math.min(Math.max(options.maxNodes ?? 300, 1), 2000);
-  const byId = new Map(graph.nodes.map(node => [node.id, node]));
-  const incident = new Map<string, GraphEdge[]>();
-  for (const edge of graph.edges) {
-    if (edge.status !== 'resolved' || !edge.from || !edge.to) continue;
-    for (const id of [edge.from, edge.to]) {
-      const items = incident.get(id) ?? [];
-      items.push(edge);
-      incident.set(id, items);
-    }
-  }
+  // Graphs are immutable per exact revision. Reuse DI's existing indexed
+  // neighborhood rather than rebuilding full maps for every assessment.
+  const context = graphQueryContext(graph);
+  const byId = context.nodesById;
 
   const pathByNode = new Map<string, { nodeIds: string[]; edgeIds: string[] }>([
     [root.id, { nodeIds: [root.id], edgeIds: [] }],
@@ -101,7 +88,8 @@ export function projectTypedReach(
   for (let level = 0; level < depth && frontier.length && pathByNode.size < maxNodes; level += 1) {
     const next: string[] = [];
     for (const id of frontier) {
-      for (const edge of incident.get(id) ?? []) {
+      for (const edge of context.incident(id)) {
+        if (edge.status !== 'resolved' || !edge.from || !edge.to) continue;
         const neighbor = edge.from === id ? edge.to : edge.from;
         if (!neighbor || pathByNode.has(neighbor) || pathByNode.size >= maxNodes) continue;
         const parent = pathByNode.get(id)!;
@@ -115,7 +103,7 @@ export function projectTypedReach(
     frontier = next;
   }
 
-  const edgesById = new Map(graph.edges.map(edge => [edge.id, edge]));
+  const edgesById = context.edgesById;
   const emptyDimension = (): TypedReachDimension => ({ observed: false, count: 0, targetIds: [], paths: [] });
   const dimensions: Record<ReachDimension, TypedReachDimension> = {
     implementation: emptyDimension(),
@@ -172,9 +160,11 @@ export function projectTypedReach(
   const reachedIds = new Set(pathByNode.keys());
   let candidate = 0;
   let unresolved = 0;
-  for (const edge of graph.edges) {
-    const touchesReach = (edge.from ? reachedIds.has(edge.from) : false) || (edge.to ? reachedIds.has(edge.to) : false);
-    if (!touchesReach) continue;
+  const seenExcluded = new Set<string>();
+  for (const id of reachedIds) for (const edge of context.incident(id)) {
+    // A relationship whose endpoints are both reached is still one edge.
+    if (seenExcluded.has(edge.id)) continue;
+    seenExcluded.add(edge.id);
     if (edge.status === 'candidate') candidate += 1;
     if (edge.status === 'unresolved') unresolved += 1;
   }
