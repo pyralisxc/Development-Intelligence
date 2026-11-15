@@ -37,9 +37,10 @@ read it without invoking Joern again:
 
 That exact-source operation reconstructs canonical W, generates the existing
 native assertion inventory and produces an ephemeral graph overlay. A Joern
-node is admitted only when its file is tracked, completely analyzed, a regular
-file inside the checkout, byte-identical to HEAD in Git, and its code plus
-line/column match source text. Joern DDG/REACHING_DEF edges remain candidate
+node is admitted when its tracked, analyzed file is a regular file inside the
+checkout, byte-identical to HEAD in Git, and its code and position match the
+source directly or by uniquely matching syntax tokens and literal values.
+The node records which matching method was used. Joern DDG/REACHING_DEF edges remain candidate
 possible-flow relationships even when both endpoint locations are verified.
 Compiler parser AST assertion-span membership is source-proven separately.
 No dynamic value, runtime path, assertion outcome or redundant-test

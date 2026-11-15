@@ -40,10 +40,13 @@ function layerLabel(node: GraphNode): string {
 function coverageNote(graph: IntelligenceGraph): string {
   const coverage = graph.coverage;
   if (!coverage) return 'Coverage details are unavailable for this graph context.';
+  const producerNote = graph.producerCoverage?.length
+    ? ' Language producer coverage: ' + graph.producerCoverage.map(item => `${item.producer} ${item.state}${item.reason ? ` (${item.reason})` : ''}`).join('; ') + '.'
+    : '';
   if (coverage.failedFiles || coverage.partialFiles || coverage.skippedFiles) {
-    return `Coverage is incomplete: ${coverage.completeFiles}/${coverage.eligibleFiles} eligible files complete, ${coverage.partialFiles} partial, ${coverage.failedFiles} failed, ${coverage.skippedFiles} skipped.`;
+    return `Coverage is incomplete: ${coverage.completeFiles}/${coverage.eligibleFiles} eligible files complete, ${coverage.partialFiles} partial, ${coverage.failedFiles} failed, ${coverage.skippedFiles} skipped.${producerNote}`;
   }
-  return `Coverage is complete for ${coverage.eligibleFiles} eligible files (${coverage.trackedFiles} tracked files total).`;
+  return `Source-file analysis is complete for ${coverage.eligibleFiles} eligible files (${coverage.trackedFiles} tracked files total).${producerNote}`;
 }
 
 function edgeCounts(edges: GraphEdge[]): Record<RelationshipStatus, number> {
@@ -103,7 +106,7 @@ function compactCoverage(graph: IntelligenceGraph): Record<string, unknown> | nu
   const coverage = graph.coverage;
   if (!coverage) return null;
   const { files: _files, ...summary } = coverage;
-  return summary;
+  return { ...summary, producerCoverage: graph.producerCoverage ?? [] };
 }
 
 function projectSubjectBrief(graph: IntelligenceGraph, query: string): Record<string, unknown> {

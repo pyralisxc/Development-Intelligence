@@ -1,6 +1,6 @@
 import { getProjectConfig } from '../config/registry.js';
 import { assertProjectAccessCurrent, hasProjectAccess, projectAccessScopeKey, projectAccessSecret } from '../config/projectAccess.js';
-import { computeOnly } from '../config/runtimeRole.js';
+import { computeOnly, previewRuntime } from '../config/runtimeRole.js';
 import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { changedFilesBetweenRevisions, revisionIdentity, withResolvedProjectCheckoutObserved, resolveProjectRevision, type ProjectCheckoutTiming, type ProjectRevision } from '../source/git.js';
@@ -181,7 +181,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
   const revision = await resolveProjectRevision(project, ref);
   const revisionResolutionMs = elapsedMs(resolutionStarted);
   const config = await getProjectConfig(project);
-  const canonicalEligible = !computeOnly() && (ref === undefined || ref === config.defaultRef);
+  const canonicalEligible = !computeOnly() && !previewRuntime() && (ref === undefined || ref === config.defaultRef);
   const cacheScope: RepositoryCacheScope = canonicalEligible ? 'canonical' : 'replay';
   const key = cacheKey(project, revision.sha, cacheScope);
   let entry = repositoryCache.get(key);
@@ -530,7 +530,7 @@ async function loadCachedRepositoryGraphForRead(project: string, ref?: string): 
   const revision = await resolveProjectRevision(project, ref);
   const revisionResolutionMs = elapsedMs(resolutionStarted);
   const config = await getProjectConfig(project);
-  const canonicalEligible = ref === undefined || ref === config.defaultRef;
+  const canonicalEligible = !previewRuntime() && (ref === undefined || ref === config.defaultRef);
 
   // Explicit historical/alternate selectors are allowed to use the replay/build
   // path. The no-surprise read/update separation applies to current canonical W.
@@ -915,7 +915,7 @@ async function scanRuntimeUrl(project: string, urlText: string, repositoryRevisi
 export async function scanGraph(project: string, options: { ref?: string | undefined; urls?: string[] } = {}): Promise<IntelligenceGraph> {
   const revision = await resolveProjectRevision(project, options.ref);
   const config = await getProjectConfig(project);
-  const canonicalEligible = options.ref === undefined || options.ref === config.defaultRef;
+  const canonicalEligible = !previewRuntime() && (options.ref === undefined || options.ref === config.defaultRef);
   const key = cacheKey(project, revision.sha, canonicalEligible ? 'canonical' : 'replay');
   const cached = repositoryCache.get(key);
   if (cached?.value && !cached.value.queryArtifacts.ref) {

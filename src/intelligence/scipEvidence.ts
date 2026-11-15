@@ -2,33 +2,32 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
-import { resolution } from './model.js';
+import { observation, resolution } from './model.js';
+import { stableHash } from '../util/hash.js';
 import { decodeScipIndex, type ScipDocument, type ScipOccurrence } from './scipWire.js';
 import { runChecked } from '../util/process.js';
 import { compilerTypeScriptReferences, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
 import { loadCompilerOptions } from './repository.js';
 
 /**
- * SCIP evidence is an opt-in source sensor. A caller-supplied index cannot
- * certify its own producer, exact revision, compiler configuration, or full
- * source coverage. Independently corroborated static TypeScript bindings are
- * admitted as RESOLVED technical code facts; other references stay CANDIDATE.
- * This never infers runtime execution or accepted product meaning.
+ * SCIP contributes source-located symbols and references. DI-run producer
+ * output belongs to the build's selected checkout; separately supplied index
+ * relationships remain candidates unless the compiler corroborates them.
+ * A reference is not itself a call or a claim about runtime execution.
  */
 export const SCIP_EVIDENCE_STRATEGY = 'scip-source-correlated.v2';
-const MAX_INDEX_BYTES = 32 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 1_000_000;
-const MAX_EDGES = 100_000;
 const DECLARATION_KINDS = new Set(['function', 'method', 'class', 'constructor', 'interface', 'type', 'declaration', 'struct', 'enum']);
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
-interface ScipDefinition { target: GraphNode; file: string; line: number }
+interface ScipDefinition { target: GraphNode; file: string | null; line: number | null }
 interface SourceDocument { file: string; text: string; lines: string[]; index: ScipDocument }
 
 export interface ScipEvidenceProjection {
   graph: IntelligenceGraph;
   index: {
     sha256: string;
+    contentSha256: string;
     producer: { name: string; version: string };
     documents: number;
     occurrences: number;
@@ -39,6 +38,7 @@ export interface ScipEvidenceProjection {
   counts: {
     sourceDocumentsMatched: number;
     sourceDocumentsSkipped: number;
+    sourceDocumentsNotIndexed: number;
     definitionsMatched: number;
     referencedSymbolsMatched: number;
     candidateEdges: number;
@@ -47,7 +47,10 @@ export interface ScipEvidenceProjection {
     compilerVerification: 'completed' | 'not-applicable' | 'bounded-out' | 'unavailable';
     ambiguousDefinitions: number;
     unresolvedOrUnsafeOccurrences: number;
+    externalReferences: number;
+    referencesWithoutIndexedDefinition: number;
   };
+  unindexedSourcePaths: string[];
   compilerOverlap: {
     baseline: 'canonical-typescript-checker';
     comparisonUnit: 'exact-caller-file-line-column-and-declaration';
@@ -59,8 +62,8 @@ export interface ScipEvidenceProjection {
   };
   policy: {
     independentlyCompilerProvenTechnicalEdgesAreResolved: true;
-    remainingUnverifiedPositiveReferencesStayCandidates: true;
-    externallySuppliedIndexNotAttested: true;
+    remainingUnverifiedPositiveReferencesStayCandidates: boolean;
+    externallySuppliedIndexNotAttested: boolean;
     assumedLegacyPositionEncodingIsNotIndependentProof: true;
     negativeCoverageNotEstablished: true;
     canonicalAuthorityUnaffected: true;
@@ -100,7 +103,7 @@ function declarationLine(node: GraphNode, relative: string): number | null {
 
 function sourceSlice(source: SourceDocument, occurrence: ScipOccurrence): string | null {
   const range = occurrence.range;
-  if (!range || range.line >= source.lines.length || range.end > 4096) return null;
+  if (!range || range.line >= source.lines.length) return null;
   const line = source.lines[range.line]!;
   if (source.index.positionEncoding === 2) { // UTF-16 code-unit offsets
     if (range.end > line.length) return null;
@@ -153,11 +156,10 @@ function utf16Start(source: SourceDocument, occurrence: ScipOccurrence): number 
   return null;
 }
 
-async function trackedDocument(root: string, doc: ScipDocument, graph: IntelligenceGraph): Promise<SourceDocument | null> {
+async function trackedDocument(root: string, doc: ScipDocument, eligiblePaths: ReadonlySet<string>): Promise<SourceDocument | null> {
   if (!safeRelative(doc.path)) throw new Error('SCIP document path is not canonical or would escape the repository');
   if (![1, 2, 3].includes(doc.positionEncoding)) return null;
-  if (!graph.coverage?.files.some(item => item.path === doc.path && item.status === 'complete')) return null;
-  if (!graph.nodes.some(node => node.id === 'file:' + doc.path && node.kind === 'file')) return null;
+  if (!eligiblePaths.has(doc.path)) return null;
   const location = path.resolve(root, doc.path);
   if (!within(root, location)) throw new Error('SCIP document escapes the inspected checkout');
   try {
@@ -177,8 +179,8 @@ async function readUntrackedIndex(root: string, indexPath: string): Promise<Uint
   const absolute = path.resolve(root, indexPath);
   if (!within(root, absolute)) throw new Error('SCIP index path escapes the checkout root');
   const lstat = await fs.lstat(absolute);
-  if (!lstat.isFile() || lstat.isSymbolicLink() || lstat.size < 1 || lstat.size > MAX_INDEX_BYTES) {
-    throw new Error('SCIP index must be a bounded regular non-symlink file');
+  if (!lstat.isFile() || lstat.isSymbolicLink() || lstat.size < 1) {
+    throw new Error('SCIP index must be a non-empty regular non-symlink file');
   }
   const real = await fs.realpath(absolute);
   if (!within(root, real)) throw new Error('SCIP index resolves outside the checkout root');
@@ -188,7 +190,10 @@ async function readUntrackedIndex(root: string, indexPath: string): Promise<Uint
 /** Build a source-backed, ephemeral DI graph projection from a precomputed .scip index. */
 export async function projectLocalScipEvidence(input: {
   root: string;
-  indexPath: string;
+  indexPath?: string;
+  /** A producer run by DI in this checkout can pass its generated index directly. */
+  indexBytes?: Uint8Array;
+  producerRanOnCheckout?: boolean;
   graph: IntelligenceGraph;
   projectPrefix?: string;
   /** Explicit, non-authoritative fallback ONLY for SCIP documents with unspecified offset encoding. */
@@ -206,11 +211,20 @@ export async function projectLocalScipEvidence(input: {
   if (prefix && !input.graph.coverage?.files.some(item => item.path.startsWith(prefix + '/'))) {
     throw new Error('SCIP project prefix has no tracked source files in the inspected graph');
   }
-  const bytes = await readUntrackedIndex(root, input.indexPath);
+  if (!input.indexBytes && !input.indexPath) throw new Error('SCIP index is required');
+  const bytes = input.indexBytes ?? await readUntrackedIndex(root, input.indexPath!);
   const parsed = decodeScipIndex(bytes);
   const indexHash = createHash('sha256').update(bytes).digest('hex');
+  // The wire metadata embeds the temporary checkout path. Hash the decoded
+  // repository-relative facts separately so replay at the same revision has a
+  // stable identity even when its checkout lives in another directory.
+  const contentHash = createHash('sha256').update(JSON.stringify(parsed)).digest('hex');
 
   const actual = new Map<string, SourceDocument>();
+  const graphFiles = new Map(input.graph.nodes.filter(node => node.kind === 'file').map(node => [node.id, node]));
+  const eligiblePaths = new Set((input.graph.coverage?.files ?? [])
+    .filter(item => (item.status === 'complete' || item.status === 'partial') && graphFiles.has('file:' + item.path))
+    .map(item => item.path));
   const seenDocuments = new Set<string>();
   let skipped = 0;
   let assumedPositionEncodingDocuments = 0;
@@ -225,10 +239,12 @@ export async function projectLocalScipEvidence(input: {
     if (assumed) assumedPositionEncodingDocuments += 1;
     const mapped = { ...doc, path: mappedPath,
       positionEncoding: assumed ? encodings[legacy!] : doc.positionEncoding };
-    const file = await trackedDocument(root, mapped, input.graph);
+    const file = await trackedDocument(root, mapped, eligiblePaths);
     if (file) actual.set(mappedPath, file);
     else skipped += 1;
   }
+  const unindexedSourcePaths = [...eligiblePaths].filter(file =>
+    /\.[cm]?[jt]sx?$/iu.test(file) && (!prefix || file.startsWith(prefix + '/')) && !actual.has(file)).sort();
 
   const declarationIndex = new Map<string, GraphNode[]>();
   for (const node of input.graph.nodes) {
@@ -243,17 +259,50 @@ export async function projectLocalScipEvidence(input: {
   }
 
   const definitions = new Map<string, ScipDefinition[]>();
+  const producerNodes = new Map<string, GraphNode>();
+  const producerContainment = new Map<string, GraphEdge>();
   let definitionsMatched = 0;
   let rejectedOccurrences = 0;
   for (const file of actual.values()) {
     for (const occurrence of file.index.occurrences) {
       if (!(occurrence.roles & 1) || !occurrence.symbol || occurrence.symbol.startsWith('local ')) continue;
+      // SCIP's TypeScript producer represents a document/module definition by
+      // a zero-width document occurrence. The file already has an identity in
+      // the shared graph; use it rather than discarding the producer's symbol.
+      if (occurrence.documentOccurrence && occurrence.symbol.endsWith('/')) {
+        const fileNode = graphFiles.get('file:' + file.file);
+        if (fileNode) {
+          const group = definitions.get(occurrence.symbol) ?? [];
+          group.push({ target: fileNode, file: file.file, line: 1 });
+          definitions.set(occurrence.symbol, group);
+          definitionsMatched += 1;
+          continue;
+        }
+      }
       const name = sourceSlice(file, occurrence);
       if (!name || !occurrence.range) { rejectedOccurrences += 1; continue; }
       const line = occurrence.range.line + 1;
       const candidates = declarationIndex.get(file.file + '\0' + String(line) + '\0' + name) ?? [];
-      if (candidates.length !== 1) { rejectedOccurrences += 1; continue; }
-      const item = { target: candidates[0]!, file: file.file, line };
+      if (candidates.length > 1) { rejectedOccurrences += 1; continue; }
+      let target = candidates[0];
+      if (!target) {
+        const column = utf16Start(file, occurrence);
+        if (column === null) { rejectedOccurrences += 1; continue; }
+        const locator = file.file + ':' + line + ':' + (column + 1);
+        const id = 'scip-declaration:' + stableHash([file.file, occurrence.range.line,
+          occurrence.range.start, occurrence.range.end, occurrence.symbol]);
+        target = observation({ id, sourceId: 'repo:' + file.file, kind: 'declaration', locator,
+          name, field: 'scip-symbol', raw: name,
+          value: { symbol: occurrence.symbol, producer: parsed.producer,
+            sourceRange: occurrence.range, positionEncoding: file.index.positionEncoding },
+          layer: 'structural', checkpoint: false });
+        producerNodes.set(id, target);
+        const contains = resolution({ from: 'file:' + file.file, to: id, kind: 'contains',
+          strategy: SCIP_EVIDENCE_STRATEGY, confidence: 1, status: 'resolved',
+          evidence: [locator], layer: 'structural', checkpoint: false });
+        producerContainment.set(contains.id, contains);
+      }
+      const item = { target, file: file.file, line };
       const group = definitions.get(occurrence.symbol) ?? [];
       group.push(item);
       definitions.set(occurrence.symbol, group);
@@ -261,19 +310,19 @@ export async function projectLocalScipEvidence(input: {
     }
   }
 
-  // SCIP symbol strings are caller-controlled. Cross-verify a source callsite
-  // and target against a fresh TypeScript TypeChecker over this exact checkout
-  // before representing the relationship as resolved evidence.
+  // For separately supplied indexes, cross-check source references and
+  // destinations with the TypeScript checker when possible.
   const typeScriptSources = new Map([...actual.values()]
     .filter(value => /\.(?:[cm]?[jt]s|tsx|jsx)$/iu.test(value.file))
     .map(value => [value.file, value.text]));
   const nativeFiles = new Map(input.graph.nodes
     .filter(node => node.kind === 'file' && node.sourceId.startsWith('repo:'))
     .map(node => [node.sourceId.slice(5), node]));
-  const compiler = compilerTypeScriptReferences({
-    root, sourceTexts: typeScriptSources, nodes: input.graph.nodes, fileNodes: nativeFiles,
-    options: loadCompilerOptions(root),
-  });
+  const compiler = input.producerRanOnCheckout ? { edges: [], state: 'not-applicable' as const }
+    : compilerTypeScriptReferences({
+      root, sourceTexts: typeScriptSources, nodes: input.graph.nodes, fileNodes: nativeFiles,
+      options: loadCompilerOptions(root),
+    });
   const compilerSiteProof = new Set<string>();
   for (const edge of compiler.edges) {
     if (edge.strategy !== TYPESCRIPT_COMPILER_LENS || edge.kind !== 'references-symbol'
@@ -286,7 +335,7 @@ export async function projectLocalScipEvidence(input: {
     }
   }
 
-  // Compare exact static callsite/target proof against the already present
+  // Compare exact static reference/target proof against the already present
   // canonical TypeChecker lens. An overlapping SCIP edge is *corroboration*,
   // not a newly discovered technical relationship or application meaning.
   const canonicalCompilerSites = new Set<string>();
@@ -303,9 +352,13 @@ export async function projectLocalScipEvidence(input: {
   const canonicalOverlappingSites = new Set<string>();
 
   const byId = new Map<string, GraphEdge>();
+  const aggregateEvidence = new Map<string, Set<string>>();
+  const externalSymbols = new Set(parsed.externalSymbols);
   let corroborated = 0;
   let referencedSymbolsMatched = 0;
   let ambiguous = 0;
+  let externalReferences = 0;
+  let referencesWithoutIndexedDefinition = 0;
   for (const file of actual.values()) {
     for (const occurrence of file.index.occurrences) {
       if ((occurrence.roles & 1) || !occurrence.symbol || occurrence.symbol.startsWith('local ')) continue;
@@ -314,12 +367,27 @@ export async function projectLocalScipEvidence(input: {
       const matches = definitions.get(occurrence.symbol) ?? [];
       const identities = new Set(matches.map(item => item.target.id));
       if (identities.size > 1) { ambiguous += 1; continue; }
-      if (identities.size !== 1) { rejectedOccurrences += 1; continue; }
-      const target = matches[0]!;
-      if (target.file === file.file) continue;
+      let target: ScipDefinition;
+      if (identities.size === 0) {
+        const external = externalSymbols.has(occurrence.symbol);
+        if (external) externalReferences += 1;
+        else referencesWithoutIndexedDefinition += 1;
+        const id = 'scip-symbol:' + stableHash([occurrence.symbol]);
+        const symbol = producerNodes.get(id) ?? observation({
+          id, sourceId: 'repository', kind: external ? 'external-symbol' : 'unlocated-symbol',
+          locator: 'scip:' + occurrence.symbol, name: text, field: 'scip-symbol', raw: text,
+          value: { symbol: occurrence.symbol, producer: parsed.producer, definitionLocation: null },
+          layer: 'structural', checkpoint: false,
+        });
+        producerNodes.set(id, symbol);
+        target = { target: symbol, file: null, line: null };
+      } else {
+        target = matches[0]!;
+      }
       const from = 'file:' + file.file;
       const unicodePosition = utf16Start(file, occurrence);
-      const locator = file.file + ':' + (occurrence.range.line + 1) + ':' + (occurrence.range.start + 1);
+      if (unicodePosition === null) { rejectedOccurrences += 1; continue; }
+      const locator = file.file + ':' + (occurrence.range.line + 1) + ':' + (unicodePosition + 1);
       const compilerLocator = unicodePosition === null ? null
         : file.file + ':' + (occurrence.range.line + 1) + ':' + (unicodePosition + 1);
       const provenSiteKey = compilerLocator === null ? null
@@ -332,29 +400,52 @@ export async function projectLocalScipEvidence(input: {
       }
       const sourceEvidence = [
         locator,
-        target.file + ':' + target.line,
-        'SCIP index ' + indexHash + ' (' + parsed.producer.name + ' ' + parsed.producer.version + '); caller-supplied, not independently attested',
+        ...(target.file && target.line ? [target.file + ':' + target.line] : ['Definition location was not present in the indexed checkout']),
+        'SCIP index ' + (input.producerRanOnCheckout ? contentHash : indexHash) + ' (' + parsed.producer.name + ' ' + parsed.producer.version + '); '
+          + (input.producerRanOnCheckout ? 'produced by DI on this checkout' : 'caller-supplied, not independently attested'),
         ...(independentProof ? [
-          'Independent TypeScript TypeChecker (' + TYPESCRIPT_COMPILER_LENS + ') proved this exact source callsite and target; compile-time binding only',
+          'Independent TypeScript TypeChecker (' + TYPESCRIPT_COMPILER_LENS + ') resolved this exact source reference and target; compile-time binding only',
         ] : []),
       ];
+      const occurrenceId = 'scip-reference:' + stableHash([file.file, occurrence.range.line,
+        occurrence.range.start, occurrence.range.end, occurrence.symbol]);
+      producerNodes.set(occurrenceId, observation({
+        id: occurrenceId, sourceId: 'repo:' + file.file, kind: 'source-reference', locator,
+        name: text, field: 'scip-symbol-reference', raw: text,
+        value: { symbol: occurrence.symbol, producer: parsed.producer,
+          sourceRange: occurrence.range, positionEncoding: file.index.positionEncoding },
+        layer: 'structural', checkpoint: false,
+      }));
+      const contains = resolution({ from, to: occurrenceId, kind: 'contains',
+        strategy: SCIP_EVIDENCE_STRATEGY, confidence: 1, status: 'resolved',
+        evidence: [locator], layer: 'structural', checkpoint: false });
+      producerContainment.set(contains.id, contains);
+      const occurrenceEdge = resolution({ from: occurrenceId, to: target.target.id,
+        kind: 'references-symbol', strategy: SCIP_EVIDENCE_STRATEGY,
+        confidence: independentProof || input.producerRanOnCheckout ? 1 : null,
+        status: independentProof || input.producerRanOnCheckout ? 'resolved' : 'candidate',
+        evidence: sourceEvidence, layer: 'structural', checkpoint: false });
+      byId.set(occurrenceEdge.id, occurrenceEdge);
       const edge = resolution({
         from, to: target.target.id, kind: 'references-symbol',
         strategy: SCIP_EVIDENCE_STRATEGY,
-        confidence: independentProof ? 1 : null,
-        status: independentProof ? 'resolved' : 'candidate',
+        confidence: independentProof || input.producerRanOnCheckout ? 1 : null,
+        status: independentProof || input.producerRanOnCheckout ? 'resolved' : 'candidate',
         evidence: sourceEvidence, layer: 'structural', checkpoint: false,
       });
       const prior = byId.get(edge.id);
       if (prior) {
-        prior.evidence = [...new Set([...prior.evidence, ...edge.evidence])].sort();
-      } else if (byId.size < MAX_EDGES) {
+        const evidence = aggregateEvidence.get(edge.id)!;
+        for (const item of edge.evidence) evidence.add(item);
+      } else {
         byId.set(edge.id, edge);
-      } else throw new Error('SCIP correlated relationships exceed the bounded capacity');
+        aggregateEvidence.set(edge.id, new Set(edge.evidence));
+      }
       referencedSymbolsMatched += 1;
     }
   }
 
+  for (const [id, evidence] of aggregateEvidence) byId.get(id)!.evidence = [...evidence].sort();
   const added = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
   return {
     graph: {
@@ -362,14 +453,16 @@ export async function projectLocalScipEvidence(input: {
       graphId: 'scip-overlay-' + createHash('sha256')
         .update(JSON.stringify([input.graph.graphId, sha, indexHash, prefix, legacy, SCIP_EVIDENCE_STRATEGY]))
         .digest('hex').slice(0, 24),
-      edges: [...input.graph.edges, ...added],
+      nodes: [...input.graph.nodes, ...producerNodes.values()],
+      edges: [...input.graph.edges, ...producerContainment.values(), ...added],
     },
-    index: { sha256: indexHash, producer: parsed.producer, documents: parsed.documents.length,
+    index: { sha256: indexHash, contentSha256: contentHash, producer: parsed.producer, documents: parsed.documents.length,
       occurrences: parsed.occurrenceCount, projectPrefix: prefix,
       legacyPositionEncoding: legacy, assumedPositionEncodingDocuments },
     counts: {
       sourceDocumentsMatched: actual.size,
       sourceDocumentsSkipped: skipped,
+      sourceDocumentsNotIndexed: unindexedSourcePaths.length,
       definitionsMatched,
       referencedSymbolsMatched,
       candidateEdges: added.filter(edge => edge.status === 'candidate').length,
@@ -378,7 +471,10 @@ export async function projectLocalScipEvidence(input: {
       compilerVerification: compiler.state,
       ambiguousDefinitions: ambiguous,
       unresolvedOrUnsafeOccurrences: rejectedOccurrences,
+      externalReferences,
+      referencesWithoutIndexedDefinition,
     },
+    unindexedSourcePaths,
     compilerOverlap: {
       baseline: 'canonical-typescript-checker',
       comparisonUnit: 'exact-caller-file-line-column-and-declaration',
@@ -390,8 +486,8 @@ export async function projectLocalScipEvidence(input: {
     },
     policy: {
       independentlyCompilerProvenTechnicalEdgesAreResolved: true,
-      remainingUnverifiedPositiveReferencesStayCandidates: true,
-      externallySuppliedIndexNotAttested: true,
+      remainingUnverifiedPositiveReferencesStayCandidates: !input.producerRanOnCheckout,
+      externallySuppliedIndexNotAttested: !input.producerRanOnCheckout,
       assumedLegacyPositionEncodingIsNotIndependentProof: true,
       negativeCoverageNotEstablished: true,
       canonicalAuthorityUnaffected: true,
