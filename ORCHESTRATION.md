@@ -74,9 +74,9 @@ For a material change:
 
 1. Read `AGENTS.md` and the owning product/architecture/operations docs for the change.
 2. Start from the exact current `preview` revision (or `main` only when Preview has no accumulated delta) and create a bounded `work/*` branch.
-3. Make the smallest coherent change; do not embed project-management state or provider secrets in source.
-4. Run `npm run verify` and preserve any relevant permanent regression evidence.
-5. Open the bounded PR against `preview` and let CI run the repository's packaged action and permanent benchmark gates.
+3. Build the complete, well-developed requested outcome across the affected source, interfaces, and integrations. Read the owning Confluence blueprint and relevant source first; do not optimize for a minimal patch, retain obsolete architecture merely to shrink the diff, or embed project-management state or provider secrets in source.
+4. Verify the outcome through actual use appropriate to the change. Do not add tests by default. For source changes, run the current `npm run verify` suite and report its result while it remains required by CI; assess obsolete fixtures, tests, and workflow gates for deliberate removal or revision. For documentation-only changes, review the changed wording and links and report CI results when available.
+5. Open a coherent PR against `preview` and report the current CI results, including packaged action and benchmark jobs where applicable.
 6. When explicit checkpoint compatibility evidence is useful, request `seal-b`; verify that artifact on the same exact source head.
 7. Integrate the exact green candidate into `preview`; use the ephemeral PR preview only when pre-integration interactive review is materially useful.
 8. Exercise the accumulated Preview deployment and exact `branch:preview` intelligence surface until the tranche is coherent.
