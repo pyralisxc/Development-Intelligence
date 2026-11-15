@@ -1652,12 +1652,14 @@ export async function queryWorkbenchRequest(input: {
       const related = result.navigation.relationships.filter((item: any) => item.edge.status === 'resolved');
       const relationshipAnswer = !result.interpretation.negated && result.navigation.relationshipKinds.length && related.length
         ? related.map((item: any) => `${item.from?.name ?? item.edge.from} ${item.edge.kind} ${item.to?.name ?? item.edge.to}`).join('; ')
+          + ((result.page.offset + result.navigation.relationships.length < result.navigation.total)
+            ? `; showing ${result.page.offset + 1}–${result.page.offset + result.navigation.relationships.length} of ${result.navigation.total} matching relationships (continue at offset ${result.page.offset + result.page.limit})` : '')
         : '';
       const comparisonAnswer = result.comparison?.state === 'evaluated'
           ? `Compared ${result.comparison.total} subjects: ${result.comparison.counts.related} related, ${result.comparison.counts.candidate} candidate, ${result.comparison.counts.notRelated} established not related, and ${result.comparison.counts.unknown} unknown.`
           : result.comparison?.reason ?? '';
       const answer = comparisonAnswer || relationshipAnswer || (focus.length
-        ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}`).join('; ')}`
+        ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
         : `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`);
       return { index, question, status: 'ok', intent: 'graph-filter', subject,
         ...(inheritedScope ? { inheritedSubject: inheritedScope } : {}),

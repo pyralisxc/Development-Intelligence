@@ -220,8 +220,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const include = (node: GraphNode | undefined): void => {
     if (node && !listed.has(node.id)) { listed.add(node.id); allNodes.push(node); }
   };
-  const familyOwners = [...subjects, ...graph.nodes.filter(node => adjacentIds.has(node.id)
-    && !subjectIds.has(node.id) && factsBySubject.has(node.id))];
+  const familyOwners = [...subjects, ...(depth > 1 ? graph.nodes.filter(node => adjacentIds.has(node.id)
+    && !subjectIds.has(node.id) && factsBySubject.has(node.id)) : [])];
   for (const subject of familyOwners) {
     include(subject);
     for (const id of factsBySubject.get(subject.id) ?? []) include(byId.get(id));
@@ -241,10 +241,11 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     const conditions = new Map(facts.filter(node => node.kind === 'source-condition')
       .map(node => [String((node.value as any)?.id ?? ''), node]));
     const projected = facts.map(node => {
-      const value = node.value as { kind?: unknown; requiredConditions?: Array<{ conditionId: string; expectedTruth: boolean }> } | null;
+      const value = node.value as { kind?: unknown; controlContext?: unknown[]; requirementsComplete?: boolean; requiredConditions?: Array<{ conditionId: string; expectedTruth: boolean }> } | null;
       const effectKind = typeof value?.kind === 'string' ? value.kind : null;
       return { id: node.id, kind: node.kind, effectKind,
         locator: node.locator, sourceId: node.sourceId, evidenceIds: node.evidenceIds ?? [], expression: node.raw,
+        controlContext: value?.controlContext ?? [], requirementsComplete: value?.requirementsComplete ?? true,
         matchedTerms: language.terms.filter(term => words(node.raw).includes(words(term))),
         matchedNegativeTerms: negativeTerms.filter(term => words(node.raw).includes(words(term))),
         requirements: (value?.requiredConditions ?? []).map(requirement => ({

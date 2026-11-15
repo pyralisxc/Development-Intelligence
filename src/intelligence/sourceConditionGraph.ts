@@ -106,6 +106,8 @@ export function buildSourceConditionGraphFacts(input: {
           evidenceGrade: 'exact-source-derivation',
           sourceSha256, proofRule, scope: 'selected-source-revision',
           requiredConditions: [...effect.requiredConditions],
+          controlContext: effect.controlContext ?? [],
+          requirementsComplete: effect.requirementsComplete ?? true,
           predicateSatisfiabilityProven: false,
           runtimeObserved: false,
         } },
