@@ -2019,6 +2019,34 @@ function addFrameworkSemantics(input: {
   }
 }
 
+/**
+ * The cross-file pass holds complete TypeScript SourceFile ASTs in its temporary
+ * moduleInfos map. Finish framework derivation in this separate async frame
+ * before creating the independent TypeChecker program: their AST lifetimes must
+ * not overlap merely to preserve a map that is no longer used.
+ *
+ * Output is still appended to the same W graph, with the same source facts,
+ * compiler scope, graph IDs, edge ordering and incomplete-coverage policy.
+ */
+async function deriveCrossFileAndFrameworkFacts(input: {
+  root: string;
+  sourceTexts: Map<string, string>;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  evidence: EvidenceRecord[];
+  fileNodes: Map<string, GraphNode>;
+}): Promise<void> {
+  const crossFile = await crossFileTypeScriptGraph(input.root, input.sourceTexts,
+    input.nodes, input.edges, input.fileNodes);
+  input.nodes.push(...crossFile.nodes);
+  input.edges.push(...crossFile.edges);
+  addFrameworkSemantics({
+    sourceTexts: input.sourceTexts, moduleInfos: crossFile.moduleInfos,
+    fileNodes: input.fileNodes, nodes: input.nodes, edges: input.edges,
+    evidence: input.evidence,
+  });
+}
+
 function ensureSemanticTargets(nodes: GraphNode[], edges: GraphEdge[]): GraphNode[] {
   const ids = new Set(nodes.map(node => node.id));
   const additions: GraphNode[] = [];
@@ -2307,10 +2335,9 @@ export async function advanceRepositoryGraph(input: {
   }
 
   if (sourceTexts.size) {
-    const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, edges, fileNodes);
-    nodes.push(...crossFile.nodes);
-    edges.push(...crossFile.edges);
-    addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
+    await deriveCrossFileAndFrameworkFacts({
+      root: input.root, sourceTexts, nodes, edges, evidence, fileNodes,
+    });
   }
 
   if (compilerSensitive) {
@@ -2529,9 +2556,9 @@ export async function buildRepositoryGraph(input: {
   resolveCSharpReferences({ nodes, edges });
   resolveUnityReverseUsage({ nodes, edges, fileNodes });
 
-  const crossFile = await crossFileTypeScriptGraph(input.root, sourceTexts, nodes, edges, fileNodes);
-  nodes.push(...crossFile.nodes);
-  edges.push(...crossFile.edges);
+  await deriveCrossFileAndFrameworkFacts({
+    root: input.root, sourceTexts, nodes, edges, evidence, fileNodes,
+  });
   const compiler = compilerTypeScriptReferences({
     root: input.root, sourceTexts, nodes, fileNodes, options: loadCompilerOptions(input.root),
   });
@@ -2542,7 +2569,6 @@ export async function buildRepositoryGraph(input: {
     warnings.push(compilerWarning);
     repositorySource.warnings = [...warnings];
   }
-  addFrameworkSemantics({ sourceTexts, moduleInfos: crossFile.moduleInfos, fileNodes, nodes, edges, evidence });
   nodes.push(...ensureSemanticTargets(nodes, edges));
   const merged = mergeNodes(nodes);
   nodes = merged.nodes;
