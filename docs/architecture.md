@@ -339,6 +339,8 @@ The viewer has four lenses:
 
 Search runs against the full selected graph; selection loads a bounded neighborhood. Candidate/unresolved relationships remain visually distinct, and both node and relationship evidence are inspectable. Sigma.js/Graphology are replaceable rendering/runtime-index helpers only.
 
+Source selection has no default file-count or file-size cutoff; explicitly configured operator budgets still report omissions. Ordinary JSON extraction retains every scalar in its arrays and objects. npm lockfile extraction currently retains selected package versions and reports partial coverage. The TypeScript compiler producer retains its own declared budgets, and canonical builds and ordinary filtering still materialize the graph in memory. Large-repository scaling requires partitioned producer handoffs and indexed graph access; removing source cutoffs alone does not provide that architecture.
+
 ## Authentication boundary
 
 ### Account/network foundation (not yet exposed as a hosted sign-in product)
