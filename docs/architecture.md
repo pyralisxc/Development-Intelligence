@@ -175,6 +175,8 @@ Ref-to-ref change analysis rebuilds both revisions with the same current analyze
 
 Canonical project/ref queries always address source-derived W. Canonical `repo-…` graph identifiers carry the complete immutable Git SHA plus analyzer/source identity and are reconstructible from Git after process-local cache loss. Process memory accelerates canonical reads but is not their owner.
 
+The Vercel Preview runtime builds its own revision-bound replay and cannot publish canonical or accepted authority. This keeps Preview's analyzer and graph format from changing Main's stored state. Canonical graph populations are persisted as independently stored shards with a manifest published after the shards, so a large graph does not depend on a single graph-wide JSON value.
+
 If `scan_graph` is supplied runtime URLs, DI overlays bounded runtime evidence onto the same graph model and returns an explicit ephemeral `graphId`. Graph, source, parity, evidence, and Viewer tools may address that `graphId` directly.
 
 Runtime snapshots are disposable and do not become the implicit “latest graph.” A previous agent's runtime scan must never change another agent's ordinary project/ref result.
@@ -183,66 +185,30 @@ If an ephemeral `snapshot-…` graph expires, callers recreate it; DI does not c
 
 ## Code intelligence
 
-An optional local SCIP source sensor (the `scip-evidence` command) can
-consume a bounded precomputed SCIP protobuf Index over an exact clean Git
-checkout. It correlates definition/reference occurrences and source encodings
-with existing tracked DI declaration/file nodes. An externally supplied index
-is **not an attested compiler run or source-completeness proof**. Every
-matching relationship remains a **candidate** unless DI independently
-re-checks its exact callsite and destination against a fresh TypeScript
-TypeChecker over the unchanged Git checkout. Only such source-proven static
-bindings are marked **resolved structural facts** in the returned DI graph
-projection. Remaining relationships stay candidate, never negative/absence
-proof. Compiler resolution still does not assert runtime execution,
-semantic product acceptance, canonical W publication or a replacement parity
-guarantee. The projected graph is disposable and identified
-by the exact Git SHA plus the index SHA-256; normal MCP and scan_graph reads
-remain unchanged. Unsupported/unsafe ranges and unavailable source documents
-are excluded with counts, not reported as absence. Generate SCIP with an
-appropriate project-aware indexer in isolated controlled compute; supplying an
-index never executes the indexer, build scripts or a language server.
+The repository graph build runs `scip-typescript` against the selected clean
+checkout when it contains JavaScript or TypeScript. Existing project
+configurations are used together; where none exists, DI supplies a temporary
+configuration outside the checkout. The producer does not install repository
+dependencies or run repository build scripts. Its definitions, individual
+reference occurrences and source-located relationships join the same graph as
+DI's other source facts. A reference identifies a symbol; it does not by itself
+assert a function call. A producer may add a declaration even when the native
+analyzer did not create it first.
 
-A SCIP producer may use a **subproject root** (for example `packages/studio`)
-while DI owns repository-relative source paths. The local CLI explicitly accepts
-`--scip-project-prefix packages/studio` to map that index's canonical
-`Document.relative_path` values into the exact checked-out repository before
-matching tracked DI file/declaration nodes. The prefix must be a canonical
-repository-relative path containing tracked graph source; all index paths are
-validated again before mapping. An invalid/missing project-root mapping yields
-skipped documents or a hard error, **never** guessed bindings. Index metadata
-itself does not authorize a source revision, prefix, producer identity, or
-semantic acceptance. The projected graph identity includes the explicit
-project prefix as well as its source-graph/index hashes, preventing two different
-scope mappings from sharing a graph identity.
+The graph records the producer version, index digest and reconciliation counts
+in `producerCoverage`. Missing project dependencies, unsupported ranges,
+external symbols and unreconciled occurrences limit relationship coverage even
+when every source file was read. A producer failure is recorded on the graph;
+it is not represented as an empty set of relationships. New revisions rebuild
+producer facts rather than carrying relationships forward from an older index.
 
-Real producer compatibility is explicit: pinned `scip-typescript@0.6.1` has
-been observed to emit documents with `position_encoding=0` (unspecified),
-which the SCIP protocol says does not establish offset units. The importer
-does **not** silently guess an encoding. The local caller may opt in with
-`--scip-legacy-position-encoding utf16` for such a producer; this selection
-applies **only** to unspecified documents. The choice and number of affected
-documents appear in the receipt and are included in the ephemeral graph
-identity. It is not independent compiler evidence: resolved facts still require
-same-source, same-callsite TypeChecker corroboration; unmatched interpretations
-remain candidates. A prior disposable, read-only SCIP real-producer acceptance run executed the pinned indexer and assessed source/definition/verified relationship reconciliation. That historical run does not create a signed indexer attestation, imply all SCIP projects are compatible, or publish canonical W.
-The opt-in local projection also reports how many unique independently
-compiler-confirmed SCIP source callsites are already proved by DI's existing
-canonical TypeScript checker evidence at the same revision. Comparison keys
-include caller file, line/column and exact declaration ID; repeated SCIP
-observations do not count as additional facts. A site *not observed* in the
-canonical checker evidence is not by itself proof of new functionality or an
-exhaustive compiler-coverage gap. These are reporting-only diagnostics, not new
-graph authority, a signed producer receipt, or automatic canonical ingestion.
-
-For example:
-```sh
-node dist/src/graphCli.js scip-evidence --repo-path /checkout \
-  --project Workspace --scip-index .scip-cache/index.scip \
-  --scip-project-prefix packages/studio
-```
-The output is an ephemeral native DI graph projection; successful source/TypeChecker
-corroboration is resolved code evidence, but normal hosted `scan_graph` cannot
-claim to have run an external SCIP producer or published its output into W.
+The `scip-evidence` command also accepts a separately generated index and an
+optional `--scip-project-prefix` for a producer rooted in a subproject. Its
+source-located facts are returned as a disposable projection. Because that
+index was not generated by DI during the selected checkout, its relationships
+remain candidates unless independently corroborated by the TypeScript checker.
+For producers with unspecified position encoding, the local caller can supply
+`--scip-legacy-position-encoding utf16`; the choice is recorded with the index.
 
 TypeScript/JavaScript analysis currently provides:
 

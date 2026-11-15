@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import type { TestClaimCatalog } from './testClaimInventory.js';
 import { observation, resolution } from './model.js';
@@ -147,7 +148,7 @@ function parseEdge(raw: unknown): SliceEdge {
 
 async function sourceFile(root: string, relative: string, graph: IntelligenceGraph): Promise<LocalSource | null> {
   if (!canonicalRelative(relative)
-    || !graph.coverage?.files.some(file => file.path === relative && file.status === 'complete')
+    || !graph.coverage?.files.some(file => file.path === relative && (file.status === 'complete' || file.status === 'partial'))
     || !graph.nodes.some(node => node.id === 'file:' + relative && node.kind === 'file')) return null;
   const location = path.resolve(root, relative);
   if (!inside(root, location)) return null;
@@ -170,7 +171,17 @@ async function sourceFile(root: string, relative: string, graph: IntelligenceGra
   } catch { return null; }
 }
 
-function exactLocation(file: LocalSource, item: SliceNode): { locator: string; offset: number } | null {
+function tokens(text: string): Array<{ kind: ts.SyntaxKind; value: string; start: number }> {
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, text);
+  const found: Array<{ kind: ts.SyntaxKind; value: string; start: number }> = [];
+  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+    const value = kind === ts.SyntaxKind.StringLiteral ? scanner.getTokenValue() : scanner.getTokenText();
+    found.push({ kind, value, start: scanner.getTokenPos() });
+  }
+  return found;
+}
+
+function exactLocation(file: LocalSource, item: SliceNode): { locator: string; offset: number; match: 'exact' | 'normalized-syntax' } | null {
   if (item.lineNumber === null) return null;
   const sourceLine = file.lines[item.lineNumber - 1];
   const sourceStart = file.starts[item.lineNumber - 1];
@@ -184,10 +195,23 @@ function exactLocation(file: LocalSource, item: SliceNode): { locator: string; o
     ? [sourceLine.indexOf(code)] : [item.columnNumber, item.columnNumber - 1];
   const matching = [...new Set(positions)].filter(pos => pos >= 0
     && sourceLine.slice(pos, pos + code.length) === code);
-  if (matching.length !== 1
-    || (item.columnNumber === null && sourceLine.lastIndexOf(code) !== matching[0])) return null;
-  const location = matching[0]!;
-  return { locator: file.path + ':' + item.lineNumber + ':' + (location + 1), offset: sourceStart + location };
+  if (matching.length === 1 && (item.columnNumber !== null || sourceLine.lastIndexOf(code) === matching[0])) {
+    const location = matching[0]!;
+    return { locator: file.path + ':' + item.lineNumber + ':' + (location + 1), offset: sourceStart + location, match: 'exact' };
+  }
+  // Compare lexical tokens, not rendered quote style. This preserves the
+  // original Git source and does not infer that distinct expressions agree.
+  const wanted = tokens(code);
+  if (!wanted.length) return null;
+  const available = tokens(sourceLine);
+  const normalized = available.flatMap((token, index) => {
+    if (item.columnNumber !== null && !positions.includes(token.start)) return [];
+    return wanted.every((part, step) => available[index + step]?.kind === part.kind
+      && available[index + step]?.value === part.value) ? [token.start] : [];
+  });
+  if (normalized.length !== 1) return null;
+  const location = normalized[0]!;
+  return { locator: file.path + ':' + item.lineNumber + ':' + (location + 1), offset: sourceStart + location, match: 'normalized-syntax' };
 }
 
 /** Call with the same exact source checkout used to build graph, not a guessed ref. */
@@ -263,15 +287,17 @@ export async function projectLocalJoernDataflow(input: {
       id, sourceId: 'repo:' + relative, kind: 'source-located-dataflow-node',
       locator: exact.locator, name: item.label, field: 'joern.slice-node',
       value: { label: item.label, code: item.code.trim(), method: item.parentMethod,
-        sourceAnchorExact: true, JoernFlowProven: false },
+        sourceAnchorExact: exact.match === 'exact', sourceAnchorMatch: exact.match, JoernFlowProven: false },
       layer: 'structural', checkpoint: false,
     });
     mapped.set(item.id, { node, path: relative, offset: exact.offset, locator: exact.locator });
     addedNodes.set(id, node);
     const contains = resolution({
       from: 'file:' + relative, to: id, kind: 'contains',
-      strategy: 'exact-git-source-span.v1', confidence: 1, status: 'resolved',
-      evidence: [exact.locator, 'Source text and Git blob independently matched; does not corroborate Joern flow'],
+      strategy: exact.match === 'exact' ? 'exact-git-source-span.v1' : 'normalized-git-source-syntax.v1', confidence: 1, status: 'resolved',
+      evidence: [exact.locator, exact.match === 'exact'
+        ? 'Source text and Git blob independently matched; does not corroborate Joern flow'
+        : 'Source tokens and literal values match the Git blob after syntax normalization; does not corroborate Joern flow'],
       layer: 'structural', checkpoint: false,
     });
     addedEdges.set(contains.id, contains);

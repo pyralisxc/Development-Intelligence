@@ -19,6 +19,8 @@ export interface SourceEffect {
   /** Exact AST start offset, distinct when statements share a line. */
   sourceOffset?: number;
   expression: string;
+  /** Structured source expression with exact offsets in the selected file. */
+  expressionStructure?: SourceExpression;
   expressionSha256: string;
   requiredConditions: SourceRequirement[];
   /** Syntax presence is established; runtime execution is not. */
@@ -29,6 +31,7 @@ export interface SourceCondition {
   sourceLine: number;
   sourceOffset?: number;
   predicate: string;
+  predicateStructure?: SourceExpression;
   predicateSha256: string;
   priorRequirements: SourceRequirement[];
   trueBranchTerminates: boolean;
@@ -36,39 +39,32 @@ export interface SourceCondition {
   conditionsAreSourceSyntaxOnly: true;
 }
 
+export interface SourceExpression {
+  kind: string;
+  start: number;
+  end: number;
+  /** Leaf text retains identifiers, operators and literal values. */
+  text?: string;
+  children?: SourceExpression[];
+}
 
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function expression(node: ts.Node | undefined, depth = 0): string {
-  if (!node || depth > 8) return '[expression]';
-  if (ts.isIdentifier(node)) return node.text;
-  if (node.kind === ts.SyntaxKind.ThisKeyword) return 'this';
-  if (ts.isPropertyAccessExpression(node)) return expression(node.expression, depth + 1) + '.' + node.name.text;
-  if (ts.isElementAccessExpression(node)) return expression(node.expression, depth + 1) + '[index]';
-  if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) return '[string-literal]';
-  if (ts.isNumericLiteral(node)) return '[number-literal]';
-  if (node.kind === ts.SyntaxKind.TrueKeyword) return 'true';
-  if (node.kind === ts.SyntaxKind.FalseKeyword) return 'false';
-  if (node.kind === ts.SyntaxKind.NullKeyword) return 'null';
-  if (ts.isParenthesizedExpression(node)) return '(' + expression(node.expression, depth + 1) + ')';
-  if (ts.isPrefixUnaryExpression(node)) return (ts.tokenToString(node.operator) ?? '[unary]') + expression(node.operand, depth + 1);
-  if (ts.isBinaryExpression(node)) {
-    const allowed = new Set([ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken,
-      ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
-      ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken,
-      ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.LessThanToken,
-      ts.SyntaxKind.GreaterThanToken]);
-    return allowed.has(node.operatorToken.kind)
-      ? expression(node.left, depth + 1) + ' ' + (ts.tokenToString(node.operatorToken.kind) ?? '?') + ' ' + expression(node.right, depth + 1)
-      : '[binary-expression]';
-  }
-  if (ts.isCallExpression(node)) return expression(node.expression, depth + 1) + '(...)';
-  if (ts.isAwaitExpression(node)) return 'await ' + expression(node.expression, depth + 1);
-  if (ts.isNewExpression(node)) return 'new ' + expression(node.expression, depth + 1) + '(...)';
-  if (ts.isConditionalExpression(node)) return '[conditional-expression]';
-  return '[' + (ts.SyntaxKind[node.kind] ?? 'unsupported-expression') + ']';
+function expression(node: ts.Node | undefined, parsed: ts.SourceFile): string {
+  return node ? node.getText(parsed) : '';
+}
+function structure(node: ts.Node, parsed: ts.SourceFile): SourceExpression {
+  const children: SourceExpression[] = [];
+  ts.forEachChild(node, child => { children.push(structure(child, parsed)); });
+  const fact: SourceExpression = {
+    kind: ts.SyntaxKind[node.kind] ?? String(node.kind),
+    start: node.getStart(parsed), end: node.getEnd(),
+  };
+  if (children.length) fact.children = children;
+  else fact.text = node.getText(parsed);
+  return fact;
 }
 function returnCall(node: ts.Expression | undefined): boolean {
   return Boolean(node && (ts.isCallExpression(node) || (ts.isAwaitExpression(node) && ts.isCallExpression(node.expression))));
@@ -102,9 +98,10 @@ export function analyzeSourceConditionStatements(
   const unknownConstructs: Array<{ line: number; kind: string }> = [];
   let boundedOut = false;
   const lineOf = (node: ts.Node) => parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
-  const recordEffect = (kind: SourceEffect['kind'], node: ts.Node, rendered: string, requires: SourceRequirement[]) => {
+  const recordEffect = (kind: SourceEffect['kind'], node: ts.Node, sourceExpression: ts.Node | undefined, requires: SourceRequirement[]) => {
     if (effects.length >= MAX_EFFECTS) { boundedOut = true; return; }
-    effects.push({ kind, sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), expression: rendered.slice(0, 180),
+    effects.push({ kind, sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), expression: expression(sourceExpression, parsed),
+      ...(sourceExpression ? { expressionStructure: structure(sourceExpression, parsed) } : {}),
       expressionSha256: digest(node.getText(parsed)),
       requiredConditions: [...requires], runtimeObserved: false });
   };
@@ -118,7 +115,7 @@ export function analyzeSourceConditionStatements(
         const id = sourcePath + ':condition:' + stmt.expression.getStart(parsed);
         const branch: SourceCondition = {
           id, sourceLine: lineOf(stmt.expression), sourceOffset: stmt.expression.getStart(parsed),
-          predicate: expression(stmt.expression).slice(0, 220),
+          predicate: expression(stmt.expression, parsed), predicateStructure: structure(stmt.expression, parsed),
           predicateSha256: digest(stmt.expression.getText(parsed)),
           priorRequirements: [...active],
           trueBranchTerminates: definitelyTerminates(stmt.thenStatement),
@@ -137,25 +134,25 @@ export function analyzeSourceConditionStatements(
         else if (branch.falseBranchTerminates) active.push({ conditionId: id, expectedTruth: true });
       } else if (ts.isReturnStatement(stmt)) {
         recordEffect(returnCall(stmt.expression) ? 'return-call' : 'return',
-          stmt, expression(stmt.expression), active);
+          stmt, stmt.expression, active);
         return;
       } else if (ts.isThrowStatement(stmt)) {
-        recordEffect('throw', stmt, expression(stmt.expression), active);
+        recordEffect('throw', stmt, stmt.expression, active);
         return;
       } else if (ts.isBlock(stmt)) scan([...stmt.statements], active, depth + 1);
       else if (ts.isExpressionStatement(stmt)) {
         const e = stmt.expression;
         if (ts.isCallExpression(e) || (ts.isAwaitExpression(e) && ts.isCallExpression(e.expression))) {
-          recordEffect('call', stmt, expression(e), active);
+          recordEffect('call', stmt, e, active);
         } else if (ts.isBinaryExpression(e) &&
           e.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && e.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
-          recordEffect('write', stmt, expression(e.left), active);
+          recordEffect('write', stmt, e, active);
         }
       } else if (ts.isVariableStatement(stmt)) {
         for (const decl of stmt.declarationList.declarations) {
           if (decl.initializer && (ts.isCallExpression(decl.initializer)
             || (ts.isAwaitExpression(decl.initializer) && ts.isCallExpression(decl.initializer.expression)))) {
-            recordEffect('initializer-call', decl, expression(decl.initializer), active);
+            recordEffect('initializer-call', decl, decl.initializer, active);
           }
         }
       } else if (ts.isTryStatement(stmt) || ts.isSwitchStatement(stmt)

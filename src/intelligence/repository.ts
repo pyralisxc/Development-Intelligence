@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import os from 'node:os';
 import ts from 'typescript';
 import type { EvidenceRecord, ExplicitValueConflict, GraphCoverage, GraphCoverageFile, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import type { RepositoryChangedFile } from '../source/git.js';
@@ -16,7 +18,58 @@ import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMP
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.25.0-scoped-derived-execution-evidence';
+export const ANALYZER_VERSION = '2.26.0-structured-source-facts';
+
+/** Run the maintained language producer once per source revision, then add its
+ * source-located facts to the same graph used by all ordinary graph queries. */
+async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph): Promise<IntelligenceGraph> {
+  const files = graph.coverage?.files ?? [];
+  if (!files.some(file => /\.[cm]?[jt]sx?$/iu.test(file.path))) return graph;
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'di-scip-'));
+  try {
+    const dirty = (await runChecked('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'])).stdout.trim();
+    if (dirty) throw new Error('Language producer requires the selected Git checkout without tracked modifications');
+    const configs = files.filter(file => /(^|\/)(?:tsconfig|jsconfig)\.json$/iu.test(file.path))
+      .map(file => path.join(root, file.path));
+    if (!configs.length) {
+      const generated = path.join(temp, 'tsconfig.json');
+      await fs.writeFile(generated, JSON.stringify({ compilerOptions: {
+        allowJs: true, checkJs: false, noEmit: true, target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext',
+      }, include: [path.join(root, '**/*')], exclude: [path.join(root, '**/node_modules/**')] }));
+      configs.push(generated);
+    }
+    const indexPath = path.join(temp, 'index.scip');
+    const indexer = createRequire(import.meta.url).resolve('@sourcegraph/scip-typescript');
+    await runChecked(process.execPath, [indexer, 'index', '--cwd', root, '--output', indexPath,
+      '--no-progress-bar', ...configs]);
+    const indexBytes = await fs.readFile(indexPath);
+    const { projectLocalScipEvidence } = await import('./scipEvidence.js');
+    const result = await projectLocalScipEvidence({ root, graph, indexBytes,
+      producerRanOnCheckout: true, legacyPositionEncoding: 'utf16' });
+    const nodes = result.graph.nodes;
+    const edges = dedupeEdges(result.graph.edges);
+    const fingerprints = graphFingerprints(nodes, edges, graph.evidence);
+    return { ...graph, nodes, edges, ...fingerprints,
+      graphId: `repo-${graph.repositoryRevision}-${stableHash([graph.sourceFingerprint, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}`,
+      namingDivergences: deriveNamingDivergences(nodes, edges), unmatchedNodeIds: deriveUnmatched(nodes, edges),
+      producerCoverage: [{ producer: result.index.producer.name,
+        state: result.counts.sourceDocumentsSkipped || result.counts.sourceDocumentsNotIndexed || result.counts.unresolvedOrUnsafeOccurrences || result.counts.referencesWithoutIndexedDefinition ? 'partial' : 'complete',
+        version: result.index.producer.version, indexSha256: result.index.sha256,
+        documents: result.index.documents, matchedDocuments: result.counts.sourceDocumentsMatched,
+        skippedDocuments: result.counts.sourceDocumentsSkipped, unindexedSourcePaths: result.unindexedSourcePaths,
+        definitions: result.counts.definitionsMatched,
+        references: result.counts.referencedSymbolsMatched,
+        ...(result.counts.sourceDocumentsNotIndexed || result.counts.sourceDocumentsSkipped || result.counts.unresolvedOrUnsafeOccurrences || result.counts.referencesWithoutIndexedDefinition
+          ? { reason: `${result.counts.sourceDocumentsNotIndexed} source files were not indexed; ${result.counts.sourceDocumentsSkipped} index documents were skipped; ${result.counts.unresolvedOrUnsafeOccurrences} occurrences could not be reconciled; ${result.counts.referencesWithoutIndexedDefinition} references retain symbols without definition locations (${result.counts.externalReferences} indexed external references)` } : {}),
+      }],
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ...graph, producerCoverage: [{ producer: 'scip-typescript', state: 'failed', reason }] };
+  } finally {
+    await fs.rm(temp, { recursive: true, force: true });
+  }
+}
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
 const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
@@ -2236,6 +2289,9 @@ export async function advanceRepositoryGraph(input: {
   if (input.previous.schemaVersion !== 2 || input.previous.analyzerVersion !== ANALYZER_VERSION) {
     return { graph: null, strategy: 'fallback', reason: 'previous canonical graph analyzer/schema is incompatible', changedFiles: sourceChanges.length, affectedFiles: sourceChanges.length };
   }
+  if (input.previous.producerCoverage?.length) {
+    return { graph: null, strategy: 'fallback', reason: 'language producer facts require refresh for the new revision', changedFiles: sourceChanges.length, affectedFiles: sourceChanges.length };
+  }
   if (!input.previous.coverage || input.previous.coverage.partialFiles || input.previous.coverage.failedFiles || input.previous.coverage.skippedFiles) {
     return { graph: null, strategy: 'fallback', reason: 'previous canonical graph coverage is incomplete', changedFiles: sourceChanges.length, affectedFiles: sourceChanges.length };
   }
@@ -2594,7 +2650,7 @@ export async function buildRepositoryGraph(input: {
     skippedFileLimitFiles,
     files: coverageFiles.sort((a, b) => a.path.localeCompare(b.path)),
   };
-  return {
+  const graph: IntelligenceGraph = {
     schemaVersion: 2,
     analyzerVersion: ANALYZER_VERSION,
     graphId: `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
@@ -2615,4 +2671,5 @@ export async function buildRepositoryGraph(input: {
     unavailableSourceIds: [],
     coverage,
   };
+  return await addLanguageProducerFacts(input.root, graph);
 }

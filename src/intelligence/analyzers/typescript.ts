@@ -564,6 +564,21 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       }
     }
 
+    // An assignment names a function even when it is not a declaration or a
+    // higher-order callback. Keep the assigned subject and its own body so
+    // its conditions, effects and references remain navigable together.
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && !pushedFunction
+      && ts.isBinaryExpression(node.parent) && node.parent.right === node
+      && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && (ts.isPropertyAccessExpression(node.parent.left) || ts.isElementAccessExpression(node.parent.left))) {
+      const name = node.parent.left.getText(sourceFile);
+      const assigned = addSymbol(name, 'function', node.parent);
+      functionStack.push(assigned);
+      scopeStack.push(name);
+      pushedFunction = true;
+      pushedScope = true;
+    }
+
     // Function expressions always create their own execution boundary, even
     // if no higher-order invocation has been proven. Without this, a merely
     // passed callback's calls would be falsely attributed to its creator.

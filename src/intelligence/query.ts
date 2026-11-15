@@ -44,6 +44,7 @@ function coverageSummary(graph: IntelligenceGraph): Record<string, unknown> | nu
     skippedFiles: coverage.skippedFiles,
     unsupportedFiles: coverage.unsupportedFiles,
     completeForEligibleSources: coverage.failedFiles === 0 && coverage.partialFiles === 0 && coverage.skippedFiles === 0 && coverage.analyzedFiles === coverage.eligibleFiles,
+    producerCoverage: graph.producerCoverage ?? [],
   };
 }
 

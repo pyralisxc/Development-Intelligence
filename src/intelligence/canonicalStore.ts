@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { assertGraphIntegrity } from './integrity.js';
@@ -74,8 +75,82 @@ interface BlobBackend {
 }
 type CanonicalBackend = FileBackend | BlobBackend | null;
 
-const MAX_CANONICAL_BYTES = 200 * 1024 * 1024;
 const MAX_DERIVED_OBJECT_BYTES = 64 * 1024 * 1024;
+
+interface CanonicalGraphPart {
+  graph: 'working' | 'accepted';
+  field: 'nodes' | 'edges' | 'evidence';
+  path: string;
+  sha256: string;
+}
+interface ShardedCanonicalRecord {
+  format: 'canonical-graph-shards-v1';
+  record: CanonicalGraphRecord;
+  parts: CanonicalGraphPart[];
+}
+
+/** Store large populations in independent objects, then publish the small
+ * manifest last. No graph-wide JSON string or total-size ceiling is needed. */
+async function shardCanonicalRecord(record: CanonicalGraphRecord): Promise<string> {
+  const generation = stableHash([record.revision, record.working.graphId, record.storedAt, Math.random()]);
+  const parts: CanonicalGraphPart[] = [];
+  const skeleton = { ...record,
+    working: { ...record.working, nodes: [], edges: [], evidence: [] },
+    accepted: record.accepted ? { ...record.accepted, nodes: [], edges: [], evidence: [] } : null,
+  } as CanonicalGraphRecord;
+  const targetBytes = 16 * 1024 * 1024;
+  for (const graphName of ['working', 'accepted'] as const) {
+    const graph = record[graphName];
+    if (!graph) continue;
+    for (const field of ['nodes', 'edges', 'evidence'] as const) {
+      let batch: string[] = [];
+      let size = 2;
+      let index = 0;
+      const flush = async (): Promise<void> => {
+        if (!batch.length) return;
+        const body = '[' + batch.join(',') + ']';
+        const partPath = `graph-shards/${generation}/${graphName}-${field}-${index++}.json`;
+        if (!await writeCanonicalDerivedObject(record.project, partPath, body, 'application/json')) {
+          throw new Error('Canonical graph shard could not be stored');
+        }
+        parts.push({ graph: graphName, field, path: partPath,
+          sha256: createHash('sha256').update(body).digest('hex') });
+        batch = [];
+        size = 2;
+      };
+      for (const item of graph[field]) {
+        const json = JSON.stringify(item);
+        const bytes = Buffer.byteLength(json, 'utf8') + 1;
+        if (batch.length && size + bytes > targetBytes) await flush();
+        batch.push(json);
+        size += bytes;
+      }
+      await flush();
+    }
+  }
+  return JSON.stringify({ format: 'canonical-graph-shards-v1', record: skeleton, parts } satisfies ShardedCanonicalRecord);
+}
+
+async function unshardCanonicalRecord(value: unknown, project: string): Promise<unknown> {
+  if (!value || typeof value !== 'object' || (value as { format?: unknown }).format !== 'canonical-graph-shards-v1') return value;
+  const manifest = value as ShardedCanonicalRecord;
+  if (!manifest.record || manifest.record.project !== project || !Array.isArray(manifest.parts)) {
+    throw new Error('Canonical graph shard manifest is malformed');
+  }
+  for (const part of manifest.parts) {
+    if (!['working', 'accepted'].includes(part.graph) || !['nodes', 'edges', 'evidence'].includes(part.field)
+      || typeof part.path !== 'string' || !/^graph-shards\/[0-9a-f]{24}\/(?:working|accepted)-(?:nodes|edges|evidence)-\d+\.json$/u.test(part.path)
+      || !/^[0-9a-f]{64}$/u.test(part.sha256)) throw new Error('Canonical graph shard reference is malformed');
+    const graph = manifest.record[part.graph];
+    if (!graph || !Array.isArray(graph[part.field])) throw new Error('Canonical graph shard target is malformed');
+    const body = await readCanonicalDerivedObject(project, part.path);
+    if (!body || createHash('sha256').update(body).digest('hex') !== part.sha256) throw new Error('Canonical graph shard is missing or mismatched');
+    const items: unknown = JSON.parse(new TextDecoder().decode(body));
+    if (!Array.isArray(items)) throw new Error('Canonical graph shard is not a list');
+    for (const item of items) (graph[part.field] as unknown[]).push(item);
+  }
+  return manifest.record;
+}
 const BLOB_API_VERSION = '12';
 
 function configuredRoot(): string | null {
@@ -519,17 +594,17 @@ async function loadFromFile(
   const exact = path.join(directory, `${expected.revision}.json`);
   const current = path.join(directory, 'current.json');
 
-  const readBounded = async (target: string): Promise<unknown | null> => {
+  const readRecord = async (target: string): Promise<unknown | null> => {
     const stat = await fs.stat(target).catch((error: any) => {
       if (error?.code === 'ENOENT') return null;
       throw error;
     });
     if (!stat) return null;
-    if (!stat.isFile() || stat.size > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record is not a bounded regular file');
-    return JSON.parse(await fs.readFile(target, 'utf8'));
+    if (!stat.isFile()) throw new Error('Canonical graph record is not a regular file');
+    return await unshardCanonicalRecord(JSON.parse(await fs.readFile(target, 'utf8')), expected.project);
   };
 
-  const exactParsed = await readBounded(exact);
+  const exactParsed = await readRecord(exact);
   if (exactParsed) {
     return { diagnostics: { ...diagnostics, loadState: 'hit' }, record: validateRecord(exactParsed, expected) };
   }
@@ -537,7 +612,7 @@ async function loadFromFile(
   // Mirror the Blob backend's current-record semantics so local/file
   // persistence can carry accepted A forward while W advances to a new
   // exact Git revision. Revision snapshots remain available beside it.
-  const currentParsed = await readBounded(current);
+  const currentParsed = await readRecord(current);
   if (!currentParsed) return { diagnostics };
   const classified = classifyCanonicalRecord(currentParsed, expected);
   return classified.state === 'stale'
@@ -557,11 +632,8 @@ async function loadFromBlob(
   });
   if (response.status === 404) return { diagnostics };
   if (!response.ok) throw new Error(`Vercel canonical Blob read failed with HTTP ${response.status}`);
-  const contentLength = Number(response.headers.get('content-length') ?? '0');
-  if (Number.isFinite(contentLength) && contentLength > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record exceeds the bounded storage size');
   const body = await response.arrayBuffer();
-  if (body.byteLength > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record exceeds the bounded storage size');
-  const parsed = JSON.parse(new TextDecoder().decode(body));
+  const parsed = await unshardCanonicalRecord(JSON.parse(new TextDecoder().decode(body)), expected.project);
   const classified = classifyCanonicalRecord(parsed, expected);
   if (classified.state === 'stale') {
     return { diagnostics: { ...diagnostics, loadState: 'stale' }, staleRecord: classified.record };
@@ -643,11 +715,16 @@ export async function saveCanonicalGraph(record: CanonicalGraphRecord): Promise<
   const selected = backend();
   const diagnostics = baseDiagnostics(selected);
   if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return diagnostics;
+  const failedProducer = record.working.producerCoverage?.find(item => item.state === 'failed');
+  if (failedProducer) {
+    diagnostics.saveState = 'skipped';
+    diagnostics.error = `${failedProducer.producer} did not finish: ${failedProducer.reason ?? 'unknown failure'}`;
+    return diagnostics;
+  }
   const startedAt = Date.now();
   try {
     const validated = validateRecord(record, { project: record.project, repository: record.repository, revision: record.revision });
-    const payload = JSON.stringify(validated);
-    if (Buffer.byteLength(payload, 'utf8') > MAX_CANONICAL_BYTES) throw new Error('Canonical graph record exceeds the bounded storage size');
+    const payload = await shardCanonicalRecord(validated);
     if (selected.kind === 'file') await saveToFile(selected, validated, payload);
     else await saveToBlob(selected, validated, payload);
     diagnostics.saveState = 'stored';

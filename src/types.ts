@@ -229,6 +229,19 @@ export interface IntelligenceGraph {
   unmatchedNodeIds: string[];
   unavailableSourceIds: string[];
   coverage?: GraphCoverage;
+  producerCoverage?: Array<{
+    producer: string;
+    state: 'complete' | 'partial' | 'failed';
+    version?: string;
+    indexSha256?: string;
+    documents?: number;
+    matchedDocuments?: number;
+    skippedDocuments?: number;
+    unindexedSourcePaths?: string[];
+    definitions?: number;
+    references?: number;
+    reason?: string;
+  }>;
 }
 
 export interface GraphCheckpointSummary {
