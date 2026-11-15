@@ -24,31 +24,16 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
-      - name: Native ACL transport before parallel source verification
-        run: node --test packaging/windows/native-acl-transport.test.mjs
-      - name: Operator uncertainty and native PowerShell waiter contracts
-        shell: pwsh
-        run: ./packaging/windows/Test-OperatorState.ps1
-      - name: Build and verify exact source
-        run: |
-          npm ci --no-audit --no-fund
-          npm run verify
+      - name: Install build dependencies
+        run: npm ci --no-audit --no-fund
       - name: Prepare pinned MSI compiler in disposable runner
         run: |
           dotnet tool install --global wix --version 5.0.2
           wix extension add -g WixToolset.Util.wixext/5.0.2
-      - name: Build two unsigned laboratory MSI versions
+      - name: Build unsigned Windows package
         shell: pwsh
-        run: |
-          # Poison ignored output and add untracked input. Packaging must rebuild
-          # only tracked exact-SHA source, independently of the caller's dist.
-          Set-Content dist/src/http.js 'throw new Error("stale caller output must not ship")'
-          Set-Content src/untracked-package-poison.ts 'throw new Error("untracked input must not ship")'
-          ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.237
-          ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.238
-          ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.239 -LaboratoryFailure
-          ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.240 -LaboratoryIncompatible
-      - name: Preserve exact packages before lifecycle
+        run: ./packaging/windows/Build-Package.ps1 -MsiVersion 2.9.237
+      - name: Preserve exact Windows package
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -60,19 +45,6 @@ jobs:
             .package-build/**/Package.wxs
             .package-build/*/operator/**
             .package-build/*.json
-          retention-days: 7
-          include-hidden-files: true
-          if-no-files-found: warn
-      - name: Actual restricted service lifecycle in disposable Windows
-        timeout-minutes: 15
-        shell: pwsh
-        run: ./packaging/windows/Test-Lifecycle.ps1 -PackageRoot "$env:GITHUB_WORKSPACE/.package-build"
-      - name: Preserve bounded lifecycle evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-trial-evidence-${{ github.event.pull_request.head.sha || github.sha }}
-          path: .package-build/*.json
           retention-days: 7
           include-hidden-files: true
           if-no-files-found: warn

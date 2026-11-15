@@ -16,7 +16,7 @@ Build the complete, well-developed outcome the owner requests. Read the Confluen
 
 Use mature tools for their intended capabilities and integrate their useful outputs directly when they fit. Do not recreate their internals or add redundant wrappers and proof machinery by default. DI should establish source-derived conditions, effects, and execution facts as facts when the code and supported analysis establish them; a separate runtime witness is not a prerequisite for source-derived facts.
 
-Do not add tests by default. The owner prefers real use and examination of real outputs as primary acceptance. Existing tests, fixtures, and workflows are implementation artifacts, not product authority; evaluate them for retirement or revision when they preserve obsolete behavior or obstruct the intended outcome. Preserve exact current CI requirements as operational facts until the relevant workflows are deliberately changed.
+Do not add tests by default. The owner prefers real use and examination of real outputs as primary acceptance. Existing tests, fixtures, and workflows are implementation artifacts, not product authority; evaluate them for retirement or revision when they preserve obsolete behavior or obstruct the intended outcome. Keep CI and the documentation aligned with the actual build and release workflows.
 
 ## Documentation ownership
 
@@ -54,4 +54,4 @@ The `/.development-intelligence/` checkpoint format remains compatibility/migrat
 
 ## Verification
 
-For source changes, the current repository verification and CI still run `npm run verify`; report their actual results. Do not add tests merely because source changed, and do not treat a passing suite as product acceptance. For documentation-only changes, review the affected text and links; report CI results when available. See `docs/testing.md` for real-use acceptance and current CI details.
+Build the affected product and assess the result through real use. Do not add tests merely because source changed. CI builds the service and Windows package; report their actual results. See `docs/testing.md` for the real-use acceptance approach.

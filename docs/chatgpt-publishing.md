@@ -154,8 +154,8 @@ On consumer/Pro surfaces, custom MCP availability and publication controls diffe
 Before merging a publishing/auth candidate, retain evidence for:
 
 - exact Git candidate SHA;
-- `npm run verify` green;
-- CardForge benchmark green;
+- `npm run build` succeeds;
+- representative real-use Preview questions have been inspected;
 - OAuth metadata discovery from the final HTTPS hostname;
 - successful owner authorization;
 - successful MCP tool discovery/call;

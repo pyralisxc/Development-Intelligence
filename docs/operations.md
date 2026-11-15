@@ -29,7 +29,7 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 
 The Windows package under `packaging/windows` is a per-machine x64 **unsigned laboratory artifact**. It bundles pinned Node 22, MinGit (including the askpass shell), native parsers, production dependencies and WinSW. WinSW uses the OS-serviced .NET Framework 4.8+ runtime; the installer fails if that prerequisite is absent and never installs it. MSI owns service registration/removal and major upgrades; WinSW supervises the process. The installer creates a manual, stopped `DevelopmentIntelligenceTrial` service under LocalService with an unrestricted service SID. No firewall rule, scheduled task, production credential, global PATH entry or global runtime is installed.
 
-Versioned binaries live under Program Files. ProgramData/DevelopmentIntelligenceTrial contains protected `config`, retained `test-data`, bounded rotating `logs`, and disposable `scratch`. Service-SID ACLs permit configuration reads and scratch/log writes; Administrators and SYSTEM retain control. The actual SID and ACL behavior is a disposable Windows CI acceptance gate, not an assumption based on installer XML.
+Versioned binaries live under Program Files. ProgramData/DevelopmentIntelligenceTrial contains protected `config`, retained `test-data`, bounded rotating `logs`, and disposable `scratch`. Service-SID ACLs permit configuration reads and scratch/log writes; Administrators and SYSTEM retain control. The actual SID and ACL behavior depends on Windows and can be examined through use of the installed package; the current build workflow does not exercise an installer lifecycle.
 
 Activation requires an administrator-provided `config/service.json` with `formatVersion: 1`, `authMode: "bearer"`, an `agentToken` of at least 32 characters and an explicit `projects` access registry. Optional `remoteStorage` contains the approved remote Blob `storeId` and `token`. Never commit this file or put production credentials into trial CI. The launcher strips inherited provider/runtime settings, binds only 127.0.0.1:8788 and installs no reconciliation scheduler. Local canonical filesystem configuration is unavailable in this managed profile. Unconfigured startup fails closed.
 
@@ -79,7 +79,7 @@ Scratch is cleared at each exclusive service start and managed stop, checked eve
 
 Builds use `Build-Package.ps1 -MsiVersion <three-part-version>` from committed exact source. The builder creates a fresh Git archive of that SHA, installs lockfile dependencies and rebuilds runtime output inside that disposable snapshot; ignored caller `dist` and untracked source cannot be stamped as the engine SHA. It requires the pinned build Node version without installing prerequisites. Runtime archives are hash-pinned in `dependencies.json`; CI uses pinned Node and WiX 5.0.2. Each payload manifest records engine/package SHA, archive provenance, runtime versions, per-file hashes and MSI version. The external MSI metadata records the final MSI hash. Hashes establish artifact identity, not publisher trust: signing and trusted distribution remain later release gates. Do not bypass operating-system warnings.
 
-The `windows-package` workflow installs only on disposable GitHub-hosted Windows runners. Oakley source editing/build artifacts do not authorize installation there. Reboot, power-loss recovery, actual Oakley resource suitability and public TLS/OAuth/MCP connectivity remain later host acceptance.
+The `windows-package` workflow builds an unsigned package on a disposable GitHub-hosted Windows runner. It no longer runs the removed installer lifecycle suite. Oakley source editing/build artifacts do not authorize installation there. Reboot, power-loss recovery, actual Oakley resource suitability and public TLS/OAuth/MCP connectivity remain later host acceptance.
 
 | Variable | Purpose |
 |---|---|
@@ -129,7 +129,7 @@ DI has multiple operational evidence owners. None is a second source of graph or
 
 **Correlate before attributing:** project/access scope, exact Git SHA, analyzer version and graphId for DI source; workflow run/job ID for CI; deployment ID and request timestamp for Vercel. A universal cross-provider request identifier and durable cross-platform trace join are **not** currently established; report them as gaps, not working features.
 
-Repository-level orientation now includes a bounded request-local `observability` projection recording durations for `graphAccess`, `scopeSelection`, `adjacencyIndex`, `rankingAndRoles`, and `semanticUnderstanding`, tied to exact graphId/revision. The CardForge benchmark prints these timings when the ordinary semantic-question budget fails. A high-level `What does this project do?` question now selects the same full current-source semantic explanation directly and reports `projection.kind=repository-semantic-summary`; it does not compute a large unused structural ranking. Explicit `orient_scope` still exposes ranked structural entities, boundaries, roles and uncertainty. Omitted structural detail is marked as not materialized, never misreported as absent. These measurements are not cumulative across independent requests and are separate from cold graph construction and full MCP/HTTP response time. No budget is relaxed.
+Repository-level orientation now includes a bounded request-local `observability` projection recording durations for `graphAccess`, `scopeSelection`, `adjacencyIndex`, `rankingAndRoles`, and `semanticUnderstanding`, tied to exact graphId/revision. The request projection can expose these timings during real investigations. A high-level `What does this project do?` question now selects the same full current-source semantic explanation directly and reports `projection.kind=repository-semantic-summary`; it does not compute a large unused structural ranking. Explicit `orient_scope` still exposes ranked structural entities, boundaries, roles and uncertainty. Omitted structural detail is marked as not materialized, never misreported as absent. These measurements are not cumulative across independent requests and are separate from cold graph construction and full MCP/HTTP response time. No budget is relaxed.
 
 Never log raw question text, source bodies, cookies, auth headers, bearer tokens or provider secrets in tracing metadata. Maintain each existing platform's access control and retention. A successful log entry is operational observation, not graph proof.
 
@@ -335,7 +335,7 @@ A successful unit test, native-private test, or proxy test does not substitute f
 
 ## Pull-request Preview acceptance
 
-The repository's `verify` workflow can expose a temporary human-review Preview for an exact PR head after the normal verify and CardForge benchmark jobs succeed.
+The repository's `verify` workflow can expose a temporary human-review Preview for an exact PR head after the service build succeeds.
 
 The Preview lane:
 

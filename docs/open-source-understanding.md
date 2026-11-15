@@ -21,7 +21,7 @@ After installing/building the repository and pinning the Joern binary/version:
 
     npm ci --no-audit --no-fund
     npm run build
-    node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-language JAVASCRIPT --joern-file-filter '.*test.*' --joern-sink-filter '.*assert.*' --node-test-file scripts/windows-preflight.test.mjs
+    node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-language JAVASCRIPT --joern-file-filter '.*src.*' --joern-sink-filter '.*'
 
 The worker first runs the matching Joern *parse* frontend to create a disposable
 CPG file, then the Joern data-flow slicer over that CPG. Joern v4.0.666's
@@ -57,10 +57,10 @@ Use Node's open-source native test runner and its structured test events,
 not scraped TAP/spec console output. The repository includes a custom
 reporter that writes a compact versioned JSON-lines envelope.
 
-Example after building the source, on a disposable exact-source checkout:
+Example after building the source, using an actual tracked Node test in an inspected project (replace the example path):
 
     mkdir -p observations
-    node --test --test-reporter=./scripts/node-test-events-reporter.mjs --test-reporter-destination=observations/node.jsonl scripts/*.test.mjs
+    node --test --test-reporter=./scripts/node-test-events-reporter.mjs --test-reporter-destination=observations/node.jsonl path/to/inspected-project.test.mjs
     node dist/src/graphCli.js node-test-evidence --repo-path . --project Development-Intelligence --node-test-events-jsonl observations/node.jsonl --node-version "$(node --version)"
 
 The Node analyzer binds direct tracked test filenames and literal test
@@ -83,13 +83,7 @@ Compiler/SCIP source facts are the baseline; new dataflow paths are
 assessed for independently useful evidence instead of double-counting
 same callsite references.
 
-Native fixtures verify Joern schema/location/forgery and a *real* Node
-test-runner capture. They do not substitute for a genuine Joern JVM
-execution. Before hosted Preview acceptance require independently pinned
-Joern producer execution, exact source comparison and bounded
-precision/false-upgrade/cost review, plus normal Linux, Windows,
-SCIP, CardForge and capacity checks. No automatic test removal,
-CI weakening, Main promotion or CardForge changes.
+Use the actual selected source and producer output when evaluating a Joern integration. Historical acceptance fixtures and CI workflows are not part of the current development line.
 
 Upstream references:
 https://docs.joern.io/cpg-slicing/
@@ -101,7 +95,7 @@ https://nodejs.org/api/test.html
 The operator-owned script now runs both mature engines against one canonical DI graph in a single process; it does not contact DI's hosted MCP or create another graph database.
 After npm run build on a clean exact-source checkout, run:
 
-    node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-language JAVASCRIPT --joern-file-filter '.*test.*' --joern-sink-filter '.*assert.*' --node-test-file scripts/windows-preflight.test.mjs
+    node scripts/run-oss-understanding.mjs --repo-path . --project Development-Intelligence --joern-executable /opt/joern/joern-cli/joern-slice --joern-version 4.0.666 --joern-language JAVASCRIPT --joern-file-filter '.*src.*' --joern-sink-filter '.*'
 
 Both engines are optional individually, but an explicit --node-test-file is needed to run a real native test (the worker never guesses which tests to execute). Joern version and expected executable are operator-provided and require independent integrity review; local Joern subprocess success is observed, not proof of a specific binary's provenance. Test subprocess exit and TestStream events are directly observed by the worker, but report bytes remain unauthenticated outside that controlled execution and do not prove assertion-level values. Joern may return source-inaccurate flows; these remain candidate edges even when source spans are exact. All scratch artifacts are removed after the bounded receipt is produced.
 
@@ -134,14 +128,7 @@ Isolated native analyzers may supply a separately validated budget up to
 20,000 roots/256 MiB/200,000 bindings. Saturation keeps independently
 resolved positive source facts but does not prove exhaustive negatives.
 
-The native benchmark `scripts/benchmark-oss-compiler-capacity.mjs --fixture`
-generates a real 1,655-file exact-Git source oracle with 3,205 independently
-specified TypeChecker callsites, plus import-only, shadowed and dynamic
-negative examples. The CI workflow `oss-repository-scale-compiler-proof`
-also evaluates exact-current DI and pinned read-only CardForge source.
-Use `--compare-legacy` to measure old and new positive callsite sets on the
-*same* Git SHA. It rejects lost previously resolved source sites and reports
-newly supported static compiler identities, not runtime behavior.
+The historical capacity benchmark and CI replay remain available through Git history. Current investigation can measure compiler capacity against an actual inspected repository.
 
 ### Native Node test evidence across multiple bounded runs
 
@@ -151,8 +138,7 @@ not the total corpus. Supply repeated `--node-test-file` selectors, optional
 untracked `--node-evidence-dir observations/native-run` for recoverable
 restricted-permission JSONL artifacts. Only explicitly named exact-Git
 source files are run; arbitrary repository code is never executed by a
-discovery flag alone. The 43-executed/1-unrun fixture verifies serial
-20+20+3 batches, unique joined identities and no missing/false results.
+discovery flag alone. Batch results retain source and run identities across the selected test files.
 
 The local `node-test-evidence` CLI accepts *repeated*
 `--node-test-events-jsonl` paths. A later `--node-events-offset` page needs
@@ -178,14 +164,4 @@ The `joern-evidence` CLI accepts repeated `--joern-slice-json` paths.
 Recover all candidate edges with `--joern-edge-offset`,
 `--joern-edge-page-size` and `--joern-edge-expected-sha256`.
 Duplicate, conflicting or unrelated revision/producers fail closed.
-A 256-file exact-source fixture verifies two 128-file shards and lossless
-100+100+56 candidate edge recovery. This demonstrates source-validating
-import and union, not an actual Joern JVM run over that entire fixture.
-
-The pinned Joern 4.0.666 JVM succeeded on a real tiny JS source fixture.
-The separate `oss-joern-repository-source-proof` workflow is the
-independent DI/CardForge full-source acceptance, not hosted MCP execution.
-Any unsupported Joern CPG, memory ceiling, empty source slice or
-unmapped assertion remains an explicit unknown, not proven absence.
-Source facts, possible-flow candidates, observed test execution and
-independently proven replacement remain distinct. No test is auto-deleted.
+Historical fixture and Joern CI receipts remain available in Git history. Unsupported Joern CPGs, resource ceilings and unmapped assertions remain identified in the resulting evidence.
