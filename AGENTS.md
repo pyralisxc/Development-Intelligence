@@ -10,6 +10,14 @@ Development Intelligence provides technical evidence. It does not decide product
 
 The [DI Confluence blueprint](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/720897) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable DI product identity, intended direction, public milestones and enduring product boundaries. Read them before material product or architecture decisions. `docs/product-direction.md` is the revision-bound technical/product-interface context at this source commit, not a second vision owner. Immutable Git, CI and actual provider/runtime evidence establish what is implemented and observed.
 
+## Development expectations
+
+Build the complete, well-developed outcome the owner requests. Read the Confluence product blueprint and roadmap and the relevant source before making material product or architecture decisions. Change all connected source, interfaces, and integrations needed for a coherent usable result; do not optimize for the smallest patch or preserve an obsolete implementation merely to reduce the diff. Make routine engineering decisions and continue authorized work without unnecessary permission requests.
+
+Use mature tools for their intended capabilities and integrate their useful outputs directly when they fit. Do not recreate their internals or add redundant wrappers and proof machinery by default. DI should establish source-derived conditions, effects, and execution facts as facts when the code and supported analysis establish them; a separate runtime witness is not a prerequisite for source-derived facts.
+
+Do not add tests by default. The owner prefers real use and examination of real outputs as primary acceptance. Existing tests, fixtures, and workflows are implementation artifacts, not product authority; evaluate them for retirement or revision when they preserve obsolete behavior or obstruct the intended outcome. Preserve exact current CI requirements as operational facts until the relevant workflows are deliberately changed.
+
 ## Documentation ownership
 
 - `README.md` — concise entry point and usage orientation.
@@ -46,6 +54,4 @@ The `/.development-intelligence/` checkpoint format remains compatibility/migrat
 
 ## Verification
 
-Run `npm run verify` for every meaningful change.
-
-Permanent evidence should protect durable product/infrastructure contracts rather than historical implementation shape.
+For source changes, the current repository verification and CI still run `npm run verify`; report their actual results. Do not add tests merely because source changed, and do not treat a passing suite as product acceptance. For documentation-only changes, review the affected text and links; report CI results when available. See `docs/testing.md` for real-use acceptance and current CI details.

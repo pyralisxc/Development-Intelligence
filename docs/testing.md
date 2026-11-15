@@ -1,12 +1,12 @@
 # Testing
 
-Run:
+## Development and verification direction
 
-```bash
-npm run verify
-```
+The owner prefers essentially no tests by default. Do not create tests, fixtures, regression cases, or permanent proof machinery merely because a change was made. The primary acceptance for DI intelligence is real use: ask ordinary questions on real repositories, inspect the answers and relevant source or other applicable evidence, and improve the product when it falls short. A concise parent-flow check may be useful when it shows that an input reaches the intended output; it is not an automatic requirement.
 
-Permanent evidence protects durable Development Intelligence contracts, not historical analyzer/provider implementation.
+Existing tests and workflows are implementation artifacts, not product authority. Review and deliberately retire or revise checks that preserve obsolete behavior, duplicate one another, or obstruct the intended product; do not replace each removed check with a new one. Do not let green fixtures or internal agreement define the answer.
+
+Current operational reality: the repository's `verify` workflow runs `npm run verify`, including the existing source test suite and scripts, and other CI workflows remain configured. This documentation does not disable those jobs or claim the suite has been reduced. For source changes, run the current required verification and report actual results until the workflow is intentionally changed; documentation-only changes should be reviewed for wording and links, with CI reported when available.
 
 ## Actual-use-first DI acceptance
 
@@ -23,12 +23,7 @@ and revision/checkout access, reasoning over an already-built graph, and
 end-to-end hosted question/response. A gain in node count, warm test speed, or
 fixture coverage alone is not a product-value acceptance criterion.
 
-Retain narrowly targeted automated checks for source determinism, false-proof
-negatives, confidentiality, auth/provider boundaries, pagination, packaging,
-recovery, and other guarantees a manual question cannot reliably exercise.
-Use real existing repositories for saturation and discover unanticipated
-questions and limitations, not a growing collection of hardcoded example
-answers. The truth of a captured code/database snapshot does not depend on
+Use real existing repositories to discover unanticipated questions and limitations, rather than a growing collection of hardcoded example answers. Any existing automated check should earn its continued cost by helping the owner and the actual product; do not assume an entire category of tests must be retained. The truth of a captured code/database snapshot does not depend on
 green CI. Green CI reports how controlled executions behaved under their
 exact mocks/fixtures; deployed use and provider observations require separate
 evidence. Never automatically delete tests on the basis of DI's analysis.
