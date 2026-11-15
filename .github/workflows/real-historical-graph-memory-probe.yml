@@ -1,0 +1,69 @@
+name: real-historical-graph-memory-probe
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - src/intelligence/repository.ts
+      - .github/workflows/real-historical-graph-memory-probe.yml
+permissions:
+  contents: read
+jobs:
+  real-historical-cardforge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact DI candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Build actual DI runtime
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build:server:runtime
+      - name: Check out real historical CardForge
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: 062169c45899bf408a9e46c515363c85d0f28736
+          path: benchmark/cardforge-history
+          persist-credentials: false
+      - name: Construct complete real W with hosted-equivalent JavaScript heap
+        shell: bash
+        run: |
+          node --max-old-space-size=1024 --input-type=module <<'JS'
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+          import { buildRepositoryGraph } from './dist/src/intelligence/repository.js';
+          const root = path.resolve('benchmark/cardforge-history');
+          const sha = execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8'}).trim();
+          const expected = '062169c45899bf408a9e46c515363c85d0f28736';
+          if (sha !== expected) throw Error('Wrong benchmark source: '+sha);
+          const start = Date.now();
+          const g = await buildRepositoryGraph({
+            project:'pyralisxc/CardForge',
+            repository:'https://github.com/pyralisxc/CardForge.git',
+            revision:sha,root,role:'W',
+          });
+          const c = g.coverage;
+          if (!c || c.eligibleFiles !== c.analyzedFiles ||
+            c.partialFiles || c.skippedFiles || c.failedFiles ||
+            c.completeFiles !== c.eligibleFiles) {
+            throw Error('Real source coverage incomplete: '+JSON.stringify(c));
+          }
+          const m = process.memoryUsage();
+          const record = {
+            revision:sha,analyzerVersion:g.analyzerVersion,graphId:g.graphId,
+            elapsedMs:Date.now()-start,trackedFiles:c.trackedFiles,
+            eligibleFiles:c.eligibleFiles,completeFiles:c.completeFiles,
+            skippedFiles:c.skippedFiles,failedFiles:c.failedFiles,
+            nodes:g.nodes.length,edges:g.edges.length,evidence:g.evidence?.length??0,
+            rssMiB:Math.round(m.rss/1048576),heapMiB:Math.round(m.heapUsed/1048576),
+            peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024)
+          };
+          console.log('REAL_HISTORICAL_GRAPH '+JSON.stringify(record));
+          JS
