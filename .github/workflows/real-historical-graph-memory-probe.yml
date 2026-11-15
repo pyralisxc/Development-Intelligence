@@ -58,6 +58,10 @@ jobs:
           const m = process.memoryUsage();
           const record = {
             revision:sha,analyzerVersion:g.analyzerVersion,graphId:g.graphId,
+            sourceFingerprint:g.sourceFingerprint,
+            topologyFingerprint:g.topologyFingerprint,
+            evidenceFingerprint:g.evidenceFingerprint,
+            explicitValueConflicts:g.explicitValueConflicts?.length??0,
             elapsedMs:Date.now()-start,trackedFiles:c.trackedFiles,
             eligibleFiles:c.eligibleFiles,completeFiles:c.completeFiles,
             skippedFiles:c.skippedFiles,failedFiles:c.failedFiles,
@@ -125,5 +129,62 @@ jobs:
             })),
             heapUsedMiB:Math.round(mem.heapUsed/1048576),
             peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024)
+          }));
+          JS
+
+  baseline-heap-context:
+    # Diagnostic comparison only; never use a failed old source head as a
+    # reason to weaken today's graph completeness or a release gate.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out unchanged original Preview as comparison
+        uses: actions/checkout@v7
+        with:
+          ref: 4c60904903a912ea3b0a29ff61cb1b3d798fa5c0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: |
+          npm ci --no-audit --no-fund
+          npm run build:server:runtime
+      - name: Check out identical pinned CardForge
+        uses: actions/checkout@v7
+        with:
+          repository: pyralisxc/CardForge
+          ref: 062169c45899bf408a9e46c515363c85d0f28736
+          path: benchmark/cardforge-history
+          persist-credentials: false
+      - name: Observe old source graph build, do not gate new candidate
+        shell: bash
+        continue-on-error: true
+        run: |
+          node --max-old-space-size=1024 --input-type=module <<'JS'
+          import path from 'node:path';
+          import {execFileSync} from 'node:child_process';
+          import {buildRepositoryGraph} from './dist/src/intelligence/repository.js';
+          const root=path.resolve('benchmark/cardforge-history');
+          const sha='062169c45899bf408a9e46c515363c85d0f28736';
+          if(execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==sha)throw Error('Wrong baseline source');
+          const start=Date.now();
+          const g=await buildRepositoryGraph({project:'pyralisxc/CardForge',
+            repository:'https://github.com/pyralisxc/CardForge.git',revision:sha,root,role:'W'});
+          const c=g.coverage;
+          const m=process.memoryUsage();
+          console.log('BASELINE_HISTORICAL_GRAPH '+JSON.stringify({
+            sha,analyzerVersion:g.analyzerVersion,graphId:g.graphId,
+            sourceFingerprint:g.sourceFingerprint,
+            topologyFingerprint:g.topologyFingerprint,
+            evidenceFingerprint:g.evidenceFingerprint,
+            explicitValueConflicts:g.explicitValueConflicts?.length??0,
+            elapsedMs:Date.now()-start,eligibleFiles:c?.eligibleFiles,
+            completeFiles:c?.completeFiles,skippedFiles:c?.skippedFiles,
+            failedFiles:c?.failedFiles,nodes:g.nodes.length,
+            edges:g.edges.length,evidence:g.evidence?.length,
+            rssMiB:Math.round(m.rss/1048576),
+            heapMiB:Math.round(m.heapUsed/1048576),
+            peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024),
           }));
           JS
