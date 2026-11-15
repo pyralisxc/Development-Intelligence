@@ -67,3 +67,63 @@ jobs:
           };
           console.log('REAL_HISTORICAL_GRAPH '+JSON.stringify(record));
           JS
+      - name: Exercise real historical CardForge through ordinary DI MCP
+        shell: bash
+        run: |
+          node --max-old-space-size=1024 --input-type=module <<'JS'
+          import os from 'node:os';
+          import path from 'node:path';
+          import { promises as fs } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { pathToFileURL } from 'node:url';
+          const root=path.resolve('benchmark/cardforge-history');
+          const sha='062169c45899bf408a9e46c515363c85d0f28736';
+          const actual=execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8'}).trim();
+          if(actual!==sha)throw Error('Wrong source identity');
+          execFileSync('git',['-C',root,'update-ref','refs/heads/di380-history',sha]);
+          const tmp=await fs.mkdtemp(path.join(os.tmpdir(),'di380-real-mcp-'));
+          const cfg=path.join(tmp,'projects.json');
+          await fs.writeFile(cfg,JSON.stringify({CardForge:{
+            repository:pathToFileURL(path.join(root,'.git')).href,
+            defaultRef:'refs/heads/di380-history',
+            allowedRefs:['refs/heads/di380-history'],
+            revisionPolicy:'repository-history',
+            credential:{type:'none'},
+          }}));
+          process.env.DEVINT_PROJECTS_FILE=cfg;
+          process.env.DEVINT_SCRATCH_DIR=path.join(tmp,'scratch');
+          process.env.DEVINT_GRAPH_MAX_FILES='20000';
+          process.env.DEVINT_GRAPH_MAX_FILE_BYTES='2000000';
+          process.env.DEVINT_GRAPH_CACHE_SIZE='2';
+          process.env.DEVINT_CANONICAL_GRAPH_DIR=path.join(tmp,'canonical');
+          const {callTool}=await import('./dist/src/mcp.js');
+          const started=Date.now();
+          const scan=await callTool('scan_graph',{project:'CardForge',ref:'commit:'+sha});
+          if(scan.revision!==sha||scan.coverage?.eligibleFiles!==scan.coverage?.completeFiles
+             ||scan.coverage?.skippedFiles||scan.coverage?.failedFiles){
+            throw Error('Historical MCP graph coverage not complete: '+JSON.stringify(scan.coverage));
+          }
+          const questions=[
+            'Why does decideCatalogTrash reject expire?',
+            'Under what conditions does resolveTemplatePipelineAttempt retry after the first await?',
+            'What does decideCatalogTrash return?'
+          ];
+          const result=await callTool('investigate',{project:'CardForge',graphId:scan.graphId,questions});
+          if(result.revision!==sha||result.items?.length!==questions.length||
+              result.items.some(item=>item.status!=='ok')){
+            throw Error('Real questions must finish on same historical graph: '+JSON.stringify(result.counts));
+          }
+          const mem=process.memoryUsage();
+          console.log('REAL_HISTORICAL_MCP '+JSON.stringify({
+            sha,graphId:scan.graphId,nodeCount:scan.nodeCount,edgeCount:scan.edgeCount,
+            evidenceCount:scan.evidenceCount,coverage:scan.coverage,
+            elapsedMs:Date.now()-started,
+            questions:result.items.map(item=>({
+              question:item.question,intent:item.intent,
+              answerStatus:item.result?.status||item.status,
+              answerPreview:String(item.answer||'').slice(0,240)
+            })),
+            heapUsedMiB:Math.round(mem.heapUsed/1048576),
+            peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024)
+          }));
+          JS
