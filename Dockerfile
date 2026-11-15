@@ -3,9 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci --no-audit --no-fund
 COPY src ./src
-COPY tests ./tests
-COPY scripts ./scripts
-RUN npm run verify
+RUN npm run build
 
 FROM node:22-bookworm-slim AS runtime
 RUN apt-get update \

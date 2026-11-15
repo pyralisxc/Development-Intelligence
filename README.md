@@ -244,7 +244,7 @@ Requirements:
 cp config/projects.example.json config/projects.json
 cp .env.example .env
 npm ci
-npm run verify
+npm run build
 npm start
 ```
 

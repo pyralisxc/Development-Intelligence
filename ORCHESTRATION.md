@@ -8,7 +8,7 @@ Use the existing owners for those concerns:
 - `docs/product-direction.md` — revision-bound product-interface and implementation context, not product roadmap authority.
 - `docs/architecture.md` — graph/system semantics and technical boundaries.
 - `docs/testing.md` — durable proof strategy and acceptance surfaces.
-- `.github/workflows/verify.yml` — current CI, sealing, benchmark, and ephemeral preview implementation.
+- `.github/workflows/verify.yml` — service build, production status check, and ephemeral preview implementation.
 - `docs/operations.md` — runtime configuration, authentication, recovery, and operational boundaries.
 - `docs/vercel-hosting.md` — Vercel-specific deployment mechanics.
 - `docs/chatgpt-publishing.md` — hosted OAuth / ChatGPT release acceptance.
@@ -28,7 +28,7 @@ A clean `main` must pass the repository's normal verification plus DI's exact-ca
 
 `preview` is the persistent non-production integration branch. It is the normal target for coherent `work/*` pull requests while a development tranche is accumulating.
 
-Preview must remain disposable relative to accepted `main`: it may contain multiple sealed, fully verified improvements, but it is not accepted product truth and must never become a second graph authority. GitHub CI runs the same correctness, packaged-action, capacity, CardForge, and polyglot gates on Preview. Vercel deploys the branch as a provider-hosted Preview candidate. When using that deployment to inspect Development Intelligence itself, request the explicit `branch:preview` revision selector so the candidate analyzes Preview rather than the configured production default.
+Preview must remain disposable relative to accepted `main`: it may contain multiple sealed, fully verified improvements, but it is not accepted product truth and must never become a second graph authority. GitHub CI builds the service and Windows package on Preview. Vercel deploys the branch as a provider-hosted Preview candidate. When using that deployment to inspect Development Intelligence itself, request the explicit `branch:preview` revision selector so the candidate analyzes Preview rather than the configured production default.
 
 Use Preview as the continuing proof surface when changes benefit from combined testing or owner review. Promote the accumulated exact Preview head through one `preview` → `main` pull request only after the tranche is coherent, sealed, and fully green. Main promotion remains owner-controlled. After promotion, reconcile accepted Main ancestry back into Preview before beginning the next tranche.
 
@@ -37,14 +37,6 @@ Use Preview as the continuing proof surface when changes benefit from combined t
 Development changes belong on bounded `work/*` branches and PRs created from an exact accepted base revision.
 
 The PR head is a proposal, not accepted truth. CI evidence applies only to the exact head SHA that produced it; after any source or checkpoint change, reevaluate the new head rather than carrying forward old green status.
-
-### Candidate self-integrity evidence
-
-Use the `seal-b` PR label when a candidate needs explicit legacy checkpoint compatibility evidence in addition to normal verification.
-
-The workflow generates and checks that compatibility checkpoint only inside the CI workspace and uploads it as a bounded artifact. It never stages, commits, or pushes `.development-intelligence`, so the PR head remains the exact source candidate under review.
-
-A successful compatibility artifact is not approval to merge and is not semantic authority. The canonical semantic review/promotion lifecycle remains the authority boundary.
 
 ### Ephemeral PR preview
 
@@ -75,9 +67,9 @@ For a material change:
 1. Read `AGENTS.md` and the owning product/architecture/operations docs for the change.
 2. Start from the exact current `preview` revision (or `main` only when Preview has no accumulated delta) and create a bounded `work/*` branch.
 3. Build the complete, well-developed requested outcome across the affected source, interfaces, and integrations. Read the owning Confluence blueprint and relevant source first; do not optimize for a minimal patch, retain obsolete architecture merely to shrink the diff, or embed project-management state or provider secrets in source.
-4. Verify the outcome through actual use appropriate to the change. Do not add tests by default. For source changes, run the current `npm run verify` suite and report its result while it remains required by CI; assess obsolete fixtures, tests, and workflow gates for deliberate removal or revision. For documentation-only changes, review the changed wording and links and report CI results when available.
-5. Open a coherent PR against `preview` and report the current CI results, including packaged action and benchmark jobs where applicable.
-6. When explicit checkpoint compatibility evidence is useful, request `seal-b`; verify that artifact on the same exact source head.
+4. Build the affected product and verify the outcome through actual use appropriate to the change. Do not add tests by default. For documentation-only changes, review the changed wording and links.
+5. Open a coherent PR against `preview` and report the actual build and relevant real-use results.
+6. When checkpoint compatibility is relevant, use the existing graph CLI against the exact candidate as needed.
 7. Integrate the exact green candidate into `preview`; use the ephemeral PR preview only when pre-integration interactive review is materially useful.
 8. Exercise the accumulated Preview deployment and exact `branch:preview` intelligence surface until the tranche is coherent.
 9. Promote the exact accumulated Preview head to `main` only after its owner-approved promotion gate is satisfied, then reconcile Main back into Preview.
@@ -102,7 +94,7 @@ GitHub checks, benchmark artifacts, exact Git identities, provider deployment st
 Do not:
 
 - treat a stale check from an earlier PR head as proof for a later head;
-- treat a self-seal token-trigger quirk or skipped preview as a source-code failure without inspecting the exact check context;
+- treat a skipped preview as a source-code failure without inspecting the exact check context;
 - infer that production changed merely because `main` changed;
 - infer that an ephemeral preview equals production;
 - promote candidate or derived Development Intelligence conclusions into accepted semantic authority without the canonical semantic review/promotion lifecycle.

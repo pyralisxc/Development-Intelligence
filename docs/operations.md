@@ -79,7 +79,7 @@ Scratch is cleared at each exclusive service start and managed stop, checked eve
 
 Builds use `Build-Package.ps1 -MsiVersion <three-part-version>` from committed exact source. The builder creates a fresh Git archive of that SHA, installs lockfile dependencies and rebuilds runtime output inside that disposable snapshot; ignored caller `dist` and untracked source cannot be stamped as the engine SHA. It requires the pinned build Node version without installing prerequisites. Runtime archives are hash-pinned in `dependencies.json`; CI uses pinned Node and WiX 5.0.2. Each payload manifest records engine/package SHA, archive provenance, runtime versions, per-file hashes and MSI version. The external MSI metadata records the final MSI hash. Hashes establish artifact identity, not publisher trust: signing and trusted distribution remain later release gates. Do not bypass operating-system warnings.
 
-The `windows-package` workflow installs only on disposable GitHub-hosted Windows runners. Oakley source editing/build artifacts do not authorize installation there. Reboot, power-loss recovery, actual Oakley resource suitability and public TLS/OAuth/MCP connectivity remain later host acceptance.
+The `windows-package` workflow builds an unsigned package on a disposable GitHub-hosted Windows runner. It no longer runs the removed installer lifecycle suite. Oakley source editing/build artifacts do not authorize installation there. Reboot, power-loss recovery, actual Oakley resource suitability and public TLS/OAuth/MCP connectivity remain later host acceptance.
 
 | Variable | Purpose |
 |---|---|
@@ -129,7 +129,7 @@ DI has multiple operational evidence owners. None is a second source of graph or
 
 **Correlate before attributing:** project/access scope, exact Git SHA, analyzer version and graphId for DI source; workflow run/job ID for CI; deployment ID and request timestamp for Vercel. A universal cross-provider request identifier and durable cross-platform trace join are **not** currently established; report them as gaps, not working features.
 
-Repository-level orientation now includes a bounded request-local `observability` projection recording durations for `graphAccess`, `scopeSelection`, `adjacencyIndex`, `rankingAndRoles`, and `semanticUnderstanding`, tied to exact graphId/revision. The CardForge benchmark prints these timings when the ordinary semantic-question budget fails. A high-level `What does this project do?` question now selects the same full current-source semantic explanation directly and reports `projection.kind=repository-semantic-summary`; it does not compute a large unused structural ranking. Explicit `orient_scope` still exposes ranked structural entities, boundaries, roles and uncertainty. Omitted structural detail is marked as not materialized, never misreported as absent. These measurements are not cumulative across independent requests and are separate from cold graph construction and full MCP/HTTP response time. No budget is relaxed.
+Repository-level orientation now includes a bounded request-local `observability` projection recording durations for `graphAccess`, `scopeSelection`, `adjacencyIndex`, `rankingAndRoles`, and `semanticUnderstanding`, tied to exact graphId/revision. The request projection can expose these timings during real investigations. A high-level `What does this project do?` question now selects the same full current-source semantic explanation directly and reports `projection.kind=repository-semantic-summary`; it does not compute a large unused structural ranking. Explicit `orient_scope` still exposes ranked structural entities, boundaries, roles and uncertainty. Omitted structural detail is marked as not materialized, never misreported as absent. These measurements are not cumulative across independent requests and are separate from cold graph construction and full MCP/HTTP response time. No budget is relaxed.
 
 Never log raw question text, source bodies, cookies, auth headers, bearer tokens or provider secrets in tracing metadata. Maintain each existing platform's access control and retention. A successful log entry is operational observation, not graph proof.
 
@@ -335,7 +335,7 @@ A successful unit test, native-private test, or proxy test does not substitute f
 
 ## Pull-request Preview acceptance
 
-The repository's `verify` workflow can expose a temporary human-review Preview for an exact PR head after the normal verify and CardForge benchmark jobs succeed.
+The repository's `verify` workflow can expose a temporary human-review Preview for an exact PR head after the service build succeeds.
 
 The Preview lane:
 

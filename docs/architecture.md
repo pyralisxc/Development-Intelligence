@@ -161,7 +161,7 @@ Accepted semantic A is an explicit owner-controlled **release/governance artifac
 
 Legacy semantic review persistence may temporarily retain explicit approvals, baseline/lineage decisions and compatibility data until their clients and release controls are reconciled. It is not a machine memory of implementation meaning and is never consumed as proof for ordinary current semantic questions. Exact historical understanding comes from replaying the requested Git revision with the relevant analyzer, comparing immutable graphs only when explicitly requested.
 
-The deterministic `.development-intelligence/` manifest/shard format remains an internal self-seal and legacy migration/compatibility format. Its content-integrity checks are still tested, but inspected repositories must not use it as a parallel machine semantic authority.
+The deterministic `.development-intelligence/` manifest/shard format remains an internal self-seal and legacy migration/compatibility format. Its content-integrity checks remain part of the compatibility implementation; inspected repositories must not use it as a parallel machine semantic authority.
 
 ## Exact revision context
 
@@ -224,10 +224,7 @@ applies **only** to unspecified documents. The choice and number of affected
 documents appear in the receipt and are included in the ephemeral graph
 identity. It is not independent compiler evidence: resolved facts still require
 same-source, same-callsite TypeChecker corroboration; unmatched interpretations
-remain candidates. The disposable, read-only `SCIP real-producer acceptance`
-CI job executes the pinned real indexer and asserts source/definition/verified
-relationship reconciliation. Its pass does not create a signed indexer
-attestation, imply all SCIP projects are compatible, or publish canonical W.
+remain candidates. A prior disposable, read-only SCIP real-producer acceptance run executed the pinned indexer and assessed source/definition/verified relationship reconciliation. That historical run does not create a signed indexer attestation, imply all SCIP projects are compatible, or publish canonical W.
 The opt-in local projection also reports how many unique independently
 compiler-confirmed SCIP source callsites are already proved by DI's existing
 canonical TypeScript checker evidence at the same revision. Comparison keys
