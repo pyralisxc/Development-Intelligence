@@ -57,7 +57,7 @@ Use Node's open-source native test runner and its structured test events,
 not scraped TAP/spec console output. The repository includes a custom
 reporter that writes a compact versioned JSON-lines envelope.
 
-Example after building the source, on a disposable exact-source checkout:
+Example after building the source, using an actual tracked Node test in an inspected project (replace the example path):
 
     mkdir -p observations
     node --test --test-reporter=./scripts/node-test-events-reporter.mjs --test-reporter-destination=observations/node.jsonl path/to/inspected-project.test.mjs
