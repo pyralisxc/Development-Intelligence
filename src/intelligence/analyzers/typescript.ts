@@ -39,7 +39,7 @@ function staticJsxClassNames(initializer: ts.JsxAttributeValue | undefined): str
   if (initializer && ts.isStringLiteralLike(initializer)) value = initializer.text;
   else if (initializer && ts.isJsxExpression(initializer) && initializer.expression) value = staticString(initializer.expression);
   if (!value) return [];
-  return [...new Set(value.split(/\s+/u).map(item => item.trim()).filter(Boolean))].slice(0, 64);
+  return [...new Set(value.split(/\s+/u).map(item => item.trim()).filter(Boolean))];
 }
 
 function scalar(node: ts.Expression): unknown | undefined {

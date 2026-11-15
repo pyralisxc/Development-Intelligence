@@ -20,7 +20,7 @@ import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMP
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.28.0-source-control-context';
+export const ANALYZER_VERSION = '2.29.0-complete-structured-values';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -118,8 +118,10 @@ async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph, 
   }
 }
 
-const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
-const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? 10_000);
+// Source selection has no default file-count or file-size cutoff. Explicit
+// operator budgets remain available and omissions are reported in coverage.
+const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? Number.MAX_SAFE_INTEGER);
+const MAX_FILES = Number(process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES ?? Number.MAX_SAFE_INTEGER);
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const POLYGLOT_EXTENSIONS = new Set(['.cs', '.java', '.py', '.go', '.rs']);
 const UNITY_SERIALIZED_EXTENSIONS = new Set(['.meta', '.unity', '.prefab', '.asset', '.mat', '.anim', '.controller', '.mixer']);

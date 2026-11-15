@@ -47,18 +47,19 @@ function npmLockfileObservations(context: AnalyzeContext, value: unknown): Obser
     }
   }
 
-  const visitLegacyDependencies = (dependencies: unknown, path: string, depth: number): void => {
-    if (depth > 12 || !dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) return;
-    for (const [dependency, metadata] of Object.entries(dependencies as Record<string, unknown>)) {
-      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) continue;
-      const record = metadata as Record<string, unknown>;
-      const dependencyPath = `${path}.${dependency}`;
-      emit(`${dependencyPath}.version`, record.version);
-      visitLegacyDependencies(record.dependencies, `${dependencyPath}.dependencies`, depth + 1);
-    }
-  };
   if (!packages || typeof packages !== 'object' || Array.isArray(packages)) {
-    visitLegacyDependencies(root.dependencies, 'dependencies', 0);
+    const pending: Array<{ dependencies: unknown; path: string }> = [{ dependencies: root.dependencies, path: 'dependencies' }];
+    while (pending.length) {
+      const { dependencies, path } = pending.pop()!;
+      if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) continue;
+      for (const [dependency, metadata] of Object.entries(dependencies as Record<string, unknown>)) {
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) continue;
+        const record = metadata as Record<string, unknown>;
+        const dependencyPath = `${path}.${dependency}`;
+        emit(`${dependencyPath}.version`, record.version);
+        pending.push({ dependencies: record.dependencies, path: `${dependencyPath}.dependencies` });
+      }
+    }
   }
 
   return observations;
@@ -67,24 +68,29 @@ function npmLockfileObservations(context: AnalyzeContext, value: unknown): Obser
 export function analyzeJson(context: AnalyzeContext): AnalyzeResult {
   const value = JSON.parse(context.text) as unknown;
   if (NPM_LOCKFILES.has(fileName(context.locatorBase))) {
-    return { observations: npmLockfileObservations(context, value), resolutions: [] };
+    return { observations: npmLockfileObservations(context, value), resolutions: [],
+      coverage: { status: 'partial', reason: 'Lockfile analysis retains package versions rather than every structured value.' } };
   }
 
   const observations: Observation[] = [];
-  const walk = (current: unknown, path: string, depth: number) => {
-    if (depth > 8) return;
+  const pending: Array<{ value: unknown; path: string }> = [{ value, path: '' }];
+  while (pending.length) {
+    const { value: current, path } = pending.pop()!;
     if (current === null || ['string', 'number', 'boolean'].includes(typeof current)) {
       observations.push(structuredObservation(context, path, current as string | number | boolean | null));
-      return;
+      continue;
     }
     if (Array.isArray(current)) {
-      current.slice(0, 200).forEach((item, index) => walk(item, `${path}[${index}]`, depth + 1));
-      return;
+      for (let index = current.length - 1; index >= 0; index -= 1) pending.push({ value: current[index], path: `${path}[${index}]` });
+      continue;
     }
     if (typeof current === 'object') {
-      for (const [key, child] of Object.entries(current as Record<string, unknown>)) walk(child, path ? `${path}.${key}` : key, depth + 1);
+      const entries = Object.entries(current as Record<string, unknown>);
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, child] = entries[index]!;
+        pending.push({ value: child, path: path ? `${path}.${key}` : key });
+      }
     }
-  };
-  walk(value, '', 0);
+  }
   return { observations, resolutions: [] };
 }
