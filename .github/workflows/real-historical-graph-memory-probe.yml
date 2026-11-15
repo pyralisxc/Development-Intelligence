@@ -188,3 +188,35 @@ jobs:
             peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024),
           }));
           JS
+      - name: Verify original W fact identities with sufficient heap
+        shell: bash
+        run: |
+          node --max-old-space-size=3072 --input-type=module <<'JS'
+          import path from 'node:path';
+          import {execFileSync} from 'node:child_process';
+          import {buildRepositoryGraph} from './dist/src/intelligence/repository.js';
+          const root=path.resolve('benchmark/cardforge-history');
+          const sha='062169c45899bf408a9e46c515363c85d0f28736';
+          if(execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==sha)throw Error('Wrong baseline source');
+          const start=Date.now();
+          const g=await buildRepositoryGraph({project:'pyralisxc/CardForge',
+            repository:'https://github.com/pyralisxc/CardForge.git',revision:sha,root,role:'W'});
+          const c=g.coverage;
+          if (!c || c.eligibleFiles!==c.completeFiles || c.skippedFiles ||
+            c.partialFiles || c.failedFiles) throw Error('Original graph coverage incomplete');
+          const m=process.memoryUsage();
+          console.log('BASELINE_RELAXED_HEAP_GRAPH '+JSON.stringify({
+            sha,analyzerVersion:g.analyzerVersion,graphId:g.graphId,
+            sourceFingerprint:g.sourceFingerprint,
+            topologyFingerprint:g.topologyFingerprint,
+            evidenceFingerprint:g.evidenceFingerprint,
+            explicitValueConflicts:g.explicitValueConflicts?.length??0,
+            elapsedMs:Date.now()-start,eligibleFiles:c?.eligibleFiles,
+            completeFiles:c?.completeFiles,skippedFiles:c?.skippedFiles,
+            failedFiles:c?.failedFiles,nodes:g.nodes.length,
+            edges:g.edges.length,evidence:g.evidence?.length,
+            rssMiB:Math.round(m.rss/1048576),
+            heapMiB:Math.round(m.heapUsed/1048576),
+            peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024),
+          }));
+          JS
