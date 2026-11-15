@@ -6,12 +6,17 @@ import ts from 'typescript';
  * construction and revision-bound legacy/source-only query projections.
  * It observes syntax and path requirements, not feasible or executed paths.
  */
-const MAX_BRANCHES = 256;
-const MAX_EFFECTS = 512;
-const MAX_DEPTH = 24;
 export interface SourceRequirement {
   conditionId: string;
   expectedTruth: boolean;
+}
+/** Source containment, retained even when the control-flow semantics are not yet modeled. */
+export interface SourceControlContext {
+  kind: string;
+  sourceLine: number;
+  sourceOffset: number;
+  expression?: string;
+  caseValue?: string;
 }
 export interface SourceEffect {
   kind: 'return' | 'return-call' | 'throw' | 'call' | 'write' | 'initializer-call';
@@ -23,6 +28,8 @@ export interface SourceEffect {
   expressionStructure?: SourceExpression;
   expressionSha256: string;
   requiredConditions: SourceRequirement[];
+  controlContext?: SourceControlContext[];
+  requirementsComplete?: boolean;
   /** Syntax presence is established; runtime execution is not. */
   runtimeObserved: false;
 }
@@ -34,6 +41,8 @@ export interface SourceCondition {
   predicateStructure?: SourceExpression;
   predicateSha256: string;
   priorRequirements: SourceRequirement[];
+  controlContext?: SourceControlContext[];
+  requirementsComplete?: boolean;
   trueBranchTerminates: boolean;
   falseBranchTerminates: boolean;
   conditionsAreSourceSyntaxOnly: true;
@@ -96,69 +105,97 @@ export function analyzeSourceConditionStatements(
   const branches: SourceCondition[] = [];
   const effects: SourceEffect[] = [];
   const unknownConstructs: Array<{ line: number; kind: string }> = [];
-  let boundedOut = false;
+  const boundedOut = false;
   const lineOf = (node: ts.Node) => parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
-  const recordEffect = (kind: SourceEffect['kind'], node: ts.Node, sourceExpression: ts.Node | undefined, requires: SourceRequirement[]) => {
-    if (effects.length >= MAX_EFFECTS) { boundedOut = true; return; }
+  const recordEffect = (kind: SourceEffect['kind'], node: ts.Node, sourceExpression: ts.Node | undefined, requires: SourceRequirement[], context: SourceControlContext[], complete: boolean) => {
     effects.push({ kind, sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), expression: expression(sourceExpression, parsed),
       ...(sourceExpression ? { expressionStructure: structure(sourceExpression, parsed) } : {}),
       expressionSha256: digest(node.getText(parsed)),
-      requiredConditions: [...requires], runtimeObserved: false });
+      requiredConditions: [...requires], controlContext: [...context], requirementsComplete: complete && context.length === 0,
+      runtimeObserved: false });
   };
-  const scan = (list: readonly ts.Statement[], requirements: SourceRequirement[], depth: number): void => {
-    if (depth > MAX_DEPTH) { boundedOut = true; return; }
+  const scan = (list: readonly ts.Statement[], requirements: SourceRequirement[], depth: number, context: SourceControlContext[] = [], inheritedComplete = true): void => {
     const active = [...requirements];
+    let complete = inheritedComplete;
     for (const stmt of list) {
-      if (boundedOut) return;
       if (ts.isIfStatement(stmt)) {
-        if (branches.length >= MAX_BRANCHES) { boundedOut = true; return; }
+        const previousUnknown = unknownConstructs.length;
         const id = sourcePath + ':condition:' + stmt.expression.getStart(parsed);
         const branch: SourceCondition = {
           id, sourceLine: lineOf(stmt.expression), sourceOffset: stmt.expression.getStart(parsed),
           predicate: expression(stmt.expression, parsed), predicateStructure: structure(stmt.expression, parsed),
           predicateSha256: digest(stmt.expression.getText(parsed)),
-          priorRequirements: [...active],
+          priorRequirements: [...active], controlContext: [...context], requirementsComplete: complete && context.length === 0,
           trueBranchTerminates: definitelyTerminates(stmt.thenStatement),
           falseBranchTerminates: Boolean(stmt.elseStatement && definitelyTerminates(stmt.elseStatement)),
           conditionsAreSourceSyntaxOnly: true,
         };
         branches.push(branch);
         const thenNodes = ts.isBlock(stmt.thenStatement) ? [...stmt.thenStatement.statements] : [stmt.thenStatement];
-        scan(thenNodes, [...active, { conditionId: id, expectedTruth: true }], depth + 1);
+        scan(thenNodes, [...active, { conditionId: id, expectedTruth: true }], depth + 1, context, complete);
         if (stmt.elseStatement) {
           const elseNodes = ts.isBlock(stmt.elseStatement) ? [...stmt.elseStatement.statements] : [stmt.elseStatement];
-          scan(elseNodes, [...active, { conditionId: id, expectedTruth: false }], depth + 1);
+          scan(elseNodes, [...active, { conditionId: id, expectedTruth: false }], depth + 1, context, complete);
         }
         if (branch.trueBranchTerminates && branch.falseBranchTerminates) return;
         if (branch.trueBranchTerminates) active.push({ conditionId: id, expectedTruth: false });
         else if (branch.falseBranchTerminates) active.push({ conditionId: id, expectedTruth: true });
+        if (unknownConstructs.length > previousUnknown) complete = false;
       } else if (ts.isReturnStatement(stmt)) {
         recordEffect(returnCall(stmt.expression) ? 'return-call' : 'return',
-          stmt, stmt.expression, active);
+          stmt, stmt.expression, active, context, complete);
         return;
       } else if (ts.isThrowStatement(stmt)) {
-        recordEffect('throw', stmt, stmt.expression, active);
+        recordEffect('throw', stmt, stmt.expression, active, context, complete);
         return;
-      } else if (ts.isBlock(stmt)) scan([...stmt.statements], active, depth + 1);
+      } else if (ts.isBlock(stmt)) {
+        const previousUnknown = unknownConstructs.length;
+        scan([...stmt.statements], active, depth + 1, context, complete);
+        if (unknownConstructs.length > previousUnknown) complete = false;
+      }
       else if (ts.isExpressionStatement(stmt)) {
         const e = stmt.expression;
         if (ts.isCallExpression(e) || (ts.isAwaitExpression(e) && ts.isCallExpression(e.expression))) {
-          recordEffect('call', stmt, e, active);
+          recordEffect('call', stmt, e, active, context, complete);
         } else if (ts.isBinaryExpression(e) &&
           e.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && e.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
-          recordEffect('write', stmt, e, active);
+          recordEffect('write', stmt, e, active, context, complete);
         }
       } else if (ts.isVariableStatement(stmt)) {
         for (const decl of stmt.declarationList.declarations) {
           if (decl.initializer && (ts.isCallExpression(decl.initializer)
             || (ts.isAwaitExpression(decl.initializer) && ts.isCallExpression(decl.initializer.expression)))) {
-            recordEffect('initializer-call', decl, decl.initializer, active);
+            recordEffect('initializer-call', decl, decl.initializer, active, context, complete);
           }
         }
       } else if (ts.isTryStatement(stmt) || ts.isSwitchStatement(stmt)
         || ts.isForStatement(stmt) || ts.isForInStatement(stmt) || ts.isForOfStatement(stmt)
         || ts.isWhileStatement(stmt) || ts.isDoStatement(stmt)) {
         unknownConstructs.push({ line: lineOf(stmt), kind: ts.SyntaxKind[stmt.kind] ?? 'control-flow' });
+        const visitBody = (body: ts.Statement, kind: string, controlExpression?: ts.Node) => {
+          const part: SourceControlContext = { kind, sourceLine: lineOf(body), sourceOffset: body.getStart(parsed),
+            ...(controlExpression ? { expression: expression(controlExpression, parsed) } : {}) };
+          scan(ts.isBlock(body) ? [...body.statements] : [body], active, depth + 1, [...context, part], false);
+        };
+        if (ts.isTryStatement(stmt)) {
+          visitBody(stmt.tryBlock, 'try');
+          if (stmt.catchClause) visitBody(stmt.catchClause.block, 'catch', stmt.catchClause.variableDeclaration);
+          if (stmt.finallyBlock) visitBody(stmt.finallyBlock, 'finally');
+        } else if (ts.isSwitchStatement(stmt)) {
+          for (const clause of stmt.caseBlock.clauses) {
+            const part: SourceControlContext = { kind: ts.isCaseClause(clause) ? 'case' : 'default',
+              sourceLine: lineOf(clause), sourceOffset: clause.getStart(parsed),
+              expression: expression(stmt.expression, parsed),
+              ...(ts.isCaseClause(clause) ? { caseValue: expression(clause.expression, parsed) } : {}) };
+            scan([...clause.statements], active, depth + 1, [...context, part], false);
+          }
+        } else {
+          const controlExpression = ts.isForStatement(stmt) ? stmt.condition
+            : ts.isForInStatement(stmt) || ts.isForOfStatement(stmt) ? stmt.expression
+              : stmt.expression;
+          visitBody(stmt.statement, ts.SyntaxKind[stmt.kind] ?? 'loop', controlExpression);
+        }
+        complete = false;
       }
     }
   };
