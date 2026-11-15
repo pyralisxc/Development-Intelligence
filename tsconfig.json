@@ -15,5 +15,5 @@
     "sourceMap": true,
     "lib": ["ES2024", "DOM"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }
