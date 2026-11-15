@@ -57,7 +57,7 @@ export interface CanonicalQueryBucketSummary {
 }
 
 export interface CanonicalQueryIndexArtifact {
-  formatVersion: 4;
+  formatVersion: 5;
   graphSchemaVersion: 2;
   project: string;
   revision: string;
@@ -101,7 +101,7 @@ export interface CanonicalQueryIndexArtifact {
 }
 
 export interface CanonicalQueryDetailShard {
-  formatVersion: 4;
+  formatVersion: 5;
   graphSchemaVersion: 2;
   project: string;
   revision: string;
@@ -301,7 +301,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
   }
 
   const common = {
-    formatVersion: 4 as const,
+    formatVersion: 5 as const,
     graphSchemaVersion: 2 as const,
     project: graph.project,
     revision,
