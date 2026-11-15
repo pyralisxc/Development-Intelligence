@@ -37,28 +37,21 @@ export function resolveEvidenceSpine(nodes: GraphNode[], existing: GraphEdge[]):
     const routine = textField(rpc, 'routine') ?? rpc.name;
     if (!routine) continue;
     const candidates = sqlFunctions.get(shortName(routine)) ?? [];
-    if (candidates.length === 1) add(output, seen, resolution({
-      from: rpc.id,
-      to: candidates[0]!.id,
-      kind: 'resolves_to',
-      strategy: 'sql-rpc-name',
-      confidence: 1,
-      status: 'resolved',
-      evidence: [rpc.locator, candidates[0]!.locator],
-      layer: 'representation',
-      checkpoint: false,
-    }));
-    else if (candidates.length > 1) add(output, seen, resolution({
-      from: rpc.id,
-      to: null,
-      kind: 'resolves_to',
-      strategy: 'sql-rpc-name',
-      confidence: null,
-      status: 'unresolved',
-      evidence: [rpc.locator, `RPC routine ${routine} matches ${candidates.length} SQL routines`],
-      layer: 'representation',
-      checkpoint: false,
-    }));
+    for (const candidate of candidates) {
+      add(output, seen, resolution({
+        from: rpc.id, to: candidate.id, kind: 'same-routine-name',
+        strategy: 'sql-rpc-name', confidence: 1, status: 'resolved',
+        evidence: [rpc.locator, candidate.locator, `Both source occurrences use short name ${shortName(routine)}`],
+        layer: 'representation', checkpoint: false,
+      }));
+      add(output, seen, resolution({
+        from: rpc.id, to: candidate.id, kind: 'candidate-sql-definition',
+        strategy: 'sql-rpc-name', confidence: null, status: 'candidate',
+        evidence: [rpc.locator, candidate.locator,
+          'The source RPC name matches this SQL declaration; deployed selection is not established'],
+        layer: 'representation', checkpoint: false,
+      }));
+    }
   }
 
   const tablesByQualified = new Map<string, GraphNode[]>();

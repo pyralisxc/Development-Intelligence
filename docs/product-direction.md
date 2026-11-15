@@ -85,7 +85,7 @@ The following is this repository document's account of release **v2.9.0** at `ht
 - accepted/working/candidate graph lifecycle with deterministic Git-owned semantic checkpoints;
 - graph search, grouped multi-query search, relationship tracing, exact-revision source search/snippets, architecture, coverage, evidence, change, parity, caller-owned Parity Contract evaluation, and deterministic evidence-backed assessment;
 - a human Workbench and modern MCP `2026-07-28` surface over the same intelligence;
-- shared Claim/Proof, Capability Realization, and audit-finding projections through `query_intelligence` and the Workbench, without creating a second graph authority;
+- a shared language-to-graph filter through `investigate`, ordinary `query_intelligence` questions and the Workbench; explicit realization expectations retain their assessment projection over the same graph;
 - TypeScript/JavaScript, C#, Java, Python, CSS, structured-text, and Unity serialized/configuration analysis at the precision disclosed by `get_graph_schema`;
 - optional source-adjacent generic semantic declarations;
 - allowlisted runtime observations and generic bounded read-only HTTP technical sources, with provider-neutral normalized external evidence for generic JSON, deployment state, and database schema responses;

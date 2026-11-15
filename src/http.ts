@@ -571,6 +571,19 @@ export function createDevelopmentIntelligenceServer() {
           capability: typeof body.capability === 'string' ? body.capability as TechnicalSourceCapability : undefined,
           scope: typeof body.scope === 'string' ? body.scope : undefined,
           rankBy: typeof body.rankBy === 'string' ? body.rankBy as any : undefined,
+          offset: typeof body.offset === 'number' ? body.offset : undefined,
+          limit: typeof body.limit === 'number' ? body.limit : undefined,
+          nodeKinds: Array.isArray(body.nodeKinds) ? body.nodeKinds.filter((item: unknown) => typeof item === 'string') : undefined,
+          relationshipKinds: Array.isArray(body.relationshipKinds) ? body.relationshipKinds.filter((item: unknown) => typeof item === 'string') : undefined,
+          statuses: Array.isArray(body.statuses) ? body.statuses.filter((item: unknown) => typeof item === 'string') : undefined,
+          direction: ['inbound', 'outbound', 'both'].includes(body.direction) ? body.direction : undefined,
+          comparisonIds: Array.isArray(body.comparisonIds) ? body.comparisonIds.filter((item: unknown) => typeof item === 'string') : undefined,
+          comparisonScope: typeof body.comparisonScope === 'string' ? body.comparisonScope : undefined,
+          comparisonKinds: Array.isArray(body.comparisonKinds) ? body.comparisonKinds.filter((item: unknown) => typeof item === 'string') : undefined,
+          conditionContains: typeof body.conditionContains === 'string' ? body.conditionContains : undefined,
+          conditionTruth: typeof body.conditionTruth === 'boolean' ? body.conditionTruth : undefined,
+          effectKinds: Array.isArray(body.effectKinds) ? body.effectKinds.filter((item: unknown) => typeof item === 'string') : undefined,
+          depth: typeof body.depth === 'number' ? body.depth : undefined,
         });
         json(res, 200, result);
       } catch (error) {

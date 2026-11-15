@@ -80,7 +80,11 @@ DI's supported TypeScript/JavaScript source-control interpreter is a **single bo
 
 The summary states the interpreter's source file hash, observed branch/effect population, unmodeled syntax and bounded/exhaustive status **within the supported statement subset**. Function and callback bodies have distinct ownership. The graph's source syntax may prove that a conditional branch, return, throw, call or assignment is written and where it is located; it does **not** prove that a guard is satisfied, that all possible paths were modeled, that the call or effect executed, or that a provider or database changed. `resolved` edges for these facts are *not* realization/execution proof. Unsupported loops, switches and exception/finally constructs remain explicit scope limitations rather than fabricated absence.
 
-Ordinary exact-function behavioral questions project those same compiled graph facts, including source path assumptions and omissions, **without another Git checkout/AST pass when the selected graph contains the complete source lens**. Supported two-hop questions may compose distinct caller/callee source facts over existing resolved call relationships, while not asserting argument binding, joint predicate satisfiability or runtime completion. Older generations and unsupported/missing graph premises preserve the exact-revision source fallback. The code-defined rule is shared; query composition is not a competing knowledge authority.
+Ordinary questions use one language-to-graph filter. Wink NLP extracts terms and preserves negative wording; graph names, source facts and relationships determine the selected subjects and their neighborhoods. Conditions and effects retain their exact source expressions and linked requirements. Clients can refine scope, node kinds, relationship kinds, status and direction, and page through the selected population. A negative phrase remains visible in the interpretation; it is not turned into an unsupported claim that a relationship is absent. Explicit technical-source queries and caller-owned realization expectations remain separate source/assessment capabilities.
+
+`investigate`, ordinary `query_intelligence`, and the Workbench use that same filter. Language terms bind to the graph's relationship vocabulary; the selected subject and sentence order determine inbound or outbound navigation, with explicit direction available as an override. `offset` and `limit` page the subjects, nodes and relationships; `sourceFamilies` groups the selected page's condition and effect occurrences by their owning subject, including source requirements and the analyzer's coverage summary. Optional `conditionContains`, `conditionTruth` and `effectKinds` filter those facts. Wording-matched facts are identified separately, without dropping the rest of the family.
+
+Negative relationship selection requires `comparisonIds`, `comparisonScope`, or `comparisonKinds` to establish the finite comparison set. Each member is classified as related, candidate, unknown, or not related. An absent edge is classified as not related only when graph `relationshipCoverage` explicitly establishes completeness for that relationship, subject, direction and target; current analyzers do not yet provide that general completeness. The optional `scope`, `nodeKinds`, `relationshipKinds`, `statuses`, and `direction` parameters refine the same graph selection. The filter defaults to a one-hop neighborhood; `depth` requests broader traversal over the same relationship filters. Bidirectional traversal also returns relationships among the selected neighbors. Multi-hop negative results remain unknown unless an appropriate completeness contract is available.
 
 ### Coverage
 
@@ -201,6 +205,9 @@ external symbols and unreconciled occurrences limit relationship coverage even
 when every source file was read. A producer failure is recorded on the graph;
 it is not represented as an empty set of relationships. New revisions rebuild
 producer facts rather than carrying relationships forward from an older index.
+Source RPC occurrences are also connected to same-named tracked SQL routine
+declarations as candidate relationships. Each migration and overload stays
+distinct; a source name match does not select a deployed database routine.
 
 The `scip-evidence` command also accepts a separately generated index and an
 optional `--scip-project-prefix` for a producer rooted in a subproject. Its

@@ -102,6 +102,8 @@ define(['has-component', 'attached-to', 'child-of'],
 // realization before this registry; preserve their factual reach.
 define(['references-symbol', 'depends-on', 'links_to'],
   'reference', 'dependency', true, 'bound-source');
+define(['candidate-sql-definition'], 'reference', 'dependency', false, 'syntax');
+define(['same-routine-name'], 'reference', 'dependency', false, 'syntax');
 define(['binds_to', 'bound_by'], 'surface', 'surface', true, 'bound-source');
 define(['uses_classes'], 'surface', 'surface', true, 'syntax', ['callable'], ['source-site']);
 define(['styled_by'], 'surface', 'surface', true, 'bound-source', ['source-site'], ['resource']);
@@ -234,6 +236,12 @@ export function sourceDerivedTechnicalEdge(edge: GraphEdge): boolean {
 
 export function observedRelationshipContracts(graph: IntelligenceGraph): RelationshipKindContract[] {
   return [...new Set(graph.edges.map(edge => edge.kind))].sort()
+    .map(relationshipKindContract);
+}
+/** Available operations include registered kinds even when this graph has no
+ * edge of that kind; an empty relationship population is still queryable. */
+export function availableRelationshipContracts(graph: IntelligenceGraph): RelationshipKindContract[] {
+  return [...new Set([...RELATIONS.keys(), ...graph.edges.map(edge => edge.kind)])].sort()
     .map(relationshipKindContract);
 }
 export function inspectRelationshipShape(edge: GraphEdge,
