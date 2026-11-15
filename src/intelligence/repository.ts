@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import ts from 'typescript';
+import { fromBinary, toBinary } from '@bufbuild/protobuf';
+import { IndexSchema } from '@scip-code/scip';
 import type { EvidenceRecord, ExplicitValueConflict, GraphCoverage, GraphCoverageFile, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import type { RepositoryChangedFile } from '../source/git.js';
 import { runChecked } from '../util/process.js';
@@ -18,13 +20,14 @@ import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMP
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.26.0-structured-source-facts';
+export const ANALYZER_VERSION = '2.27.0-language-graph-filter';
 
-/** Run the maintained language producer once per source revision, then add its
- * source-located facts to the same graph used by all ordinary graph queries. */
-async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph): Promise<IntelligenceGraph> {
-  const files = graph.coverage?.files ?? [];
-  if (!files.some(file => /\.[cm]?[jt]sx?$/iu.test(file.path))) return graph;
+type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
+
+/** Produce the index before allocating the full native graph so the producer
+ * and graph builder do not hold their largest heaps at the same time. */
+async function prepareLanguageProducer(root: string, files: Array<{ path: string }>): Promise<LanguageProducerInput> {
+  if (!files.some(file => /\.[cm]?[jt]sx?$/iu.test(file.path))) return null;
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'di-scip-'));
   try {
     const dirty = (await runChecked('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'])).stdout.trim();
@@ -42,9 +45,55 @@ async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph):
     const indexer = createRequire(import.meta.url).resolve('@sourcegraph/scip-typescript');
     await runChecked(process.execPath, [indexer, 'index', '--cwd', root, '--output', indexPath,
       '--no-progress-bar', ...configs]);
-    const indexBytes = await fs.readFile(indexPath);
+    let bytes: Uint8Array = await fs.readFile(indexPath);
+    const primary = fromBinary(IndexSchema, bytes);
+    const indexed = new Set(primary.documents.map(document => document.relativePath));
+    let fallbackError: string | undefined;
+    const missing = files.map(file => file.path)
+      .filter(file => /\.[cm]?[jt]sx?$/iu.test(file) && !indexed.has(file));
+    if (missing.length) {
+      const fallback = path.join(temp, 'remaining-sources.json');
+      await fs.writeFile(fallback, JSON.stringify({ compilerOptions: {
+        allowJs: true, checkJs: false, noEmit: true, target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext',
+      }, files: missing.map(file => path.join(root, file)) }));
+      const fallbackIndex = path.join(temp, 'remaining.scip');
+      try {
+        await runChecked(process.execPath, [indexer, 'index', '--cwd', root, '--output', fallbackIndex,
+          '--no-progress-bar', fallback]);
+        const remaining = fromBinary(IndexSchema, await fs.readFile(fallbackIndex));
+        for (const document of remaining.documents) {
+          if (!indexed.has(document.relativePath)) {
+            indexed.add(document.relativePath);
+            primary.documents.push(document);
+          }
+        }
+        const external = new Set(primary.externalSymbols.map(symbol => symbol.symbol));
+        for (const symbol of remaining.externalSymbols) if (!external.has(symbol.symbol)) {
+          external.add(symbol.symbol);
+          primary.externalSymbols.push(symbol);
+        }
+        bytes = toBinary(IndexSchema, primary);
+      } catch (error) {
+        // The ordinary producer output remains useful; uncovered paths are
+        // reported by reconciliation rather than disappearing from coverage.
+        fallbackError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    return { bytes, ...(fallbackError ? { fallbackError } : {}) };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    await fs.rm(temp, { recursive: true, force: true });
+  }
+}
+
+/** Reconcile producer facts into the same graph used by ordinary queries. */
+async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph, producer: LanguageProducerInput): Promise<IntelligenceGraph> {
+  if (!producer) return graph;
+  if ('error' in producer) return { ...graph, producerCoverage: [{ producer: 'scip-typescript', state: 'failed', reason: producer.error }] };
+  try {
     const { projectLocalScipEvidence } = await import('./scipEvidence.js');
-    const result = await projectLocalScipEvidence({ root, graph, indexBytes,
+    const result = await projectLocalScipEvidence({ root, graph, indexBytes: producer.bytes,
       producerRanOnCheckout: true, legacyPositionEncoding: 'utf16' });
     const nodes = result.graph.nodes;
     const edges = dedupeEdges(result.graph.edges);
@@ -60,14 +109,12 @@ async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph):
         definitions: result.counts.definitionsMatched,
         references: result.counts.referencedSymbolsMatched,
         ...(result.counts.sourceDocumentsNotIndexed || result.counts.sourceDocumentsSkipped || result.counts.unresolvedOrUnsafeOccurrences || result.counts.referencesWithoutIndexedDefinition
-          ? { reason: `${result.counts.sourceDocumentsNotIndexed} source files were not indexed; ${result.counts.sourceDocumentsSkipped} index documents were skipped; ${result.counts.unresolvedOrUnsafeOccurrences} occurrences could not be reconciled; ${result.counts.referencesWithoutIndexedDefinition} references retain symbols without definition locations (${result.counts.externalReferences} indexed external references)` } : {}),
+          ? { reason: `${result.counts.sourceDocumentsNotIndexed} source files were not indexed; ${result.counts.sourceDocumentsSkipped} index documents were skipped; ${result.counts.unresolvedOrUnsafeOccurrences} occurrences could not be reconciled; ${result.counts.referencesWithoutIndexedDefinition} references retain symbols without definition locations (${result.counts.externalReferences} indexed external references)${producer.fallbackError ? `; remaining-source producer: ${producer.fallbackError}` : ''}` } : {}),
       }],
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return { ...graph, producerCoverage: [{ producer: 'scip-typescript', state: 'failed', reason }] };
-  } finally {
-    await fs.rm(temp, { recursive: true, force: true });
   }
 }
 
@@ -79,6 +126,7 @@ const UNITY_SERIALIZED_EXTENSIONS = new Set(['.meta', '.unity', '.prefab', '.ass
 const UNITY_JSON_EXTENSIONS = new Set(['.asmdef', '.asmref', '.inputactions']);
 const SYMBOL_KINDS = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);
 const SEMANTIC_PREFIXES = new Set(['surface', 'capability', 'action', 'feature', 'route', 'api', 'mcp', 'provider', 'tool', 'workflow']);
+
 
 interface TrackedFile {
   path: string;
@@ -2495,6 +2543,7 @@ export async function buildRepositoryGraph(input: {
 }): Promise<IntelligenceGraph> {
   const createdAt = new Date().toISOString();
   const tracked = await trackedFiles(input.root);
+  const languageProducer = await prepareLanguageProducer(input.root, tracked);
   const eligible = tracked.filter(file => supportsSourcePath(file.path));
   const selected = [...eligible]
     .sort((left, right) => {
@@ -2632,6 +2681,7 @@ export async function buildRepositoryGraph(input: {
   edges = resolveFrameworkSpine(nodes, edges);
   edges = dedupeEdges(resolveEvidenceSpine(nodes, resolveCrossSource(nodes, edges)));
 
+  sourceTexts.clear();
   const fingerprint = await sourceFingerprint(input.root);
   const fingerprints = graphFingerprints(nodes, edges, evidence);
   const skippedFileLimitFiles = Math.max(0, eligible.length - selected.length);
@@ -2671,5 +2721,5 @@ export async function buildRepositoryGraph(input: {
     unavailableSourceIds: [],
     coverage,
   };
-  return await addLanguageProducerFacts(input.root, graph);
+  return await addLanguageProducerFacts(input.root, graph, languageProducer);
 }

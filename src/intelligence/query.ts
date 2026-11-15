@@ -9,7 +9,7 @@ import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 import { normalizeName } from './model.js';
 import { deriveQueryCorrelations } from './resolver.js';
 import { exactEvidenceQueryBuckets } from './queryArtifacts.js';
-import { observedRelationshipContracts, sourceCapabilityCoverage } from './graphKnowledge.js';
+import { availableRelationshipContracts, observedRelationshipContracts, sourceCapabilityCoverage } from './graphKnowledge.js';
 
 function nodeText(node: GraphNode): string {
   return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ');
@@ -1087,6 +1087,8 @@ export async function graphSchema(project: string, ref?: string, graphId?: strin
     nodeKinds: [...new Set(graph.nodes.map(node => node.kind))].sort(),
     relationshipKinds: [...new Set(graph.edges.map(edge => edge.kind))].sort(),
     relationshipContracts: observedRelationshipContracts(graph),
+    availableRelationshipContracts: availableRelationshipContracts(graph),
+    relationshipCoverage: graph.relationshipCoverage ?? [],
     sourceCapabilityCoverage: sourceCapabilityCoverage(graph),
     relationshipStatuses: ['resolved', 'candidate', 'unresolved'],
     layers: ['semantic', 'structural', 'representation'],
@@ -1109,6 +1111,8 @@ export async function graphCoverage(project: string, ref?: string, graphId?: str
     revision: graph.repositoryRevision,
     coverage: graph.coverage ? { ...graph.coverage, files } : null,
     sourceCapabilityCoverage: sourceCapabilityCoverage(graph),
+    producerCoverage: graph.producerCoverage ?? [],
+    relationshipCoverage: graph.relationshipCoverage ?? [],
     summary: coverageSummary(graph),
     unavailableSourceIds: graph.unavailableSourceIds,
   };

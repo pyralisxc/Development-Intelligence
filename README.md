@@ -66,7 +66,7 @@ Graph/code primitives:
 - `analyze_impact`
 - `query_parity`
 
-`query_intelligence` is the shared deterministic Assessment Engine used by MCP and the Workbench. It projects revision-bound claims, proof bundles, typed capability-realization paths, hypotheses, and audit findings over the selected graph. Proof is purpose-aware: a relationship may be resolved in the graph yet still be inadmissible for a realization claim (for example, declaration-only or naming-correlation edges). Caller-required facets are ephemeral expectations: an unobserved facet becomes contradicted only when the claim's repository scope is exhaustively covered across tracked sources; unsupported, partial, skipped, failed, or unavailable sources keep absence unproven.
+`investigate`, ordinary `query_intelligence` questions, and the Workbench use the same non-generative language-to-graph filter. Results include source conditions, effects, their requirements, related relationships, coverage, and pagination. Supply a scope or graph filters to refine the same selection. `query_intelligence` with explicit `requiredFacets` evaluates a caller-owned realization expectation.
 - `evaluate_parity`
 
 There is no separate Parity database, public cache-management API, provider-specific graph query language, or development-methodology API.

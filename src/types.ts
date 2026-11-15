@@ -207,6 +207,17 @@ export interface GraphCoverage {
 
 export type GraphRole = 'A' | 'W' | 'B';
 
+export interface GraphRelationshipCoverage {
+  relationshipKind: string;
+  subjectId: string;
+  direction: 'inbound' | 'outbound';
+  complete: boolean;
+  allTargets?: boolean;
+  comparisonIds?: string[];
+  basis: string;
+  evidenceIds?: string[];
+}
+
 export const GRAPH_SCHEMA_VERSION = 2 as const;
 
 export interface IntelligenceGraph {
@@ -242,6 +253,7 @@ export interface IntelligenceGraph {
     references?: number;
     reason?: string;
   }>;
+  relationshipCoverage?: GraphRelationshipCoverage[];
 }
 
 export interface GraphCheckpointSummary {

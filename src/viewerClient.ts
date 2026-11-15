@@ -314,8 +314,8 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
   const sourceData = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
   if (!sectionIsCurrent(epoch, 'query')) return;
   const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
-  content.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><p class="muted">DI queries are deterministic projections over graph/code/change evidence. External technical sources are bounded read-only adapter requests and do not automatically become accepted topology.</p></div><div id="query-result" class="query-result"></div>`;
-  const run = async () => {
+  content.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
+  const run = async (offset = 0) => {
     const text = (document.getElementById('query-text') as HTMLTextAreaElement).value.trim();
     const sourceId = (document.getElementById('query-source') as HTMLSelectElement).value;
     preferredQuerySource = sourceId;
@@ -323,10 +323,27 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
     const target = document.getElementById('query-result') as HTMLElement;
     target.innerHTML = empty('Running query', 'Gathering bounded evidence…');
     try {
-      const result = await postJson('/workbench/query', { text, ...(sourceId ? { sourceId } : {}) });
+      const scope = (document.getElementById('query-scope') as HTMLInputElement).value.trim();
+      const splitKinds = (id: string) => (document.getElementById(id) as HTMLInputElement).value.split(',').map(value => value.trim()).filter(Boolean);
+      const nodeKinds = splitKinds('query-node-kinds');
+      const relationshipKinds = splitKinds('query-edge-kinds');
+      const direction = (document.getElementById('query-direction') as HTMLSelectElement).value;
+      const comparisonIds = splitKinds('query-comparison-ids');
+      const comparisonScope = (document.getElementById('query-comparison-scope') as HTMLInputElement).value.trim();
+      const comparisonKinds = splitKinds('query-comparison-kinds');
+      const conditionContains = (document.getElementById('query-condition') as HTMLInputElement).value.trim();
+      const conditionValue = (document.getElementById('query-condition-truth') as HTMLSelectElement).value;
+      const effectKinds = splitKinds('query-effect-kinds');
+      const depth = Number((document.getElementById('query-depth') as HTMLInputElement).value) || 1;
+      const result = await postJson('/workbench/query', { text, offset, depth, ...(direction ? { direction } : {}),
+        ...(scope ? { scope } : {}), ...(nodeKinds.length ? { nodeKinds } : {}),
+        ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) });
       if (!sectionIsCurrent(epoch, 'query')) return;
-      target.innerHTML = `<div class="card"><h3>${esc(result.intent ?? 'query')}</h3><div class="answer">${esc(result.answer ?? '')}</div>${renderQueryResult(result.result)}</div>`;
+      const page = result.result?.page;
+      target.innerHTML = `<div class="card"><h3>${esc(result.intent ?? 'query')}</h3><div class="answer">${esc(result.answer ?? '')}</div>${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
       wireNodeButtons(target);
+      target.querySelector<HTMLButtonElement>('#query-previous')?.addEventListener('click', () => void run(Math.max(0, page.offset - page.limit)));
+      target.querySelector<HTMLButtonElement>('#query-next')?.addEventListener('click', () => void run(page.nextOffset));
       if (result.intent === 'inspect' && result.result?.entity) { selectedInspection = result.result; inspectorTab = 'summary'; renderInspector(); }
     } catch (error) { target.innerHTML = `<div class="card"><h3>Query failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`; }
   };
@@ -897,6 +914,14 @@ async function renderParity(epoch: number): Promise<void> {
 
 function renderQueryResult(result: any): string {
   if (!result) return '';
+  if (Array.isArray(result.sourceFamilies)) {
+    const language = result.interpretation?.negated
+      ? `<p class="muted">Negative wording: ${esc((result.interpretation.negativeTerms ?? []).join(', ') || 'not')}</p>` : '';
+    const relationships = (result.navigation?.relationships ?? []).map((item: any) => `<div class="row"><span class="badge">${esc(item.edge.kind)}</span><span class="row-main">${esc(item.from?.name ?? item.edge.from)} → ${esc(item.to?.name ?? item.edge.to)}<small>${esc(item.edge.status)}</small></span></div>`).join('');
+    const comparison = (result.comparison?.items ?? []).map((item: any) => `<div class="row"><span class="badge">${esc(item.state)}</span><span class="row-main">${esc(item.node.name ?? item.node.id)}<small>${esc(item.node.locator)}</small></span></div>`).join('');
+    const families = result.sourceFamilies.map((family: any) => `<details><summary>${esc(family.subjectName)} · ${family.facts.length} source facts${family.focusedFacts?.length ? ` · ${family.focusedFacts.length} match the wording` : ''}</summary><div class="list">${family.facts.map((fact: any) => `<div class="row"><span class="badge">${esc(fact.effectKind ?? fact.kind)}</span><span class="row-main"><code>${esc(fact.expression)}</code><small>${esc(fact.locator)}${fact.requirements?.length ? ` · requires ${esc(fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}${requirement.predicate ?? requirement.conditionId}`).join(' and '))}` : ''}</small></span></div>`).join('')}</div></details>`).join('');
+    return `${language}${relationships ? `<h4>Known relationships</h4><div class="list">${relationships}</div>` : ''}${comparison ? `<h4>Comparison</h4><div class="list">${comparison}</div>` : ''}${families}<div class="list">${(result.nodes ?? []).map(nodeRow).join('')}</div><details><summary class="muted">Graph details</summary><pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre></details>`;
+  }
   if (Array.isArray(result.claims) && result.answerStatus) return renderAssessment(result);
   if (result.entity) return `<div class="list">${nodeRow(result.entity)}</div>`;
   if (Array.isArray(result.nodes)) return `<div class="list">${result.nodes.slice(0, 30).map(nodeRow).join('')}</div><details><summary class="muted">Raw result</summary><pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre></details>`;
