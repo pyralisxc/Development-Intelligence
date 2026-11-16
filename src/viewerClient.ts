@@ -939,6 +939,12 @@ async function renderParity(epoch: number): Promise<void> {
 
 function renderQueryResult(result: any): string {
   if (!result) return '';
+  if (result.projection?.kind === 'repository-semantic-summary') {
+    const understanding = result.semanticUnderstanding ?? {};
+    const items = understanding.meanings ?? understanding.concepts ?? understanding.candidates ?? [];
+    const evidence = items.map((item: any) => `<div class="row"><span class="badge">${esc(item.kind ?? 'source evidence')}</span><span class="row-main"><strong>${esc(item.name ?? item.scope ?? item.id)}</strong>${item.description ? `<small>${esc(item.description)}</small>` : ''}${item.locator ? `<small>${esc(item.locator)}</small>` : ''}</span></div>`).join('');
+    return `${evidence ? `<h4>Evidence-backed areas</h4><div class="list">${evidence}</div>` : '<p class="muted">No source-backed semantic areas were selected.</p>'}<details><summary class="muted">Evidence and coverage details</summary><pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre></details>`;
+  }
   if (Array.isArray(result.sourceFamilies)) {
     const language = result.interpretation?.negated
       ? `<p class="muted">Negative wording: ${esc((result.interpretation.negativeTerms ?? []).join(', ') || 'not')}</p>` : '';

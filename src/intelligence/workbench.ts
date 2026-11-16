@@ -705,8 +705,11 @@ async function repositorySemanticUnderstanding(
   const coverageNote = truth.exclusions.completeForEligibleSources
     ? 'All eligible source files were analyzed.'
     : 'Source coverage is incomplete; absence and exhaustive conclusions are unavailable.';
+  const sourceIdentity = graph.sourceState?.kind === 'working-tree'
+    ? 'working tree ' + graph.sourceFingerprint + ' (HEAD ' + graph.sourceState.headRevision + ')'
+    : graph.repositoryRevision ?? 'an unavailable revision';
   const summary = primary.length
-    ? 'Current source understanding of ' + project + ' at ' + String(graph.repositoryRevision)
+    ? 'Current source understanding of ' + project + ' at ' + sourceIdentity
       + ': ' + truth.counts.provenTechnicalScopes + ' independently proven technical source scope(s), '
       + truth.counts.sourceDeclaredConcepts + ' source-declared semantic concept(s), '
       + truth.counts.supportedInterpretations + ' source-supported interpretation(s). '
@@ -1622,8 +1625,17 @@ export async function queryWorkbenchRequest(input: {
   // contract. Explicit technical-source queries retain their source adapter.
   if (!input.sourceId) {
     let previousSubject: string | undefined;
-    const items = questions.map((question, index) => {
-      if (!question) { previousSubject = undefined; return { index, question, status: 'error', error: 'Question is empty' }; }
+    const items: Array<Record<string, any>> = [];
+    for (const [index, question] of questions.entries()) {
+      if (!question) { previousSubject = undefined; items.push({ index, question, status: 'error', error: 'Question is empty' }); continue; }
+      const repositoryQuestion = /^(?:what (?:does|is) (?:this|the) (?:project|repository|repo)(?: do)?|what is (?:this|the) (?:project|repository|repo) (?:for|about)|describe (?:this|the) (?:project|repository|repo))\s*[?.!]*$/iu.test(question);
+      if (repositoryQuestion && !input.scope && !input.offset && !input.nodeKinds?.length && !input.relationshipKinds?.length && !input.statuses?.length && !input.direction && !input.comparisonIds?.length && !input.comparisonScope && !input.comparisonKinds?.length && !input.conditionContains && input.conditionTruth === undefined && !input.effectKinds?.length && (input.depth === undefined || input.depth === 1)) {
+        const result = await scopeOrientation({ project: input.project, graphId: graph.graphId, semanticSummaryOnly: true, orientationReuse: { graph }, rankBy: input.rankBy, semanticDepth: input.semanticDepth, limit: input.limit });
+        previousSubject = undefined;
+        items.push({ index, question, status: 'ok', intent: 'repository-orientation', subject: null,
+          answer: result.summary, routing: { tool: 'orient_scope' }, result });
+        continue;
+      }
       const inheritedScope = !input.scope && previousSubject && /\b(?:it|its|itself)\b/iu.test(question)
         ? previousSubject : undefined;
       const effectiveScope = input.scope ?? inheritedScope;
@@ -1663,14 +1675,14 @@ export async function queryWorkbenchRequest(input: {
       const answer = comparisonAnswer || relationshipAnswer || (focus.length
         ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
         : `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`);
-      return { index, question, status: 'ok', intent: 'graph-filter', subject,
+      items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,
         ...(inheritedScope ? { inheritedSubject: inheritedScope } : {}),
         answer,
-        routing: { tool: 'graph-filter', selection: result.interpretation.selection }, result };
-    });
+        routing: { tool: 'graph-filter', selection: result.interpretation.selection }, result });
+    }
     const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
       questionCount: questions.length, originalText: originalText || null,
-      ...(input.rankBy || input.semanticDepth ? { unappliedOptions: [
+      ...((input.rankBy || input.semanticDepth) && items.some(item => item.intent === 'graph-filter') ? { unappliedOptions: [
         ...(input.rankBy ? ['rankBy'] : []), ...(input.semanticDepth ? ['semanticDepth'] : []),
       ] } : {}) };
     if (items.length === 1 && items[0]!.status === 'ok') return { ...items[0], request };

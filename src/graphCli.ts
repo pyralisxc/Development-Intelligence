@@ -3,7 +3,6 @@ import { promises as fs } from 'node:fs';
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 import { buildLocalGraph, buildLocalRevisionGraph, buildLocalWorkingGraph } from './intelligence/local.js';
 import { activateLocalSourceGraph, backupLocalSourceGraphs, localSourceGraphHistory, readLocalSourceGraph, removeLocalGraphTarget, saveLocalSourceGraph } from './intelligence/localGraphStore.js';
-import { filterGraph } from './intelligence/graphFilter.js';
 import { compareRevisionSet, diffGraphs, pageGraphDiff } from './intelligence/query.js';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -131,13 +130,26 @@ async function main(): Promise<void> {
     const question = arg('--question');
     if (!dataDir || !project || !question) throw new Error('working-query requires --data-dir, --project and --question');
     const target = arg('--target');
-    const catalog = target ? await localSourceGraphHistory(dataDir, project) : null;
+    const catalog = target || arg('--graph-id') ? await localSourceGraphHistory(dataDir, project) : null;
     const generation = target ? catalog?.targets?.[target] : undefined;
     const entry = target ? catalog?.entries.find(item => item.generation === generation) : undefined;
     const graphId = arg('--graph-id') ?? entry?.graphId;
     if (target && !graphId) throw new Error(`No retained graph target: ${target}`);
-    const graph = await readLocalSourceGraph(dataDir, project, graphId, arg('--graph-id') ? undefined : entry?.generation);
-    console.log(JSON.stringify({ project, graphId: graph.graphId, sourceState: graph.sourceState, result: filterGraph(graph, { text: question }) }, null, 2));
+    if (arg('--graph-id') && !catalog?.entries.some(item => item.graphId === graphId)) throw new Error(`Local graph is not retained: ${graphId}`);
+    process.env.DEVINT_LOCAL_GRAPH_DIR = path.resolve(dataDir);
+    process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [project]: { repository: pathToFileURL(path.resolve(root)).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
+    const offset = Number(arg('--offset') ?? '0'), limit = Number(arg('--limit') ?? '20');
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Query offset must be non-negative and limit must be 1..1000');
+    const { queryWorkbenchRequest } = await import('./intelligence/workbench.js');
+    const response = await queryWorkbenchRequest({ project, text: question, ...(graphId ? { graphId } : {}), offset, limit });
+    if (process.argv.includes('--details')) console.log(JSON.stringify(response, null, 2));
+    else {
+      const result = response.result as Record<string, unknown> | undefined;
+      const items = Array.isArray(response.items) ? response.items.map((item: any) => ({ question: item.question, status: item.status,
+        answer: item.answer, error: item.error, intent: item.intent, coverage: item.result?.coverage, page: item.result?.page })) : undefined;
+      console.log(JSON.stringify({ project, question, answer: response.answer, intent: response.intent, request: response.request,
+        coverage: result?.coverage, page: result?.page, ...(items ? { items } : {}), details: 'Use --details for the complete evidence response.' }, null, 2));
+    }
   } else if (command === 'working-serve' || command === 'working-mcp') {
     const dataDir = arg('--data-dir');
     if (!dataDir || !project) throw new Error(`${command} requires --data-dir and --project`);
