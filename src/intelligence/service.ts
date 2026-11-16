@@ -979,10 +979,18 @@ export async function graphContext(project: string, options: { ref?: string; gra
     const entry = options.graphId ? catalog?.entries.find(item => item.graphId === options.graphId) : catalog?.entries.find(item => item.generation === generation);
     if (entry) {
       const config = await getProjectConfig(project);
-      const key = `${localDir}\0${project}`;
+      const prefix = `${localDir}\0${project}\0`;
+      const key = `${prefix}${entry.generation}`;
       let graph = localGraphCache.get(key);
-      if (graph?.graphId !== entry.graphId) {
-        graph = await readLocalSourceGraph(localDir, project, entry.graphId);
+      if (!graph) {
+        graph = await readLocalSourceGraph(localDir, project, entry.graphId, entry.generation);
+        localGraphCache.set(key, graph);
+        const configured = Number(process.env.DEVINT_LOCAL_GRAPH_CACHE_SIZE ?? '3');
+        const maximum = Number.isSafeInteger(configured) && configured >= 0 ? configured : 3;
+        const keys = [...localGraphCache.keys()].filter(candidate => candidate.startsWith(prefix));
+        while (keys.length > maximum) localGraphCache.delete(keys.shift()!);
+      } else {
+        localGraphCache.delete(key);
         localGraphCache.set(key, graph);
       }
       const sha = graph.sourceState?.headRevision ?? graph.repositoryRevision;
@@ -1059,6 +1067,7 @@ export async function currentGraph(project: string, ref?: string, graphId?: stri
 }
 
 export function clearGraphCache(project?: string): void {
+  for (const key of localGraphCache.keys()) if (!project || key.split('\0')[1] === project) localGraphCache.delete(key);
   if (hasProjectAccess()) {
     const prefix = `${projectAccessScopeKey()}:`;
     for (const key of repositoryCache.keys()) if (key.startsWith(prefix) && (!project || key.startsWith(`${prefix}${project}:`))) repositoryCache.delete(key);

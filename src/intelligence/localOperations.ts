@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { localSourceGraphHistory } from './localGraphStore.js';
 
-type Settings = { installDir: string; dataDir: string; scratchDir: string; repoPath: string; project: string; retain: number; port: number; backupDir?: string };
+type Settings = { installDir: string; dataDir: string; scratchDir: string; repoPath: string; project: string; retain: number; cacheSize?: number; port: number; backupDir?: string };
 type Job = { action: string; state: 'running' | 'complete' | 'failed'; output: string; startedAt: string; finishedAt?: string };
 let job: Job | null = null;
 const settingsPath = () => {
@@ -27,10 +27,10 @@ export async function updateLocalSettings(input: Record<string, unknown>): Promi
     if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} must be a path`);
     return path.resolve(value.trim());
   };
-  const retain = Number(input.retain ?? previous.retain), port = Number(input.port ?? previous.port);
-  if (!Number.isSafeInteger(retain) || retain < 1 || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Retention must be positive and port must be between 1 and 65535');
+  const retain = Number(input.retain ?? previous.retain), cacheSize = Number(input.cacheSize ?? previous.cacheSize ?? 3), port = Number(input.port ?? previous.port);
+  if (!Number.isSafeInteger(retain) || retain < 1 || !Number.isSafeInteger(cacheSize) || cacheSize < 0 || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Retention must be positive, cache size non-negative and port between 1 and 65535');
   const { backupDir: _previousBackup, ...base } = previous;
-  const settings: Settings = { ...base, repoPath: str('repoPath', previous.repoPath), dataDir: str('dataDir', previous.dataDir), scratchDir: str('scratchDir', previous.scratchDir), retain, port,
+  const settings: Settings = { ...base, repoPath: str('repoPath', previous.repoPath), dataDir: str('dataDir', previous.dataDir), scratchDir: str('scratchDir', previous.scratchDir), retain, cacheSize, port,
     ...(typeof input.backupDir === 'string' && input.backupDir.trim() ? { backupDir: path.resolve(input.backupDir.trim()) } : {}) };
   await fs.access(settings.repoPath);
   await fs.mkdir(settings.dataDir, { recursive: true });
@@ -40,7 +40,10 @@ export async function updateLocalSettings(input: Record<string, unknown>): Promi
   await fs.rename(temporary, settingsPath());
   process.env.DEVINT_LOCAL_GRAPH_DIR = settings.dataDir;
   process.env.DEVINT_SCRATCH_DIR = settings.scratchDir;
+  process.env.DEVINT_LOCAL_GRAPH_CACHE_SIZE = String(settings.cacheSize);
   process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [settings.project]: { repository: pathToFileURL(settings.repoPath).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
+  const { clearGraphCache } = await import('./service.js');
+  clearGraphCache(settings.project);
   return settings;
 }
 export async function startLocalOperation(input: Record<string, unknown>): Promise<Job> {

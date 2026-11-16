@@ -20,7 +20,7 @@ import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMP
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.30.1-cross-platform-source-identities';
+export const ANALYZER_VERSION = '2.30.2-cross-platform-source-identities';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -104,7 +104,7 @@ async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph, 
     const edges = dedupeEdges(result.graph.edges);
     const fingerprints = graphFingerprints(nodes, edges, graph.evidence);
     return { ...graph, nodes, edges, ...fingerprints,
-      graphId: graph.sourceState ? `worktree-${graph.sourceFingerprint}-${stableHash([ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}` : `repo-${graph.repositoryRevision}-${stableHash([graph.sourceFingerprint, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}`,
+      graphId: graph.sourceState ? `worktree-${graph.sourceFingerprint}-${stableHash([graph.sourceState.headRevision, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}` : `repo-${graph.repositoryRevision}-${stableHash([graph.sourceFingerprint, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}`,
       namingDivergences: deriveNamingDivergences(nodes, edges), unmatchedNodeIds: deriveUnmatched(nodes, edges),
       producerCoverage: [{ producer: result.index.producer.name,
         state: result.counts.sourceDocumentsSkipped || result.counts.sourceDocumentsNotIndexed || result.counts.unresolvedOrUnsafeOccurrences || result.counts.referencesWithoutIndexedDefinition ? 'partial' : 'complete',
@@ -2732,7 +2732,7 @@ export async function buildRepositoryGraph(input: {
   const graph: IntelligenceGraph = {
     schemaVersion: 2,
     analyzerVersion: ANALYZER_VERSION,
-    graphId: input.workingTree ? `worktree-${fingerprint}-${stableHash([ANALYZER_VERSION]).slice(0, 10)}` : `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
+    graphId: input.workingTree ? `worktree-${fingerprint}-${stableHash([input.revision, ANALYZER_VERSION]).slice(0, 10)}` : `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
     project: input.project,
     role: input.role ?? 'W',
     createdAt,

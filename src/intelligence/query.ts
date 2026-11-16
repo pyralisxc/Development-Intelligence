@@ -83,6 +83,7 @@ export function diffGraphs(base: IntelligenceGraph, head: IntelligenceGraph, lay
     head: { graphId: head.graphId, role: head.role, revision: head.repositoryRevision, sourceFingerprint: head.sourceFingerprint, topologyFingerprint: head.topologyFingerprint, evidenceFingerprint: head.evidenceFingerprint, analyzerVersion: head.analyzerVersion },
     topologyChanged: base.topologyFingerprint !== head.topologyFingerprint,
     evidenceChanged: base.evidenceFingerprint !== head.evidenceFingerprint,
+    fingerprintScope: 'accepted-semantic-projection',
     analyzerChanged: base.analyzerVersion !== head.analyzerVersion,
     comparisonNote: 'Unique equivalent source occurrences are reconciled across movement. Unmatched producer output, analysis changes in unchanged files, ambiguous occurrences, moved records and provenance changes are separate.',
     nodes: compared.nodes,
@@ -145,7 +146,7 @@ export async function diffRevisions(input: {
   const result = diffGraphs(base.graph, head.graph, input.layers) as any;
   return {
     ...result,
-    comparisonMode: 'current-analyzer-replay',
+    comparisonMode: result.analyzerChanged ? 'mixed-analyzers' : process.env.DEVINT_LOCAL_GRAPH_DIR ? 'retained-graphs' : 'current-analyzer-replay',
     base: { ...result.base, identity: revisionIdentity(base.revision) },
     head: { ...result.head, identity: revisionIdentity(head.revision) },
   };

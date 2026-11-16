@@ -176,14 +176,14 @@ export async function removeLocalGraphTarget(root: string, project: string, name
   });
 }
 
-export async function readLocalSourceGraph(root: string, project: string, graphId?: string): Promise<IntelligenceGraph> {
+export async function readLocalSourceGraph(root: string, project: string, graphId?: string, generation?: string): Promise<IntelligenceGraph> {
   const directory = projectDirectory(root, project);
   try { await fs.access(directory); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`No local graph for ${project}; build it first`); throw error; }
   return await withCatalogLock(directory, async () => {
   const catalog = await catalogAt(directory);
   if (!catalog || catalog.project !== project) throw new Error(`No local graph for ${project}; build it first`);
-  const entry = graphId ? catalog.entries.find(item => item.graphId === graphId) : catalog.entries.find(item => item.generation === catalog.active);
+  const entry = generation ? catalog.entries.find(item => item.generation === generation && (!graphId || item.graphId === graphId)) : graphId ? catalog.entries.find(item => item.graphId === graphId) : catalog.entries.find(item => item.generation === catalog.active);
   if (!entry || !/^[a-f0-9]{32}$/u.test(entry.generation)) throw new Error(`Local graph is not retained: ${graphId ?? 'active'}`);
   const target = path.join(directory, entry.generation);
   const manifest = JSON.parse(await fs.readFile(path.join(target, 'manifest.json'), 'utf8')) as Manifest;

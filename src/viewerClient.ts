@@ -944,43 +944,53 @@ async function renderChanges(epoch: number): Promise<void> {
   const defaultHead = viewerConfig.ref || (viewerConfig.local ? 'working-tree' : 'HEAD');
   content.innerHTML = `<div class="card"><h3>Graph comparison</h3><h2>Compare repository states</h2><p>${viewerConfig.local ? 'Compare the retained main, preview and working graphs, or choose two targets below.' : 'Leave the base empty for accepted → working semantic change. Historical comparisons replay both exact revisions through the same current analyzer.'}</p>${viewerConfig.local ? '<button class="primary" id="compare-three" type="button">Compare main, preview and working</button>' : ''}<div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare two</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
   let offset = 0;
+  const detailPageSize = 10;
+  let requestNumber = 0;
   const run = async () => {
+    const request = ++requestNumber;
     const baseRef = (document.getElementById('change-base') as HTMLInputElement).value.trim();
     const headRef = (document.getElementById('change-head') as HTMLInputElement).value.trim();
     const target = document.getElementById('change-result') as HTMLElement;
-    target.innerHTML = empty('Loading change intelligence', baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing accepted semantic topology with current working reality…');
+    target.innerHTML = empty('Loading change intelligence', viewerConfig.local ? 'Comparing the selected graph targets…' : baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing accepted semantic topology with current working reality…');
     try {
-      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}), ...(viewerConfig.local ? { offset: String(offset), limit: '50' } : {}) }));
-      if (!sectionIsCurrent(epoch, 'changes')) return;
+      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}), ...(viewerConfig.local ? { offset: String(offset), limit: String(detailPageSize) } : {}) }));
+      if (!sectionIsCurrent(epoch, 'changes') || request !== requestNumber) return;
       const counts = data.counts ?? {};
       const baseIdentity = data.detail?.base?.identity;
       const headIdentity = data.detail?.head?.identity;
       const identity = baseIdentity && headIdentity ? `<p class="muted">${esc(baseIdentity.selector)} → ${esc(headIdentity.selector)}<br>${esc(baseIdentity.sha)} → ${esc(headIdentity.sha)}</p>` : '';
-      target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Graph comparison' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? 'Both graphs use the same current analyzer.' : 'Accepted semantic comparison ignores line movement and provenance-only churn.'}</p>${data.detail?.comparisonNote ? `<p class="muted">${esc(data.detail.comparisonNote)}</p>` : ''}</div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${data.page ? `<p class="muted">Showing up to ${data.page.limit} items per change category, starting at ${data.page.offset + 1}.</p><button id="change-previous" ${offset === 0 ? 'disabled' : ''}>Previous</button> <button id="change-next" ${data.page.nextOffset === null ? 'disabled' : ''}>Next</button>` : ''}${renderChangeBucket(data.detail)}</div>`;
+      target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Graph comparison' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? data.detail?.analyzerChanged ? 'These graphs use different analyzer versions; rebuild the targets to compare with one analyzer.' : 'Both graphs use the same analyzer.' : 'Accepted semantic comparison ignores line movement and provenance-only churn.'}</p>${data.detail?.comparisonNote ? `<p class="muted">${esc(data.detail.comparisonNote)}</p>` : ''}</div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${data.page ? `<p class="muted">Showing up to ${data.page.limit} items per change category, starting at ${data.page.offset + 1}.</p><button id="change-previous" ${offset === 0 ? 'disabled' : ''}>Previous</button> <button id="change-next" ${data.page.nextOffset === null ? 'disabled' : ''}>Next</button>` : ''}${renderChangeBucket(data.detail)}</div>`;
       wireNodeButtons(target);
-      target.querySelector('#change-previous')?.addEventListener('click', () => { offset = Math.max(0, offset - 50); void run(); });
+      target.querySelector('#change-previous')?.addEventListener('click', () => { offset = Math.max(0, offset - detailPageSize); void run(); });
       target.querySelector('#change-next')?.addEventListener('click', () => { offset = data.page.nextOffset; void run(); });
     } catch (error) {
+      if (request !== requestNumber) return;
       target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
     }
   };
   const runAll = async () => {
+    const request = ++requestNumber;
     const target = document.getElementById('change-result') as HTMLElement;
     target.innerHTML = empty('Comparing graph targets', 'Comparing each pair using the same graph operation…');
     try {
-      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'compare-graphs', offset: String(offset), limit: '20' }));
-      if (!sectionIsCurrent(epoch, 'changes')) return;
-      const comparisons = data.comparisons ?? [];
-      const next = comparisons.some((item: any) => item.page?.nextOffset !== null);
-      target.innerHTML = `<div class="card"><p>Source changes, moved records, analysis changes, ambiguous occurrences and provenance changes are separate. Page ${Math.floor(offset / 20) + 1}.</p><button id="all-previous" ${offset === 0 ? 'disabled' : ''}>Previous</button> <button id="all-next" ${next ? '' : 'disabled'}>Next</button></div>${comparisons.map((item: any) => { const t = item.page?.totals ?? {}; const count = (name: string) => Number(t['nodes.' + name] ?? 0) + Number(t['edges.' + name] ?? 0); return `<div class="card" style="margin-top:13px"><h3>${esc(item.baseRef)} → ${esc(item.ref)}</h3><div class="metric-grid">${metric('added', count('added'))}${metric('removed', count('removed'))}${metric('changed', count('changed'))}${metric('moved', count('moved'))}${metric('analysis added', count('analysisAdded'))}${metric('analysis removed', count('analysisRemoved'))}${metric('analysis changed', count('analysisChanged'))}${metric('ambiguous additions', count('ambiguousAdded'))}${metric('ambiguous removals', count('ambiguousRemoved'))}${metric('provenance', count('provenanceChanged'))}</div>${renderChangeBucket(item.detail)}</div>`; }).join('')}`;
-      wireNodeButtons(target);
-      target.querySelector('#all-previous')?.addEventListener('click', () => { offset = Math.max(0, offset - 20); void runAll(); });
-      target.querySelector('#all-next')?.addEventListener('click', () => { offset += 20; void runAll(); });
-    } catch (error) { target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`; }
+      const comparisons: any[] = [];
+      const pairs = [['main', 'preview'], ['main', 'working-tree'], ['preview', 'working-tree']];
+      for (const [baseRef, ref] of pairs) {
+        const result = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', baseRef: baseRef!, headRef: ref!, offset: '0', limit: '1' }));
+        if (!sectionIsCurrent(epoch, 'changes') || request !== requestNumber) return;
+        comparisons.push({ baseRef, ref, page: result.page, detail: result.detail });
+        target.innerHTML = `<div class="card"><p>Source changes, moved records, analysis changes, ambiguous occurrences and provenance changes are separate. Select a pair to inspect all of its paged evidence.${comparisons.length < pairs.length ? ' Comparing remaining pairs…' : ''}</p></div>${comparisons.map((item: any) => { const t = item.page?.totals ?? {}; const count = (name: string) => Number(t['nodes.' + name] ?? 0) + Number(t['edges.' + name] ?? 0); const identity = (graph: any) => graph?.revision ?? `working ${String(graph?.sourceFingerprint ?? '').slice(0, 12)}`; return `<div class="card" style="margin-top:13px"><h3>${esc(item.baseRef)} → ${esc(item.ref)}</h3><p class="muted">${esc(identity(item.detail?.base))} → ${esc(identity(item.detail?.head))}${item.detail?.analyzerChanged ? ' · Different analyzers; rebuild targets' : ''}</p><div class="metric-grid">${metric('added', count('added'))}${metric('removed', count('removed'))}${metric('changed', count('changed'))}${metric('moved', count('moved'))}${metric('analysis added', count('analysisAdded'))}${metric('analysis removed', count('analysisRemoved'))}${metric('analysis changed', count('analysisChanged'))}${metric('ambiguous additions', count('ambiguousAdded'))}${metric('ambiguous removals', count('ambiguousRemoved'))}${metric('provenance', count('provenanceChanged'))}</div><button class="primary" data-change-base="${esc(item.baseRef)}" data-change-head="${esc(item.ref)}">Inspect this pair</button></div>`; }).join('')}`;
+        for (const button of Array.from(target.querySelectorAll<HTMLButtonElement>('[data-change-base]'))) button.addEventListener('click', () => {
+          (document.getElementById('change-base') as HTMLInputElement).value = button.dataset.changeBase ?? '';
+          (document.getElementById('change-head') as HTMLInputElement).value = button.dataset.changeHead ?? '';
+          offset = 0; void run();
+        });
+      }
+    } catch (error) { if (request === requestNumber) target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`; }
   };
   (document.getElementById('compare-revisions') as HTMLButtonElement).addEventListener('click', () => { offset = 0; void run(); });
   document.getElementById('compare-three')?.addEventListener('click', () => { offset = 0; void runAll(); });
-  await run();
+  if (viewerConfig.local) await runAll(); else await run();
 }
 
 function renderChangeBucket(detail: any): string {
@@ -1000,7 +1010,7 @@ async function renderLocal(epoch: number): Promise<void> {
   if (!sectionIsCurrent(epoch, 'local')) return;
   const settings = state.settings;
   const field = (label: string, id: string, value: unknown) => `<label style="display:block;margin:10px 0"><span class="muted">${esc(label)}</span><input id="${id}" value="${esc(value)}" style="display:block;width:100%;border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:9px;padding:9px"></label>`;
-  content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Build current files and keep selected committed revisions as comparison targets.</p><button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}${field('Target name', 'local-target', 'preview')}<button data-local-action="build-revision">Build revision target</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
+  content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Graphs cached in memory (0 disables cache)', 'local-cache', settings.cacheSize ?? 3)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Build current files and keep selected committed revisions as comparison targets.</p><button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}${field('Target name', 'local-target', 'preview')}<button data-local-action="build-revision">Build revision target</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
   const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
   const show = (data: any) => {
     const history = document.getElementById('local-history');
@@ -1015,7 +1025,7 @@ async function renderLocal(epoch: number): Promise<void> {
     catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
   };
   (document.getElementById('local-save') as HTMLButtonElement).addEventListener('click', async () => {
-    try { await postJson('/workbench/local', { action: 'settings', repoPath: value('local-repo'), dataDir: value('local-data'), scratchDir: value('local-scratch'), backupDir: value('local-backup'), retain: Number(value('local-retain')), port: Number(value('local-port')) }); await poll(); }
+    try { await postJson('/workbench/local', { action: 'settings', repoPath: value('local-repo'), dataDir: value('local-data'), scratchDir: value('local-scratch'), backupDir: value('local-backup'), retain: Number(value('local-retain')), cacheSize: Number(value('local-cache')), port: Number(value('local-port')) }); await poll(); }
     catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
   });
   for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-local-action]'))) button.addEventListener('click', async () => {

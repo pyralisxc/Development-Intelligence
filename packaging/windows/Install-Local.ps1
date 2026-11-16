@@ -6,6 +6,7 @@ param(
   [string]$ScratchDir,
   [string]$DesktopDir,
   [int]$Retain = 0,
+  [int]$CacheSize = -1,
   [int]$Port = 0,
   [switch]$SkipInitialBuild,
   [switch]$NonInteractive
@@ -23,10 +24,12 @@ if (-not $NonInteractive) {
   if (-not $DataDir) { $DataDir = Read-Host 'Graph data directory (Enter uses Local AppData)' }
   if (-not $ScratchDir) { $ScratchDir = Read-Host 'Scratch directory (Enter uses the graph data directory)' }
   if (-not $Retain) { $value = Read-Host 'Graph generations to retain (Enter keeps the default)'; if ($value) { $Retain = [int]$value } }
+  if ($CacheSize -lt 0) { $value = Read-Host 'Graphs to cache in memory, 0 disables cache (Enter keeps the default)'; if ($value) { $CacheSize = [int]$value } }
   if (-not $Port) { $value = Read-Host 'Workbench port (Enter keeps the default)'; if ($value) { $Port = [int]$value } }
 }
 $arguments = @($installer, '--repo-path', $RepoPath)
 if ($Retain) { $arguments += @('--retain', "$Retain") }
+if ($CacheSize -ge 0) { $arguments += @('--cache-size', "$CacheSize") }
 if ($Port) { $arguments += @('--port', "$Port") }
 if ($Project) { $arguments += @('--project', $Project) }
 if ($InstallDir) { $arguments += @('--install-dir', $InstallDir) }

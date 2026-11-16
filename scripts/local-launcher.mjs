@@ -15,7 +15,7 @@ if (!commands[command]) {
 const executable = process.execPath;
 const defaults = ['--repo-path', config.repoPath, '--project', config.project, '--data-dir', config.dataDir, '--retain', String(config.retain), '--port', String(config.port)];
 const argv = [path.join(home, 'dist', 'src', 'graphCli.js'), commands[command], ...args, ...defaults];
-const env = { ...process.env, DEVINT_SCRATCH_DIR: config.scratchDir, DEVINT_LOCAL_SETTINGS: path.join(home, 'local-settings.json') };
+const env = { ...process.env, DEVINT_SCRATCH_DIR: config.scratchDir, DEVINT_LOCAL_GRAPH_CACHE_SIZE: String(config.cacheSize ?? 3), DEVINT_LOCAL_SETTINGS: path.join(home, 'local-settings.json') };
 if (command === 'open') {
   const server = spawn(executable, argv, { env, detached: true, stdio: 'ignore' });
   server.unref();

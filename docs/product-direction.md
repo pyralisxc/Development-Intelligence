@@ -14,13 +14,14 @@ The graph is the internal model, not the product identity. The product outcome i
 
 Development Intelligence is built first for a solo software owner working with coding agents across many repositories, languages, revisions, providers, and long-running product histories.
 
-Its quality bar is enterprise-grade evidence discipline—exact revision identity, explicit coverage, bounded credentials, deterministic accepted history, inspectable uncertainty, and reproducible release proof—without making teams, organizational administration, or process governance a prerequisite. Team capability may be added later when it directly improves the solo-owner repository experience; it is not a current product promise.
+Its quality bar is enterprise-grade evidence discipline—exact revision identity for committed states, explicit content identity for local working files, coverage, bounded credentials, deterministic accepted history, inspectable uncertainty, and reproducible release proof—without making teams, organizational administration, or process governance a prerequisite. Team capability may be added later when it directly improves the solo-owner repository experience; it is not a current product promise.
 
 ## The job it owns
 
 Development Intelligence helps answer:
 
 - What exists in this exact revision?
+- What exists in the current local files, including changes not yet committed?
 - How are code, product concepts, routes, APIs, tools, providers, UI representations, and technical evidence connected?
 - What changed between accepted, proposed, historical, and working states?
 - Where is the evidence complete, partial, unsupported, skipped, failed, candidate, or unresolved?

@@ -120,10 +120,10 @@ async function main(): Promise<void> {
       return;
     }
     const catalog = await localSourceGraphHistory(dataDir, project);
-    const resolve = (name: string) => catalog?.entries.find(item => item.generation === catalog.targets?.[name])?.graphId;
-    const baseId = resolve(base), targetId = resolve(target);
-    if (!baseId || !targetId) throw new Error('Comparison targets must have retained graphs');
-    const [left, right] = await Promise.all([readLocalSourceGraph(dataDir, project, baseId), readLocalSourceGraph(dataDir, project, targetId)]);
+    const resolve = (name: string) => catalog?.entries.find(item => item.generation === catalog.targets?.[name]);
+    const baseEntry = resolve(base), targetEntry = resolve(target);
+    if (!baseEntry || !targetEntry) throw new Error('Comparison targets must have retained graphs');
+    const [left, right] = await Promise.all([readLocalSourceGraph(dataDir, project, baseEntry.graphId, baseEntry.generation), readLocalSourceGraph(dataDir, project, targetEntry.graphId, targetEntry.generation)]);
     const page = pageGraphDiff(diffGraphs(left, right), offset, limit);
     console.log(JSON.stringify({ project, baseTarget: base, target, ...page }, null, 2));
   } else if (command === 'working-query') {
@@ -133,9 +133,10 @@ async function main(): Promise<void> {
     const target = arg('--target');
     const catalog = target ? await localSourceGraphHistory(dataDir, project) : null;
     const generation = target ? catalog?.targets?.[target] : undefined;
-    const graphId = arg('--graph-id') ?? (target ? catalog?.entries.find(entry => entry.generation === generation)?.graphId : undefined);
+    const entry = target ? catalog?.entries.find(item => item.generation === generation) : undefined;
+    const graphId = arg('--graph-id') ?? entry?.graphId;
     if (target && !graphId) throw new Error(`No retained graph target: ${target}`);
-    const graph = await readLocalSourceGraph(dataDir, project, graphId);
+    const graph = await readLocalSourceGraph(dataDir, project, graphId, arg('--graph-id') ? undefined : entry?.generation);
     console.log(JSON.stringify({ project, graphId: graph.graphId, sourceState: graph.sourceState, result: filterGraph(graph, { text: question }) }, null, 2));
   } else if (command === 'working-serve' || command === 'working-mcp') {
     const dataDir = arg('--data-dir');
