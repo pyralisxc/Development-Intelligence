@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 22.23.4
@@ -41,6 +42,12 @@ jobs:
           & "$bundle/Install-Local.ps1" -RepoPath "$env:GITHUB_WORKSPACE" -Project di-windows -InstallDir "$env:RUNNER_TEMP/di-local" -DataDir "$env:RUNNER_TEMP/di-data" -ScratchDir "$env:RUNNER_TEMP/di-scratch" -DesktopDir "$env:RUNNER_TEMP/di-shortcuts" -NonInteractive
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:RUNNER_TEMP/di-local/di-local.cmd" history
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/di-local/di-local.cmd" build-revision --ref origin/main --target main
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/di-local/di-local.cmd" build-revision --ref origin/preview --target preview
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/di-local/di-local.cmd" compare --limit 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Preserve exact Windows package
         if: always()

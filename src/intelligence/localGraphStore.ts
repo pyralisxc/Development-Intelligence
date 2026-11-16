@@ -33,13 +33,11 @@ async function writeCatalog(directory: string, catalog: Catalog): Promise<void> 
 /** Serialize publication and reads so terminal, Workbench and MCP cannot race retention. */
 async function withCatalogLock<T>(directory: string, fn: () => Promise<T>): Promise<T> {
   const lock = path.join(directory, '.catalog-lock');
-  let acquired = false;
-  for (let attempt = 0; attempt < 300; attempt++) {
+  for (;;) {
     try {
       await fs.mkdir(lock);
       try { await fs.writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid })); }
       catch (error) { await fs.rm(lock, { recursive: true, force: true }); throw error; }
-      acquired = true;
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -57,7 +55,6 @@ async function withCatalogLock<T>(directory: string, fn: () => Promise<T>): Prom
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
-  if (!acquired) throw new Error('Another local graph operation is using this project; retry when it finishes');
   try { return await fn(); }
   finally { await fs.rm(lock, { recursive: true, force: true }); }
 }
