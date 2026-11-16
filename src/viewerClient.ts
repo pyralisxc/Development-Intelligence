@@ -350,14 +350,18 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
       target.querySelector<HTMLButtonElement>('#copy-query-answer')?.addEventListener('click', async () => {
         const copyText = `Question: ${text}\n\n${visibleAnswer}${page && (page.offset > 0 || page.nextOffset != null) ? '\n\nThis is one page of a paginated result.' : ''}`;
         const status = target.querySelector<HTMLElement>('#copy-query-status');
+        let selection = copyActions.querySelector<HTMLTextAreaElement>('[aria-label="Copyable answer"]');
+        if (!selection) {
+          selection = document.createElement('textarea');
+          selection.setAttribute('aria-label', 'Copyable answer');
+          selection.readOnly = true;
+          copyActions.append(selection);
+        }
+        selection.value = copyText;
         try {
           await navigator.clipboard.writeText(copyText);
-          if (status) status.textContent = 'Copied.';
+          if (status) status.textContent = 'Copied in this browser. If paste does not work, select and copy the text below.';
         } catch {
-          const selection = document.createElement('textarea');
-          selection.value = copyText;
-          selection.setAttribute('aria-label', 'Copyable answer');
-          copyActions.append(selection);
           selection.select();
           if (status) status.textContent = 'Select and copy the text below.';
         }
