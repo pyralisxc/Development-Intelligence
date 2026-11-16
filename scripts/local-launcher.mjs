@@ -8,7 +8,7 @@ const config = JSON.parse(await fs.readFile(path.join(home, 'local-settings.json
 const [command = 'help', ...args] = process.argv.slice(2);
 const commands = { build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve' };
 if (!commands[command]) {
-  console.log('DI local: build | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | query --question TEXT | serve | open | mcp');
+  console.log('DI local: build | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | query --question TEXT [--details] | serve | open | mcp');
   console.log('Options: --repo-path PATH --project NAME --data-dir PATH --retain COUNT --port PORT');
   process.exit(command === 'help' ? 0 : 2);
 }
