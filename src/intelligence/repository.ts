@@ -20,7 +20,7 @@ import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMP
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.30.0-source-content-identities';
+export const ANALYZER_VERSION = '2.30.1-cross-platform-source-identities';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -49,6 +49,8 @@ async function prepareLanguageProducer(root: string, files: Array<{ path: string
       '--no-progress-bar', ...configs]);
     let bytes: Uint8Array = await fs.readFile(indexPath);
     const primary = fromBinary(IndexSchema, bytes);
+    // scip-typescript uses the host path separator in document paths on Windows.
+    for (const document of primary.documents) document.relativePath = document.relativePath.replace(/\\/gu, '/');
     const indexed = new Set(primary.documents.map(document => document.relativePath));
     let fallbackError: string | undefined;
     const missing = files.map(file => file.path)
@@ -63,6 +65,7 @@ async function prepareLanguageProducer(root: string, files: Array<{ path: string
         await runChecked(process.execPath, [indexer, 'index', '--cwd', root, '--output', fallbackIndex,
           '--no-progress-bar', fallback]);
         const remaining = fromBinary(IndexSchema, await fs.readFile(fallbackIndex));
+        for (const document of remaining.documents) document.relativePath = document.relativePath.replace(/\\/gu, '/');
         for (const document of remaining.documents) {
           if (!indexed.has(document.relativePath)) {
             indexed.add(document.relativePath);
@@ -74,13 +77,13 @@ async function prepareLanguageProducer(root: string, files: Array<{ path: string
           external.add(symbol.symbol);
           primary.externalSymbols.push(symbol);
         }
-        bytes = toBinary(IndexSchema, primary);
       } catch (error) {
         // The ordinary producer output remains useful; uncovered paths are
         // reported by reconciliation rather than disappearing from coverage.
         fallbackError = error instanceof Error ? error.message : String(error);
       }
     }
+    bytes = toBinary(IndexSchema, primary);
     return { bytes, ...(fallbackError ? { fallbackError } : {}) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };

@@ -84,7 +84,7 @@ export function diffGraphs(base: IntelligenceGraph, head: IntelligenceGraph, lay
     topologyChanged: base.topologyFingerprint !== head.topologyFingerprint,
     evidenceChanged: base.evidenceFingerprint !== head.evidenceFingerprint,
     analyzerChanged: base.analyzerVersion !== head.analyzerVersion,
-    comparisonNote: 'Unique equivalent source occurrences are reconciled across movement. Analysis changes in unchanged files, ambiguous occurrences, moved records and provenance changes are separate.',
+    comparisonNote: 'Unique equivalent source occurrences are reconciled across movement. Unmatched producer output, analysis changes in unchanged files, ambiguous occurrences, moved records and provenance changes are separate.',
     nodes: compared.nodes,
     edges: compared.edges,
   };

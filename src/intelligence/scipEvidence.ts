@@ -16,7 +16,6 @@ import { loadCompilerOptions } from './repository.js';
  * A reference is not itself a call or a claim about runtime execution.
  */
 export const SCIP_EVIDENCE_STRATEGY = 'scip-source-correlated.v2';
-const MAX_SOURCE_BYTES = 1_000_000;
 const DECLARATION_KINDS = new Set(['function', 'method', 'class', 'constructor', 'interface', 'type', 'declaration', 'struct', 'enum']);
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
@@ -164,7 +163,7 @@ async function trackedDocument(root: string, doc: ScipDocument, eligiblePaths: R
   if (!within(root, location)) throw new Error('SCIP document escapes the inspected checkout');
   try {
     const link = await fs.lstat(location);
-    if (!link.isFile() || link.isSymbolicLink() || link.size > MAX_SOURCE_BYTES) return null;
+    if (!link.isFile() || link.isSymbolicLink()) return null;
     const physical = await fs.realpath(location);
     if (!within(root, physical)) return null;
     const buffer = await fs.readFile(physical);
@@ -232,8 +231,9 @@ export async function projectLocalScipEvidence(input: {
   for (const doc of parsed.documents) {
     // Validate the producer's relative paths before adding any explicit prefix.
     // A mapped document never gains authority solely by existing in the index.
-    if (!safeRelative(doc.path)) throw new Error('SCIP document path is not canonical or would escape the repository');
-    const mappedPath = prefix ? prefix + '/' + doc.path : doc.path;
+    const producerPath = doc.path.replace(/\\/gu, '/');
+    if (!safeRelative(producerPath)) throw new Error('SCIP document path is not canonical or would escape the repository');
+    const mappedPath = prefix ? prefix + '/' + producerPath : producerPath;
     if (seenDocuments.has(mappedPath)) throw new Error('SCIP index repeats the same canonical document path');
     seenDocuments.add(mappedPath);
     const assumed = doc.positionEncoding === 0 && legacy !== null;

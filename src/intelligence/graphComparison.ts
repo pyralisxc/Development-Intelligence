@@ -4,6 +4,8 @@ type Pair<T> = { before: T; after: T };
 type Delta<T> = { added: T[]; removed: T[]; changed: Pair<T>[]; moved: Pair<T>[]; provenanceChanged: Pair<T>[]; analysisAdded: T[]; analysisRemoved: T[]; analysisChanged: Pair<T>[]; ambiguousAdded: T[]; ambiguousRemoved: T[] };
 
 const positionFields = new Set(['line', 'sourceLine', 'sourceOffset', 'sourceSha256', 'start', 'end', 'sourceRange']);
+// These are graph relationship strategies emitted by the producer adapters.
+const producerStrategies = new Set(['scip-source-correlated.v2', 'joern-slice-source-correlated.v1']);
 
 function conditionNames(nodes: GraphNode[]): Map<string, string> {
   const result = new Map<string, string>();
@@ -49,6 +51,12 @@ function canReconcile(node: GraphNode): boolean {
     && (node.kind !== 'declaration' || node.field === 'scip-symbol' || Boolean(node.name));
 }
 
+function producerNode(node: GraphNode): boolean {
+  if (!node.value || typeof node.value !== 'object') return false;
+  const producer = (node.value as Record<string, unknown>).producer;
+  return Boolean(producer && typeof producer === 'object' && typeof (producer as Record<string, unknown>).name === 'string');
+}
+
 function evidenceChanged<T>(a: T, b: T): boolean { return JSON.stringify(a) !== JSON.stringify(b); }
 
 /** Reconcile only uniquely identified, source-equivalent occurrences within the same owner/file. */
@@ -66,6 +74,10 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
   };
   const leftHashes = sourceHashes(leftGraph, leftNodes), rightHashes = sourceHashes(rightGraph, rightNodes);
   const unchangedSource = (sourceId: string) => Boolean(sourceId.startsWith('repo:') && leftHashes.has(sourceId) && leftHashes.get(sourceId) === rightHashes.get(sourceId));
+  const leftPaths = new Set((leftGraph.coverage?.files ?? []).map(file => `repo:${file.path}`));
+  const rightPaths = new Set((rightGraph.coverage?.files ?? []).map(file => `repo:${file.path}`));
+  const sourceAdded = (sourceId: string) => Boolean(leftGraph.coverage && sourceId.startsWith('repo:') && !leftPaths.has(sourceId) && rightPaths.has(sourceId));
+  const sourceRemoved = (sourceId: string) => Boolean(rightGraph.coverage && sourceId.startsWith('repo:') && leftPaths.has(sourceId) && !rightPaths.has(sourceId));
   const leftConditions = conditionNames(leftNodes), rightConditions = conditionNames(rightNodes);
   const leftById = new Map(leftNodes.map(node => [node.id, node]));
   const leftKeys = new Map<string, GraphNode[]>(), rightKeys = new Map<string, GraphNode[]>();
@@ -79,7 +91,7 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
   const usedLeft = new Set<string>(), usedRight = new Set<string>(), newToOld = new Map<string, string>();
   const pairNode = (before: GraphNode, after: GraphNode) => {
     usedLeft.add(before.id); usedRight.add(after.id); newToOld.set(after.id, before.id);
-    if (JSON.stringify(nodeShape(before, leftConditions)) !== JSON.stringify(nodeShape(after, rightConditions))) (unchangedSource(before.sourceId) ? nodes.analysisChanged : nodes.changed).push({ before, after });
+    if (JSON.stringify(nodeShape(before, leftConditions)) !== JSON.stringify(nodeShape(after, rightConditions))) (unchangedSource(before.sourceId) || producerNode(before) || producerNode(after) ? nodes.analysisChanged : nodes.changed).push({ before, after });
     else if (before.id !== after.id || before.locator !== after.locator) nodes.moved.push({ before, after });
     else if (evidenceChanged(before, after)) nodes.provenanceChanged.push({ before, after });
   };
@@ -113,8 +125,8 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
     for (const node of remainingLeft) leftAmbiguous.add(node.id);
     for (const node of remainingRight) rightAmbiguous.add(node.id);
   }
-  for (const after of rightNodes) if (!usedRight.has(after.id)) (unchangedSource(after.sourceId) ? nodes.analysisAdded : rightAmbiguous.has(after.id) ? nodes.ambiguousAdded : nodes.added).push(after);
-  for (const before of leftNodes) if (!usedLeft.has(before.id)) (unchangedSource(before.sourceId) ? nodes.analysisRemoved : leftAmbiguous.has(before.id) ? nodes.ambiguousRemoved : nodes.removed).push(before);
+  for (const after of rightNodes) if (!usedRight.has(after.id)) (unchangedSource(after.sourceId) || producerNode(after) && !sourceAdded(after.sourceId) ? nodes.analysisAdded : rightAmbiguous.has(after.id) ? nodes.ambiguousAdded : nodes.added).push(after);
+  for (const before of leftNodes) if (!usedLeft.has(before.id)) (unchangedSource(before.sourceId) || producerNode(before) && !sourceRemoved(before.sourceId) ? nodes.analysisRemoved : leftAmbiguous.has(before.id) ? nodes.ambiguousRemoved : nodes.removed).push(before);
 
   const edgeKey = (edge: GraphEdge, remap: boolean) => JSON.stringify([
     remap && edge.from ? newToOld.get(edge.from) ?? edge.from : edge.from,
@@ -130,15 +142,17 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
   const pairedLeft = new Set<string>(), pairedRight = new Set<string>();
   const leftNodeIndex = new Map(leftNodes.map(node => [node.id, node]));
   const rightNodeIndex = new Map(rightNodes.map(node => [node.id, node]));
-  const edgeUnchangedSource = (edge: GraphEdge, index: Map<string, GraphNode>) => {
+  const edgeSource = (edge: GraphEdge, index: Map<string, GraphNode>) => {
     const from = edge.from ? index.get(edge.from)?.sourceId : undefined;
-    if (from?.startsWith('repo:')) return unchangedSource(from);
+    if (from?.startsWith('repo:')) return from;
     const to = edge.to ? index.get(edge.to)?.sourceId : undefined;
-    return to ? unchangedSource(to) : false;
+    return to ?? '';
   };
+  const edgeUnchangedSource = (edge: GraphEdge, index: Map<string, GraphNode>) => unchangedSource(edgeSource(edge, index));
+  const producerEdge = (edge: GraphEdge, index: Map<string, GraphNode>) => producerStrategies.has(edge.strategy) || Boolean((edge.from && index.get(edge.from) && producerNode(index.get(edge.from)!)) || (edge.to && index.get(edge.to) && producerNode(index.get(edge.to)!)));
   const pairEdge = (before: GraphEdge, after: GraphEdge) => {
     pairedLeft.add(before.id); pairedRight.add(after.id);
-    if (before.status !== after.status || before.confidence !== after.confidence || before.checkpoint !== after.checkpoint) (edgeUnchangedSource(before, leftNodeIndex) ? edges.analysisChanged : edges.changed).push({ before, after });
+    if (before.status !== after.status || before.confidence !== after.confidence || before.checkpoint !== after.checkpoint) (edgeUnchangedSource(before, leftNodeIndex) || producerEdge(before, leftNodeIndex) || producerEdge(after, rightNodeIndex) ? edges.analysisChanged : edges.changed).push({ before, after });
     else if (before.from !== after.from || before.to !== after.to) edges.moved.push({ before, after });
     else if (evidenceChanged([before.evidence, before.evidenceIds], [after.evidence, after.evidenceIds])) edges.provenanceChanged.push({ before, after });
   };
@@ -151,8 +165,8 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
     if (pairedRight.has(after.id)) continue;
     const before = leftEdgeIds.get(after.id);
     if (before && !pairedLeft.has(before.id) && edgeKey(before, false) === edgeKey(after, true)) pairEdge(before, after);
-    else (edgeUnchangedSource(after, rightNodeIndex) ? edges.analysisAdded : (after.from && rightAmbiguous.has(after.from)) || (after.to && rightAmbiguous.has(after.to)) ? edges.ambiguousAdded : edges.added).push(after);
+    else (edgeUnchangedSource(after, rightNodeIndex) || producerEdge(after, rightNodeIndex) && !sourceAdded(edgeSource(after, rightNodeIndex)) ? edges.analysisAdded : (after.from && rightAmbiguous.has(after.from)) || (after.to && rightAmbiguous.has(after.to)) ? edges.ambiguousAdded : edges.added).push(after);
   }
-  for (const before of leftEdges) if (!pairedLeft.has(before.id)) (edgeUnchangedSource(before, leftNodeIndex) ? edges.analysisRemoved : (before.from && leftAmbiguous.has(before.from)) || (before.to && leftAmbiguous.has(before.to)) ? edges.ambiguousRemoved : edges.removed).push(before);
+  for (const before of leftEdges) if (!pairedLeft.has(before.id)) (edgeUnchangedSource(before, leftNodeIndex) || producerEdge(before, leftNodeIndex) && !sourceRemoved(edgeSource(before, leftNodeIndex)) ? edges.analysisRemoved : (before.from && leftAmbiguous.has(before.from)) || (before.to && leftAmbiguous.has(before.to)) ? edges.ambiguousRemoved : edges.removed).push(before);
   return { nodes, edges };
 }
