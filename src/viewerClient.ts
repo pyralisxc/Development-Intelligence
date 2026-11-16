@@ -3,11 +3,11 @@ import Sigma from 'sigma';
 
 declare global {
   interface Window {
-    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; section?: string };
+    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; section?: string; local?: boolean };
   }
 }
 
-type Section = 'overview' | 'explore' | 'semantics' | 'parity' | 'query' | 'sources' | 'changes';
+type Section = 'overview' | 'explore' | 'semantics' | 'parity' | 'query' | 'sources' | 'changes' | 'local';
 type ExploreMode = 'summary' | 'list' | 'table' | 'graph' | 'raw';
 type GraphLens = 'architecture' | 'parity' | 'code';
 type ProjectionNode = { id: string; kind: string; layer?: string; name?: string; locator?: string; value?: unknown; evidenceIds?: string[] };
@@ -30,7 +30,7 @@ const globalForm = document.getElementById('global-query') as HTMLFormElement;
 const globalInput = document.getElementById('global-query-input') as HTMLInputElement;
 const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-section]'));
 
-let section: Section = (['overview', 'explore', 'semantics', 'parity', 'query', 'sources', 'changes'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
+let section: Section = (['overview', 'explore', 'semantics', 'parity', 'query', 'sources', 'changes', 'local'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
 let sectionEpoch = 0;
 let exploreMode: ExploreMode = 'summary';
 let graphLens: GraphLens = 'architecture';
@@ -63,6 +63,7 @@ const sectionCopy: Record<Section, { title: string; description: string }> = {
   query: { title: 'Query', description: 'Ask Development Intelligence about the project or run a bounded read-only query against a configured technical source.' },
   sources: { title: 'Sources', description: 'See what DI can actually inspect: Git, runtime origins, databases/log adapters, freshness, coverage and query capabilities.' },
   changes: { title: 'Changes', description: 'Compare accepted-to-working semantics or any two immutable historical revision selectors under the same current analyzer.' },
+  local: { title: 'Local setup', description: 'Choose storage and manage the graphs used by the Workbench, terminal and local agents.' },
 };
 
 function esc(value: unknown): string {
@@ -940,40 +941,88 @@ async function renderSources(epoch: number): Promise<void> {
 
 async function renderChanges(epoch: number): Promise<void> {
   setHead();
-  const defaultHead = viewerConfig.ref || 'HEAD';
-  content.innerHTML = `<div class="card"><h3>Historical comparison</h3><h2>Compare any two repository states</h2><p>Leave the base empty for accepted → working semantic change. Historical comparisons replay both exact revisions through the same current analyzer.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
+  const defaultHead = viewerConfig.ref || (viewerConfig.local ? 'working-tree' : 'HEAD');
+  content.innerHTML = `<div class="card"><h3>Graph comparison</h3><h2>Compare repository states</h2><p>${viewerConfig.local ? 'Compare the retained main, preview and working graphs, or choose two targets below.' : 'Leave the base empty for accepted → working semantic change. Historical comparisons replay both exact revisions through the same current analyzer.'}</p>${viewerConfig.local ? '<button class="primary" id="compare-three" type="button">Compare main, preview and working</button>' : ''}<div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare two</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
+  let offset = 0;
   const run = async () => {
     const baseRef = (document.getElementById('change-base') as HTMLInputElement).value.trim();
     const headRef = (document.getElementById('change-head') as HTMLInputElement).value.trim();
     const target = document.getElementById('change-result') as HTMLElement;
     target.innerHTML = empty('Loading change intelligence', baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing accepted semantic topology with current working reality…');
     try {
-      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}) }));
+      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}), ...(viewerConfig.local ? { offset: String(offset), limit: '50' } : {}) }));
       if (!sectionIsCurrent(epoch, 'changes')) return;
       const counts = data.counts ?? {};
       const baseIdentity = data.detail?.base?.identity;
       const headIdentity = data.detail?.head?.identity;
       const identity = baseIdentity && headIdentity ? `<p class="muted">${esc(baseIdentity.selector)} → ${esc(headIdentity.selector)}<br>${esc(baseIdentity.sha)} → ${esc(headIdentity.sha)}</p>` : '';
-      target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Historical replay' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? 'Both revisions use the same current analyzer so project change is not confused with analyzer evolution.' : 'Accepted semantic comparison ignores line movement and provenance-only churn.'}</p></div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${renderChangeBucket(data.detail)}</div>`;
+      target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Graph comparison' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? 'Both graphs use the same current analyzer.' : 'Accepted semantic comparison ignores line movement and provenance-only churn.'}</p>${data.detail?.comparisonNote ? `<p class="muted">${esc(data.detail.comparisonNote)}</p>` : ''}</div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${data.page ? `<p class="muted">Showing up to ${data.page.limit} items per change category, starting at ${data.page.offset + 1}.</p><button id="change-previous" ${offset === 0 ? 'disabled' : ''}>Previous</button> <button id="change-next" ${data.page.nextOffset === null ? 'disabled' : ''}>Next</button>` : ''}${renderChangeBucket(data.detail)}</div>`;
       wireNodeButtons(target);
+      target.querySelector('#change-previous')?.addEventListener('click', () => { offset = Math.max(0, offset - 50); void run(); });
+      target.querySelector('#change-next')?.addEventListener('click', () => { offset = data.page.nextOffset; void run(); });
     } catch (error) {
       target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
     }
   };
-  (document.getElementById('compare-revisions') as HTMLButtonElement).addEventListener('click', () => void run());
+  const runAll = async () => {
+    const target = document.getElementById('change-result') as HTMLElement;
+    target.innerHTML = empty('Comparing graph targets', 'Comparing each pair using the same graph operation…');
+    try {
+      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'compare-graphs', offset: String(offset), limit: '20' }));
+      if (!sectionIsCurrent(epoch, 'changes')) return;
+      const comparisons = data.comparisons ?? [];
+      const next = comparisons.some((item: any) => item.page?.nextOffset !== null);
+      target.innerHTML = `<div class="card"><p>Source changes, moved records, analysis changes, ambiguous occurrences and provenance changes are separate. Page ${Math.floor(offset / 20) + 1}.</p><button id="all-previous" ${offset === 0 ? 'disabled' : ''}>Previous</button> <button id="all-next" ${next ? '' : 'disabled'}>Next</button></div>${comparisons.map((item: any) => { const t = item.page?.totals ?? {}; const count = (name: string) => Number(t['nodes.' + name] ?? 0) + Number(t['edges.' + name] ?? 0); return `<div class="card" style="margin-top:13px"><h3>${esc(item.baseRef)} → ${esc(item.ref)}</h3><div class="metric-grid">${metric('added', count('added'))}${metric('removed', count('removed'))}${metric('changed', count('changed'))}${metric('moved', count('moved'))}${metric('analysis added', count('analysisAdded'))}${metric('analysis removed', count('analysisRemoved'))}${metric('analysis changed', count('analysisChanged'))}${metric('ambiguous additions', count('ambiguousAdded'))}${metric('ambiguous removals', count('ambiguousRemoved'))}${metric('provenance', count('provenanceChanged'))}</div>${renderChangeBucket(item.detail)}</div>`; }).join('')}`;
+      wireNodeButtons(target);
+      target.querySelector('#all-previous')?.addEventListener('click', () => { offset = Math.max(0, offset - 20); void runAll(); });
+      target.querySelector('#all-next')?.addEventListener('click', () => { offset += 20; void runAll(); });
+    } catch (error) { target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`; }
+  };
+  (document.getElementById('compare-revisions') as HTMLButtonElement).addEventListener('click', () => { offset = 0; void run(); });
+  document.getElementById('compare-three')?.addEventListener('click', () => { offset = 0; void runAll(); });
   await run();
 }
 
 function renderChangeBucket(detail: any): string {
   const semantic = detail?.semantic ?? (detail?.nodes && detail?.edges ? detail : null);
   if (!semantic) return `<pre class="raw">${esc(JSON.stringify(detail, null, 2))}</pre>`;
-  const nodes = [
-    ...(semantic.nodes?.added ?? []).map((item: any) => ({ ...item, _change: 'added' })),
-    ...(semantic.nodes?.removed ?? []).map((item: any) => ({ ...item, _change: 'removed' })),
-    ...(semantic.nodes?.changed ?? []).map((item: any) => ({ ...(item.after ?? item.before), _change: 'changed' })),
-  ];
-  if (!nodes.length) return empty('No semantic entity changes', 'Accepted and working semantic topology agree. Structural/code differences can still exist.');
-  return `<div class="list">${nodes.map((node: any) => `<button class="row row-button" data-node="${esc(node.id)}"><span class="badge ${node._change === 'added' ? 'status-good' : node._change === 'removed' ? 'status-bad' : 'status-warn'}">${esc(node._change)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.kind ?? '')}</small></span></button>`).join('')}</div>`;
+  const changes = ['added', 'removed', 'changed', 'moved', 'analysisAdded', 'analysisRemoved', 'analysisChanged', 'ambiguousAdded', 'ambiguousRemoved', 'provenanceChanged'];
+  const nodes = changes.flatMap(change => (semantic.nodes?.[change] ?? []).map((item: any) => ({ ...(item.after ?? item.before ?? item), _change: change, _comparison: item.before && item.after ? item : null })));
+  const edges = changes.flatMap(change => (semantic.edges?.[change] ?? []).map((item: any) => ({ ...(item.after ?? item.before ?? item), _change: change, _comparison: item.before && item.after ? item : null })));
+  if (!nodes.length && !edges.length) return empty('No changes on this page', 'Use the page controls to inspect other changes.');
+  const beforeAfter = (pair: any) => pair ? `<details><summary>Before and after</summary><pre class="raw">${esc(JSON.stringify(pair, null, 2))}</pre></details>` : '';
+  return `<div class="list">${nodes.map((node: any) => `<div><button class="row row-button" data-node="${esc(node.id)}"><span class="badge ${node._change === 'added' ? 'status-good' : node._change === 'removed' ? 'status-bad' : 'status-warn'}">${esc(node._change)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.kind ?? '')}</small></span></button>${beforeAfter(node._comparison)}</div>`).join('')}${edges.map((edge: any) => `<div><div class="row"><span class="badge">${esc(edge._change)}</span><span class="row-main"><strong>${esc(edge.kind ?? 'relationship')}</strong><small>${esc(edge.from ?? '?')} → ${esc(edge.to ?? '?')}</small></span></div>${beforeAfter(edge._comparison)}</div>`).join('')}</div>`;
+}
+
+async function renderLocal(epoch: number): Promise<void> {
+  setHead();
+  const state = await getJson('/workbench/local', new URLSearchParams());
+  if (!sectionIsCurrent(epoch, 'local')) return;
+  const settings = state.settings;
+  const field = (label: string, id: string, value: unknown) => `<label style="display:block;margin:10px 0"><span class="muted">${esc(label)}</span><input id="${id}" value="${esc(value)}" style="display:block;width:100%;border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:9px;padding:9px"></label>`;
+  content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Build current files and keep selected committed revisions as comparison targets.</p><button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}${field('Target name', 'local-target', 'preview')}<button data-local-action="build-revision">Build revision target</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
+  const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
+  const show = (data: any) => {
+    const history = document.getElementById('local-history');
+    if (history) history.textContent = data.history?.targets ? `Retained targets: ${Object.keys(data.history.targets).join(', ')}` : 'No graphs built at this location yet.';
+    const target = document.getElementById('local-job');
+    if (target) target.textContent = data.job ? `${data.job.action}: ${data.job.state}${data.job.output ? `\n${data.job.output}` : ''}` : 'No operation running.';
+  };
+  show(state);
+  const poll = async () => {
+    if (!sectionIsCurrent(epoch, 'local')) return;
+    try { const current = await getJson('/workbench/local', new URLSearchParams()); show(current); if (current.job?.state === 'running') window.setTimeout(() => void poll(), 2000); }
+    catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
+  };
+  (document.getElementById('local-save') as HTMLButtonElement).addEventListener('click', async () => {
+    try { await postJson('/workbench/local', { action: 'settings', repoPath: value('local-repo'), dataDir: value('local-data'), scratchDir: value('local-scratch'), backupDir: value('local-backup'), retain: Number(value('local-retain')), port: Number(value('local-port')) }); await poll(); }
+    catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
+  });
+  for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-local-action]'))) button.addEventListener('click', async () => {
+    try { await postJson('/workbench/local', { action: button.dataset.localAction, ref: value('local-ref'), target: value('local-target'), backupDir: value('local-backup') }); await poll(); }
+    catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
+  });
+  if (state.job?.state === 'running') window.setTimeout(() => void poll(), 2000);
 }
 
 async function activateSection(next: Section, queryPrefill = ''): Promise<void> {
@@ -988,6 +1037,7 @@ async function activateSection(next: Section, queryPrefill = ''): Promise<void> 
     else if (section === 'parity') await renderParity(epoch);
     else if (section === 'query') await renderQuery(epoch, queryPrefill);
     else if (section === 'sources') await renderSources(epoch);
+    else if (section === 'local') await renderLocal(epoch);
     else await renderChanges(epoch);
   } catch (error) {
     if (!sectionIsCurrent(epoch, next)) return;

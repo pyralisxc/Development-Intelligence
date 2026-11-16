@@ -201,9 +201,10 @@ export async function projectLocalScipEvidence(input: {
 }): Promise<ScipEvidenceProjection> {
   const root = await fs.realpath(path.resolve(input.root));
   const changed = (await runChecked('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'])).stdout.trim();
-  if (changed) throw new Error('SCIP evidence requires tracked source identical to the exact Git HEAD');
+  if (input.graph.sourceState && !input.producerRanOnCheckout) throw new Error('Working-tree SCIP evidence must be produced with this graph build');
+  if (changed && !input.graph.sourceState) throw new Error('SCIP evidence requires tracked source identical to the exact Git HEAD');
   const sha = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
-  if (sha !== input.graph.repositoryRevision) throw new Error('SCIP evidence graph must match the exact checked-out Git revision');
+  if (sha !== (input.graph.sourceState?.headRevision ?? input.graph.repositoryRevision)) throw new Error('SCIP evidence graph must match the checked-out Git revision');
   const prefix = projectPrefix(input.projectPrefix);
   const legacy = input.legacyPositionEncoding ?? null;
   const encodings = { utf8: 1, utf16: 2, utf32: 3 } as const;

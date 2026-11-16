@@ -28,6 +28,7 @@ import {
   type CanonicalQueryArtifactPointerPublishResult,
 } from './queryArtifactStore.js';
 import { candidateQueryBuckets } from './queryArtifacts.js';
+import { localSourceGraphHistory, readLocalSourceGraph } from './localGraphStore.js';
 
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_GRAPH_MAX_RUNTIME_BYTES ?? process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
 
@@ -107,6 +108,7 @@ interface RepositoryCacheEntry {
 }
 
 const repositoryCache = new Map<string, RepositoryCacheEntry>();
+const localGraphCache = new Map<string, IntelligenceGraph>();
 const snapshotCache = new Map<string, SnapshotGraph>();
 const repositoryBuildGate = new AsyncGate(() => positiveIntegerSetting(process.env.DEVINT_GRAPH_BUILD_CONCURRENCY, 1, 'DEVINT_GRAPH_BUILD_CONCURRENCY'));
 
@@ -969,6 +971,26 @@ export async function repositoryGraphs(project: string, ref?: string): Promise<{
 export async function graphContext(project: string, options: { ref?: string; graphId?: string } = {}): Promise<{ graph: IntelligenceGraph; revision: ProjectRevision }> {
   await assertProjectAccessCurrent(project);
   if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
+  const localDir = process.env.DEVINT_LOCAL_GRAPH_DIR?.trim();
+  if (localDir) {
+    const catalog = await localSourceGraphHistory(localDir, project);
+    const name = options.ref === 'working-tree' ? 'working' : options.ref?.replace(/^branch:/u, '');
+    const generation = name ? catalog?.targets?.[name] : catalog?.active;
+    const entry = options.graphId ? catalog?.entries.find(item => item.graphId === options.graphId) : catalog?.entries.find(item => item.generation === generation);
+    if (entry) {
+      const config = await getProjectConfig(project);
+      const key = `${localDir}\0${project}`;
+      let graph = localGraphCache.get(key);
+      if (graph?.graphId !== entry.graphId) {
+        graph = await readLocalSourceGraph(localDir, project, entry.graphId);
+        localGraphCache.set(key, graph);
+      }
+      const sha = graph.sourceState?.headRevision ?? graph.repositoryRevision;
+      if (!sha) throw new Error('Local graph is missing its source identity');
+      return { graph, revision: { project, repository: config.repository, ref: graph.sourceState ? 'working-tree' : options.ref ?? graph.repositoryRevision!, selectorKind: graph.sourceState ? 'working-tree' : 'commit', resolvedRef: graph.sourceState ? 'working-tree' : graph.repositoryRevision!, sha } };
+    }
+    if (!options.ref && !options.graphId || options.ref === 'working-tree' || options.ref === 'main' || options.ref === 'preview' || options.graphId?.startsWith('worktree-')) throw new Error(`No retained local graph for ${project}${options.ref ? ` target ${options.ref}` : ''}; build it first`);
+  }
   if (options.graphId) {
     const snapshot = snapshotCache.get(snapshotKey(options.graphId));
     if (snapshot?.graph.project === project) {

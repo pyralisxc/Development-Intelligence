@@ -18,7 +18,7 @@ export interface ProjectRevision {
   pullRequest?: PullRequestRevision;
 }
 
-export type RevisionSelectorKind = 'default' | 'git-ref' | 'commit' | 'branch' | 'tag' | 'pr-head' | 'pr-base' | 'pr-result';
+export type RevisionSelectorKind = 'default' | 'git-ref' | 'commit' | 'branch' | 'tag' | 'pr-head' | 'pr-base' | 'pr-result' | 'working-tree';
 
 export interface PullRequestRevision {
   number: number;

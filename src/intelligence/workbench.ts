@@ -39,7 +39,7 @@ function coverageNote(graph: IntelligenceGraph): string {
   if (coverage.failedFiles || coverage.partialFiles || coverage.skippedFiles) {
     return `Coverage is incomplete: ${coverage.completeFiles}/${coverage.eligibleFiles} eligible files complete, ${coverage.partialFiles} partial, ${coverage.failedFiles} failed, ${coverage.skippedFiles} skipped.${producerNote}`;
   }
-  return `Source-file analysis is complete for ${coverage.eligibleFiles} eligible files (${coverage.trackedFiles} tracked files total).${producerNote}`;
+  return `Source-file analysis is complete for ${coverage.eligibleFiles} eligible files (${coverage.trackedFiles} ${graph.sourceState ? 'working source files' : 'tracked files'} total).${producerNote}`;
 }
 
 function edgeCounts(edges: GraphEdge[]): Record<RelationshipStatus, number> {
@@ -193,9 +193,10 @@ export async function semanticAudit(input: {
 
 export async function projectOverview(project: string, ref?: string | undefined, graphId?: string | undefined, subjects: string[] = []): Promise<Record<string, unknown>> {
   const graph = await currentGraph(project, ref, graphId);
+  const local = Boolean(process.env.DEVINT_LOCAL_GRAPH_DIR);
   const [status, diff, sources] = await Promise.all([
-    graphId ? Promise.resolve(null) : projectStatus(project, false),
-    graphId ? Promise.resolve(null) : diffAcceptedToWorking(project, ref),
+    graphId || local ? Promise.resolve(null) : projectStatus(project, false),
+    graphId || local ? Promise.resolve(null) : diffAcceptedToWorking(project, ref),
     listTechnicalSources(project),
   ]);
   const semantic = graph.nodes.filter(node => node.layer === 'semantic');
@@ -209,7 +210,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
     coverageNote(graph),
     `${relations.resolved} relationships are resolved; ${relations.candidate} remain candidates and ${relations.unresolved} are unresolved.`,
   ];
-  if (!graphId) notes.push(diffCounts.added || diffCounts.removed || diffCounts.changed
+  if (!graphId && !local) notes.push(diffCounts.added || diffCounts.removed || diffCounts.changed
     ? `Accepted → working semantic change: ${diffCounts.added} added, ${diffCounts.removed} removed, ${diffCounts.changed} changed records.`
     : 'No accepted → working semantic topology change is currently detected.');
   if (graph.explicitValueConflicts.length) notes.push(`${graph.explicitValueConflicts.length} explicit semantic value conflict(s) need attention.`);
@@ -218,6 +219,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
     project,
     graphId: graph.graphId,
     revision: graph.repositoryRevision,
+    ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
     role: graph.role,
     summary: notes[0],
     quickNotes: notes,
@@ -1666,7 +1668,7 @@ export async function queryWorkbenchRequest(input: {
         answer,
         routing: { tool: 'graph-filter', selection: result.interpretation.selection }, result };
     });
-    const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision,
+    const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
       questionCount: questions.length, originalText: originalText || null,
       ...(input.rankBy || input.semanticDepth ? { unappliedOptions: [
         ...(input.rankBy ? ['rankBy'] : []), ...(input.semanticDepth ? ['semanticDepth'] : []),
@@ -1688,7 +1690,7 @@ export async function queryWorkbenchRequest(input: {
       items.push({ index, question, status: 'error', error: error instanceof Error ? error.message : String(error) });
     }
   }
-  const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision,
+  const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
     questionCount: questions.length, originalText: originalText || null };
   if (items.length === 1 && items[0]!.status === 'ok') return { ...items[0], request };
   return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, request, items };

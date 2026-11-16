@@ -235,6 +235,8 @@ Ordinary project/ref queries always address deterministic source-derived W. Cano
 
 ## Local development
 
+To install and use the local Workbench, terminal and MCP interface, including the Windows distribution and graph lifecycle, see [Local Development Intelligence](docs/local-workbench.md).
+
 Requirements:
 
 - Node.js 22+

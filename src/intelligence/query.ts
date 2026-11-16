@@ -2,7 +2,8 @@ import path from 'node:path';
 import { getProjectConfig } from '../config/registry.js';
 import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus , EvidenceRecord} from '../types.js';
-import { checkpointProjection, stableEdgeShape, stableNodeShape } from './repository.js';
+import { checkpointProjection } from './repository.js';
+import { compareGraphRecords } from './graphComparison.js';
 import { currentGraph, graphContext, loadCurrentQueryArtifactBuckets, loadCurrentQueryArtifacts, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
@@ -63,29 +64,6 @@ export function findGraphNodeCandidates(graph: IntelligenceGraph, query: string,
   return graph.nodes.filter(node => queryTextMatches(nodeText(node), query)).slice(0, limit);
 }
 
-function comparableItem<T extends { id: string }>(item: T): unknown {
-  const node = item as unknown as GraphNode;
-  if ('sourceId' in (item as any) && node.layer === 'semantic') return stableNodeShape(node);
-  const edge = item as unknown as GraphEdge;
-  if ('status' in (item as any) && edge.layer === 'semantic') return stableEdgeShape(edge);
-  return item;
-}
-
-function diffById<T extends { id: string }>(left: T[], right: T[]) {
-  const a = new Map(left.map(item => [item.id, item]));
-  const b = new Map(right.map(item => [item.id, item]));
-  const added: T[] = [];
-  const removed: T[] = [];
-  const changed: Array<{ before: T; after: T }> = [];
-  for (const [id, item] of b) {
-    const previous = a.get(id);
-    if (!previous) added.push(item);
-    else if (JSON.stringify(comparableItem(previous)) !== JSON.stringify(comparableItem(item))) changed.push({ before: previous, after: item });
-  }
-  for (const [id, item] of a) if (!b.has(id)) removed.push(item);
-  return { added, removed, changed };
-}
-
 function filteredGraph(graph: IntelligenceGraph, layers?: GraphNodeLayer[]): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const allowed = new Set(layers ?? []);
   const nodes = graph.nodes.filter(node => layersMatch(node.layer, allowed));
@@ -97,6 +75,7 @@ function filteredGraph(graph: IntelligenceGraph, layers?: GraphNodeLayer[]): { n
 export function diffGraphs(base: IntelligenceGraph, head: IntelligenceGraph, layers?: GraphNodeLayer[]): Record<string, unknown> {
   const left = filteredGraph(base, layers);
   const right = filteredGraph(head, layers);
+  const compared = compareGraphRecords(base, head, left.nodes, right.nodes, left.edges, right.edges);
   return {
     project: head.project,
     layers: layers?.length ? layers : ['semantic', 'structural', 'representation'],
@@ -105,9 +84,29 @@ export function diffGraphs(base: IntelligenceGraph, head: IntelligenceGraph, lay
     topologyChanged: base.topologyFingerprint !== head.topologyFingerprint,
     evidenceChanged: base.evidenceFingerprint !== head.evidenceFingerprint,
     analyzerChanged: base.analyzerVersion !== head.analyzerVersion,
-    nodes: diffById(left.nodes, right.nodes),
-    edges: diffById(left.edges, right.edges),
+    comparisonNote: 'Unique equivalent source occurrences are reconciled across movement. Analysis changes in unchanged files, ambiguous occurrences, moved records and provenance changes are separate.',
+    nodes: compared.nodes,
+    edges: compared.edges,
   };
+}
+
+export function pageGraphDiff(detail: any, offset: number, limit: number): { detail: any; page: Record<string, unknown> } {
+  const semantic = detail?.semantic ?? detail;
+  const totals: Record<string, number> = {};
+  const pageBucket = (kind: string) => {
+    const bucket = semantic?.[kind] ?? {};
+    const result: Record<string, unknown> = { ...bucket };
+    for (const change of ['added', 'removed', 'changed', 'moved', 'provenanceChanged', 'analysisAdded', 'analysisRemoved', 'analysisChanged', 'ambiguousAdded', 'ambiguousRemoved']) {
+      const items = Array.isArray(bucket[change]) ? bucket[change] : [];
+      totals[`${kind}.${change}`] = items.length;
+      result[change] = items.slice(offset, offset + limit);
+    }
+    return result;
+  };
+  const paged = { ...semantic, nodes: pageBucket('nodes'), edges: pageBucket('edges') };
+  const maximum = Math.max(0, ...Object.values(totals));
+  return { detail: detail?.semantic ? { ...detail, semantic: paged } : paged,
+    page: { offset, limit, totals, nextOffset: offset + limit < maximum ? offset + limit : null } };
 }
 
 export async function diffAcceptedToWorking(project: string, ref?: string): Promise<Record<string, unknown>> {
@@ -137,7 +136,7 @@ export async function diffRevisions(input: {
   layers?: GraphNodeLayer[] | undefined;
 }): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(input.project);
-  const headRef = input.ref ?? config.defaultRef;
+  const headRef = input.ref ?? (process.env.DEVINT_LOCAL_GRAPH_DIR ? 'working-tree' : config.defaultRef);
   const baseRef = input.baseRef ?? config.defaultRef;
   const [base, head] = await Promise.all([
     graphContext(input.project, { ref: baseRef }),
@@ -150,6 +149,22 @@ export async function diffRevisions(input: {
     base: { ...result.base, identity: revisionIdentity(base.revision) },
     head: { ...result.head, identity: revisionIdentity(head.revision) },
   };
+}
+
+/** Compare every pair through the same graph operation, keeping each response paged. */
+export async function compareRevisionSet(input: { project: string; refs: string[]; offset?: number; limit?: number }): Promise<Record<string, unknown>> {
+  if (input.refs.length < 2 || input.refs.length > 3 || new Set(input.refs).size !== input.refs.length || input.refs.some(ref => !ref.trim())) throw new Error('Choose two or three distinct graph targets');
+  const offset = input.offset ?? 0, limit = input.limit ?? 50;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('Comparison offset must be non-negative and limit must be 1..500');
+  const comparisons: Array<Record<string, unknown>> = [];
+  for (let base = 0; base < input.refs.length; base++) {
+    for (let head = base + 1; head < input.refs.length; head++) {
+      const baseRef = input.refs[base]!, ref = input.refs[head]!;
+      const result = await diffRevisions({ project: input.project, baseRef, ref });
+      comparisons.push({ baseRef, ref, ...pageGraphDiff(result, offset, limit) });
+    }
+  }
+  return { project: input.project, refs: input.refs, comparisons };
 }
 
 interface ImpactTraversalOptions {
