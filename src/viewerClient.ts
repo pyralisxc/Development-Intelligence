@@ -342,6 +342,26 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
       if (!sectionIsCurrent(epoch, 'query')) return;
       const page = result.result?.page;
       target.innerHTML = `<div class="card"><h3>${esc(result.intent ?? 'query')}</h3><div class="answer">${esc(result.answer ?? '')}</div>${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
+      const visibleAnswer = (target.firstElementChild as HTMLElement).innerText;
+      const copyActions = document.createElement('div');
+      copyActions.className = 'actions';
+      copyActions.innerHTML = `<button type="button" id="copy-query-answer">Copy question and visible answer</button><span id="copy-query-status" role="status">${page && (page.offset > 0 || page.nextOffset != null) ? 'Copies this page only.' : ''}</span>`;
+      target.firstElementChild?.append(copyActions);
+      target.querySelector<HTMLButtonElement>('#copy-query-answer')?.addEventListener('click', async () => {
+        const copyText = `Question: ${text}\n\n${visibleAnswer}${page && (page.offset > 0 || page.nextOffset != null) ? '\n\nThis is one page of a paginated result.' : ''}`;
+        const status = target.querySelector<HTMLElement>('#copy-query-status');
+        try {
+          await navigator.clipboard.writeText(copyText);
+          if (status) status.textContent = 'Copied.';
+        } catch {
+          const selection = document.createElement('textarea');
+          selection.value = copyText;
+          selection.setAttribute('aria-label', 'Copyable answer');
+          copyActions.append(selection);
+          selection.select();
+          if (status) status.textContent = 'Select and copy the text below.';
+        }
+      });
       wireNodeButtons(target);
       target.querySelector<HTMLButtonElement>('#query-previous')?.addEventListener('click', () => void run(Math.max(0, page.offset - page.limit)));
       target.querySelector<HTMLButtonElement>('#query-next')?.addEventListener('click', () => void run(page.nextOffset));

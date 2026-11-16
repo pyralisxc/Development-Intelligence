@@ -92,13 +92,9 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
   const pairNode = (before: GraphNode, after: GraphNode) => {
     usedLeft.add(before.id); usedRight.add(after.id); newToOld.set(after.id, before.id);
     if (JSON.stringify(nodeShape(before, leftConditions)) !== JSON.stringify(nodeShape(after, rightConditions))) (unchangedSource(before.sourceId) || producerNode(before) || producerNode(after) ? nodes.analysisChanged : nodes.changed).push({ before, after });
-    else if (before.id !== after.id || before.locator !== after.locator) nodes.moved.push({ before, after });
+    else if (before.id !== after.id || before.locator !== after.locator) (unchangedSource(before.sourceId) || producerNode(before) || producerNode(after) ? nodes.analysisChanged : nodes.moved).push({ before, after });
     else if (evidenceChanged(before, after)) nodes.provenanceChanged.push({ before, after });
   };
-  for (const [key, before] of leftKeys) {
-    const after = rightKeys.get(key);
-    if (before.length === 1 && after?.length === 1) pairNode(before[0]!, after[0]!);
-  }
   // Equal source content and equal locations identify the same occurrence even
   // when different dependency resolution changes SCIP's symbol identifier.
   const locationGroups = new Map<string, GraphNode[]>();
@@ -109,6 +105,10 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
   for (const node of rightNodes) if (!usedRight.has(node.id) && canReconcile(node) && unchangedSource(node.sourceId)) {
     const group = locationGroups.get(locationKey(node));
     if (group?.length === 1 && !usedLeft.has(group[0]!.id)) pairNode(group[0]!, node);
+  }
+  for (const [key, before] of leftKeys) {
+    const after = rightKeys.get(key);
+    if (before.length === 1 && after?.length === 1 && !usedLeft.has(before[0]!.id) && !usedRight.has(after[0]!.id)) pairNode(before[0]!, after[0]!);
   }
   for (const after of rightNodes) {
     if (usedRight.has(after.id)) continue;
@@ -153,7 +153,7 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
   const pairEdge = (before: GraphEdge, after: GraphEdge) => {
     pairedLeft.add(before.id); pairedRight.add(after.id);
     if (before.status !== after.status || before.confidence !== after.confidence || before.checkpoint !== after.checkpoint) (edgeUnchangedSource(before, leftNodeIndex) || producerEdge(before, leftNodeIndex) || producerEdge(after, rightNodeIndex) ? edges.analysisChanged : edges.changed).push({ before, after });
-    else if (before.from !== after.from || before.to !== after.to) edges.moved.push({ before, after });
+    else if (before.from !== after.from || before.to !== after.to) (edgeUnchangedSource(before, leftNodeIndex) || producerEdge(before, leftNodeIndex) || producerEdge(after, rightNodeIndex) ? edges.analysisChanged : edges.moved).push({ before, after });
     else if (evidenceChanged([before.evidence, before.evidenceIds], [after.evidence, after.evidenceIds])) edges.provenanceChanged.push({ before, after });
   };
   for (const [key, before] of leftGroups) {
