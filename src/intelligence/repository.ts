@@ -20,18 +20,20 @@ import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMP
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.29.0-complete-structured-values';
+export const ANALYZER_VERSION = '2.30.2-cross-platform-source-identities';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
 /** Produce the index before allocating the full native graph so the producer
  * and graph builder do not hold their largest heaps at the same time. */
-async function prepareLanguageProducer(root: string, files: Array<{ path: string }>): Promise<LanguageProducerInput> {
+async function prepareLanguageProducer(root: string, files: Array<{ path: string }>, workingTree = false): Promise<LanguageProducerInput> {
   if (!files.some(file => /\.[cm]?[jt]sx?$/iu.test(file.path))) return null;
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'di-scip-'));
+  const scratch = path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir());
+  await fs.mkdir(scratch, { recursive: true });
+  const temp = await fs.mkdtemp(path.join(scratch, 'di-scip-'));
   try {
     const dirty = (await runChecked('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'])).stdout.trim();
-    if (dirty) throw new Error('Language producer requires the selected Git checkout without tracked modifications');
+    if (dirty && !workingTree) throw new Error('Language producer requires the selected Git checkout without tracked modifications');
     const configs = files.filter(file => /(^|\/)(?:tsconfig|jsconfig)\.json$/iu.test(file.path))
       .map(file => path.join(root, file.path));
     if (!configs.length) {
@@ -47,6 +49,8 @@ async function prepareLanguageProducer(root: string, files: Array<{ path: string
       '--no-progress-bar', ...configs]);
     let bytes: Uint8Array = await fs.readFile(indexPath);
     const primary = fromBinary(IndexSchema, bytes);
+    // scip-typescript uses the host path separator in document paths on Windows.
+    for (const document of primary.documents) document.relativePath = document.relativePath.replace(/\\/gu, '/');
     const indexed = new Set(primary.documents.map(document => document.relativePath));
     let fallbackError: string | undefined;
     const missing = files.map(file => file.path)
@@ -61,6 +65,7 @@ async function prepareLanguageProducer(root: string, files: Array<{ path: string
         await runChecked(process.execPath, [indexer, 'index', '--cwd', root, '--output', fallbackIndex,
           '--no-progress-bar', fallback]);
         const remaining = fromBinary(IndexSchema, await fs.readFile(fallbackIndex));
+        for (const document of remaining.documents) document.relativePath = document.relativePath.replace(/\\/gu, '/');
         for (const document of remaining.documents) {
           if (!indexed.has(document.relativePath)) {
             indexed.add(document.relativePath);
@@ -72,13 +77,13 @@ async function prepareLanguageProducer(root: string, files: Array<{ path: string
           external.add(symbol.symbol);
           primary.externalSymbols.push(symbol);
         }
-        bytes = toBinary(IndexSchema, primary);
       } catch (error) {
         // The ordinary producer output remains useful; uncovered paths are
         // reported by reconciliation rather than disappearing from coverage.
         fallbackError = error instanceof Error ? error.message : String(error);
       }
     }
+    bytes = toBinary(IndexSchema, primary);
     return { bytes, ...(fallbackError ? { fallbackError } : {}) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
@@ -99,7 +104,7 @@ async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph, 
     const edges = dedupeEdges(result.graph.edges);
     const fingerprints = graphFingerprints(nodes, edges, graph.evidence);
     return { ...graph, nodes, edges, ...fingerprints,
-      graphId: `repo-${graph.repositoryRevision}-${stableHash([graph.sourceFingerprint, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}`,
+      graphId: graph.sourceState ? `worktree-${graph.sourceFingerprint}-${stableHash([graph.sourceState.headRevision, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}` : `repo-${graph.repositoryRevision}-${stableHash([graph.sourceFingerprint, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}`,
       namingDivergences: deriveNamingDivergences(nodes, edges), unmatchedNodeIds: deriveUnmatched(nodes, edges),
       producerCoverage: [{ producer: result.index.producer.name,
         state: result.counts.sourceDocumentsSkipped || result.counts.sourceDocumentsNotIndexed || result.counts.unresolvedOrUnsafeOccurrences || result.counts.referencesWithoutIndexedDefinition ? 'partial' : 'complete',
@@ -180,6 +185,24 @@ async function trackedFiles(root: string): Promise<TrackedFile[]> {
   return output.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+async function workingFiles(root: string): Promise<TrackedFile[]> {
+  const indexed = new Map((await trackedFiles(root)).map(file => [file.path, file]));
+  const result = await runChecked('git', ['-C', root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z']);
+  const files: TrackedFile[] = [];
+  for (const relative of new Set(result.stdout.split('\0').filter(Boolean))) {
+    if (isRepositoryAnalysisIgnoredPath(relative)) continue;
+    try {
+      const stat = await fs.lstat(path.join(root, relative));
+      const existing = indexed.get(relative);
+      const mode = stat.isSymbolicLink() ? '120000' : existing?.mode === '160000' ? '160000' : stat.isFile() ? (stat.mode & 0o111 ? '100755' : '100644') : '';
+      if (mode) files.push({ path: relative, mode, blob: existing?.blob ?? '' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
 async function trackedSymlinkTarget(root: string, relative: string): Promise<string> {
   const absolute = path.join(root, relative);
   const stat = await fs.lstat(absolute);
@@ -190,12 +213,12 @@ async function trackedSymlinkTarget(root: string, relative: string): Promise<str
   return await fs.readFile(absolute, 'utf8');
 }
 
-export async function sourceFingerprint(root: string): Promise<string> {
-  const tracked = await trackedFiles(root);
+export async function sourceFingerprint(root: string, workingTree = false): Promise<string> {
+  const tracked = workingTree ? await workingFiles(root) : await trackedFiles(root);
   if (tracked.some(file => file.path.includes('\n'))) throw new Error('Tracked filenames containing newlines are not supported by graph sealing');
   const regular = tracked.filter(file => file.mode !== '120000' && file.mode !== '160000');
   const regularHashes = regular.length
-    ? (await runChecked('git', ['-C', root, 'hash-object', '--stdin-paths'], { input: `${regular.map(file => file.path).join('\n')}\n` })).stdout.trim().split(/\r?\n/u)
+    ? (await runChecked('git', ['-C', root, 'hash-object', ...(workingTree ? ['--no-filters'] : []), '--stdin-paths'], { input: `${regular.map(file => file.path).join('\n')}\n` })).stdout.trim().split(/\r?\n/u)
     : [];
   if (regularHashes.length !== regular.length) throw new Error('Unable to fingerprint every tracked regular source file');
   const regularByPath = new Map(regular.map((file, index) => [file.path, regularHashes[index]!]));
@@ -407,7 +430,7 @@ function unityGuidReference(value: unknown): value is UnityGuidReferenceValue {
 }
 
 function resolveUnityGraph(input: {
-  revision: string;
+  revision: string | null;
   createdAt: string;
   trackedPaths: Set<string>;
   nodes: GraphNode[];
@@ -2542,10 +2565,12 @@ export async function buildRepositoryGraph(input: {
   revision: string;
   root: string;
   role?: 'A' | 'W' | 'B';
+  workingTree?: boolean;
 }): Promise<IntelligenceGraph> {
   const createdAt = new Date().toISOString();
-  const tracked = await trackedFiles(input.root);
-  const languageProducer = await prepareLanguageProducer(input.root, tracked);
+  const tracked = input.workingTree ? await workingFiles(input.root) : await trackedFiles(input.root);
+  const beforeFingerprint = input.workingTree ? await sourceFingerprint(input.root, true) : null;
+  const languageProducer = await prepareLanguageProducer(input.root, tracked, input.workingTree);
   const eligible = tracked.filter(file => supportsSourcePath(file.path));
   const selected = [...eligible]
     .sort((left, right) => {
@@ -2606,7 +2631,7 @@ export async function buildRepositoryGraph(input: {
       id: `repo:${trackedFile.path}`,
       kind: 'repository-file',
       locator: trackedFile.path,
-      revision: input.revision,
+      revision: input.workingTree ? null : input.revision,
       observedAt: createdAt,
       available: true,
     };
@@ -2621,6 +2646,7 @@ export async function buildRepositoryGraph(input: {
       continue;
     }
     if (CODE_EXTENSIONS.has(path.extname(trackedFile.path).toLowerCase())) sourceTexts.set(trackedFile.path, text);
+    const contentSha256 = createHash('sha256').update(text).digest('hex');
     const result = analyzeByTechnology({ source: fileSource, text, locatorBase: trackedFile.path });
     nodes.push(file, ...result.observations);
     edges.push(...result.resolutions, ...result.observations.filter(node => node.layer !== 'semantic').map(node => containsEdge(file, node, trackedFile.path)));
@@ -2628,13 +2654,13 @@ export async function buildRepositoryGraph(input: {
     const analyzerFailure = result.resolutions.find(edge => edge.kind === 'analysis' && edge.status === 'unresolved' && !edge.from && !edge.to);
     if (analyzerFailure) {
       failedFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure' });
+      coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure', contentSha256 });
     } else if (result.coverage?.status === 'partial') {
       partialFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'partial', reason: result.coverage.reason ?? 'analyzer reported partial coverage' });
+      coverageFiles.push({ path: trackedFile.path, status: 'partial', reason: result.coverage.reason ?? 'analyzer reported partial coverage', contentSha256 });
     } else {
       completeFiles += 1;
-      coverageFiles.push({ path: trackedFile.path, status: 'complete' });
+      coverageFiles.push({ path: trackedFile.path, status: 'complete', contentSha256 });
     }
   }
 
@@ -2644,14 +2670,14 @@ export async function buildRepositoryGraph(input: {
     id: 'repository',
     kind: 'repository',
     locator: input.repository,
-    revision: input.revision,
+    revision: input.workingTree ? null : input.revision,
     observedAt: createdAt,
     available: true,
     ...(warnings.length ? { warnings } : {}),
   };
 
   resolveUnityGraph({
-    revision: input.revision,
+    revision: input.workingTree ? null : input.revision,
     createdAt,
     trackedPaths,
     nodes,
@@ -2684,7 +2710,8 @@ export async function buildRepositoryGraph(input: {
   edges = dedupeEdges(resolveEvidenceSpine(nodes, resolveCrossSource(nodes, edges)));
 
   sourceTexts.clear();
-  const fingerprint = await sourceFingerprint(input.root);
+  const fingerprint = await sourceFingerprint(input.root, input.workingTree);
+  if (beforeFingerprint && beforeFingerprint !== fingerprint) throw new Error('Working files changed during graph construction; rebuild to use one consistent source state');
   const fingerprints = graphFingerprints(nodes, edges, evidence);
   const skippedFileLimitFiles = Math.max(0, eligible.length - selected.length);
   const skippedFiles = skippedOversizedFiles + skippedNonRegularFiles + skippedFileLimitFiles;
@@ -2705,11 +2732,12 @@ export async function buildRepositoryGraph(input: {
   const graph: IntelligenceGraph = {
     schemaVersion: 2,
     analyzerVersion: ANALYZER_VERSION,
-    graphId: `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
+    graphId: input.workingTree ? `worktree-${fingerprint}-${stableHash([input.revision, ANALYZER_VERSION]).slice(0, 10)}` : `repo-${input.revision}-${stableHash([fingerprint, ANALYZER_VERSION]).slice(0, 10)}`,
     project: input.project,
     role: input.role ?? 'W',
     createdAt,
-    repositoryRevision: input.revision,
+    repositoryRevision: input.workingTree ? null : input.revision,
+    ...(input.workingTree ? { sourceState: { kind: 'working-tree' as const, headRevision: input.revision } } : {}),
     sourceFingerprint: fingerprint,
     topologyFingerprint: fingerprints.topologyFingerprint,
     evidenceFingerprint: fingerprints.evidenceFingerprint,
@@ -2723,5 +2751,7 @@ export async function buildRepositoryGraph(input: {
     unavailableSourceIds: [],
     coverage,
   };
-  return await addLanguageProducerFacts(input.root, graph, languageProducer);
+  const produced = await addLanguageProducerFacts(input.root, graph, languageProducer);
+  if (beforeFingerprint && beforeFingerprint !== await sourceFingerprint(input.root, true)) throw new Error('Working files changed during graph construction; rebuild to use one consistent source state');
+  return produced;
 }

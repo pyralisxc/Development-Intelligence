@@ -34,7 +34,7 @@ Keep each truth in its owner. Update an existing living document when its truth 
 
 1. One canonical Development Intelligence graph model; do not create separate code/parity/provider graph authorities.
 2. Git/source is authoritative implementation evidence. Durable accepted semantic authority lives in DI canonical persistence and remains revision-bound to Git history.
-3. A/W/B lifecycle: accepted A is DI-owned semantic authority for an exact accepted source revision, working W is reconstructable evidence for an exact Git revision, and B is the exact candidate revision plus its semantic review delta before promotion.
+3. A/W/B lifecycle: accepted A is DI-owned semantic authority for an exact accepted source revision; hosted or historical W is reconstructable evidence for an exact Git revision; local W can describe the current working files by content fingerprint, with HEAD recorded as context rather than represented as their exact revision. B is the exact candidate revision plus its semantic review delta before promotion.
 4. Optional expectation evidence may be overlaid by a caller, but Development Intelligence never requires a particular product/development methodology.
 5. No project-specific analyzer/extractor in generic production source.
 6. No required semantic project configuration or hidden source-authority hierarchy.

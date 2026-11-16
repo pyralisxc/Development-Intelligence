@@ -30,7 +30,7 @@ See [Product direction](docs/product-direction.md), [Architecture](docs/architec
 Development Intelligence uses a revision-bound accepted/working/candidate lifecycle:
 
 - **A — accepted:** durable semantic topology and review/acceptance history owned by DI canonical persistence for an exact project revision.
-- **W — working:** the complete evidence graph for one exact Git revision. Current default-branch W may be durably cached in DI, but remains reconstructable from Git and technical evidence.
+- **W — working:** the evidence graph for a selected source state. Hosted and historical states identify an exact Git revision; a local working graph identifies the current files by content fingerprint and records HEAD separately. Current default-branch W may be durably cached in DI, but remains reconstructable from Git and technical evidence.
 - **B — candidate:** the exact candidate revision plus its semantic delta/review state at the Preview→Main promotion boundary.
 - Promotion advances DI's accepted semantic state only after the current-revision semantic gate is satisfied; Git remains source/history authority.
 
@@ -234,6 +234,8 @@ Ordinary project/ref queries always address deterministic source-derived W. Cano
 `search_graph` and `query_parity` accept either one `query` or up to 20 independent `queries`. Grouped queries load the selected graph once and return one result per term; they are the preferred path for exploratory audits that would otherwise repeat the same graph context many times.
 
 ## Local development
+
+To install and use the local Workbench, terminal and MCP interface, including the Windows distribution and graph lifecycle, see [Local Development Intelligence](docs/local-workbench.md).
 
 Requirements:
 

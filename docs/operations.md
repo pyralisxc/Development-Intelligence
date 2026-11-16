@@ -25,6 +25,8 @@ GitHub may own source/history and a platform may host the Workbench/MCP plus dis
 
 ## Configuration
 
+For the user-local Linux and Windows application, setup, storage, graph retention, backup, and desktop/MCP access, see [Local Development Intelligence](local-workbench.md). The Windows local distribution is separate from the managed compute trial below.
+
 ### Managed Windows compute trial
 
 The Windows package under `packaging/windows` is a per-machine x64 **unsigned laboratory artifact**. It bundles pinned Node 22, MinGit (including the askpass shell), native parsers, production dependencies and WinSW. WinSW uses the OS-serviced .NET Framework 4.8+ runtime; the installer fails if that prerequisite is absent and never installs it. MSI owns service registration/removal and major upgrades; WinSW supervises the process. The installer creates a manual, stopped `DevelopmentIntelligenceTrial` service under LocalService with an unrestricted service SID. No firewall rule, scheduled task, production credential, global PATH entry or global runtime is installed.

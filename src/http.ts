@@ -6,7 +6,9 @@ import { authMode, authorize, authorizeOwnerWrite, authorizeSemanticGateWrite, c
 import { callTool, listTools } from './mcp.js';
 import { runtimeIdentity } from './runtimeIdentity.js';
 import { currentGraph } from './intelligence/service.js';
-import { diffAcceptedToWorking, diffRevisions, viewerProjection } from './intelligence/query.js';
+import { localSourceGraphHistory } from './intelligence/localGraphStore.js';
+import { localLifecycleStatus, startLocalOperation, updateLocalSettings } from './intelligence/localOperations.js';
+import { compareRevisionSet, diffAcceptedToWorking, diffRevisions, pageGraphDiff, viewerProjection } from './intelligence/query.js';
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbenchRequest, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
@@ -189,6 +191,18 @@ export function createDevelopmentIntelligenceServer() {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;
     }
+    if (requestUrl.pathname === '/workbench/local' && process.env.DEVINT_LOCAL_SETTINGS) {
+      if (!authorize(req, res)) return;
+      try {
+        if (req.method === 'GET') { json(res, 200, await localLifecycleStatus()); return; }
+        if (req.method === 'POST') {
+          const body = await readJson(req);
+          const result = body.action === 'settings' ? await updateLocalSettings(body) : await startLocalOperation(body);
+          json(res, 200, result); return;
+        }
+        json(res, 405, { error: 'Use GET or POST' }); return;
+      } catch (error) { json(res, 400, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
     if (requestUrl.pathname === '/internal/reconcile-canonical' && req.method === 'GET') {
       const cronSecret = process.env.CRON_SECRET?.trim();
       if (!cronSecret) {
@@ -253,7 +267,7 @@ export function createDevelopmentIntelligenceServer() {
     if (requestUrl.pathname === '/viewer.js' && req.method === 'GET') {
       try {
         const script = await fs.readFile(VIEWER_BUNDLE, 'utf8');
-        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff' });
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
         res.end(script);
       } catch (error) {
         res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
@@ -334,15 +348,29 @@ export function createDevelopmentIntelligenceServer() {
         } else if (action === 'explore') {
           result = await exploreWorkbench({ project, query: requestUrl.searchParams.get('query') ?? undefined, limit: numberParam(requestUrl, 'limit', 250), ...context });
         } else if (action === 'sources') result = await workbenchSources(project, context.ref, context.graphId);
-        else if (action === 'changes') {
+        else if (action === 'compare-graphs') {
+          const refs = requestUrl.searchParams.getAll('refs');
+          const offset = Number(requestUrl.searchParams.get('offset') ?? 0), limit = Number(requestUrl.searchParams.get('limit') ?? 50);
+          result = await compareRevisionSet({ project, refs: refs.length ? refs : ['main', 'preview', 'working-tree'], offset, limit });
+        } else if (action === 'changes') {
           if (context.graphId) throw Object.assign(new Error('Accepted-to-working change is only available for canonical source graphs'), { status: 400 });
-          const baseRef = requestUrl.searchParams.get('baseRef') ?? undefined;
-          const headRef = requestUrl.searchParams.get('headRef') ?? context.ref;
+          let baseRef = requestUrl.searchParams.get('baseRef') ?? undefined;
+          let headRef = requestUrl.searchParams.get('headRef') ?? context.ref;
+          if (!baseRef && process.env.DEVINT_LOCAL_GRAPH_DIR) {
+            const catalog = await localSourceGraphHistory(process.env.DEVINT_LOCAL_GRAPH_DIR, project);
+            baseRef = catalog?.targets?.preview ? 'preview' : catalog?.targets?.main ? 'main' : undefined;
+            if (baseRef && !headRef) headRef = 'working-tree';
+          }
           const detail = baseRef
             ? await diffRevisions({ project, baseRef, ...(headRef ? { ref: headRef } : {}) })
             : await diffAcceptedToWorking(project, headRef);
           const counts = changeCounts(detail);
           const historical = Boolean(baseRef);
+          const offsetValue = Number(requestUrl.searchParams.get('offset') ?? 0);
+          const limitValue = Number(requestUrl.searchParams.get('limit') ?? 50);
+          const paged = process.env.DEVINT_LOCAL_GRAPH_DIR
+            ? pageGraphDiff(detail, Number.isSafeInteger(offsetValue) && offsetValue >= 0 ? offsetValue : 0,
+              Number.isSafeInteger(limitValue) && limitValue > 0 ? Math.min(limitValue, 500) : 50) : null;
           result = {
             project,
             mode: historical ? 'revision-to-revision' : 'accepted-to-working',
@@ -350,7 +378,8 @@ export function createDevelopmentIntelligenceServer() {
             summary: counts.added || counts.removed || counts.changed
               ? `${counts.added} added, ${counts.removed} removed, ${counts.changed} changed ${historical ? 'graph' : 'semantic'} records.`
               : historical ? 'The selected revisions have no graph changes.' : 'Accepted and working semantic topology agree.',
-            detail,
+            detail: paged?.detail ?? detail,
+            ...(paged ? { page: paged.page } : {}),
           };
         } else if (action === 'semantics') {
           result = await semanticReviewSurface({ project, ...context, limit: numberParam(requestUrl, 'limit', 25) });
