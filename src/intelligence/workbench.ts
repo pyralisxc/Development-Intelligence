@@ -1684,7 +1684,7 @@ export async function queryWorkbenchRequest(input: {
             const concise = (family?.facts ?? []).filter((fact: any) => typeof fact.expression === 'string');
             const matched = concise.filter((fact: any) => fact.matchedTerms?.length);
             const facts = matched.length ? matched : concise.filter((fact: any) => fact.effectKind?.split('-').includes('call'));
-            const detail = facts.map((fact: any) => `${fact.expression}${fact.requirements?.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext?.length ? ` within ${fact.controlContext.map((context: any) => context.kind).join(' > ')}` : ''}`).join('; ');
+            const detail = facts.map((fact: any) => `${fact.expression}${fact.requirements?.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext?.length ? ` within ${fact.controlContext.map((context: any) => context.kind).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ');
             return `${item.name ?? item.id} (${item.locator})${detail ? `: ${detail}` : ''}`;
           }).join(' | ')
           + '. These are ranked matching source facts; inspect the selected graph subjects and coverage for the rest.'

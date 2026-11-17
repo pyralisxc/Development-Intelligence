@@ -18,6 +18,16 @@ const config = window.__DEVINT_VIEWER__;
 if (!config?.project) throw new Error('Development Intelligence Workbench is missing project context');
 const viewerConfig = config;
 
+function savedPositiveSetting(name: string, fallback: number): number {
+  try {
+    const value = Number(window.localStorage.getItem(`di:${viewerConfig.project}:${name}`));
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  } catch { return fallback; }
+}
+function savePositiveSetting(name: string, value: number): void {
+  try { window.localStorage.setItem(`di:${viewerConfig.project}:${name}`, String(value)); } catch { /* session control remains usable */ }
+}
+
 const sectionHead = document.getElementById('section-head') as HTMLElement;
 const content = document.getElementById('content') as HTMLElement;
 const inspectorContext = document.getElementById('inspector-context') as HTMLElement;
@@ -34,8 +44,9 @@ let section: Section = (['overview', 'explore', 'semantics', 'parity', 'query', 
 let sectionEpoch = 0;
 let exploreMode: ExploreMode = 'graph';
 let graphLens: GraphLens = 'architecture';
-let graphLimit = 700;
-let graphDepth = 2;
+let graphLimit = savedPositiveSetting('graphNodes', 700);
+let graphDepth = savedPositiveSetting('graphDepth', 2);
+let queryPageSize = savedPositiveSetting('queryPageSize', 20);
 let exploreQuery = '';
 let graphSelected = '';
 let lastExplore: any = null;
@@ -308,7 +319,9 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
       if (status) status.textContent = 'Enter positive whole numbers for nodes and depth.';
       return;
     }
-    graphLimit = size; graphDepth = depth; void renderGraph(root, epoch);
+    graphLimit = size; graphDepth = depth;
+    savePositiveSetting('graphNodes', size); savePositiveSetting('graphDepth', depth);
+    void renderGraph(root, epoch);
   });
   const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) })) as Projection;
   if (!sectionIsCurrent(epoch, 'explore') || sequence !== graphRenderSequence || exploreMode !== 'graph') return;
@@ -371,8 +384,12 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
   const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
   if (prefill) queryDraft = prefill;
   prefill = queryDraft;
-  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="20"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
+  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
   queryPanelReady = true;
+  queryPanel.querySelector<HTMLInputElement>('#query-limit')?.addEventListener('change', event => {
+    const value = Number((event.target as HTMLInputElement).value);
+    if (Number.isSafeInteger(value) && value > 0) { queryPageSize = value; savePositiveSetting('queryPageSize', value); }
+  });
   (queryPanel.querySelector('#query-text') as HTMLTextAreaElement).addEventListener('input', event => { queryDraft = (event.target as HTMLTextAreaElement).value; });
   const run = async (offset = 0) => {
     const text = (document.getElementById('query-text') as HTMLTextAreaElement).value.trim();
@@ -396,6 +413,7 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
       const depth = Number((document.getElementById('query-depth') as HTMLInputElement).value) || 1;
       const limit = Number((document.getElementById('query-limit') as HTMLInputElement).value);
       if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Results per page must be a positive whole number');
+      queryPageSize = limit; savePositiveSetting('queryPageSize', limit);
       const result = await postJson('/workbench/query', { text, offset, depth, limit, ...(direction ? { direction } : {}),
         ...(scope ? { scope } : {}), ...(nodeKinds.length ? { nodeKinds } : {}),
         ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) });

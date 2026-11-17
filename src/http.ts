@@ -122,7 +122,9 @@ export async function handleRpc(body: any, requestInfo: { modern: boolean }): Pr
 }
 
 function numberParam(url: URL, key: string, fallback: number): number {
-  const value = Number(url.searchParams.get(key));
+  const raw = url.searchParams.get(key);
+  if (raw === null || raw.trim() === '') return fallback;
+  const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
 }
 
