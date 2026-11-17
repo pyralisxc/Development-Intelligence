@@ -10,6 +10,8 @@ It turns exact Git revisions and bounded technical observations into one inspect
 
 The graph is the internal model, not the product identity. The product outcome is faster, more trustworthy understanding before a person or agent decides or changes anything.
 
+The product works graph-first: source producers build reusable nodes, relationships, values and provenance before questions arrive. Shared language interpretation selects subjects, scope, relationship direction and constraints over that knowledge; graph operations and evidence compose the answer. Do not create routes for particular wording, questions or repositories. Repository-wide orientation is a graph scope, not a separate question system. The local CLI, Workbench, visualization and MCP expose this same understanding for human and agent use.
+
 ## Who it is for
 
 Development Intelligence is built first for a solo software owner working with coding agents across many repositories, languages, revisions, providers, and long-running product histories.

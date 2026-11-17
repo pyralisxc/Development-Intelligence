@@ -32,14 +32,17 @@ const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[dat
 
 let section: Section = (['overview', 'explore', 'semantics', 'parity', 'query', 'sources', 'changes', 'local'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
 let sectionEpoch = 0;
-let exploreMode: ExploreMode = 'summary';
+let exploreMode: ExploreMode = 'graph';
 let graphLens: GraphLens = 'architecture';
 let exploreQuery = '';
+let graphSelected = '';
 let lastExplore: any = null;
 let selectedInspection: any = null;
 let inspectorTab = 'summary';
 let renderer: Sigma | null = null;
 let preferredQuerySource = '';
+let queryDraft = '';
+let graphRenderSequence = 0;
 let semanticFlash = '';
 let parityContractText = `{
   "version": 1,
@@ -57,7 +60,7 @@ let parityContractText = `{
 
 const sectionCopy: Record<Section, { title: string; description: string }> = {
   overview: { title: 'Overview', description: 'Readable project intelligence: current state, quick notes, important concepts, coverage and meaningful change.' },
-  explore: { title: 'Explore', description: 'Search the same intelligence as Summary, List, Table, Graph or Raw records. Use the Inspector for the details.' },
+  explore: { title: 'Explore', description: 'Navigate connected source knowledge. Search for a subject, select a node, and inspect its evidence.' },
   semantics: { title: 'Semantics', description: 'Review evidence-derived project meaning before it becomes durable authority. Amend, accept, reject, verify and lineage changes are explicit, separately recorded actions.' },
   parity: { title: 'Parity Contracts', description: 'Compare caller-owned expected entities and relationships with observed project reality. Expectations remain ephemeral and never become accepted truth.' },
   query: { title: 'Query', description: 'Ask Development Intelligence about the project or run a bounded read-only query against a configured technical source.' },
@@ -246,7 +249,7 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; void renderExploreResult(epoch); });
   content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
-  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); void fetchExplore(epoch); });
+  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
   await fetchExplore(epoch);
 }
 
@@ -290,23 +293,33 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 }
 
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
+  const sequence = ++graphRenderSequence;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div>`;
+  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><span class="muted">Drag to pan · scroll to zoom · select a node to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
-  const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(exploreQuery ? { query: exploreQuery } : {}), limit: '700', depth: '2' })) as Projection;
-  if (!sectionIsCurrent(epoch, 'explore')) return;
+  const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: '700', depth: '2' })) as Projection;
+  if (!sectionIsCurrent(epoch, 'explore') || sequence !== graphRenderSequence || exploreMode !== 'graph') return;
   const container = document.getElementById('graph') as HTMLElement;
   const graphStatus = document.getElementById('graph-status') as HTMLElement;
-  if (projection.ambiguous) { container.innerHTML = empty('Ambiguous search', 'Choose a result from Summary/List instead of forcing a combined graph.'); graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates`; return; }
+  if (projection.ambiguous) {
+    container.innerHTML = empty('Choose a subject', 'Several graph subjects match. Select one below to see its neighborhood.');
+    graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates`;
+    const choices = document.getElementById('graph-choices')!;
+    choices.innerHTML = `<div class="card"><h3>Matching subjects</h3><div class="list">${(projection.candidates ?? []).map(node => `<button class="row row-button" data-graph-choice="${esc(node.id)}"><span class="badge">${esc(node.kind)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.locator)}</small></span><span>→</span></button>`).join('')}</div></div>`;
+    for (const button of Array.from(choices.querySelectorAll<HTMLButtonElement>('[data-graph-choice]'))) button.addEventListener('click', () => { graphSelected = button.dataset.graphChoice!; void renderGraph(root, epoch); });
+    return;
+  }
+  if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects found', 'Try another search or choose a different view.'); graphStatus.textContent = '0 nodes'; return; }
   const graph = new MultiGraph({ allowSelfLoops: false });
   projection.nodes.forEach((node, index) => { const point = graphPoint(node, index, projection.nodes.length); graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4, color: graphColor(node), node }); });
   for (const edge of projection.edges) {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
-  renderer = new Sigma(graph, container, { renderEdgeLabels: projection.nodes.length < 120, labelDensity: .15, labelGridCellSize: 85, labelRenderedSizeThreshold: 7, zIndex: true });
+  renderer = new Sigma(graph, container, { renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
   renderer.on('clickNode', event => void openInspector(event.node));
-  graphStatus.textContent = `${projection.nodes.length} nodes · ${projection.edges.length} relationships${projection.truncated ? ' · bounded' : ''}`;
+  root.querySelector<HTMLButtonElement>('#graph-reset')?.addEventListener('click', () => void renderer?.getCamera().animatedReset());
+  graphStatus.textContent = `${projection.nodes.length} nodes · ${graph.size} drawn relationships${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}`;
 }
 
 async function renderQuery(epoch: number, prefill = ''): Promise<void> {
@@ -315,7 +328,10 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
   const sourceData = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
   if (!sectionIsCurrent(epoch, 'query')) return;
   const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
+  if (prefill) queryDraft = prefill;
+  prefill = queryDraft;
   content.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
+  (document.getElementById('query-text') as HTMLTextAreaElement).addEventListener('input', event => { queryDraft = (event.target as HTMLTextAreaElement).value; });
   const run = async (offset = 0) => {
     const text = (document.getElementById('query-text') as HTMLTextAreaElement).value.trim();
     const sourceId = (document.getElementById('query-source') as HTMLSelectElement).value;

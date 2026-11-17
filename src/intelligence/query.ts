@@ -1275,7 +1275,7 @@ export async function viewerProjection(input: {
       ...neighborhood.nodes.flatMap(node => node.evidenceIds ?? []),
       ...neighborhood.edges.flatMap(edge => edge.evidenceIds ?? []),
     ]);
-    return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, selected: selected.id, nodes: neighborhood.nodes, edges: neighborhood.edges, evidence: graph.evidence.filter(item => evidenceIds.has(item.id)), coverage: coverageSummary(graph) };
+    return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, selected: selected.id, nodes: neighborhood.nodes, edges: neighborhood.edges, evidence: graph.evidence.filter(item => evidenceIds.has(item.id)), coverage: coverageSummary(graph), truncated: neighborhood.nodes.length >= limit };
   }
 
   let seedNodes: GraphNode[];
@@ -1292,10 +1292,12 @@ export async function viewerProjection(input: {
     ]);
     seedNodes = graph.nodes.filter(node => changedIds.has(node.id));
   }
+  const seedsTruncated = seedNodes.length > limit;
   seedNodes = seedNodes.slice(0, limit);
-  const ids = new Set(seedNodes.map(node => node.id));
-  const edges = graph.edges.filter(edge => edge.from && edge.to && ids.has(edge.from) && ids.has(edge.to)).slice(0, limit * 4);
-  return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, nodes: seedNodes, edges, coverage: coverageSummary(graph), truncated: seedNodes.length >= limit };
+  // Include the neighborhood of the selected concepts: relationships often
+  // end at implementation nodes outside the semantic seed kinds.
+  const neighborhood = boundedNeighborhood(graph, context, seedNodes.map(node => node.id), 1, limit);
+  return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, nodes: neighborhood.nodes, edges: neighborhood.edges, coverage: coverageSummary(graph), truncated: seedsTruncated || neighborhood.nodes.length >= limit };
 }
 
 const SYMBOL_KINDS_FOR_VIEW = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);

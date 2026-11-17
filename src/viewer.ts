@@ -66,7 +66,7 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
   <aside class="nav" aria-label="Development Intelligence workspace">
     <div class="nav-label">Workspace</div>
     <button class="nav-button active" data-section="overview"><span class="nav-icon">O</span><span class="nav-copy"><strong>Overview</strong><span>Quick project notes and current state</span></span></button>
-    <button class="nav-button" data-section="explore"><span class="nav-icon">E</span><span class="nav-copy"><strong>Explore</strong><span>Search, list, table and graph</span></span></button>
+    <button class="nav-button" data-section="explore"><span class="nav-icon">E</span><span class="nav-copy"><strong>Explore graph</strong><span>Navigate code and relationships</span></span></button>
     <button class="nav-button" data-section="semantics"><span class="nav-icon">M</span><span class="nav-copy"><strong>Semantics</strong><span>Review and accept project meaning</span></span></button>
     <button class="nav-button" data-section="parity"><span class="nav-icon">P</span><span class="nav-copy"><strong>Parity</strong><span>Evaluate expected outcomes</span></span></button>
     <button class="nav-button" data-section="query"><span class="nav-icon">Q</span><span class="nav-copy"><strong>Query</strong><span>Ask DI or a connected source</span></span></button>

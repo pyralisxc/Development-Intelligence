@@ -143,6 +143,17 @@ async function main(): Promise<void> {
     const { queryWorkbenchRequest } = await import('./intelligence/workbench.js');
     const response = await queryWorkbenchRequest({ project, text: question, ...(graphId ? { graphId } : {}), offset, limit });
     if (process.argv.includes('--details')) console.log(JSON.stringify(response, null, 2));
+    else if (process.argv.includes('--text')) {
+      const request = response.request as any;
+      const items = Array.isArray(response.items) ? response.items as any[] : [response];
+      console.log(`${project} · ${request?.sourceState?.kind === 'working-tree' ? 'working files (HEAD ' + request.sourceState.headRevision + ')' : request?.revision ?? graphId ?? 'selected graph'}`);
+      for (const item of items) {
+        console.log(`\n${item.question ?? question}\n${item.answer ?? item.error ?? 'No answer available.'}`);
+        const page = item.result?.page;
+        if (page?.nextOffset != null) console.log(`More results: --offset ${page.nextOffset}`);
+      }
+      console.log('\nUse --details for graph evidence and coverage.');
+    }
     else {
       const result = response.result as Record<string, unknown> | undefined;
       const items = Array.isArray(response.items) ? response.items.map((item: any) => ({ question: item.question, status: item.status,
