@@ -42,6 +42,7 @@ declare module 'node:async_hooks' {
 }
 
 declare module 'node:zlib' {
-  export const gzipSync: any;
   export const gunzipSync: any;
+  export const createGzip: any;
 }
+declare module 'node:stream' { export const Readable: any; }

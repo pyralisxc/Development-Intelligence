@@ -4,7 +4,7 @@ import { listPublicProjects } from '../source/git.js';
 import type { GraphEdge, GraphNode, IntelligenceGraph, RelationshipStatus, TechnicalSourceCapability } from '../types.js';
 import { getCodeSnippet } from './code.js';
 import { currentGraph } from './service.js';
-import { diffAcceptedToWorking, findGraphNodeCandidates, searchGraph } from './query.js';
+import { diffDefaultToSelected, findGraphNodeCandidates, searchGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, type AuditFinding } from './assessment.js';
 import { bootstrapSemanticCandidates } from './semanticBootstrap.js';
@@ -187,7 +187,7 @@ export async function semanticAudit(input: {
     summary: `${audit.candidateUniverse.eligible} evidence-qualified semantic candidate(s); ${audited} audited, ${core} meeting the explicit core-candidate facets and ${needsReview} requiring factuality review; ${displayed} detailed item(s) displayed. ${audit.candidateUniverse.truncated ? 'The eligible candidate population is truncated by the requested source-candidate budget.' : 'The eligible candidate population is complete for this request.'}`,
     ...audit,
     coverage: compactCoverage(graph),
-    policyNote: 'Core/supporting is an evidence-grounded audit classification, not semantic authority. Acceptance and verification remain separate.',
+    policyNote: 'Core/supporting is an evidence-grounded audit classification; source facts retain their evidence and scope.',
   };
 }
 
@@ -196,7 +196,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
   const local = Boolean(process.env.DEVINT_LOCAL_GRAPH_DIR);
   const [status, diff, sources] = await Promise.all([
     graphId || local ? Promise.resolve(null) : projectStatus(project, false),
-    graphId || local ? Promise.resolve(null) : diffAcceptedToWorking(project, ref),
+    graphId || local ? Promise.resolve(null) : diffDefaultToSelected(project, ref),
     listTechnicalSources(project),
   ]);
   const semantic = graph.nodes.filter(node => node.layer === 'semantic');
@@ -211,8 +211,8 @@ export async function projectOverview(project: string, ref?: string | undefined,
     `${relations.resolved} relationships are resolved; ${relations.candidate} remain candidates and ${relations.unresolved} are unresolved.`,
   ];
   if (!graphId && !local) notes.push(diffCounts.added || diffCounts.removed || diffCounts.changed
-    ? `Accepted → working semantic change: ${diffCounts.added} added, ${diffCounts.removed} removed, ${diffCounts.changed} changed records.`
-    : 'No accepted → working semantic topology change is currently detected.');
+    ? `Default → selected semantic change: ${diffCounts.added} added, ${diffCounts.removed} removed, ${diffCounts.changed} changed records.`
+    : 'No semantic change is detected between the default and selected source states.');
   if (graph.explicitValueConflicts.length) notes.push(`${graph.explicitValueConflicts.length} explicit semantic value conflict(s) need attention.`);
   if (findings.length) notes.push(`${findings.length} deterministic evidence finding(s) currently deserve attention; findings remain revision-bound projections rather than accepted graph truth.`);
   return {
@@ -233,7 +233,7 @@ export async function projectOverview(project: string, ref?: string | undefined,
       conflicts: graph.explicitValueConflicts.length,
       relationships: relations,
     },
-    currentness: status ? (status as any).graph?.currentness ?? null : null,
+
     coverage: compactCoverage(graph),
     coverageDetailTool: 'check_graph_coverage',
     highlights: semanticHighlights(graph).map(node => ({ id: node.id, kind: node.kind, name: displayName(node), locator: node.locator })),
@@ -304,7 +304,7 @@ export async function projectStatistics(project: string, ref?: string | undefine
       unresolvedNodeIds: graph.unmatchedNodeIds.length,
       unavailableSources: graph.unavailableSourceIds.length,
     },
-    currentness: graphStatus?.currentness ?? null,
+
     persistence: observability ? {
       canonical: observability.persistence ?? null,
       queryArtifacts: observability.queryArtifacts ?? null,
@@ -411,7 +411,7 @@ export async function inspectEntity(input: { project: string; node: string; ref?
   try { code = await getCodeSnippet({ project: input.project, ref: input.ref, graphId: input.graphId, node: selected.id, context: 5 }); } catch { /* semantic/runtime entities may not map to one source snippet */ }
   let change: unknown = null;
   if (!input.graphId) {
-    try { change = changeForNode(await diffAcceptedToWorking(input.project, input.ref), selected.id); } catch { change = null; }
+    try { change = changeForNode(await diffDefaultToSelected(input.project, input.ref), selected.id); } catch { change = null; }
   }
   return {
     project: input.project,
@@ -1628,14 +1628,6 @@ export async function queryWorkbenchRequest(input: {
     const items: Array<Record<string, any>> = [];
     for (const [index, question] of questions.entries()) {
       if (!question) { previousSubject = undefined; items.push({ index, question, status: 'error', error: 'Question is empty' }); continue; }
-      const repositoryQuestion = /^(?:what (?:does|is) (?:this|the) (?:project|repository|repo)(?: do)?|what is (?:this|the) (?:project|repository|repo) (?:for|about)|describe (?:this|the) (?:project|repository|repo))\s*[?.!]*$/iu.test(question);
-      if (repositoryQuestion && !input.scope && !input.offset && !input.nodeKinds?.length && !input.relationshipKinds?.length && !input.statuses?.length && !input.direction && !input.comparisonIds?.length && !input.comparisonScope && !input.comparisonKinds?.length && !input.conditionContains && input.conditionTruth === undefined && !input.effectKinds?.length && (input.depth === undefined || input.depth === 1)) {
-        const result = await scopeOrientation({ project: input.project, graphId: graph.graphId, semanticSummaryOnly: true, orientationReuse: { graph }, rankBy: input.rankBy, semanticDepth: input.semanticDepth, limit: input.limit });
-        previousSubject = undefined;
-        items.push({ index, question, status: 'ok', intent: 'repository-orientation', subject: null,
-          answer: result.summary, routing: { tool: 'orient_scope' }, result });
-        continue;
-      }
       const inheritedScope = !input.scope && previousSubject && /\b(?:it|its|itself)\b/iu.test(question)
         ? previousSubject : undefined;
       const effectiveScope = input.scope ?? inheritedScope;
@@ -1655,6 +1647,14 @@ export async function queryWorkbenchRequest(input: {
         ...(input.effectKinds?.length ? { effectKinds: input.effectKinds } : {}),
         ...(input.depth !== undefined ? { depth: input.depth } : {}),
       }) as any;
+      if (result.interpretation.selection === 'repository' && !result.navigation.operation) {
+        const orientation = await scopeOrientation({ project: input.project, graphId: graph.graphId, semanticSummaryOnly: true, orientationReuse: { graph }, rankBy: input.rankBy, semanticDepth: input.semanticDepth, limit: input.limit });
+        previousSubject = undefined;
+        items.push({ index, question, status: 'ok', intent: 'graph-filter', subject: null,
+          answer: orientation.summary, routing: { tool: 'graph-filter', selection: 'repository' },
+          result: { ...orientation, interpretation: result.interpretation } });
+        continue;
+      }
       const subject = ['exact-name', 'scope'].includes(result.interpretation.selection) && result.subjectTotal === 1
         ? result.subjects[0] : null;
       previousSubject = subject?.id;
@@ -1672,7 +1672,9 @@ export async function queryWorkbenchRequest(input: {
       const comparisonAnswer = result.comparison?.state === 'evaluated'
           ? `Compared ${result.comparison.total} subjects: ${result.comparison.counts.related} related, ${result.comparison.counts.candidate} candidate, ${result.comparison.counts.notRelated} established not related, and ${result.comparison.counts.unknown} unknown.`
           : result.comparison?.reason ?? '';
-      const answer = comparisonAnswer || relationshipAnswer || (focus.length
+      const answer = comparisonAnswer || (result.interpretation.negated
+        ? 'The graph matches subjects for this question, but the requested negative conclusion is not established. Narrow the subject and relationship or supply a comparison scope.'
+        : '') || relationshipAnswer || (focus.length
         ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
         : `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`);
       items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,
@@ -1718,6 +1720,6 @@ export async function workbenchSources(project: string, ref?: string | undefined
     observedGraphSources: graph.sources,
     unavailableSourceIds: graph.unavailableSourceIds,
     coverage: graph.coverage ?? null,
-    note: 'Technical sources are operational read-only inputs. Query results are evidence/observations and are not automatically promoted into accepted semantic topology.',
+    note: 'Technical sources are operational read-only inputs. Query results retain their own evidence and observation provenance.',
   };
 }

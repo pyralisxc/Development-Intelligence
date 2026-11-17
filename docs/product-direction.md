@@ -10,6 +10,8 @@ It turns exact Git revisions and bounded technical observations into one inspect
 
 The graph is the internal model, not the product identity. The product outcome is faster, more trustworthy understanding before a person or agent decides or changes anything.
 
+The product works graph-first: source producers build reusable nodes, relationships, values and provenance before questions arrive. Shared language interpretation selects subjects, scope, relationship direction and constraints over that knowledge; graph operations and evidence compose the answer. Do not create routes for particular wording, questions or repositories. Repository-wide orientation is a graph scope, not a separate question system. The local CLI, Workbench, visualization and MCP expose this same understanding for human and agent use.
+
 ## Who it is for
 
 Development Intelligence is built first for a solo software owner working with coding agents across many repositories, languages, revisions, providers, and long-running product histories.
@@ -99,8 +101,8 @@ Current boundaries are equally important:
 
 - TypeScript/JavaScript has the deepest cross-file call intelligence; other language analyzers expose narrower, disclosed precision.
 - CSS structure is searchable, but component-to-selector usage is not inferred.
-- Runtime and configured technical-source observations do not automatically become accepted semantic topology.
-- Assessment results and caller-required realization facets are ephemeral projections; they are not accepted semantic topology or inferred product intent.
+- Runtime and configured technical-source observations retain their own provenance and do not rewrite source facts.
+- Assessment results and caller-required realization facets are ephemeral projections, not inferred product intent.
 - Source-adjacent declarations can state generic current semantics; Development Intelligence does not determine whether those semantics are desirable product intent.
 - Arbitrary external analyzers may contribute evidence only after a generic adapter contract exists; no plugin may dictate graph identity or lifecycle.
 - The service inspects and explains. It does not write inspected repositories or operate their providers.

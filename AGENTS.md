@@ -16,6 +16,8 @@ Build the complete, well-developed outcome the owner requests. Read the Confluen
 
 Use mature tools for their intended capabilities and integrate their useful outputs directly when they fit. Do not recreate their internals or add redundant wrappers and proof machinery by default. DI should establish source-derived conditions, effects, and execution facts as facts when the code and supported analysis establish them; a separate runtime witness is not a prerequisite for source-derived facts.
 
+DI builds reusable graph knowledge before questions arrive. Interpret language into general graph subjects, relationship directions, constraints and negation, and compose answers from that shared knowledge and its evidence. Repository orientation is a scope of the same model. Do not add question-specific routes, phrase-matching handlers, repository-specific cases or answer templates; improve shared graph facts, interpretation and composition instead. CLI, Workbench, visualization and MCP are first-class views over that same understanding.
+
 Do not add tests by default. The owner prefers real use and examination of real outputs as primary acceptance. Existing tests, fixtures, and workflows are implementation artifacts, not product authority; evaluate them for retirement or revision when they preserve obsolete behavior or obstruct the intended outcome. Keep CI and the documentation aligned with the actual build and release workflows.
 
 ## Documentation ownership
@@ -33,8 +35,8 @@ Keep each truth in its owner. Update an existing living document when its truth 
 ## Non-negotiable invariants
 
 1. One canonical Development Intelligence graph model; do not create separate code/parity/provider graph authorities.
-2. Git/source is authoritative implementation evidence. Durable accepted semantic authority lives in DI canonical persistence and remains revision-bound to Git history.
-3. A/W/B lifecycle: accepted A is DI-owned semantic authority for an exact accepted source revision; hosted or historical W is reconstructable evidence for an exact Git revision; local W can describe the current working files by content fingerprint, with HEAD recorded as context rather than represented as their exact revision. B is the exact candidate revision plus its semantic review delta before promotion.
+2. Git/source is authoritative implementation evidence. Current understanding is derived from the selected graph and its source evidence, without a separate semantic approval ledger.
+3. Committed and historical graphs identify exact Git revisions; a local working graph identifies current files by content fingerprint, with HEAD recorded as context. Compare selected states directly. Preview and Main remain distinct release branches.
 4. Optional expectation evidence may be overlaid by a caller, but Development Intelligence never requires a particular product/development methodology.
 5. No project-specific analyzer/extractor in generic production source.
 6. No required semantic project configuration or hidden source-authority hierarchy.
@@ -46,9 +48,9 @@ Keep each truth in its owner. Update an existing living document when its truth 
 12. MCP, the Workbench, AI Systems Control, and future clients must project the same canonical DI intelligence rather than create client-specific intelligence backends.
 13. The Workbench is a specialist diagnostic/reference surface. Do not add control-plane ownership or duplicate ASC product responsibilities merely to preserve it as a competing primary website.
 
-## Accepted semantic authority
+## Source graph authority
 
-Git remains source/history authority. Durable accepted semantic A, semantic-review history, and canonical current W for inspected projects live in Development Intelligence canonical persistence, keyed to exact project revisions. Inspected repositories must not maintain a second machine semantic authority.
+Git remains source/history authority. DI may persist reconstructable source graphs and evidence for the selected revision. Existing historical review records are not deleted, but they do not determine current understanding. Inspected repositories must not maintain a second machine semantic authority.
 
 The `/.development-intelligence/` checkpoint format remains compatibility/migration machinery generated only in disposable tests or CI artifacts. Development Intelligence and inspected product repositories must not track it as machine semantic authority.
 

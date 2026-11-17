@@ -18,6 +18,7 @@ di-local build-revision --ref main --target main
 di-local build-revision --ref preview --target preview
 di-local history
 di-local query --question "What calls the graph builder?"
+di-local query --question "What calls the graph builder?" --text
 di-local query --target preview --question "What calls the graph builder?"
 di-local query --question "What calls the graph builder?" --details
 di-local compare --base preview --target working
@@ -33,6 +34,8 @@ Committed references resolve using the local Git repository. `main` or `preview`
 The `open` command starts the local Workbench and opens the browser. `serve` runs the loopback service in the foreground. `mcp` serves the same local graph through standard input/output to a compatible local agent. Connecting ChatGPT to a local process requires a supported connection or tunnel configured separately.
 
 The Workbench Semantics view derives its understanding from the selected graph. It does not provide separate editing, approval or verification of semantic meanings. Legacy review, promotion-gate and portfolio-bootstrap interfaces are retired; existing stored review data is not deleted. Source-graph backup does not include that old data.
+
+Explore opens the graph first. Search for a subject, choose among matching identities, and select a node to inspect its source and evidence. Pan, zoom and reset the view; the status reports when the displayed neighborhood is bounded. List, table, summary and raw records remain available for the same investigation. `query --text` offers a readable terminal answer; the default JSON remains suitable for scripts and `--details` returns the full evidence response.
 
 `di-local backup --backup-dir PATH` copies retained source graphs into a new backup directory. `di-local restore --backup-dir PATH --data-dir NEW_PATH` restores them into an empty graph location. These commands do not back up repository files or accepted semantic records. Use `history` to find retained graph IDs, `activate --graph-id ID` to select a retained generation, and `unpin --target NAME` to release a comparison target for cleanup on the next build.
 

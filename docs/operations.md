@@ -2,11 +2,11 @@
 
 ## Hosting principle
 
-Development Intelligence does not require a permanently administered graph database or persistent graph disk. Git remains source/history authority, while hosted canonical A/W and semantic-review authority use configured DI canonical persistence (currently Vercel Private Blob). Local checkouts, query artifacts, and analyzer caches remain reconstructable compute.
+Development Intelligence does not require a permanently administered graph database or persistent graph disk. Git remains source/history authority, while reconstructable hosted source graphs use configured DI canonical persistence (currently Vercel Private Blob). Local checkouts, query artifacts, and analyzer caches remain reconstructable compute.
 
 Vercel container deployment is runtime-change scoped. `vercel.json` compares the candidate Git SHA with Vercel's last successful deployment SHA over runtime source, dependency manifests/lockfile, TypeScript runtime build configuration, `Dockerfile.vercel`, Vercel configuration, and Docker ignore rules. Documentation, tests, benchmarks, GitHub workflow edits, packaged-action-only edits, and other runtime-neutral repository changes skip the expensive container build and do not push a new image. Missing previous-deployment identity, an unavailable comparison revision, and same-SHA redeploys fail open to a real build so first deploys, failed-build recovery, and provider/environment-triggered redeploys cannot be hidden by the optimization. Preview/Main correctness remains owned by GitHub verification; runtime-affecting commits still deploy normally.
 
-Inspected repositories do not need a generated semantic checkpoint. Consumers should pin `pyralisxc/Development-Intelligence` to a reviewed full commit SHA and use checkpointless `mode: analyze` when they want repository-side CI evidence. DI canonical persistence owns semantic acceptance/review state; repository source and product/architecture documents retain their own authority roles.
+Inspected repositories do not need a generated semantic checkpoint. Consumers should pin `pyralisxc/Development-Intelligence` to a reviewed full commit SHA and use checkpointless `mode: analyze` when they want repository-side CI evidence. DI derives current knowledge from source graphs; repository source and product/architecture documents retain their own authority roles.
 
 The legacy `check` / `seal` checkpoint modes remain for DI self-verification and migration compatibility, not as the normal authority model for inspected repositories.
 
@@ -35,9 +35,9 @@ Versioned binaries live under Program Files. ProgramData/DevelopmentIntelligence
 
 Activation requires an administrator-provided `config/service.json` with `formatVersion: 1`, `authMode: "bearer"`, an `agentToken` of at least 32 characters and an explicit `projects` access registry. Optional `remoteStorage` contains the approved remote Blob `storeId` and `token`. Never commit this file or put production credentials into trial CI. The launcher strips inherited provider/runtime settings, binds only 127.0.0.1:8788 and installs no reconciliation scheduler. Local canonical filesystem configuration is unavailable in this managed profile. Unconfigured startup fails closed.
 
-Remote DI persistence remains durable authority. Git/source remains implementation evidence. A compute node does not acquire semantic acceptance rights or become a concurrent production publisher by being installed. Initial trial state/credentials must be isolated from production; production publisher transfer and simultaneous nodes require separate publication coordination and approval. Existing source read/currentness guards remain unchanged.
+Remote DI persistence remains durable authority. Git/source remains implementation evidence. A compute node does not become a concurrent production publisher by being installed. Initial trial state/credentials must be isolated from production; production publisher transfer and simultaneous nodes require separate publication coordination and approval. Existing source read/currentness guards remain unchanged.
 
-The launcher fixes `DEVINT_COMPUTE_ONLY=1`; configuration cannot override this role. All three canonical persistence writers reject it explicitly, even with a configured remote credential. HTTP reconciliation and semantic mutation routes and mutable MCP bootstrap are denied. `scan_graph` permits only immutable `commit:<full-sha>` replay. Cache-loss graph reconstruction uses the existing replay path, while ordinary canonical/A reads retain exact revision/currentness validation. The role is inherited by worker threads; it is not an absent-credential convention or merely a disabled scheduler.
+The launcher fixes `DEVINT_COMPUTE_ONLY=1`; configuration cannot override this role. All three canonical persistence writers reject it explicitly, even with a configured remote credential. HTTP reconciliation remains unavailable to this compute-only role. `scan_graph` permits only immutable `commit:<full-sha>` replay. Cache-loss graph reconstruction uses the existing replay path, while ordinary canonical reads retain exact revision and integrity validation. The role is inherited by worker threads; it is not an absent-credential convention or merely a disabled scheduler.
 
 The managed profile supports explicit protected GitHub App material as described below, but no live private-source credentials or production access are established by its disposable tests. Owner OAuth remains outside this profile. Existing hosted production authentication remains at its current owner. Windows SCM and the supplied operator commands are the server-management surface; no separate Start-menu application or destructive purge command is claimed. Normal uninstall intentionally retains protected state. Same-source MSI-version tests prove package replacement/recovery, not cross-schema or cross-analyzer compatibility. Those compatibility and production-access gates remain required before a production replacement is considered.
 
@@ -75,7 +75,7 @@ Service stop submits `Stop-Service -NoWait` before its 45-second status wait. St
 
 The package includes an exact-source compatibility/capability descriptor: graph schemas, analyzer version, query artifact format, declared language support, fixed role and configured resource bounds. Installed activation compares that descriptor with the compiled engine. Non-listening Preflight is reused by Start and Update; incompatible or corrupt candidates are rejected before service disruption. Major upgrades require the operator's descriptor-check marker to prevent accidental raw-MSI bypass; this is a mechanical guard, not publisher trust or a security boundary. Use the current operator script for upgrades.
 
-Replay compatibility is distinct from canonical-read compatibility and remote availability. Preflight makes bounded GET-only query-pointer observations for every configured project, up to eight projects in batches of four with a 2.5-second request timeout and 128 KiB response bound. Beyond that limit the observation is explicitly incomplete. Remote absence or schema/analyzer drift does not block the default immutable-replay role. Optional `requiredCapabilities: ["canonical-read"]` blocks activation unless every configured project's observed metadata is compatible. Pointer metadata alone does not certify currentness, payload integrity or accepted semantic-authority compatibility; existing readers still enforce those boundaries. Source reachability is not probed. Host memory/processor/storage readings are observations, while software support and resource bounds are declarations, not capacity acceptance. Managed health omits project/revision details from these observations.
+Replay compatibility is distinct from canonical-read compatibility and remote availability. Preflight makes bounded GET-only query-pointer observations for every configured project, up to eight projects in batches of four with a 2.5-second request timeout and 128 KiB response bound. Beyond that limit the observation is explicitly incomplete. Remote absence or schema/analyzer drift does not block the default immutable-replay role. Optional `requiredCapabilities: ["canonical-read"]` blocks activation unless every configured project's observed metadata is compatible. Pointer metadata alone does not certify currentness, payload integrity or legacy semantic-history compatibility; existing readers still enforce payload and identity boundaries. Source reachability is not probed. Host memory/processor/storage readings are observations, while software support and resource bounds are declarations, not capacity acceptance. Managed health omits project/revision details from these observations.
 
 Scratch is cleared at each exclusive service start and managed stop, checked every five seconds against a 2 GiB budget, and never pruned during active work. A budget or link-integrity failure stops the service; this polling bound can temporarily overshoot and is not a filesystem hard quota. Logs rotate at 1 MiB with four retained files per stream. Warm graph counts/build concurrency are bounded independently; record budgets and V8 heap limits are not total-memory guarantees.
 
@@ -173,7 +173,7 @@ DI issues bounded GET requests using query/capability/limit parameters. Credenti
 
 The deployment adapter may correlate an externally reported Git SHA only when it exactly equals the inspected repository revision. The database-schema adapter may correlate a table only when it uniquely matches one observed repository `sql-table`. A configured provider id may correlate only to the exact `provider:<id>` node. Ambiguous or unavailable evidence is not promoted to resolved correlation.
 
-These normalized results are read-only investigation evidence. Provider state remains authoritative for provider facts, raw provider data remains inspectable, and neither raw nor normalized external evidence automatically changes accepted semantic topology or graph lifecycle.
+These normalized results are read-only investigation evidence. Provider state remains authoritative for provider facts, raw provider data remains inspectable, and neither raw nor normalized external evidence automatically rewrites source facts or graph lifecycle.
 
 Technical-source configuration is operational access, not semantic project configuration.
 
@@ -207,7 +207,7 @@ Runtime snapshots:
 - never become implicit “latest project state”;
 - never replace canonical project/ref W;
 - may expire and be recreated;
-- are not sealed into A/B automatically.
+- do not replace the selected source graph.
 
 ## Human Workbench
 
@@ -222,42 +222,15 @@ The HTTP entry points are:
 
 The Workbench is not a second data owner. It consumes the same graph/evidence/query/source services as MCP.
 
-## Semantic candidate promotion
+## Source understanding and change
 
-For an inspected repository:
+DI derives current technical understanding from the selected source graph and its evidence. The Workbench Semantics view and MCP expose that same understanding without a separate semantic review or promotion gate. To assess change, compare explicit revisions or the configured default source against the selected state. Existing historical review data is not deleted and is not used as current source authority.
 
-1. make and verify the intended source changes through that repository's normal Preview-first workflow;
-2. DI resolves the exact candidate revision and derives W plus evidence-linked semantic candidates/evolution;
-3. review any changed semantic meaning through DI's shared review surface;
-4. require a current-revision approval basis for every semantic promotion item;
-5. only after the repository's normal human/release gate does DI advance accepted semantic A for the promoted revision;
-6. do not commit a generated `.development-intelligence/` authority directory into the inspected repository.
-
-For the **first** enrolled semantic baseline, the owner-authenticated Workbench may use the current-Main bootstrap action. That action is intentionally unavailable to ordinary agent bearer access. It accepts only the explicitly selected current semantic candidates, enrolls `enforced` policy against the full exact-Main candidate census, requires the resulting gate to be `ready`, and then promotes canonical accepted A to that same already-promoted Main revision. The Workbench defaults this action to deterministic factuality-supported **core** candidates; supporting candidates remain proposals unless the owner explicitly accepts them.
-
-The bootstrap action is a one-time authority migration path, not a shortcut around Preview/Main. It refuses stale review digests, non-current W, unsupported selected candidates, ambiguous lineage, or any revision other than provider-authoritative current Main.
-
-For an owner's first portfolio-wide baseline, Workbench also exposes **Bootstrap semantic authority across portfolio**. This is orchestration only: each authorized repository is reconciled to its exact provider-authoritative default branch, audited independently, and given its own authority ledger, enrollment record, accepted A, and gate. The portfolio action selects every current candidate whose deterministic factuality audit is supported, regardless of core/supporting structural classification, because the owner is explicitly delegating the first factual review to DI. Any unsupported, inaccessible, stale, or ambiguous repository is left untouched and reported. Repositories whose exact current semantic census is empty may enroll an empty enforced baseline; a non-empty census still requires explicit accepted meaning records. No cross-repository mega-authority is persisted.
-
-If canonical A is absent, stale, or contradictory, promotion fails closed and the migration/recovery path must make the discrepancy explicit rather than inventing acceptance.
-
-### Currentness interpretation
-
-`project_status` reports separate dimensions:
-
-- accepted semantic currentness;
-- source currentness;
-- semantic topology currentness;
-- evidence currentness/drift;
-- analyzer currentness/drift;
-- schema support;
-- integrity state.
-
-Evidence/analyzer drift alone does not manufacture product-semantic drift. Changed or unsupported semantic topology requires explicit review; repository-local legacy checkpoints are migration fallback only once DI canonical A exists.
+`project_status` reports the selected revision, graph identity, coverage, cache and persistence diagnostics. It does not report an old approval checkpoint as source currentness. Product release and Main promotion remain separate owner-controlled decisions.
 
 ## Authentication
 
-DI keeps authentication provider-neutral while supporting a small private deployment directly. Authentication is an access boundary only and never enters graph semantics, accepted checkpoints, source authority, or analyzer behavior.
+DI keeps authentication provider-neutral while supporting a small private deployment directly. Authentication is an access boundary only and never enters graph semantics, source authority, or analyzer behavior.
 
 ### Native OAuth mode — recommended for hosted ChatGPT
 
@@ -356,7 +329,7 @@ The lane is intentionally a physical pre-merge acceptance surface for the same o
 
 ## Runtime observation safety
 
-Runtime origins are operator-allowlisted. Requests are GET-only and bounded by timeout/body size. Redirect origins are revalidated; configured authenticated headers cannot be forwarded to a different origin. Credential values remain server-side and never enter accepted checkpoints.
+Runtime origins are operator-allowlisted. Requests are GET-only and bounded by timeout/body size. Redirect origins are revalidated; configured authenticated headers cannot be forwarded to a different origin. Credential values remain server-side and never enter graph evidence.
 
 ## Recovery
 
@@ -367,7 +340,7 @@ There is deliberately little service-local recovery procedure:
 - lost runtime snapshot → rescan if still needed;
 - lost host instance → regenerate from Git;
 - expired/lost OAuth authorization code → restart the client authorization flow;
-- damaged accepted checkpoint → regenerate/seal from the corresponding source revision and review the repair through Git.
+- damaged current source graph → rebuild from the selected source revision; preserve any historical records independently.
 
 The canonical repository remains usable even if Development Intelligence is unavailable.
 

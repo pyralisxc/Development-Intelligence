@@ -10,7 +10,7 @@ export function previewRuntime(): boolean {
 
 export function assertAuthorityWritesAllowed(): void {
   if (computeOnly() || previewRuntime()) {
-    throw Object.assign(new Error('This runtime cannot publish canonical or accepted authority'), {
+    throw Object.assign(new Error('This runtime cannot publish canonical source graphs'), {
       status: 403,
       code: 'COMPUTE_ONLY_AUTHORITY_DENIED',
     });

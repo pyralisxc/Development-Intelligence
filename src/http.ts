@@ -8,7 +8,7 @@ import { runtimeIdentity } from './runtimeIdentity.js';
 import { currentGraph } from './intelligence/service.js';
 import { localSourceGraphHistory } from './intelligence/localGraphStore.js';
 import { localLifecycleStatus, startLocalOperation, updateLocalSettings } from './intelligence/localOperations.js';
-import { compareRevisionSet, diffAcceptedToWorking, diffRevisions, pageGraphDiff, viewerProjection } from './intelligence/query.js';
+import { compareRevisionSet, diffDefaultToSelected, diffRevisions, pageGraphDiff, viewerProjection } from './intelligence/query.js';
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbenchRequest, scopeOrientation, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
@@ -181,7 +181,7 @@ export function createDevelopmentIntelligenceServer() {
       requestUrl.pathname === '/internal/reconcile-canonical'
       || requestUrl.pathname === '/workbench/reconcile-canonical'
     )) {
-      json(res, 403, { error: 'This compute-only runtime cannot publish canonical or accepted authority', code: 'COMPUTE_ONLY_AUTHORITY_DENIED' });
+      json(res, 403, { error: 'This compute-only runtime cannot publish canonical source graphs', code: 'COMPUTE_ONLY_AUTHORITY_DENIED' });
       return;
     }
     if (requestUrl.pathname === '/health' && req.method === 'GET') {
@@ -350,7 +350,7 @@ export function createDevelopmentIntelligenceServer() {
           const offset = Number(requestUrl.searchParams.get('offset') ?? 0), limit = Number(requestUrl.searchParams.get('limit') ?? 50);
           result = await compareRevisionSet({ project, refs: refs.length ? refs : ['main', 'preview', 'working-tree'], offset, limit });
         } else if (action === 'changes') {
-          if (context.graphId) throw Object.assign(new Error('Accepted-to-working change is only available for canonical source graphs'), { status: 400 });
+          if (context.graphId) throw Object.assign(new Error('Choose revision selectors to compare source states'), { status: 400 });
           let baseRef = requestUrl.searchParams.get('baseRef') ?? undefined;
           let headRef = requestUrl.searchParams.get('headRef') ?? context.ref;
           if (!baseRef && process.env.DEVINT_LOCAL_GRAPH_DIR) {
@@ -360,7 +360,7 @@ export function createDevelopmentIntelligenceServer() {
           }
           const detail = baseRef
             ? await diffRevisions({ project, baseRef, ...(headRef ? { ref: headRef } : {}) })
-            : await diffAcceptedToWorking(project, headRef);
+            : await diffDefaultToSelected(project, headRef);
           const counts = changeCounts(detail);
           const historical = Boolean(baseRef);
           const offsetValue = Number(requestUrl.searchParams.get('offset') ?? 0);
@@ -370,11 +370,11 @@ export function createDevelopmentIntelligenceServer() {
               Number.isSafeInteger(limitValue) && limitValue > 0 ? Math.min(limitValue, 500) : 50) : null;
           result = {
             project,
-            mode: historical ? 'revision-to-revision' : 'accepted-to-working',
+            mode: historical ? 'revision-to-revision' : 'default-to-selected',
             counts,
             summary: counts.added || counts.removed || counts.changed
               ? `${counts.added} added, ${counts.removed} removed, ${counts.changed} changed ${historical ? 'graph' : 'semantic'} records.`
-              : historical ? 'The selected revisions have no graph changes.' : 'Accepted and working semantic topology agree.',
+              : historical ? 'The selected revisions have no graph changes.' : 'The default and selected source states have no semantic changes.',
             detail: paged?.detail ?? detail,
             ...(paged ? { page: paged.page } : {}),
           };

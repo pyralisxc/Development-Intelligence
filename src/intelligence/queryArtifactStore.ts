@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { createGzip, gunzipSync } from 'node:zlib';
+import { Readable } from 'node:stream';
 import type { IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import {
@@ -19,7 +20,7 @@ import {
 } from './queryArtifacts.js';
 
 export const QUERY_ARTIFACT_SLOT_COUNT = 4;
-export const QUERY_ARTIFACT_FORMAT_VERSION = 4;
+export const QUERY_ARTIFACT_FORMAT_VERSION = 5;
 const QUERY_ARTIFACT_SLOT_RESERVATION_STALE_MS = 60 * 60 * 1000;
 
 export interface CanonicalQueryArtifactDescriptor {
@@ -28,11 +29,12 @@ export interface CanonicalQueryArtifactDescriptor {
   bytes: number;
   uncompressedBytes: number;
   encoding: 'gzip';
+  parts?: Array<{ path: string; bytes: number; sha256: string }>;
 }
 
 export interface CanonicalQueryArtifactManifest {
   formatVersion: 1;
-  artifactFormatVersion: 4;
+  artifactFormatVersion: 5;
   generationId: string;
   slot: number;
   project: string;
@@ -49,14 +51,6 @@ export interface CanonicalQueryArtifactManifest {
   shards: Record<string, CanonicalQueryArtifactDescriptor>;
 }
 
-export interface PreparedCanonicalQueryArtifactGeneration {
-  ref: CanonicalQueryArtifactGenerationRef;
-  manifest: CanonicalQueryArtifactManifest;
-  manifestPath: string;
-  manifestPayload: string;
-  objects: Array<{ descriptor: CanonicalQueryArtifactDescriptor; body: Uint8Array }>;
-}
-
 export interface CanonicalQueryArtifactPublishResult {
   state: 'not-configured' | 'stored' | 'error';
   saveMs: number;
@@ -66,7 +60,7 @@ export interface CanonicalQueryArtifactPublishResult {
 
 interface CanonicalQueryArtifactSlotReservation {
   formatVersion: 1;
-  artifactFormatVersion: 4;
+  artifactFormatVersion: number;
   project: string;
   revision: string;
   graphId: string;
@@ -86,7 +80,7 @@ export interface CanonicalQueryArtifactLoadResult {
 
 export interface CanonicalQueryArtifactPointer {
   formatVersion: 1;
-  artifactFormatVersion: 4;
+  artifactFormatVersion: 5;
   project: string;
   repository: string;
   revision: string;
@@ -175,7 +169,7 @@ function parseSlotReservation(value: unknown, slot: number): CanonicalQueryArtif
   const item = value as Record<string, unknown>;
   if (
     item.formatVersion !== 1
-    || item.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
+    || typeof item.artifactFormatVersion !== 'number' || !Number.isInteger(item.artifactFormatVersion) || item.artifactFormatVersion < 1
     || typeof item.project !== 'string'
     || typeof item.revision !== 'string'
     || typeof item.graphId !== 'string'
@@ -291,98 +285,79 @@ export async function releaseCanonicalQueryArtifactSlot(
   return false;
 }
 
-function encodeArtifact(value: unknown): { body: Uint8Array; bytes: number; uncompressedBytes: number; sha256: string } {
-  const raw = Buffer.from(JSON.stringify(value), 'utf8');
-  const body = new Uint8Array(gzipSync(raw, { level: 6 }));
-  return { body, bytes: body.byteLength, uncompressedBytes: raw.byteLength, sha256: sha256(body) };
-}
-
-function descriptor(path: string, encoded: ReturnType<typeof encodeArtifact>): CanonicalQueryArtifactDescriptor {
-  return { path, sha256: encoded.sha256, bytes: encoded.bytes, uncompressedBytes: encoded.uncompressedBytes, encoding: 'gzip' };
-}
-
-export function prepareCanonicalQueryArtifactGeneration(
-  graph: IntelligenceGraph,
-  previous: CanonicalQueryArtifactGenerationRef | null | undefined = null,
-  slotOverride?: number,
-): PreparedCanonicalQueryArtifactGeneration {
-  if (!graph.repositoryRevision) throw new Error('Canonical query artifact publication requires an exact repository revision');
-  const generation = generationId(graph);
-  const slot = slotOverride ?? slotAfter(previous);
-  const prefix = slotPrefix(slot);
-  const artifacts = buildCanonicalQueryArtifacts(graph);
-  const objects: PreparedCanonicalQueryArtifactGeneration['objects'] = [];
-
-  const encodedIndex = encodeArtifact(artifacts.index);
-  const index = descriptor(`${prefix}/index.json.gz`, encodedIndex);
-  objects.push({ descriptor: index, body: encodedIndex.body });
-
-  const bucketIds = populatedQueryBuckets(artifacts.index);
-  const shards: Record<string, CanonicalQueryArtifactDescriptor> = {};
-  for (const bucket of bucketIds) {
-    const shard = artifacts.shards[bucket];
-    if (!shard) throw new Error(`Canonical query detail shard is missing during publication: ${bucket}`);
-    const encoded = encodeArtifact(shard);
-    const item = descriptor(`${prefix}/shards/${bucket}.json.gz`, encoded);
-    shards[bucket] = item;
-    objects.push({ descriptor: item, body: encoded.body });
+async function encodeArtifact(
+  value: Record<string, unknown>,
+  writePart: (body: Uint8Array, index: number) => Promise<{ path: string; bytes: number; sha256: string }>,
+): Promise<{ bytes: number; uncompressedBytes: number; sha256: string; parts: Array<{ path: string; bytes: number; sha256: string }> }> {
+  let uncompressedBytes = 0;
+  // Artifact objects are records whose large fields are arrays. Serializing
+  // each entry preserves JSON's values and order without creating another
+  // graph-sized string and buffer before compression.
+  function* jsonParts(): Generator<string> {
+    let buffer = '';
+    const pieces = function* (): Generator<string> {
+      yield '{';
+      let firstField = true;
+      for (const [key, item] of Object.entries(value)) {
+        if (item === undefined || typeof item === 'function' || typeof item === 'symbol') continue;
+        if (!firstField) yield ',';
+        firstField = false;
+        yield JSON.stringify(key) + ':';
+        if (Array.isArray(item)) {
+          yield '[';
+          for (let index = 0; index < item.length; index += 1) {
+            if (index) yield ',';
+            yield JSON.stringify(item[index]) ?? 'null';
+          }
+          yield ']';
+        } else yield JSON.stringify(item);
+      }
+      yield '}';
+    };
+    for (const piece of pieces()) {
+      buffer += piece;
+      if (buffer.length >= 64 * 1024) {
+        uncompressedBytes += Buffer.byteLength(buffer, 'utf8');
+        yield buffer;
+        buffer = '';
+      }
+    }
+    if (buffer) { uncompressedBytes += Buffer.byteLength(buffer, 'utf8'); yield buffer; }
   }
-
-  const manifest: CanonicalQueryArtifactManifest = {
-    formatVersion: 1,
-    artifactFormatVersion: QUERY_ARTIFACT_FORMAT_VERSION,
-    generationId: generation,
-    slot,
-    project: graph.project,
-    revision: graph.repositoryRevision,
-    analyzerVersion: graph.analyzerVersion,
-    graphSchemaVersion: 2,
-    graphId: graph.graphId,
-    sourceFingerprint: graph.sourceFingerprint,
-    topologyFingerprint: graph.topologyFingerprint,
-    evidenceFingerprint: graph.evidenceFingerprint,
-    createdAt: new Date().toISOString(),
-    index,
-    bucketIds,
-    shards,
+  const compressedHash = createHash('sha256');
+  const parts: Array<{ path: string; bytes: number; sha256: string }> = [];
+  const partBytes = 32 * 1024 * 1024;
+  let chunks: Buffer[] = [];
+  let pendingBytes = 0;
+  let bytes = 0;
+  const flush = async (): Promise<void> => {
+    if (!pendingBytes) return;
+    const body: Uint8Array = Buffer.concat(chunks, pendingBytes);
+    parts.push(await writePart(body, parts.length));
+    chunks = [];
+    pendingBytes = 0;
   };
-  const manifestPayload = JSON.stringify(manifest);
-  const ref: CanonicalQueryArtifactGenerationRef = {
-    formatVersion: 1,
-    artifactFormatVersion: QUERY_ARTIFACT_FORMAT_VERSION,
-    generationId: generation,
-    slot,
-    objectCount: objects.length,
-    manifestSha256: sha256(manifestPayload),
-  };
-  return {
-    ref,
-    manifest,
-    manifestPath: `${prefix}/manifest.json`,
-    manifestPayload,
-    objects,
-  };
-}
-
-async function writeBatches<T>(items: T[], size: number, operation: (item: T) => Promise<void>): Promise<void> {
-  for (let offset = 0; offset < items.length; offset += size) {
-    await Promise.all(items.slice(offset, offset + size).map(operation));
+  const input = Readable.from(jsonParts());
+  const compressor = createGzip({ level: 6 });
+  input.on('error', (error: Error) => compressor.destroy(error));
+  try {
+    for await (const chunk of input.pipe(compressor)) {
+      compressedHash.update(chunk);
+      bytes += chunk.byteLength;
+      for (let offset = 0; offset < chunk.byteLength;) {
+        const size = Math.min(partBytes - pendingBytes, chunk.byteLength - offset);
+        chunks.push(chunk.subarray(offset, offset + size));
+        pendingBytes += size;
+        offset += size;
+        if (pendingBytes === partBytes) await flush();
+      }
+    }
+    await flush();
+  } finally {
+    input.destroy();
+    compressor.destroy();
   }
-}
-
-export async function persistPreparedCanonicalQueryArtifacts(
-  project: string,
-  prepared: PreparedCanonicalQueryArtifactGeneration,
-  options: { publishManifest?: boolean } = {},
-): Promise<void> {
-  await writeBatches(prepared.objects, 8, async item => {
-    const stored = await writeCanonicalDerivedObject(project, item.descriptor.path, item.body, 'application/gzip');
-    if (!stored) throw new Error('Canonical derived storage is not configured');
-  });
-  if (options.publishManifest !== false) {
-    const stored = await writeCanonicalDerivedObject(project, prepared.manifestPath, prepared.manifestPayload, 'application/json');
-    if (!stored) throw new Error('Canonical derived storage is not configured');
-  }
+  return { bytes, uncompressedBytes, sha256: compressedHash.digest('hex'), parts };
 }
 
 export async function publishCanonicalQueryArtifacts(
@@ -396,10 +371,56 @@ export async function publishCanonicalQueryArtifacts(
   let reservedRef: CanonicalQueryArtifactGenerationRef | null = null;
   try {
     const slot = await reserveCanonicalQueryArtifactSlot(graph, previous, options.repository);
-    const prepared = prepareCanonicalQueryArtifactGeneration(graph, previous, slot);
-    reservedRef = prepared.ref;
-    await persistPreparedCanonicalQueryArtifacts(graph.project, prepared);
-    return { state: 'stored', saveMs: Math.max(0, Date.now() - startedAt), ref: prepared.ref };
+    const generation = generationId(graph);
+    // Establish the reservation identity before doing any expensive work, so
+    // a failed build or write can release the slot it already owns.
+    reservedRef = { formatVersion: 1, artifactFormatVersion: QUERY_ARTIFACT_FORMAT_VERSION,
+      generationId: generation, slot, objectCount: 0, manifestSha256: '0'.repeat(64) };
+    const prefix = slotPrefix(slot);
+    const artifacts = buildCanonicalQueryArtifacts(graph);
+    const bucketIds = populatedQueryBuckets(artifacts.index);
+    let objectCount = 0;
+    const writeArtifact = async (path: string, value: object): Promise<CanonicalQueryArtifactDescriptor> => {
+      const encoded = await encodeArtifact(value as Record<string, unknown>, async (body, part) => {
+        const partPath = `${path}.part-${part}`;
+        if (!await writeCanonicalDerivedObject(graph.project, partPath, body, 'application/octet-stream')) {
+          throw new Error('Canonical derived storage is not configured');
+        }
+        objectCount += 1;
+        return { path: partPath, bytes: body.byteLength, sha256: sha256(body) };
+      });
+      return { path, ...encoded, encoding: 'gzip' };
+    };
+    const index = await writeArtifact(`${prefix}/index.json.gz`, artifacts.index);
+    // The persisted index has been written; it is no longer needed while the
+    // detail buckets are encoded. Avoid retaining a second graph-sized index.
+    artifacts.index.nodeSearch = [];
+    artifacts.index.edgeSearch = [];
+    artifacts.index.semanticNodes = [];
+    artifacts.index.semanticEdges = [];
+    artifacts.index.evidenceBucketById = [];
+    const shards: Record<string, CanonicalQueryArtifactDescriptor> = {};
+    for (const bucket of bucketIds) {
+      const shard = artifacts.shards[bucket];
+      if (!shard) throw new Error(`Canonical query detail shard is missing during publication: ${bucket}`);
+      shards[bucket] = await writeArtifact(`${prefix}/shards/${bucket}.json.gz`, shard);
+      delete artifacts.shards[bucket];
+    }
+    const manifest: CanonicalQueryArtifactManifest = {
+      formatVersion: 1, artifactFormatVersion: QUERY_ARTIFACT_FORMAT_VERSION,
+      generationId: generation, slot, project: graph.project, revision: graph.repositoryRevision!,
+      analyzerVersion: graph.analyzerVersion, graphSchemaVersion: 2, graphId: graph.graphId,
+      sourceFingerprint: graph.sourceFingerprint, topologyFingerprint: graph.topologyFingerprint,
+      evidenceFingerprint: graph.evidenceFingerprint, createdAt: new Date().toISOString(),
+      index, bucketIds, shards,
+    };
+    const payload = JSON.stringify(manifest);
+    const ref: CanonicalQueryArtifactGenerationRef = { ...reservedRef,
+      objectCount, manifestSha256: sha256(payload) };
+    if (!await writeCanonicalDerivedObject(graph.project, `${prefix}/manifest.json`, payload, 'application/json')) {
+      throw new Error('Canonical derived storage is not configured');
+    }
+    return { state: 'stored', saveMs: Math.max(0, Date.now() - startedAt), ref };
   } catch (error) {
     if (reservedRef) await releaseCanonicalQueryArtifactSlot(graph.project, reservedRef).catch(() => false);
     return {
@@ -446,12 +467,26 @@ function validateManifest(
 }
 
 async function readDescriptor(project: string, item: CanonicalQueryArtifactDescriptor): Promise<unknown> {
-  const body = await readCanonicalDerivedObject(project, item.path, Math.max(item.bytes + 1024, 1024));
+  let body: Uint8Array | null;
+  if (item.parts?.length) {
+    const chunks: Uint8Array[] = [];
+    for (const [index, part] of item.parts.entries()) {
+      if (part.path !== `${item.path}.part-${index}` || !Number.isSafeInteger(part.bytes) || part.bytes < 1 || part.bytes > 32 * 1024 * 1024) {
+        throw new Error(`Canonical query artifact part is invalid: ${part.path}`);
+      }
+      const chunk = await readCanonicalDerivedObject(project, part.path, part.bytes + 1024);
+      if (!chunk || chunk.byteLength !== part.bytes || sha256(chunk) !== part.sha256) {
+        throw new Error(`Canonical query artifact part failed integrity validation: ${part.path}`);
+      }
+      chunks.push(chunk);
+    }
+    body = Buffer.concat(chunks);
+  } else body = await readCanonicalDerivedObject(project, item.path, Math.max(item.bytes + 1024, 1024));
   if (!body) throw new Error(`Canonical query artifact object is missing: ${item.path}`);
   if (body.byteLength !== item.bytes || sha256(body) !== item.sha256) throw new Error(`Canonical query artifact object failed integrity validation: ${item.path}`);
   const raw = gunzipSync(body);
   if (raw.byteLength !== item.uncompressedBytes) throw new Error(`Canonical query artifact object size is invalid: ${item.path}`);
-  return JSON.parse(Buffer.from(raw).toString('utf8'));
+  return JSON.parse(raw.toString('utf8'));
 }
 
 export async function loadCanonicalQueryArtifacts(

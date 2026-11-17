@@ -202,7 +202,7 @@ export function projectOrientation(
       persisted: false,
       acceptedCheckpointAffected: false,
       derivedClaimsMaySatisfyProof: false,
-      note: 'Orientation explains the selected revision without promoting derived interpretation into accepted semantic topology.',
+      note: 'Orientation explains the selected revision using its source evidence.',
     },
   };
 }

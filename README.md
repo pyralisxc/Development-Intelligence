@@ -13,7 +13,7 @@ The [Development Intelligence Confluence blueprint](https://pyralisholdings.atla
 ## Core rules
 
 - Git/source remains authoritative implementation evidence.
-- Git owns source/history; DI canonical persistence owns durable accepted semantic authority and its revision-bound review state.
+- Git owns source/history; DI derives current understanding from the selected source graph and its evidence.
 - No project-specific extractors or required semantic project configuration.
 - Generic analyzers may understand languages, frameworks, protocols, and formats.
 - Raw names are preserved; naming differences are evidence rather than normalized away.
@@ -25,18 +25,11 @@ The [Development Intelligence Confluence blueprint](https://pyralisholdings.atla
 
 See [Product direction](docs/product-direction.md), [Architecture](docs/architecture.md), [Operations](docs/operations.md), [Testing](docs/testing.md), and [ChatGPT publishing](docs/chatgpt-publishing.md).
 
-## A / W / B lifecycle
+## Source-state lifecycle
 
-Development Intelligence uses a revision-bound accepted/working/candidate lifecycle:
+DI builds understanding from a selected source state. Committed and historical graphs identify an exact Git revision; local working graphs identify current files by content fingerprint and record HEAD as context. DI can persist reconstructable graphs for access and retention. Compare selected states directly, including working, Main and Preview.
 
-- **A — accepted:** durable semantic topology and review/acceptance history owned by DI canonical persistence for an exact project revision.
-- **W — working:** the evidence graph for a selected source state. Hosted and historical states identify an exact Git revision; a local working graph identifies the current files by content fingerprint and records HEAD separately. Current default-branch W may be durably cached in DI, but remains reconstructable from Git and technical evidence.
-- **B — candidate:** the exact candidate revision plus its semantic delta/review state at the Preview→Main promotion boundary.
-- Promotion advances DI's accepted semantic state only after the current-revision semantic gate is satisfied; Git remains source/history authority.
-
-Expectation/future overlays are optional caller evidence, not accepted current reality. Acceptance never implies verification, and repository-local generated files are not a second semantic authority.
-
-The deterministic `/.development-intelligence/` checkpoint format remains supported only for explicit legacy migration/compatibility testing and disposable CI evidence. Development Intelligence itself and hosted inspected projects use DI canonical persistence and do not track generated checkpoint authority in Git.
+Current source facts do not require a separate semantic approval history. Existing historical review records are not deleted, and optional caller expectations remain separate from source evidence. The `/.development-intelligence/` checkpoint format remains only for explicit compatibility and migration, not current graph authority.
 
 ## Public MCP surface
 
@@ -71,7 +64,7 @@ Graph/code primitives:
 
 There is no separate Parity database, public cache-management API, provider-specific graph query language, or development-methodology API.
 
-`evaluate_parity` accepts a bounded caller-owned **Parity Contract** (expectation overlay E) containing required or forbidden entities and relationships. It evaluates E against canonical W or an explicit graph snapshot and returns `satisfied`, `missing`, `forbidden-present`, or `unproven` for every obligation. E is ephemeral input: it is never persisted, sealed, or promoted into accepted A.
+`evaluate_parity` accepts a bounded caller-owned **Parity Contract** (expectation overlay E) containing required or forbidden entities and relationships. It evaluates E against canonical W or an explicit graph snapshot and returns `satisfied`, `missing`, `forbidden-present`, or `unproven` for every obligation. E is ephemeral caller input and never becomes source authority.
 
 ```json
 {
@@ -105,7 +98,7 @@ Use stable IDs returned by `search_graph`, `inspect_entity`, or `query_parity`. 
 
 PR head means the proposal, base means the exact target observed by GitHub, and result means the accepted merge result. DI never silently substitutes one for another.
 
-`diff_graph` owns change intelligence. Without `baseRef` it compares accepted semantic A with canonical W. With `baseRef` it compares any two authorized historical selectors under the same current analyzer and reports both resolved identities. Revision distance is irrelevant after resolution; a comparison may span unrelated PRs or hundreds of commits. Semantic diffs compare stable semantic topology rather than source locators/evidence references; evidence/analyzer drift is reported separately.
+`diff_graph` owns change intelligence. Without `baseRef` it compares the default source state with the selected state. With `baseRef` it compares any two authorized historical selectors under the same current analyzer and reports both resolved identities. Revision distance is irrelevant after resolution; a comparison may span unrelated PRs or hundreds of commits. Semantic diffs compare stable semantic topology rather than source locators/evidence references; evidence/analyzer drift is reported separately.
 
 `analyze_impact` owns revision-aware blast-radius analysis. It resolves two authorized Git revisions, obtains the actual Git changed paths, maps those files into each revision graph, and traces bounded inbound/outbound relationships from the affected entities. This catches implementation-only changes that may leave graph topology unchanged. Coverage, unmapped changed paths, relationship status, and immutable revision identities remain explicit.
 
@@ -144,7 +137,7 @@ Readable current-state synthesis:
 - quick project notes;
 - semantic/structural/representation counts;
 - coverage/currentness;
-- meaningful accepted → working change;
+- meaningful source-state change;
 - important semantic concepts and repository areas;
 - connected technical sources.
 
@@ -190,11 +183,11 @@ This is not intended to masquerade as an unconstrained language model. Query res
 
 Sources are first-class operational inputs. Built-in sources include Git and allowlisted runtime observations. Optional configured technical sources may represent read-only databases, logs, metrics, provider APIs, or other technical systems.
 
-Technical-source results are observations/evidence. They are **not automatically promoted into accepted semantic topology**.
+Technical-source results remain observations with their own provenance; they do not rewrite source facts.
 
 ### Changes
 
-Readable accepted → working semantic change plus current-analyzer replay between any two authorized historical selectors. The Workbench exposes the resolved immutable SHAs so proposal, base, and accepted PR result are never conflated.
+Readable source-state change plus current-analyzer replay between any two authorized historical selectors. The Workbench exposes the resolved immutable SHAs so proposal, base, and accepted PR result are never conflated.
 
 ## Technical-source adapters
 
@@ -287,7 +280,7 @@ steps:
       parity-contract: .development-intelligence/required-parity.json # optional caller-owned gate
 ```
 
-`mode: analyze` builds and verifies the exact checkout without creating repository-owned semantic authority. When `parity-contract` is supplied, the path is resolved inside that same checkout and the existing parity evaluator runs against the graph already built for analysis. The action fails closed unless every claim is satisfied with qualified, replacement-eligible evidence; malformed, unreadable, escaping, missing, unproven, not-applicable, or forbidden-present claims fail with a JSON receipt. Omitting the input preserves ordinary analysis behavior. `check` / `seal` remain compatibility/self-test modes for the legacy checkpoint format; semantic acceptance and promotion for hosted projects belong to DI canonical persistence and its review lifecycle.
+`mode: analyze` builds and verifies the exact checkout without creating repository-owned semantic authority. When `parity-contract` is supplied, the path is resolved inside that same checkout and the existing parity evaluator runs against the graph already built for analysis. The action fails closed unless every claim is satisfied with qualified, replacement-eligible evidence; malformed, unreadable, escaping, missing, unproven, not-applicable, or forbidden-present claims fail with a JSON receipt. Omitting the input preserves ordinary analysis behavior. `check` / `seal` remain compatibility/self-test modes for the legacy checkpoint format; hosted source understanding comes from the selected source graph.
 
 ## Project access configuration
 
