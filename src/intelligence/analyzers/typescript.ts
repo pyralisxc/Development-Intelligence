@@ -834,7 +834,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         const config = node.arguments[1];
         if (config && ts.isObjectLiteralExpression(unwrap(config) ?? config)) flattenObject(tool, unwrap(config)! as ts.ObjectLiteralExpression);
       }
-      if (owner && ts.isIdentifier(node.expression)) pendingReferences.push({ from: owner, targetName: node.expression.text, kind: 'calls', line: lineOf(node) });
+      // A same-named declaration elsewhere in the file does not establish
+      // which value this call invokes. The compiler producer binds call sites.
     }
 
     if (ts.isTryStatement(node)) {

@@ -37,6 +37,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'constructor': ['callable', 'symbol'] as NodeTrait[],
   'sql-function': ['callable', 'resource'], 'sql-procedure': ['callable', 'resource'],
   'import-binding': ['symbol'], 'call-reference': ['source-site'],
+  parameter: ['symbol', 'source-site'], argument: ['source-site'],
   'css-class-reference': ['source-site'], 'css-selector': ['resource'],
   'unity-object': ['container', 'resource'], 'unity-asset-guid': ['resource'],
   'component-prop-handler': ['source-site', 'boundary'],
@@ -119,6 +120,7 @@ define(['callback-argument'], 'reference', 'dependency', false, 'syntax',
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
 // A call occurrence is established by syntax even when its target cannot be bound.
 define(['calls-site'], 'invocation', 'execution', false, 'syntax', ['callable'], ['source-site']);
+define(['has-parameter', 'has-argument', 'argument-for'], 'composition', 'composition-context', false, 'syntax');
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
   'automated-by', 'constructs'], 'invocation', 'execution', true, 'bound-source');
 define(['has-source-control'], 'condition', 'composition-context', false, 'source-conditional',

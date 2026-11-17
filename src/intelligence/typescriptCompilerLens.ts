@@ -1,7 +1,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 import type { GraphNode, GraphEdge } from '../types.js';
-import { resolution } from './model.js';
+import { observation, resolution } from './model.js';
 
 /**
  * Optional, bounded compiler-symbol lens over the existing graph.
@@ -9,13 +9,11 @@ import { resolution } from './model.js';
  * No independent symbol authority or persisted TypeScript program is created.
  */
 export const TYPESCRIPT_COMPILER_LENS = 'typescript-checker-symbol.v1';
-// Versioned native-compiler capacity defaults. These are resource budgets,
-// not scientific limits on meaning. The same defaults apply to full and
-// incremental canonical graph builds; local isolated producer probes may use
-// explicitly supplied, validated budgets without changing hosted authority.
-export const TYPESCRIPT_COMPILER_MAX_FILES = 4096;
-export const TYPESCRIPT_COMPILER_MAX_SOURCE_BYTES = 32 * 1024 * 1024;
-export const TYPESCRIPT_COMPILER_MAX_BINDINGS = 12000;
+// Canonical builds do not silently stop compiler analysis at a fixed project
+// size. Explicit producer budgets remain available to callers that request one.
+export const TYPESCRIPT_COMPILER_MAX_FILES = Number.MAX_SAFE_INTEGER;
+export const TYPESCRIPT_COMPILER_MAX_SOURCE_BYTES = Number.MAX_SAFE_INTEGER;
+export const TYPESCRIPT_COMPILER_MAX_BINDINGS = Number.MAX_SAFE_INTEGER;
 export interface TypeScriptCompilerBudget {
   maxFiles: number;
   maxSourceBytes: number;
@@ -28,12 +26,12 @@ export const DEFAULT_TYPESCRIPT_COMPILER_BUDGET: Readonly<TypeScriptCompilerBudg
 });
 function compilerBudget(overrides: Partial<TypeScriptCompilerBudget> | undefined): TypeScriptCompilerBudget {
   const budget = { ...DEFAULT_TYPESCRIPT_COMPILER_BUDGET, ...overrides };
-  for (const [name, value, maximum] of [
-    ['maxFiles', budget.maxFiles, 20000],
-    ['maxSourceBytes', budget.maxSourceBytes, 256 * 1024 * 1024],
-    ['maxBindings', budget.maxBindings, 200000],
+  for (const [name, value] of [
+    ['maxFiles', budget.maxFiles],
+    ['maxSourceBytes', budget.maxSourceBytes],
+    ['maxBindings', budget.maxBindings],
   ] as const) {
-    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    if (!Number.isSafeInteger(value) || value < 1) {
       throw new Error('Invalid TypeScript compiler resource budget ' + name);
     }
   }
@@ -128,7 +126,13 @@ export function compilerTypeScriptReferences(input: {
   }
 
   const native = new Map<string, GraphNode[]>();
+  const callSites = new Map<string, GraphNode>();
   for (const node of input.nodes) {
+    if (node.kind === 'call-reference' && node.sourceId.startsWith('repo:') && node.value && typeof node.value === 'object') {
+      const value = node.value as { language?: string; sourceOffset?: number; functionId?: string };
+      if (value.language === 'typescript' && typeof value.sourceOffset === 'number' && value.functionId)
+        callSites.set([node.sourceId.slice(5), value.sourceOffset].join('\0'), node);
+    }
     if (!DECLARATION_KINDS.has(node.kind) || !node.name || !node.sourceId.startsWith('repo:')) continue;
     const file = node.sourceId.slice(5);
     const line = graphNodeLine(node, file);
@@ -145,8 +149,28 @@ export function compilerTypeScriptReferences(input: {
       ...input.options, noEmit: true,
     });
     const checker = program.getTypeChecker();
-    const resultNodes: GraphNode[] = [];
+    const resultNodes = new Map<string, GraphNode>();
     const resultEdges: GraphEdge[] = [];
+    const formalParameter = (parameter: ts.ParameterDeclaration, index: number, callable: GraphNode): GraphNode | null => {
+      const source = parameter.getSourceFile();
+      const file = relativeFile(input.root, source.fileName);
+      if (!file || !tracked.has(file)) return null;
+      const offset = parameter.getStart(source);
+      const line = source.getLineAndCharacterOfPosition(offset).line + 1;
+      const name = parameter.name.getText(source);
+      const duplicate = ts.isFunctionLike(parameter.parent)
+        && parameter.parent.parameters.filter(item => item.name.getText(source) === name).length > 1;
+      const item = observation({ identity: [callable.id, 'parameter', name, ...(duplicate ? [index] : [])], sourceId: `repo:${file}`,
+        kind: 'parameter', locator: `${file}:${line}:parameter-offset-${offset}`, name, field: 'parameter',
+        raw: parameter.getText(source), value: { functionId: callable.id, index, sourceOffset: offset, producer: TYPESCRIPT_COMPILER_LENS },
+        layer: 'structural', checkpoint: false });
+      if (resultNodes.has(item.id)) return item;
+      resultNodes.set(item.id, item);
+      resultEdges.push(resolution({ from: callable.id, to: item.id, kind: 'has-parameter',
+        strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved',
+        evidence: [item.locator], layer: 'structural', checkpoint: false }));
+      return item;
+    };
     let resolvedBindings = 0;
     for (const file of relatives) {
       if (resolvedBindings >= budget.maxBindings) break;
@@ -158,25 +182,94 @@ export function compilerTypeScriptReferences(input: {
         if (resolvedBindings >= budget.maxBindings) return;
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           if (ts.isIdentifier(node.expression) || ts.isPropertyAccessExpression(node.expression)) {
+            const site = ts.isCallExpression(node) ? callSites.get([file, node.getStart(source)].join('\0')) : undefined;
+            const referenced = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node.expression)
+              ? node.expression.name : node.expression);
+            const calleeSymbol = referenced && (referenced.flags & ts.SymbolFlags.Alias)
+              ? checker.getAliasedSymbol(referenced) : referenced;
+            if (site && ts.isIdentifier(node.expression)) {
+              const parameter = calleeSymbol?.declarations?.find(ts.isParameter);
+              if (parameter && ts.isFunctionLike(parameter.parent)) {
+                const parent = parameter.parent as ts.SignatureDeclaration;
+                const location = declarationLocation(input.root, parent, tracked);
+                const callable = location ? native.get([location.file, location.name, location.line].join('\0')) ?? [] : [];
+                const parameters = parent.parameters.filter(p => !(ts.isIdentifier(p.name) && p.name.text === 'this'));
+                const index = parameters.indexOf(parameter);
+                if (callable.length === 1 && index >= 0) {
+                  const formal = formalParameter(parameter, index, callable[0]!);
+                  if (formal) resultEdges.push(resolution({ from: site.id, to: formal.id, kind: 'resolves_to',
+                    strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved',
+                    evidence: [site.locator, formal.locator], layer: 'structural', checkpoint: false }));
+                }
+              }
+            }
             const signature = checker.getResolvedSignature(node);
             const declaration = signature?.declaration;
             const found = declaration ? declarationLocation(input.root, declaration, tracked) : null;
-            if (found && found.file !== file) {
+            if (found) {
               const targets = native.get([found.file, found.name, found.line].join('\0')) ?? [];
               if (targets.length === 1) {
+                const previousEdgeCount = resultEdges.length;
                 const target = targets[0]!;
                 const start = source.getLineAndCharacterOfPosition(node.expression.getStart(source));
                 const locator = `${file}:${start.line + 1}:${start.character + 1}`;
                 // Preserve existing DI structural identities: do not introduce a
                 // same-name call-reference node that can displace a declaration
                 // in general natural-language and parity query selection.
-                resultEdges.push(resolution({
+                const proof = [locator, `${file}:${start.line + 1}`, `${found.file}:${found.line}`, 'TypeScript TypeChecker resolved static signature; runtime dispatch not established'];
+                if (found.file !== file) resultEdges.push(resolution({
                   from: owner.id, to: target.id, kind: 'references-symbol',
                   strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved',
-                  evidence: [locator, `${found.file}:${found.line}`, 'TypeScript TypeChecker resolved static signature; runtime dispatch not established'],
-                  layer: 'structural', checkpoint: false,
+                  evidence: proof, layer: 'structural', checkpoint: false,
                 }));
-                resolvedBindings += 1;
+                const callable = declaration && ((ts.isFunctionDeclaration(declaration) || ts.isMethodDeclaration(declaration))
+                  ? Boolean(declaration.body) : ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration));
+                // A signature can come from a parameter or mutable variable's
+                // type. It does not identify that value's runtime target.
+                const directBinding = Boolean(declaration && calleeSymbol?.declarations?.some(item => item === declaration
+                  || (ts.isVariableDeclaration(item) && ts.isVariableDeclarationList(item.parent)
+                    && (item.parent.flags & ts.NodeFlags.Const) !== 0 && item.initializer === declaration)));
+                const callerId = (site?.value as { functionId?: string } | undefined)?.functionId;
+                if (site && callerId && callable && directBinding && declaration && !ts.isJSDocSignature(declaration) && ts.isCallExpression(node)) {
+                  resultEdges.push(resolution({ from: site.id, to: target.id, kind: 'resolves_to',
+                    strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved', evidence: proof,
+                    layer: 'structural', checkpoint: false }));
+                  resultEdges.push(resolution({ from: callerId, to: target.id, kind: 'calls',
+                    strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved', evidence: proof,
+                    layer: 'structural', checkpoint: false }));
+                  const parameters = declaration.parameters.filter(p => !(ts.isIdentifier(p.name) && p.name.text === 'this'));
+                  for (const [index, argument] of node.arguments.entries()) {
+                    const parameter = parameters[index];
+                    if (!parameter || ts.isSpreadElement(argument) || parameter.dotDotDotToken) break;
+                    const formal = formalParameter(parameter, index, target);
+                    if (!formal) continue;
+                    const offset = argument.getStart(source);
+                    const line = source.getLineAndCharacterOfPosition(offset).line + 1;
+                    const actual = observation({ identity: [site.id, 'argument', index], sourceId: `repo:${file}`,
+                      kind: 'argument', locator: `${file}:${line}:argument-offset-${offset}`,
+                      name: `Argument ${index + 1}`, field: 'argument', raw: argument.getText(source),
+                      value: { callSiteId: site.id, index, sourceOffset: offset, producer: TYPESCRIPT_COMPILER_LENS }, layer: 'structural', checkpoint: false });
+                    resultNodes.set(actual.id, actual);
+                    const evidence = [site.locator, actual.locator, formal.locator];
+                    resultEdges.push(resolution({ from: site.id, to: actual.id, kind: 'has-argument',
+                      strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved', evidence,
+                      layer: 'structural', checkpoint: false }));
+                    resultEdges.push(resolution({ from: actual.id, to: formal.id, kind: 'argument-for',
+                      strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved', evidence,
+                      layer: 'structural', checkpoint: false }));
+                    if (ts.isIdentifier(argument)) {
+                      const symbol = checker.getSymbolAtLocation(argument);
+                      const binding = symbol?.valueDeclaration;
+                      const bindingFile = binding && relativeFile(input.root, binding.getSourceFile().fileName);
+                      const bindingLine = binding && binding.getSourceFile().getLineAndCharacterOfPosition(binding.getStart()).line + 1;
+                      const matches = bindingFile && bindingLine ? native.get([bindingFile, argument.text, bindingLine].join('\0')) ?? [] : [];
+                      if (matches.length === 1) resultEdges.push(resolution({ from: actual.id, to: matches[0]!.id,
+                        kind: 'references-symbol', strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved',
+                        evidence: [actual.locator, matches[0]!.locator], layer: 'structural', checkpoint: false }));
+                    }
+                  }
+                }
+                if (resultEdges.length > previousEdgeCount) resolvedBindings += 1;
               }
             }
           }
@@ -186,7 +279,7 @@ export function compilerTypeScriptReferences(input: {
       visit(source);
     }
     const saturated = resolvedBindings >= budget.maxBindings;
-    return { nodes: resultNodes, edges: resultEdges, sourceFiles: relatives.length, resolvedBindings,
+    return { nodes: [...resultNodes.values()], edges: resultEdges, sourceFiles: relatives.length, resolvedBindings,
       state: saturated ? 'bounded-out' : 'completed',
       reason: saturated ? 'Binding budget ' + budget.maxBindings + ' reached after '
         + visitedFiles + '/' + relatives.length

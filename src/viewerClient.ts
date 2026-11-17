@@ -12,7 +12,7 @@ type ExploreMode = 'summary' | 'list' | 'table' | 'graph' | 'raw';
 type GraphLens = 'architecture' | 'parity' | 'code';
 type ProjectionNode = { id: string; kind: string; layer?: string; name?: string; locator?: string; value?: unknown; evidenceIds?: string[] };
 type ProjectionEdge = { id: string; from: string | null; to: string | null; kind: string; status: string; strategy?: string; confidence?: number | null; evidenceIds?: string[] };
-type Projection = { project: string; graphId?: string; revision?: string; selected?: string; ambiguous?: boolean; candidates?: Array<{ id: string; kind: string; layer: string; name: string | null; locator: string }>; nodes: ProjectionNode[]; edges: ProjectionEdge[]; evidence?: unknown[]; coverage?: unknown; truncated?: boolean };
+type Projection = { project: string; graphId?: string; revision?: string; selected?: string; ambiguous?: boolean; candidatesTruncated?: boolean; candidates?: Array<{ id: string; kind: string; layer: string; name: string | null; locator: string }>; nodes: ProjectionNode[]; edges: ProjectionEdge[]; evidence?: unknown[]; coverage?: unknown; truncated?: boolean };
 
 const config = window.__DEVINT_VIEWER__;
 if (!config?.project) throw new Error('Development Intelligence Workbench is missing project context');
@@ -34,6 +34,8 @@ let section: Section = (['overview', 'explore', 'semantics', 'parity', 'query', 
 let sectionEpoch = 0;
 let exploreMode: ExploreMode = 'graph';
 let graphLens: GraphLens = 'architecture';
+let graphLimit = 700;
+let graphDepth = 2;
 let exploreQuery = '';
 let graphSelected = '';
 let lastExplore: any = null;
@@ -296,9 +298,19 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const sequence = ++graphRenderSequence;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><button id="graph-scope" type="button" disabled>Use selected subject for question</button><span id="graph-selected-label" class="muted"></span><span class="muted">Drag to pan · scroll to zoom · select a node to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button><button id="graph-scope" type="button" disabled>Use selected subject for question</button><span id="graph-selected-label" class="muted"></span><span class="muted">Drag to pan · scroll to zoom · select a node to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
-  const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: '700', depth: '2' })) as Projection;
+  root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
+    const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
+    const depth = Number(root.querySelector<HTMLInputElement>('#graph-depth')?.value);
+    if (!Number.isSafeInteger(size) || size < 1 || !Number.isSafeInteger(depth) || depth < 1) {
+      const status = root.querySelector<HTMLElement>('#graph-status');
+      if (status) status.textContent = 'Enter positive whole numbers for nodes and depth.';
+      return;
+    }
+    graphLimit = size; graphDepth = depth; void renderGraph(root, epoch);
+  });
+  const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) })) as Projection;
   if (!sectionIsCurrent(epoch, 'explore') || sequence !== graphRenderSequence || exploreMode !== 'graph') return;
   if (!projection.nodes.length && !projection.ambiguous && graphLens === 'architecture') {
     graphLens = 'code';
@@ -309,7 +321,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const graphStatus = document.getElementById('graph-status') as HTMLElement;
   if (projection.ambiguous) {
     container.innerHTML = empty('Choose a subject', 'Several graph subjects match. Select one below to see its neighborhood.');
-    graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates`;
+    graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates${projection.candidatesTruncated ? ' shown · increase Nodes to see more' : ''}`;
     const choices = document.getElementById('graph-choices')!;
     choices.innerHTML = `<div class="card"><h3>Matching subjects</h3><div class="list">${(projection.candidates ?? []).map(node => `<button class="row row-button" data-graph-choice="${esc(node.id)}"><span class="badge">${esc(node.kind)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.locator)}</small></span><span>→</span></button>`).join('')}</div></div>`;
     for (const button of Array.from(choices.querySelectorAll<HTMLButtonElement>('[data-graph-choice]'))) button.addEventListener('click', () => { graphSelected = button.dataset.graphChoice!; void renderGraph(root, epoch); });
@@ -359,7 +371,7 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
   const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
   if (prefill) queryDraft = prefill;
   prefill = queryDraft;
-  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
+  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="20"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
   queryPanelReady = true;
   (queryPanel.querySelector('#query-text') as HTMLTextAreaElement).addEventListener('input', event => { queryDraft = (event.target as HTMLTextAreaElement).value; });
   const run = async (offset = 0) => {
@@ -382,7 +394,9 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
       const conditionValue = (document.getElementById('query-condition-truth') as HTMLSelectElement).value;
       const effectKinds = splitKinds('query-effect-kinds');
       const depth = Number((document.getElementById('query-depth') as HTMLInputElement).value) || 1;
-      const result = await postJson('/workbench/query', { text, offset, depth, ...(direction ? { direction } : {}),
+      const limit = Number((document.getElementById('query-limit') as HTMLInputElement).value);
+      if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Results per page must be a positive whole number');
+      const result = await postJson('/workbench/query', { text, offset, depth, limit, ...(direction ? { direction } : {}),
         ...(scope ? { scope } : {}), ...(nodeKinds.length ? { nodeKinds } : {}),
         ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) });
       const page = result.result?.page;

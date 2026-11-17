@@ -139,7 +139,7 @@ async function main(): Promise<void> {
     process.env.DEVINT_LOCAL_GRAPH_DIR = path.resolve(dataDir);
     process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [project]: { repository: pathToFileURL(path.resolve(root)).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
     const offset = Number(arg('--offset') ?? '0'), limit = Number(arg('--limit') ?? '20');
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Query offset must be non-negative and limit must be 1..1000');
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1) throw new Error('Query offset must be non-negative and limit must be positive');
     const { queryWorkbenchRequest } = await import('./intelligence/workbench.js');
     const response = await queryWorkbenchRequest({ project, text: question, ...(graphId ? { graphId } : {}), offset, limit });
     if (process.argv.includes('--details')) console.log(JSON.stringify(response, null, 2));

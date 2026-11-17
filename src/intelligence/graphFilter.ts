@@ -49,7 +49,9 @@ function interpret(text: string): { tokens: LanguageToken[]; terms: string[]; te
   const framing = new Set(['work', 'works', 'show', 'tell', 'explain', 'find', 'give', 'know', 'happen', 'happens', 'thing', 'things']);
   const meaningful = tokens.filter(token => !token.stop && !framing.has(token.lemma)
     && !['not', 'no', 'never', 'without', 'none'].includes(token.lemma));
-  const nouns = meaningful.filter(token => ['NOUN', 'PROPN', 'ADJ'].includes(token.partOfSpeech));
+  const operations = new Set(['call', 'invoke', 'reference', 'import', 'depend', 'contain', 'handle', 'construct', 'trigger', 'dispatch', 'write', 'read', 'use']);
+  const nouns = meaningful.filter(token => ['NOUN', 'PROPN', 'ADJ'].includes(token.partOfSpeech)
+    || (token.partOfSpeech === 'VERB' && !operations.has(token.lemma)));
   const termGroups = (nouns.length ? nouns : meaningful).map(token =>
     [...new Set([token.text.toLowerCase(), token.lemma].filter(term => term.length > 1))]).filter(group => group.length);
   const terms = [...new Set(termGroups.flat())];
@@ -58,6 +60,11 @@ function interpret(text: string): { tokens: LanguageToken[]; terms: string[]; te
 
 function words(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/gu, '$1 $2').replace(/[_./:#-]+/gu, ' ').toLowerCase();
+}
+
+function includesTerm(value: string, term: string): boolean {
+  if (term.length > 2) return value.includes(term);
+  return value.split(/\s+/u).includes(term);
 }
 
 function containsName(question: string, name: string): boolean {
@@ -74,7 +81,7 @@ function containsName(question: string, name: string): boolean {
   return false;
 }
 
-const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'provider', 'mcp-tool', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure']);
+const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'provider', 'mcp-tool', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference']);
 
 /** Language proposes terms and exact names; selection and navigation operate
  * exclusively on the graph's existing nodes and relationships. */
@@ -117,17 +124,23 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       && containsName(input.text, node.name));
     if (named.length) {
       const longest = named.reduce((length, node) => Math.max(length, node.name!.length), 0);
-      subjects = named.filter(node => node.name!.length === longest);
+      const exact = named.filter(node => node.name!.length === longest);
+      // A declaration and its call occurrences are distinct subjects. Prefer
+      // the declaration when present; otherwise navigate every matching site.
+      const declarations = exact.filter(node => node.kind !== 'call-reference');
+      subjects = declarations.length ? declarations : exact;
       selection = 'exact-name';
     } else if (language.terms.length) {
       const terms = language.terms.map(words);
       const factTerms = new Map<string, Set<string>>();
+      const sourceFamilies = new Set<string>();
       for (const fact of graph.nodes) {
         if (fact.kind !== 'source-condition' && fact.kind !== 'source-effect') continue;
         const value = fact.value as { functionId?: unknown } | null;
         if (!value || typeof value.functionId !== 'string') continue;
+        sourceFamilies.add(value.functionId);
         const factText = words(fact.raw ?? '');
-        const matching = terms.filter(term => factText.includes(term));
+        const matching = terms.filter(term => includesTerm(factText, term));
         if (!matching.length) continue;
         const group = factTerms.get(value.functionId) ?? new Set<string>();
         for (const term of matching) group.add(term);
@@ -135,22 +148,27 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       }
       const scored: Array<{ node: GraphNode; score: number; groups: number }> = [];
       for (const node of eligible) {
+        // Source occurrences are good exact subjects, but letting every call
+        // site compete with its owner swamps broad feature searches.
+        if (node.kind === 'call-reference' && !kinds.size) continue;
         const name = words(node.name ?? '');
         const locator = words(node.locator);
         const raw = words(node.raw ?? '');
         let score = 0;
         let groups = 0;
         for (const group of language.termGroups) {
-          if (group.some(term => name.includes(words(term)) || locator.includes(words(term))
-            || raw.includes(words(term)) || factTerms.get(node.id)?.has(words(term)))) groups += 1;
+          if (group.some(term => includesTerm(name, words(term)) || includesTerm(locator, words(term))
+            || includesTerm(raw, words(term)) || factTerms.get(node.id)?.has(words(term)))) groups += 1;
         }
         for (const term of terms) {
-          if (name.includes(term)) score += 4;
-          if (locator.includes(term)) score += 2;
-          if (raw.includes(term)) score += 1;
+          if (includesTerm(name, term)) score += 4;
+          if (includesTerm(locator, term)) score += 2;
+          if (includesTerm(raw, term)) score += 1;
           if (factTerms.get(node.id)?.has(term)) score += 3;
         }
-        if (score) scored.push({ node, groups, score: score + (['function', 'method', 'constructor'].includes(node.kind) ? 2 : 0) });
+        if (score) scored.push({ node, groups, score: score
+          + (['function', 'method', 'constructor'].includes(node.kind) ? 4 : 0)
+          + (sourceFamilies.has(node.id) ? 2 : 0) });
       }
       scored.sort((a, b) => b.score - a.score || a.node.id.localeCompare(b.node.id));
       const minimum = Math.min(2, language.termGroups.length);
@@ -166,7 +184,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   // position relative to the selected subject to choose traversal direction.
   // A symbol reference is never promoted to a call by language matching.
   const subject = subjects.length === 1 ? subjects[0] : undefined;
-  const subjectName = subject?.name ?? '';
+  const sharedName = subjects[0]?.name;
+  const subjectName = subject?.name ?? (sharedName && subjects.every(node => node.name === sharedName) ? sharedName : '') ?? '';
   const nameStart = subjectName ? input.text.toLowerCase().indexOf(subjectName.toLowerCase()) : -1;
   const pronoun = nameStart < 0 && input.scope ? /\b(?:it|its|itself)\b/iu.exec(input.text) : null;
   const subjectStart = nameStart >= 0 ? nameStart : pronoun?.index ?? -1;
@@ -179,6 +198,9 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     const matching = contracts.filter(contract => {
       const parts = contract.kind.toLowerCase().split(/[-_]/u);
       if (parts.includes('by')) return false;
+      // "Use" asks for the graph's general dependency and invocation
+      // relationships, not a single edge spelling.
+      if (operationToken.lemma === 'use' && ['reference', 'invocation'].includes(contract.family)) return true;
       const first = parts[0] ?? '';
       const lemmas = nlp.readDoc(first).tokens().out(its.lemma as any) as string[];
       return first === operationToken.lemma || lemmas.some(lemma => lemma.toLowerCase() === operationToken.lemma);
@@ -187,7 +209,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   }
   if (!input.direction && operationToken && subjectStart >= 0 && relationshipKinds.size) {
     const between = input.text.slice(Math.min(operationToken.end, subjectEnd), Math.max(operationToken.start, subjectStart));
-    const passive = /\bby\b/iu.test(between) || /\bby\s*\??\s*$/iu.test(input.text);
+    const passive = /\bby\b/iu.test(between) || /\bby\s*\??\s*$/iu.test(input.text)
+      || (operationToken.start > subjectEnd && /\b(?:is|are|was|were|be|been|being)\s*$/iu.test(input.text.slice(0, subjectStart)));
     direction = operationToken.start < subjectStart ? (passive ? 'outbound' : 'inbound') : (passive ? 'inbound' : 'outbound');
   }
   const subjectIds = new Set(subjects.map(node => node.id));
@@ -240,7 +263,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   }
   for (const node of graph.nodes) if (adjacentIds.has(node.id)) include(node);
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
-  const limit = Math.max(1, Math.min(1000, Math.floor(input.limit ?? 20)));
+  const limit = input.limit ?? 20;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Graph page size must be a positive integer');
   const subjectPage = subjects.slice(offset, offset + limit);
   const negativeTerms = [...new Set(language.tokens.filter(token => token.negated)
     .flatMap(token => [token.text.toLowerCase(), token.lemma]).filter(term => term.length > 1))];
@@ -258,8 +282,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       return { id: node.id, kind: node.kind, effectKind,
         locator: node.locator, sourceId: node.sourceId, evidenceIds: node.evidenceIds ?? [], expression: node.raw,
         controlContext: value?.controlContext ?? [], requirementsComplete: value?.requirementsComplete ?? true,
-        matchedTerms: language.terms.filter(term => words(node.raw).includes(words(term))),
-        matchedNegativeTerms: negativeTerms.filter(term => words(node.raw).includes(words(term))),
+        matchedTerms: language.terms.filter(term => includesTerm(words(node.raw), words(term))),
+        matchedNegativeTerms: negativeTerms.filter(term => includesTerm(words(node.raw), words(term))),
         requirements: (value?.requiredConditions ?? []).map(requirement => ({
           conditionId: requirement.conditionId, expectedTruth: requirement.expectedTruth,
           predicate: conditions.get(requirement.conditionId)?.raw ?? null,

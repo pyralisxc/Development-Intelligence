@@ -11,6 +11,12 @@ import { deriveQueryCorrelations } from './resolver.js';
 import { exactEvidenceQueryBuckets } from './queryArtifacts.js';
 import { availableRelationshipContracts, observedRelationshipContracts, sourceCapabilityCoverage } from './graphKnowledge.js';
 
+function requestedCount(value: number | undefined, fallback: number, minimum: number, name: string): number {
+  const count = value ?? fallback;
+  if (!Number.isSafeInteger(count) || count < minimum) throw new Error(`${name} must be an integer of at least ${minimum}`);
+  return count;
+}
+
 function nodeText(node: GraphNode): string {
   return [node.id, node.kind, node.layer, node.locator, node.field, node.name, node.raw, JSON.stringify(node.value)].filter(Boolean).join(' ');
 }
@@ -193,8 +199,8 @@ function impactNeighborhood(
 ): Record<string, unknown> {
   const context = graphQueryContext(graph);
   const direction = options.direction ?? 'inbound';
-  const maxDepth = Math.min(Math.max(options.depth ?? 3, 0), 10);
-  const limit = Math.min(Math.max(options.limit ?? 500, 1), 5000);
+  const maxDepth = requestedCount(options.depth, 3, 0, 'Depth');
+  const limit = requestedCount(options.limit, 500, 1, 'Limit');
   const allowedKinds = new Set(options.relationshipKinds ?? []);
   const allowedStatuses = new Set(options.statuses ?? ['resolved']);
   const allowedLayers = new Set(options.layers ?? []);
@@ -374,7 +380,7 @@ function searchGraphMatches(graph: IntelligenceGraph, input: SearchGraphInput, r
 
 function searchGraphResult(graph: IntelligenceGraph, input: SearchGraphInput, requestedQuery?: string): Record<string, unknown> {
   const { nodes, edges } = searchGraphMatches(graph, input, requestedQuery);
-  const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
+  const limit = requestedCount(input.limit, 100, 1, 'Limit');
   const offset = Math.max(input.offset ?? 0, 0);
   const returnedNodes = nodes.slice(offset, offset + limit);
   const returnedEdges = edges.slice(offset, offset + limit);
@@ -725,7 +731,7 @@ function fullTraceGraphResult(
   query: string,
   queryPlane?: Record<string, unknown>,
 ): Record<string, unknown> {
-  const candidates = findGraphNodeCandidates(graph, query, 20);
+  const candidates = findGraphNodeCandidates(graph, query, Number.MAX_SAFE_INTEGER);
   if (!candidates.length) throw new Error(`Graph node not found: ${input.node}`);
   if (candidates.length > 1 && !candidates.some(node => node.id === query)) {
     return {
@@ -746,8 +752,8 @@ function fullTraceGraphResult(
   const allowedKinds = new Set(input.relationshipKinds ?? []);
   const allowedStatuses = new Set(input.statuses ?? ['resolved']);
   const allowedLayers = new Set(input.layers ?? []);
-  const maxDepth = Math.min(Math.max(input.depth ?? 3, 0), 10);
-  const limit = Math.min(Math.max(input.limit ?? 250, 1), 2000);
+  const maxDepth = requestedCount(input.depth, 3, 0, 'Depth');
+  const limit = requestedCount(input.limit, 250, 1, 'Limit');
   const direction = input.direction ?? 'both';
   const visited = new Set<string>([start.id]);
   const selectedEdges: GraphEdge[] = [];
@@ -838,7 +844,7 @@ async function adaptiveCurrentTrace(
 
   const shards = { ...loaded.shards };
   let partial = queryArtifactSearchGraph(loaded.index as any, shards);
-  const candidates = findGraphNodeCandidates(partial, query, 20);
+  const candidates = findGraphNodeCandidates(partial, query, Number.MAX_SAFE_INTEGER);
   if (!candidates.length) {
     return { result: null, reason: 'adaptive-trace-seed-not-materialized', loadMs: loaded.loadMs, selectedBuckets: bucketIds.size };
   }
@@ -876,8 +882,8 @@ async function adaptiveCurrentTrace(
   const allowedKinds = new Set(input.relationshipKinds ?? []);
   const allowedStatuses = new Set(input.statuses ?? ['resolved']);
   const allowedLayers = new Set(input.layers ?? []);
-  const maxDepth = Math.min(Math.max(input.depth ?? 3, 0), 10);
-  const limit = Math.min(Math.max(input.limit ?? 250, 1), 2000);
+  const maxDepth = requestedCount(input.depth, 3, 0, 'Depth');
+  const limit = requestedCount(input.limit, 250, 1, 'Limit');
   const direction = input.direction ?? 'both';
   const visited = new Set<string>([start.id]);
   const selectedEdges: GraphEdge[] = [];
@@ -1151,7 +1157,7 @@ function parityLensResult(graph: IntelligenceGraph, context: GraphQueryContext, 
   const query = requestedQuery?.trim().toLowerCase();
   const kinds = new Set(input.kinds ?? []);
   const offset = Math.max(input.offset ?? 0, 0);
-  const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
+  const limit = requestedCount(input.limit, 100, 1, 'Limit');
   let semantic = graph.nodes.filter(node => node.layer === 'semantic' && (!kinds.size || kinds.has(node.kind)) && (!query || nodeText(node).includes(query)));
   if (input.sourceIds?.length) {
     const sourceIds = new Set(input.sourceIds);
@@ -1248,14 +1254,17 @@ export async function viewerProjection(input: {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const context = graphQueryContext(graph);
   const view = input.view ?? 'architecture';
-  const limit = Math.min(Math.max(input.limit ?? 700, 50), 2000);
-  const depth = Math.min(Math.max(input.depth ?? 2, 1), 5);
+  const limit = input.limit ?? 700;
+  const depth = input.depth ?? 2;
+  if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(depth) || depth < 1)
+    throw new Error('Graph display size and depth must be positive integers');
   const requested = input.node ?? input.query;
   if (requested) {
-    const candidates = findGraphNodeCandidates(graph, requested, 25);
+    const candidates = findGraphNodeCandidates(graph, requested, Math.min(Number.MAX_SAFE_INTEGER, limit + 1));
+    const candidateLimitReached = candidates.length > limit;
     if (!candidates.length) return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, query: requested, nodes: [], edges: [], candidates: [] };
     if (candidates.length > 1 && !candidates.some(node => node.id === requested)) {
-      return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, query: requested, ambiguous: true, candidates: candidates.map(node => ({ id: node.id, kind: node.kind, layer: node.layer ?? 'structural', name: node.name ?? null, locator: node.locator })), nodes: [], edges: [] };
+      return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, query: requested, ambiguous: true, candidatesTruncated: candidateLimitReached, candidates: candidates.slice(0, limit).map(node => ({ id: node.id, kind: node.kind, layer: node.layer ?? 'structural', name: node.name ?? null, locator: node.locator })), nodes: [], edges: [] };
     }
     const selected = candidates.find(node => node.id === requested) ?? candidates[0]!;
     const neighborhood = boundedNeighborhood(graph, context, [selected.id], depth, limit);

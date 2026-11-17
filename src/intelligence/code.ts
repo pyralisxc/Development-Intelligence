@@ -7,7 +7,7 @@ import { graphContext } from './service.js';
 import { locatorFileAndLine } from './query.js';
 import { isRepositoryAnalysisIgnoredPath } from './repository.js';
 
-const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? 1_000_000);
+const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? Number.MAX_SAFE_INTEGER);
 
 export type FilePatternMode = 'regex' | 'literal' | 'prefix' | 'glob';
 

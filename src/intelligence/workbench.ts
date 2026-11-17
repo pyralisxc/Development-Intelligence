@@ -1664,10 +1664,10 @@ export async function queryWorkbenchRequest(input: {
           .filter((fact: any) => fact.effectKind && result.interpretation.requestedEffects.some((effect: string) => fact.effectKind.split('-').includes(effect)))
         : [];
       const related = result.navigation.relationships.filter((item: any) => item.edge.status === 'resolved');
-      const relationshipAnswer = !result.interpretation.negated && result.navigation.relationshipKinds.length && related.length
+      const relationshipAnswer = !result.interpretation.negated && result.interpretation.selection !== 'terms' && result.navigation.relationshipKinds.length && related.length
         ? related.map((item: any) => item.edge.kind === 'calls-site'
           ? `${item.from?.name ?? item.edge.from} has source call ${item.to?.name ?? item.edge.to} at ${item.to?.locator ?? item.edge.evidence?.[0] ?? 'source'}`
-          : `${item.from?.name ?? item.edge.from} ${item.edge.kind} ${item.to?.name ?? item.edge.to}`).join('; ')
+          : `${item.from?.name ?? item.edge.from}${item.from?.locator ? ` (${item.from.locator})` : ''} ${item.edge.kind} ${item.to?.name ?? item.edge.to}${item.to?.locator ? ` (${item.to.locator})` : ''}`).join('; ')
           + (related.some((item: any) => item.edge.kind === 'calls-site') ? '. Source call occurrences do not by themselves bind target declarations.' : '')
           + ((result.page.offset + result.navigation.relationships.length < result.navigation.total)
             ? `; showing ${result.page.offset + 1}–${result.page.offset + result.navigation.relationships.length} of ${result.navigation.total} matching relationships (continue at offset ${result.page.offset + result.page.limit})` : '')
@@ -1675,9 +1675,24 @@ export async function queryWorkbenchRequest(input: {
       const comparisonAnswer = result.comparison?.state === 'evaluated'
           ? `Compared ${result.comparison.total} subjects: ${result.comparison.counts.related} related, ${result.comparison.counts.candidate} candidate, ${result.comparison.counts.notRelated} established not related, and ${result.comparison.counts.unknown} unknown.`
           : result.comparison?.reason ?? '';
+      // Broad term matches are a ranked source scope, not one bound subject.
+      // Compose visible source facts for that scope instead of asserting that
+      // every incident relationship answers the question.
+      const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
+        ? `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): `
+          + result.subjects.map((item: any) => {
+            const family = result.sourceFamilies.find((value: any) => value.subjectId === item.id);
+            const concise = (family?.facts ?? []).filter((fact: any) => typeof fact.expression === 'string');
+            const matched = concise.filter((fact: any) => fact.matchedTerms?.length);
+            const facts = matched.length ? matched : concise.filter((fact: any) => fact.effectKind?.split('-').includes('call'));
+            const detail = facts.map((fact: any) => `${fact.expression}${fact.requirements?.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext?.length ? ` within ${fact.controlContext.map((context: any) => context.kind).join(' > ')}` : ''}`).join('; ');
+            return `${item.name ?? item.id} (${item.locator})${detail ? `: ${detail}` : ''}`;
+          }).join(' | ')
+          + '. These are ranked matching source facts; inspect the selected graph subjects and coverage for the rest.'
+        : '';
       const answer = comparisonAnswer || (result.interpretation.negated
         ? 'The graph matches subjects for this question, but the requested negative conclusion is not established. Narrow the subject and relationship or supply a comparison scope.'
-        : '') || relationshipAnswer || (focus.length
+        : '') || relationshipAnswer || scopedAnswer || (focus.length
         ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
         : `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`);
       items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,
