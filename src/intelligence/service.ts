@@ -9,7 +9,6 @@ import { proveRuntimeDeployment } from './runtimeDeploymentProof.js';
 import { sanitizeExternalPayload } from './externalSanitization.js';
 import { resolution } from './model.js';
 import { AsyncGate, cacheEntryLimitSetting, graphRecordWeight, positiveIntegerSetting, retentionEvictions, type RetentionItem } from './capacity.js';
-import { checkpointAnalyzerCurrent, checkpointToGraph, readCheckpoint } from './checkpoint.js';
 import { assertGraphIntegrity } from './integrity.js';
 import { advanceRepositoryGraph, ANALYZER_VERSION, buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
@@ -47,8 +46,6 @@ export interface GraphCurrentness {
 export interface GraphColdBuildTiming {
   queueWaitMs: number;
   graphBuildMs: number;
-  checkpointReadMs: number;
-  acceptedProjectionMs: number;
   checkout: ProjectCheckoutTiming;
   totalMs: number;
   strategy?: 'full' | 'incremental';
@@ -223,6 +220,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
                 revision: revision.sha,
                 working: loaded.record.working,
                 accepted: loaded.record.accepted,
+                ...(loaded.record.legacyAcceptedParts ? { legacyAcceptedParts: loaded.record.legacyAcceptedParts } : {}),
                 currentness: loaded.record.currentness,
                 queryArtifacts: queryArtifactPublication.ref,
               });
@@ -276,8 +274,6 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         }
 
         let graphBuildMs = 0;
-        let checkpointReadMs = 0;
-        let acceptedProjectionMs = 0;
         let buildStrategy: 'full' | 'incremental' = 'full';
         let changedFileCount: number | undefined;
         let affectedFileCount: number | undefined;
@@ -324,47 +320,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           assertGraphIntegrity(graph);
           graphBuildMs = elapsedMs(graphBuildStarted);
 
-          let checkpoint = null;
-          let checkpointError: string | null = null;
-          let accepted = loaded.staleRecord?.accepted ?? null;
-
-          // DI canonical A is authoritative once it exists. Repository-local
-          // checkpoints are read only as a one-way migration fallback.
-          if (!accepted) {
-            const checkpointReadStarted = Date.now();
-            try {
-              checkpoint = await readCheckpoint(checkout.root);
-            } catch (error) {
-              checkpointError = error instanceof Error ? error.message : String(error);
-            }
-            checkpointReadMs = elapsedMs(checkpointReadStarted);
-            accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
-          }
-
-          const acceptedProjectionStarted = Date.now();
-          if (accepted) assertGraphIntegrity(accepted);
-          let currentness = emptyCurrentness(checkpointError);
-          if (accepted) {
-            const sourceCurrent = accepted.sourceFingerprint === graph.sourceFingerprint;
-            const analyzerCurrent = accepted.analyzerVersion === graph.analyzerVersion;
-            const topologyCurrent = accepted.topologyFingerprint === graph.topologyFingerprint;
-            const evidenceCurrent = accepted.evidenceFingerprint === graph.evidenceFingerprint;
-            const schemaSupported = accepted.schemaVersion === 2;
-            const integrityCurrent = true;
-            currentness = {
-              // Semantic acceptance survives source/evidence-only movement when
-              // the accepted semantic topology itself is preserved.
-              acceptedSemanticCurrent: topologyCurrent && schemaSupported && integrityCurrent,
-              sourceCurrent,
-              topologyCurrent,
-              evidenceCurrent,
-              analyzerCurrent,
-              schemaSupported,
-              integrityCurrent,
-              checkpointError,
-            };
-          }
-          acceptedProjectionMs = elapsedMs(acceptedProjectionStarted);
+          // Preserve old accepted records only as historical stored data. They
+          // do not supply current source understanding or a review gate.
+          const accepted = loaded.staleRecord?.accepted ?? null;
+          const currentness = emptyCurrentness();
           return { graph, accepted, currentness };
         });
         const previousQueryArtifacts = loaded.staleRecord?.queryArtifacts ?? null;
@@ -379,6 +338,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           revision: revision.sha,
           working: observed.value.graph,
           accepted: observed.value.accepted,
+          ...(loaded.staleRecord?.legacyAcceptedParts ? { legacyAcceptedParts: loaded.staleRecord.legacyAcceptedParts } : {}),
           currentness: observed.value.currentness,
           queryArtifacts: queryArtifactPublication.state === 'stored' ? queryArtifactPublication.ref : null,
         });
@@ -401,8 +361,6 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           buildTiming: {
             queueWaitMs,
             graphBuildMs,
-            checkpointReadMs,
-            acceptedProjectionMs,
             checkout: observed.timing,
             totalMs: elapsedMs(queuedAt),
             strategy: buildStrategy,
@@ -430,8 +388,6 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
       }
 
       let graphBuildMs = 0;
-      let checkpointReadMs = 0;
-      let acceptedProjectionMs = 0;
       const observed = await withResolvedProjectCheckoutObserved(revision, async checkout => {
         const graphBuildStarted = Date.now();
         const graph = await buildRepositoryGraph({
@@ -444,39 +400,8 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         assertGraphIntegrity(graph);
         graphBuildMs = elapsedMs(graphBuildStarted);
 
-        let checkpoint = null;
-        let checkpointError: string | null = null;
-        const checkpointReadStarted = Date.now();
-        try {
-          checkpoint = await readCheckpoint(checkout.root);
-        } catch (error) {
-          checkpointError = error instanceof Error ? error.message : String(error);
-        }
-        checkpointReadMs = elapsedMs(checkpointReadStarted);
-
-        const acceptedProjectionStarted = Date.now();
-        const accepted = checkpoint ? checkpointToGraph({ project, repository: checkout.repository, revision: checkout.sha, checkpoint }) : null;
-        if (accepted) assertGraphIntegrity(accepted);
-        let currentness = emptyCurrentness(checkpointError);
-        if (checkpoint) {
-          const sourceCurrent = checkpoint.meta.sourceFingerprint === graph.sourceFingerprint;
-          const analyzerCurrent = checkpointAnalyzerCurrent(checkpoint.meta);
-          const topologyCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.topologyFingerprint === graph.topologyFingerprint;
-          const evidenceCurrent = checkpoint.meta.schemaVersion === 2 && checkpoint.meta.evidenceFingerprint === graph.evidenceFingerprint;
-          const schemaSupported = checkpoint.meta.schemaVersion === 2;
-          const integrityCurrent = checkpoint.integrity.countsValid && checkpoint.integrity.topologyValid !== false;
-          currentness = {
-            acceptedSemanticCurrent: topologyCurrent && schemaSupported && integrityCurrent,
-            sourceCurrent,
-            topologyCurrent,
-            evidenceCurrent,
-            analyzerCurrent,
-            schemaSupported,
-            integrityCurrent,
-            checkpointError,
-          };
-        }
-        acceptedProjectionMs = elapsedMs(acceptedProjectionStarted);
+        const accepted = null;
+        const currentness = emptyCurrentness();
         return { graph, accepted, currentness };
       });
       return {
@@ -486,8 +411,6 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         buildTiming: {
           queueWaitMs,
           graphBuildMs,
-          checkpointReadMs,
-          acceptedProjectionMs,
           checkout: observed.timing,
           totalMs: elapsedMs(queuedAt),
         },
@@ -966,11 +889,6 @@ export async function scanGraph(project: string, options: { ref?: string | undef
   return graph;
 }
 
-export async function repositoryGraphs(project: string, ref?: string): Promise<{ accepted: IntelligenceGraph | null; working: IntelligenceGraph; acceptedCurrent: boolean; currentness: GraphCurrentness }> {
-  const value = await loadCachedRepositoryGraphForRead(project, ref);
-  return { accepted: value.accepted, working: value.graph, acceptedCurrent: value.currentness.acceptedSemanticCurrent, currentness: value.currentness };
-}
-
 export async function graphContext(project: string, options: { ref?: string; graphId?: string } = {}): Promise<{ graph: IntelligenceGraph; revision: ProjectRevision }> {
   await assertProjectAccessCurrent(project);
   if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
@@ -1115,7 +1033,7 @@ export async function graphStatus(project: string, ref?: string, materialize = t
   const repository = materialize
     ? await buildCachedRepositoryGraph(project, ref)
     : await loadCachedRepositoryGraphForRead(project, ref);
-  const graphs = { accepted: repository.accepted, working: repository.graph };
+  const graphs = { working: repository.graph };
   const semanticNodes = graphs.working.nodes.filter(node => node.layer === 'semantic').length;
   const semanticEdges = graphs.working.edges.filter(edge => edge.layer === 'semantic').length;
   return {
@@ -1125,17 +1043,6 @@ export async function graphStatus(project: string, ref?: string, materialize = t
     revision: repository.revision.sha,
     revisionIdentity: revisionIdentity(repository.revision),
     analyzerVersion: graphs.working.analyzerVersion,
-    currentness: repository.currentness,
-    accepted: graphs.accepted ? {
-      graphId: graphs.accepted.graphId,
-      sourceFingerprint: graphs.accepted.sourceFingerprint,
-      topologyFingerprint: graphs.accepted.topologyFingerprint,
-      evidenceFingerprint: graphs.accepted.evidenceFingerprint,
-      analyzerVersion: graphs.accepted.analyzerVersion,
-      current: repository.currentness.acceptedSemanticCurrent,
-      nodes: graphs.accepted.nodes.length,
-      edges: graphs.accepted.edges.length,
-    } : null,
     working: {
       graphId: graphs.working.graphId,
       sourceFingerprint: graphs.working.sourceFingerprint,

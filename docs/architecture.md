@@ -34,7 +34,7 @@ Development Intelligence owns one graph model. Code inspection, Architecture, Pa
 
 ## Authority and independence
 
-Git/source owns implementation truth. DI produces rebuildable technical and semantic projections of exact Git revisions or of a fingerprinted local working state. Local working graphs include current non-ignored files and record HEAD as context, not as a claim that those files equal the commit. Accepted semantic authority remains bound to an exact Git revision.
+Git/source owns implementation truth. DI produces rebuildable technical and semantic projections of exact Git revisions or of a fingerprinted local working state. Local working graphs include current non-ignored files and record HEAD as context, not as a claim that those files equal the commit. Historical evidence remains bound to its own exact Git revision.
 
 External tools may contribute evidence. They do not own DI identity, graph semantics, lifecycle, storage, query contracts, or product intent. No production analyzer may branch on project identity.
 
@@ -127,45 +127,13 @@ Rules:
 
 Expectation/future data is caller reasoning and is not sealed as accepted current reality merely because it is planned.
 
-## A / W / B lifecycle
+## Source graph lifecycle
 
-DI canonical persistence owns accepted semantic state for inspected projects; Git remains source/history authority.
+Current understanding is reconstructed from one selected source graph: an exact Git revision or explicitly fingerprinted local working files. Source-derived facts retain their evidence and applicable conditions; no separate semantic approval history is required. Committed source states and local working files can be compared directly, including the retained Main, Preview and working targets.
 
-- **A — accepted:** stable semantic topology plus explicit review/acceptance history associated with exact project revisions.
-- **W — working:** the complete graph generated from one exact Git SHA. Current default-branch W may be durably cached for fast reads but is reconstructable.
-- **B — candidate:** the candidate revision's semantic delta and review/evolution state at the Preview→Main boundary.
-- Promotion advances A only after the current-revision semantic gate is satisfied. Previous accepted meaning remains temporally inspectable through DI authority/history rather than generated files in the inspected repository.
+Canonical persistence may retain a reconstructable source graph and query artifacts for access. Existing historical review records remain stored but do not determine current source understanding. Source observations, provider observations and caller-owned expectations remain distinguishable. The old checkpoint format remains available only for explicit compatibility and migration work.
 
-### Why accepted authority stays semantic
-
-Git already stores the source required to rebuild structural intelligence. Persisting every source-derived structural record as authority would duplicate source and create needless churn. DI therefore keeps semantic acceptance/review state as durable authority while structural/code intelligence remains reconstructable from Git.
-
-Runtime observations never automatically become accepted semantics because they may not be reproducible from repository source.
-
-### Current semantic understanding (Preview)
-
-Ordinary DI source and semantic understanding is reconstructed from **one selected source graph**: an exact Git revision or an explicitly fingerprinted local working state. The versioned `intrinsic-technical-scope.v1` rule establishes independently proven literal technical scopes directly; source-declared concepts and supported source interpretations form further layers of that same graph. Facts that are proven do not require historical acceptance records or a human review gate to be used. Lexical API, persistence, and motif signals may identify source-supported interpretations but do not prove desired product intent or runtime behavior.
-
-A changed source revision, compiler, analyzer, or coverage can add, weaken or eliminate technical meaning. DI does not retain or replay prior accepted descriptions as evidence for today's code. Canonical `scan_graph` no longer maintains a separate derived-semantic ledger; ordinary Workbench and project orientation project current meaning from the selected graph. Historical questions select their own Git revision and rerun the same derivation.
-
-The earlier semantic-review and promotion interfaces may still expose existing review records as **separate compatibility/governance metadata** while migration is tested. They do not determine current source truth, and this Preview change neither erases data nor alters an explicitly enforced Main approval gate. Removal of obsolete storage and controls follows provider/client parity validation, not hidden destructive cleanup.
-
-## Canonical integrity and currentness
-
-Canonical persistence records exact revision identity and independent currentness dimensions:
-
-- source currentness;
-- topology currentness;
-- evidence drift;
-- analyzer drift;
-- schema support;
-- integrity state.
-
-Accepted semantic A is an explicit owner-controlled **release/governance artifact**, not a source of current code understanding. Ordinary analysis always derives current semantic evidence from the selected W graph, even when A exists, differs, or is unavailable. If a promotion gate is explicitly enforced, its review obligation is separate from the truth of the inspected source graph.
-
-Legacy semantic review persistence may temporarily retain explicit approvals, baseline/lineage decisions and compatibility data until their clients and release controls are reconciled. It is not a machine memory of implementation meaning and is never consumed as proof for ordinary current semantic questions. Exact historical understanding comes from replaying the requested Git revision with the relevant analyzer, comparing immutable graphs only when explicitly requested.
-
-The deterministic `.development-intelligence/` manifest/shard format remains an internal self-seal and legacy migration/compatibility format. Its content-integrity checks remain part of the compatibility implementation; inspected repositories must not use it as a parallel machine semantic authority.
+Older canonical records may bundle a historical accepted graph with the source graph. The current loader retains the historical shard references without reading them into source understanding; an unavailable historical shard does not prevent the source graph from loading. On a later graph publication those references remain attached, so the historical data can be recovered when its storage is available. Current source shards still require identity and integrity validation.
 
 ## Exact revision context
 
@@ -307,7 +275,7 @@ Graph-consuming tools address canonical project/ref W, a reconstructible canonic
 
 `diff_graph` owns change intelligence:
 
-- no `baseRef` → accepted semantic A vs canonical W;
+- no `baseRef` → the default source state vs the selected source state;
 - `baseRef` → two immutable revision selectors under the same current analyzer.
 
 `analyze_impact` composes Git change truth with graph reach. It seeds from actual changed paths between two resolved revisions, maps those paths into both graphs, and traverses bounded dependency relationships. It does not infer that unchanged topology means unchanged implementation, and it reports unmapped paths/coverage rather than silently dropping unsupported evidence.

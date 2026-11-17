@@ -20,7 +20,7 @@ Do not copy volatile URLs, SHAs, secrets, deployment IDs, issue state, or provid
 
 ### Accepted main
 
-`main` is the accepted source branch. DI canonical persistence owns accepted semantic A and review history; Git owns accepted source/history. Development Intelligence does not track a generated semantic checkpoint: legacy seal/check format is generated only as disposable compatibility evidence.
+`main` is the accepted source branch. Git owns accepted source/history; DI derives understanding from the selected source graph. Development Intelligence does not track a generated semantic checkpoint: legacy seal/check format is generated only as disposable compatibility evidence.
 
 Accept `main` only after the exact candidate has a successful build and its material behavior has been reviewed through real use. Provider/runtime state is separate and must be read from the provider when current deployment fact matters.
 
@@ -97,7 +97,7 @@ Do not:
 - treat a skipped preview as a source-code failure without inspecting the exact check context;
 - infer that production changed merely because `main` changed;
 - infer that an ephemeral preview equals production;
-- promote candidate or derived Development Intelligence conclusions into accepted semantic authority without the canonical semantic review/promotion lifecycle.
+- treat a derived interpretation as product intent or a release approval.
 
 When CI/provider state is ambiguous, inspect the exact PR head, exact base, individual check results, and provider state before changing code.
 

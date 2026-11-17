@@ -2,9 +2,8 @@ import path from 'node:path';
 import { getProjectConfig } from '../config/registry.js';
 import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus , EvidenceRecord} from '../types.js';
-import { checkpointProjection } from './repository.js';
 import { compareGraphRecords } from './graphComparison.js';
-import { currentGraph, graphContext, loadCurrentQueryArtifactBuckets, loadCurrentQueryArtifacts, loadQueryArtifactShadow, repositoryGraphs } from './service.js';
+import { currentGraph, graphContext, loadCurrentQueryArtifactBuckets, loadCurrentQueryArtifacts, loadQueryArtifactShadow } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 import { normalizeName } from './model.js';
@@ -110,24 +109,13 @@ export function pageGraphDiff(detail: any, offset: number, limit: number): { det
     page: { offset, limit, totals, nextOffset: offset + limit < maximum ? offset + limit : null } };
 }
 
-export async function diffAcceptedToWorking(project: string, ref?: string): Promise<Record<string, unknown>> {
-  const { accepted, working, acceptedCurrent, currentness } = await repositoryGraphs(project, ref);
-  const projection = checkpointProjection(working);
-  const workingSemantic: IntelligenceGraph = { ...working, nodes: projection.nodes, edges: projection.edges };
-  if (!accepted) return {
-    project,
-    base: null,
-    head: { graphId: working.graphId, role: working.role, revision: working.repositoryRevision, topologyFingerprint: working.topologyFingerprint, evidenceFingerprint: working.evidenceFingerprint },
-    acceptedCurrent: false,
-    currentness,
-    semantic: {
-      nodes: { added: projection.nodes, removed: [], changed: [] },
-      edges: { added: projection.edges, removed: [], changed: [] },
-    },
-    note: 'Accepted checkpoints persist stable semantic topology only. Use a ref-to-ref diff for structural/code change analysis.',
-  };
-  const semantic = diffGraphs(accepted, workingSemantic, ['semantic']);
-  return { project, acceptedCurrent, currentness, semantic, note: 'Accepted A/B checkpoints are semantic topology projections; provenance/evidence drift is reported separately and structural diffs require two Git revisions analyzed with the same current analyzer.' };
+export async function diffDefaultToSelected(project: string, ref?: string): Promise<Record<string, unknown>> {
+  const config = await getProjectConfig(project);
+  const baseRef = process.env.DEVINT_LOCAL_GRAPH_DIR ? 'main' : config.defaultRef;
+  const detail = await diffRevisions({ project, baseRef, ...(ref ? { ref } : {}), layers: ['semantic'] });
+  const { nodes, edges, ...context } = detail;
+  return { ...context, semantic: { nodes, edges },
+    note: 'Compares the default source state with the selected source state; use explicit refs to choose both sides.' };
 }
 
 export async function diffRevisions(input: {
@@ -1283,8 +1271,8 @@ export async function viewerProjection(input: {
   else if (view === 'parity') seedNodes = graph.nodes.filter(node => node.layer === 'semantic' && ['surface', 'capability', 'action', 'feature', 'api', 'route', 'provider', 'mcp', 'tool'].includes(node.kind));
   else if (view === 'code') seedNodes = graph.nodes.filter(node => node.kind === 'file' || SYMBOL_KINDS_FOR_VIEW.has(node.kind));
   else {
-    if (input.graphId) throw new Error('Change view compares accepted A to canonical source W and does not accept a runtime graphId');
-    const delta = await diffAcceptedToWorking(input.project, input.ref) as any;
+    if (input.graphId) throw new Error('Change view compares source states and does not accept a runtime graphId');
+    const delta = await diffDefaultToSelected(input.project, input.ref) as any;
     const changedIds = new Set<string>([
       ...(delta.semantic?.nodes?.added ?? []).map((node: GraphNode) => node.id),
       ...(delta.semantic?.nodes?.removed ?? []).map((node: GraphNode) => node.id),

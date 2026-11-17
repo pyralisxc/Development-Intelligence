@@ -1,6 +1,6 @@
 import type { GraphEdge, GraphNode, GraphCoverageStatus, IntelligenceGraph } from '../types.js';
 import { auditGraph, type AuditFinding } from './assessment.js';
-import { currentGraph, repositoryGraphs, type GraphCurrentness } from './service.js';
+import { currentGraph } from './service.js';
 import { locatorFileAndLine, nodeArea } from './query.js';
 
 type AuditRelationshipStatus = 'candidate' | 'unresolved';
@@ -11,8 +11,6 @@ const BOUNDARY_RELATIONSHIP_KINDS = new Set([
 ]);
 
 interface RepositoryAuditOptions {
-  currentness?: GraphCurrentness | null;
-  acceptedPresent?: boolean | null;
   limit?: number;
 }
 
@@ -348,19 +346,6 @@ function triageInvestigationTarget(item: Record<string, unknown>) {
   };
 }
 
-function staleDimensions(currentness: GraphCurrentness | null | undefined): string[] {
-  if (!currentness) return [];
-  return [
-    ['acceptedSemanticCurrent', currentness.acceptedSemanticCurrent],
-    ['sourceCurrent', currentness.sourceCurrent],
-    ['topologyCurrent', currentness.topologyCurrent],
-    ['evidenceCurrent', currentness.evidenceCurrent],
-    ['analyzerCurrent', currentness.analyzerCurrent],
-    ['schemaSupported', currentness.schemaSupported],
-    ['integrityCurrent', currentness.integrityCurrent],
-  ].filter(([, value]) => value === false).map(([name]) => String(name));
-}
-
 export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: RepositoryAuditOptions = {}): Record<string, unknown> {
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
   const indexes = auditIndexes(graph);
@@ -368,19 +353,8 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
   const relationships = relationshipConcentrations(graph, limit, indexes);
   const blockers = coverageBlockers(graph, limit);
   const architectureBoundaries = bidirectionalArchitectureBoundaries(graph, limit, indexes);
-  const stale = staleDimensions(options.currentness);
   const precisionLimits = analyzerPrecisionLimits(graph);
   const targets: Array<Record<string, unknown>> = [];
-
-  if (options.acceptedPresent === true && stale.length) targets.push({
-    kind: 'currentness',
-    basis: 'observed',
-    count: stale.length,
-    summary: `Accepted/current graph dimensions are not current: ${stale.join(', ')}.`,
-    evidence: { dimensions: stale, checkpointError: options.currentness?.checkpointError ?? null },
-    fixSurface: { paths: [], areas: [] },
-    nextEvidence: 'Reconcile the accepted checkpoint/current analyzer state for the exact candidate before treating accepted semantics as current.',
-  });
 
   for (const signal of precisionLimits) targets.push({
     kind: 'analyzer-precision',
@@ -440,11 +414,6 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     revision: graph.repositoryRevision,
     role: graph.role,
     analyzerVersion: graph.analyzerVersion,
-    acceptedCheckpoint: {
-      present: options.acceptedPresent ?? null,
-      current: options.acceptedPresent === true ? options.currentness?.acceptedSemanticCurrent ?? null : null,
-    },
-    currentness: options.currentness ?? null,
     coverage: compactCoverage(graph),
     findingSummary: { total: findings.total, groups: findings.groups },
     findings: findings.samples,
@@ -471,21 +440,13 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
       persisted: false,
       modifiesRepository: false,
       createsWorkItems: false,
-      ranking: 'Currentness, coverage, unresolved relationships, candidate relationships, deterministic conflict/realization findings, then bidirectional architecture-boundary investigations; counts break ties before lexical identity.',
+      ranking: 'Coverage, unresolved relationships, candidate relationships, deterministic conflict/realization findings, then bidirectional architecture-boundary investigations; counts break ties before lexical identity.',
       note: 'Repository audits synthesize revision-bound technical evidence. They do not assign product intent, authorize changes, or create durable project-management truth.',
     },
   };
 }
 
 export async function repositoryAudit(input: { project: string; ref?: string; graphId?: string; limit?: number }): Promise<Record<string, unknown>> {
-  if (input.graphId) {
-    const graph = await currentGraph(input.project, input.ref, input.graphId);
-    return synthesizeRepositoryAudit(graph, { currentness: null, acceptedPresent: null, ...(typeof input.limit === 'number' ? { limit: input.limit } : {}) });
-  }
-  const repository = await repositoryGraphs(input.project, input.ref);
-  return synthesizeRepositoryAudit(repository.working, {
-    currentness: repository.currentness,
-    acceptedPresent: Boolean(repository.accepted),
-    ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
-  });
+  const graph = await currentGraph(input.project, input.ref, input.graphId);
+  return synthesizeRepositoryAudit(graph, { ...(typeof input.limit === 'number' ? { limit: input.limit } : {}) });
 }
