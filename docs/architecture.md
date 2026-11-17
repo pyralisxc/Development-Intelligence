@@ -181,6 +181,8 @@ Canonical project/ref queries always address source-derived W. Canonical `repo-�
 
 The Vercel Preview runtime builds its own revision-bound replay and cannot publish canonical or accepted authority. This keeps Preview's analyzer and graph format from changing Main's stored state. Canonical graph populations are persisted as independently stored shards with a manifest published after the shards, so a large graph does not depend on a single graph-wide JSON value.
 
+The derived query index is serialized and compressed incrementally, written in bounded storage parts, and published by a manifest after its parts. Each part and the complete compressed artifact retain integrity checks. An explicit scan can rebuild an older derived index from its saved source graph without changing that graph's identity. Current graph building and query-index reading still materialize large structures in memory; multipart storage alone does not make those operations scale independently of repository size.
+
 If `scan_graph` is supplied runtime URLs, DI overlays bounded runtime evidence onto the same graph model and returns an explicit ephemeral `graphId`. Graph, source, parity, evidence, and Viewer tools may address that `graphId` directly.
 
 Runtime snapshots are disposable and do not become the implicit “latest graph.” A previous agent's runtime scan must never change another agent's ordinary project/ref result.

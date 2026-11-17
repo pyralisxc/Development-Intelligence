@@ -23,6 +23,7 @@ import {
   publishCanonicalQueryArtifactPointer,
   publishCanonicalQueryArtifacts,
   releaseCanonicalQueryArtifactSlot,
+  QUERY_ARTIFACT_FORMAT_VERSION,
   type CanonicalQueryArtifactLoadResult,
   type CanonicalQueryArtifactPointer,
   type CanonicalQueryArtifactPointerPublishResult,
@@ -206,10 +207,11 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           // Canonical W may predate the derived query-plane format. Backfill the
           // disposable generation from the already-valid stored graph without
           // rebuilding/advancing source truth or touching Git checkout state.
-          if (!loaded.record.queryArtifacts && loaded.diagnostics.durable) {
+          if ((!loaded.record.queryArtifacts || loaded.record.queryArtifacts.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION)
+            && loaded.diagnostics.durable) {
             const queryArtifactPublication = await publishCanonicalQueryArtifacts(
               loaded.record.working,
-              null,
+              loaded.record.queryArtifacts ?? null,
               { repository: revision.repository },
             );
             let saved = null;
@@ -230,7 +232,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
                   loaded.record.working,
                   revision.repository,
                   queryArtifactPublication.ref,
-                  null,
+                  loaded.record.queryArtifacts ?? null,
                 );
               } else {
                 await releaseCanonicalQueryArtifactSlot(project, queryArtifactPublication.ref).catch(() => false);
@@ -920,7 +922,8 @@ export async function scanGraph(project: string, options: { ref?: string | undef
   const canonicalEligible = !previewRuntime() && (options.ref === undefined || options.ref === config.defaultRef);
   const key = cacheKey(project, revision.sha, canonicalEligible ? 'canonical' : 'replay');
   const cached = repositoryCache.get(key);
-  if (cached?.value && !cached.value.queryArtifacts.ref) {
+  if (cached?.value && (!cached.value.queryArtifacts.ref
+    || cached.value.queryArtifacts.ref.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION)) {
     repositoryCache.delete(key);
   }
   const repository = await buildCachedRepositoryGraph(project, options.ref);
@@ -1044,7 +1047,9 @@ export async function graphContext(project: string, options: { ref?: string; gra
         return { graph: repository.graph, revision: repository.revision };
       }
       try {
-        const current = await buildCachedRepositoryGraph(project);
+        // An explicit graph-id lookup is a read. Loading a current saved graph
+        // must not trigger artifact migration or publication as a side effect.
+        const current = await loadCachedRepositoryGraphForRead(project);
         if (current.revision.sha === sha && current.graph.graphId === options.graphId) {
           return { graph: current.graph, revision: current.revision };
         }
