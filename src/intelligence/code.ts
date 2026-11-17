@@ -1,5 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/git.js';
 import { runChecked } from '../util/process.js';
@@ -171,13 +173,19 @@ export async function getCodeSnippet(input: {
   }
   const node = exactId ?? candidates[0]!;
   const locator = locatorFileAndLine(node.locator);
-  return await withResolvedProjectCheckout(context.revision, async checkout => {
+  const readSnippet = async (checkout: { root: string; sha: string | null }) => {
     const absolute = path.resolve(checkout.root, locator.file);
     const root = path.resolve(checkout.root);
     if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) throw new Error('Graph node locator escapes repository root');
     const stat = await fs.lstat(absolute);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Graph node source is not a regular file: ${locator.file}`);
-    const lines: string[] = String(await fs.readFile(absolute, 'utf8')).split(/\r?\n/u);
+    const source = await fs.readFile(absolute, 'utf8');
+    if (graph.sourceState) {
+      const expected = graph.coverage?.files.find(file => file.path === locator.file)?.contentSha256;
+      if (!expected || createHash('sha256').update(source).digest('hex') !== expected)
+        throw new Error(`Working source no longer matches the graph: ${locator.file}. Rebuild the working graph to inspect current source.`);
+    }
+    const lines: string[] = source.split(/\r?\n/u);
     const radius = input.context ?? 8;
     if (!Number.isSafeInteger(radius) || radius < 0) throw new Error('Source context must be a non-negative integer');
     const center = locator.line ? locator.line - 1 : 0;
@@ -187,6 +195,7 @@ export async function getCodeSnippet(input: {
       project: input.project,
       graphId: graph.graphId,
       revision: checkout.sha,
+      ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
       ambiguous: false,
       node,
       file: locator.file,
@@ -194,5 +203,12 @@ export async function getCodeSnippet(input: {
       endLine: end,
       lines: lines.slice(start, end).map((text, index) => ({ line: start + index + 1, text })),
     };
-  });
+  };
+  if (graph.sourceState) {
+    let root: string;
+    try { root = fileURLToPath(context.revision.repository); }
+    catch { throw new Error('Working graph source requires a local repository binding'); }
+    return await readSnippet({ root, sha: null });
+  }
+  return await withResolvedProjectCheckout(context.revision, readSnippet);
 }
