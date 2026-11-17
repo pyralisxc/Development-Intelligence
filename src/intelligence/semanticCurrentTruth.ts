@@ -9,7 +9,7 @@ import { assessAutonomousSemanticProof, AUTONOMOUS_SEMANTIC_PROOF_RULE } from '.
  * semantic lineage, or any derived semantic persistence.
  */
 export function deriveCurrentSemanticTruth(graph: IntelligenceGraph) {
-  const census = bootstrapSemanticCandidates(graph, { limit: 1000 });
+  const census = bootstrapSemanticCandidates(graph, { limit: Number.MAX_SAFE_INTEGER });
   const audit = auditSemanticCandidates(graph, census, { limit: census.candidates.length || 1 });
   const audited = new Map(audit.items.map(item => [item.candidateId, item]));
   const provenTechnicalScopes = [] as Array<{

@@ -173,7 +173,7 @@ export async function semanticAudit(input: {
   candidateLimit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const candidateLimit = Math.min(Math.max(input.candidateLimit ?? 200, 1), 1000);
+  const candidateLimit = Math.max(input.candidateLimit ?? 200, 1);
   const bootstrap = bootstrapSemanticCandidates(graph, { limit: candidateLimit });
   const audit = auditSemanticCandidates(graph, bootstrap, { limit: input.limit ?? 30 });
   const audited = audit.counts.audited;
@@ -471,7 +471,7 @@ function scopeNodeIds(graph: IntelligenceGraph, requested?: string): {
   }).map(node => node.id);
   if (pathIds.length) return { kind: 'path', value: pathScope, ids: new Set(pathIds), entity: null, candidates: [] };
 
-  const candidates = findGraphNodeCandidates(graph, scope, 20);
+  const candidates = findGraphNodeCandidates(graph, scope, Number.MAX_SAFE_INTEGER);
   const exact = candidates.find(node => node.id === scope);
   if (exact || candidates.length === 1) {
     const entity = exact ?? candidates[0]!;
@@ -690,9 +690,9 @@ async function repositorySemanticUnderstanding(
       || a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
   const coreDerived = derivedAll.filter(x => x.coreness === 'core-candidate' && x.factuality === 'supported');
   const supportDerived = derivedAll.filter(x => x.coreness !== 'core-candidate' || x.factuality !== 'supported');
-  const candidateLimit = depth === 'exhaustive' ? 1000
-    : depth === 'expanded' ? Math.min(Math.max(limit * 6,64),250)
-    : Math.min(Math.max(limit * 2,24),100);
+  const candidateLimit = depth === 'exhaustive' ? derivedAll.length
+    : depth === 'expanded' ? Math.max(limit * 6,64)
+    : Math.max(limit * 2,24);
   const bounded = derivedAll.slice(0,candidateLimit);
   const censusExhausted = truth.counts.candidatePopulationExhausted;
   const projectedExhausted = censusExhausted && bounded.length === derivedAll.length;
@@ -717,7 +717,7 @@ async function repositorySemanticUnderstanding(
       + coverageNote + ' These facts do not establish desired product intent or runtime execution.'
     : 'No currently source-proven technical scopes or semantic declarations were found for '
       + project + '. ' + coverageNote + ' DI must not reuse older acceptance as current truth.';
-  const supportingLimit=Math.min(Math.max(limit*2,24),64);
+  const supportingLimit=Math.max(limit*2,24);
   const derivedLayer = depth === 'nucleus' ? [] : depth === 'exhaustive'
     ? bounded
     : [...coreDerived.filter(x=>bounded.includes(x)),...supportDerived.filter(x=>bounded.includes(x)).slice(0,supportingLimit)];
@@ -768,11 +768,11 @@ async function repositorySemanticUnderstanding(
     completeness: {
       requestedDepth: depth,
       semanticCandidateUniverseExhausted: censusExhausted && depth === 'exhaustive',
-      candidateOperationalLimit: 1000,
+      candidateOperationalLimit: null,
       eligibleSourceCoverageComplete: truth.exclusions.completeForEligibleSources,
       unsupportedFiles: truth.exclusions.unsupportedFiles,
       claim: depth === 'exhaustive'
-        ? (censusExhausted ? 'exhaustive-derived-candidate-census' : 'exhaustive-request-bounded-by-operational-limit')
+        ? (censusExhausted ? 'exhaustive-derived-candidate-census' : 'exhaustive-request-incomplete')
         : 'non-exhaustive-semantic-answer',
       repositoryOmissionMeansAbsent: false,
       candidateOmissionWithinExhaustedCensusMeansAbsent: depth === 'exhaustive' && censusExhausted,
@@ -835,7 +835,7 @@ export async function scopeOrientation(input: {
   const graph = reusable?.graph ?? await currentGraph(input.project, input.ref, input.graphId);
   phaseMs.graphAccess = Date.now() - orientationStarted;
   const rankBy = input.rankBy ?? 'cross-file';
-  const limit = Math.min(Math.max(input.limit ?? 12, 1), 50);
+  const limit = Math.max(input.limit ?? 12, 1);
   const selected = scopeNodeIds(graph, input.scope);
   phaseMs.scopeSelection = Date.now() - orientationStarted - phaseMs.graphAccess;
 
@@ -846,7 +846,7 @@ export async function scopeOrientation(input: {
       revision: graph.repositoryRevision,
       ambiguous: true,
       scope: { kind: selected.kind, value: selected.value },
-      candidates: selected.candidates.slice(0, 10).map(node => ({ id: node.id, name: displayName(node), kind: node.kind, layer: node.layer ?? 'structural', locator: node.locator })),
+      candidates: selected.candidates.map(node => ({ id: node.id, name: displayName(node), kind: node.kind, layer: node.layer ?? 'structural', locator: node.locator })),
       policy: { subjectiveImportanceScore: false, persisted: false },
     };
   }
@@ -870,7 +870,7 @@ export async function scopeOrientation(input: {
   if (selected.kind === 'repository' && input.semanticSummaryOnly) {
     const semanticStarted = Date.now();
     const understanding = await repositorySemanticUnderstanding(
-      input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable);
+      input.project, graph, limit, input.semanticDepth ?? 'nucleus', reusable);
     phaseMs.semanticUnderstanding = Date.now() - semanticStarted;
     return {
       project: input.project,
@@ -999,8 +999,7 @@ export async function scopeOrientation(input: {
   }));
 
   const boundary = graph.edges
-    .filter(edge => edge.status === 'resolved' && edge.from && edge.to && scopedSet.has(edge.from) !== scopedSet.has(edge.to))
-    .slice(0, 200);
+    .filter(edge => edge.status === 'resolved' && edge.from && edge.to && scopedSet.has(edge.from) !== scopedSet.has(edge.to));
   const boundarySummaries: OrientationBoundarySummary[] = boundary.map(edge => {
     const outbound = scopedSet.has(edge.from!);
     const externalId = outbound ? edge.to! : edge.from!;
@@ -1034,7 +1033,7 @@ export async function scopeOrientation(input: {
     return [{
       role,
       count: members.length,
-      entities: sorted.slice(0, Math.min(limit, 8)).map(({ node, metrics }) => ({
+      entities: sorted.slice(0, limit).map(({ node, metrics }) => ({
         id: node.id,
         name: displayName(node),
         kind: node.kind,
@@ -1042,12 +1041,12 @@ export async function scopeOrientation(input: {
         locator: node.locator,
         metrics,
       })),
-      evidenceNodeIds: members.map(node => node.id).sort().slice(0, 100),
+      evidenceNodeIds: members.map(node => node.id).sort(),
     }];
   });
   const dependencies = {
-    outbound: orientationDependencies(boundarySummaries, 'outbound', Math.min(limit, 12)),
-    inbound: orientationDependencies(boundarySummaries, 'inbound', Math.min(limit, 12)),
+    outbound: orientationDependencies(boundarySummaries, 'outbound', limit),
+    inbound: orientationDependencies(boundarySummaries, 'inbound', limit),
   };
   const responsibilities = roleGroups
     .filter(group => group.role !== 'structural' || roleGroups.length === 1)
@@ -1086,14 +1085,14 @@ export async function scopeOrientation(input: {
   const uncertainty = ranked
     .filter(item => item.metrics.candidate + item.metrics.unresolved > 0)
     .sort((a,b) => (b.metrics.candidate + b.metrics.unresolved) - (a.metrics.candidate + a.metrics.unresolved))
-    .slice(0, Math.min(limit, 10))
+    .slice(0, limit)
     .map(({node,metrics}) => ({ id: node.id, name: displayName(node), kind: node.kind, locator: node.locator, candidate: metrics.candidate, unresolved: metrics.unresolved }));
 
   phaseMs.rankingAndRoles = Date.now() - orientationStarted
     - phaseMs.graphAccess - phaseMs.scopeSelection - phaseMs.adjacencyIndex;
   const semanticStarted = Date.now();
   const semanticUnderstanding = selected.kind === 'repository'
-    ? await repositorySemanticUnderstanding(input.project, graph, Math.min(limit, 12), input.semanticDepth ?? 'nucleus', reusable)
+    ? await repositorySemanticUnderstanding(input.project, graph, limit, input.semanticDepth ?? 'nucleus', reusable)
     : null;
   phaseMs.semanticUnderstanding = Date.now() - semanticStarted;
 
@@ -1127,8 +1126,8 @@ export async function scopeOrientation(input: {
     responsibilities,
     roleGroups,
     dependencies,
-    nodeKinds: Object.entries(nodeKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
-    relationshipKinds: Object.entries(relationshipKinds).sort((a,b) => b[1]-a[1]).slice(0, 12).map(([kind,count]) => ({kind,count})),
+    nodeKinds: Object.entries(nodeKinds).sort((a,b) => b[1]-a[1]).map(([kind,count]) => ({kind,count})),
+    relationshipKinds: Object.entries(relationshipKinds).sort((a,b) => b[1]-a[1]).map(([kind,count]) => ({kind,count})),
     keyEntities,
     boundaries: boundarySummaries.slice(0, limit * 2),
     uncertainty,
@@ -1242,7 +1241,7 @@ export async function interfaceProjection(input: {
   limit?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+  const limit = Math.max(input.limit ?? 20, 1);
   const selected = scopeNodeIds(graph, input.scope);
 
   if (selected.kind === 'ambiguous') {
@@ -1252,7 +1251,7 @@ export async function interfaceProjection(input: {
       revision: graph.repositoryRevision,
       ambiguous: true,
       scope: { kind: selected.kind, value: selected.value },
-      candidates: selected.candidates.slice(0, 10).map(node => ({
+      candidates: selected.candidates.map(node => ({
         id: node.id,
         name: displayName(node),
         kind: node.kind,
@@ -1436,7 +1435,7 @@ export async function interfaceProjection(input: {
       || String(a.component ?? '').localeCompare(String(b.component ?? ''))
       || a.prop.localeCompare(b.prop)
       || a.id.localeCompare(b.id));
-  const mechanismSampleLimit = Math.min(limit, 20);
+  const mechanismSampleLimit = limit;
   const resolvedHandlerCount = mechanismItems.filter(item => item.resolvedHandler).length;
   const directConsequenceMechanismCount = mechanismItems.filter(item => item.directConsequences.length > 0).length;
   const directConsequenceCount = mechanismItems.reduce((sum, item) => sum + item.directConsequences.length, 0);
@@ -1531,7 +1530,7 @@ export async function interfaceProjection(input: {
     uncertainty: {
       candidateEdges: uncertaintyEdges.filter(edge => edge.status === 'candidate').length,
       unresolvedEdges: uncertaintyEdges.filter(edge => edge.status === 'unresolved').length,
-      examples: uncertaintyEdges.slice(0, Math.min(limit, 12)).map(edge => ({
+      examples: uncertaintyEdges.slice(0, limit).map(edge => ({
         edgeId: edge.id,
         kind: edge.kind,
         status: edge.status,
@@ -1540,7 +1539,7 @@ export async function interfaceProjection(input: {
       })),
       unknowns,
     },
-    nextInspections: combined.slice(0, Math.min(8, limit)).map((item: any) => ({
+    nextInspections: combined.slice(0, limit).map((item: any) => ({
       id: item.id,
       name: item.name,
       kind: item.kind,
