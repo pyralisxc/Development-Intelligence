@@ -42,6 +42,8 @@ export interface CanonicalGraphRecord {
   evidenceFingerprint: string | null;
   working: IntelligenceGraph;
   accepted: IntelligenceGraph | null;
+  /** Opaque legacy accepted-graph shards retained for recovery, not source truth. */
+  legacyAcceptedParts?: CanonicalGraphPart[];
   currentness: CanonicalGraphCurrentness;
   queryArtifacts?: CanonicalQueryArtifactGenerationRef | null;
 }
@@ -93,13 +95,14 @@ interface ShardedCanonicalRecord {
  * manifest last. No graph-wide JSON string or total-size ceiling is needed. */
 async function shardCanonicalRecord(record: CanonicalGraphRecord): Promise<string> {
   const generation = stableHash([record.revision, record.working.graphId, record.storedAt, Math.random()]);
-  const parts: CanonicalGraphPart[] = [];
+  const parts: CanonicalGraphPart[] = [...(record.legacyAcceptedParts ?? [])];
   const skeleton = { ...record,
     working: { ...record.working, nodes: [], edges: [], evidence: [] },
     accepted: record.accepted ? { ...record.accepted, nodes: [], edges: [], evidence: [] } : null,
   } as CanonicalGraphRecord;
   const targetBytes = 16 * 1024 * 1024;
   for (const graphName of ['working', 'accepted'] as const) {
+    if (graphName === 'accepted' && record.legacyAcceptedParts) continue;
     const graph = record[graphName];
     if (!graph) continue;
     for (const field of ['nodes', 'edges', 'evidence'] as const) {
@@ -137,7 +140,12 @@ async function unshardCanonicalRecord(value: unknown, project: string): Promise<
   if (!manifest.record || manifest.record.project !== project || !Array.isArray(manifest.parts)) {
     throw new Error('Canonical graph shard manifest is malformed');
   }
+  // Preserve legacy references without loading them into current source
+  // understanding. An unavailable historical shard must not block W.
+  const legacy = manifest.parts.filter(part => part?.graph === 'accepted');
+  if (legacy.length) manifest.record.legacyAcceptedParts = legacy;
   for (const part of manifest.parts) {
+    if (part?.graph === 'accepted') continue;
     if (!['working', 'accepted'].includes(part.graph) || !['nodes', 'edges', 'evidence'].includes(part.field)
       || typeof part.path !== 'string' || !/^graph-shards\/[0-9a-f]{24}\/(?:working|accepted)-(?:nodes|edges|evidence)-\d+\.json$/u.test(part.path)
       || !/^[0-9a-f]{64}$/u.test(part.sha256)) throw new Error('Canonical graph shard reference is malformed');
@@ -320,13 +328,8 @@ function validateRecord(record: unknown, expected: { project: string; repository
     throw new Error('Canonical graph manifest fingerprints do not match the working graph');
   }
   assertGraphIntegrity(working);
-  if (value.accepted) {
-    if (value.accepted.schemaVersion !== 2 || value.accepted.project !== expected.project) {
-      throw new Error('Canonical accepted graph identity is malformed');
-    }
-    if (value.accepted.repositoryRevision !== null) assertExactRevision(value.accepted.repositoryRevision);
-    assertGraphIntegrity(value.accepted);
-  }
+  // accepted is retained solely as legacy data; current graph validity is
+  // established by the selected source graph above.
   return value;
 }
 
@@ -610,8 +613,8 @@ async function loadFromFile(
   }
 
   // Mirror the Blob backend's current-record semantics so local/file
-  // persistence can carry accepted A forward while W advances to a new
-  // exact Git revision. Revision snapshots remain available beside it.
+  // persistence can carry historical records forward while source advances
+  // to a new exact Git revision. Revision snapshots remain available beside it.
   const currentParsed = await readRecord(current);
   if (!currentParsed) return { diagnostics };
   const classified = classifyCanonicalRecord(currentParsed, expected);
@@ -742,6 +745,7 @@ export function makeCanonicalGraphRecord(input: {
   revision: string;
   working: IntelligenceGraph;
   accepted: IntelligenceGraph | null;
+  legacyAcceptedParts?: CanonicalGraphPart[];
   currentness: CanonicalGraphCurrentness;
   queryArtifacts?: CanonicalQueryArtifactGenerationRef | null;
 }): CanonicalGraphRecord {
@@ -758,6 +762,7 @@ export function makeCanonicalGraphRecord(input: {
     evidenceFingerprint: input.working.evidenceFingerprint,
     working: input.working,
     accepted: input.accepted,
+    ...(input.legacyAcceptedParts ? { legacyAcceptedParts: input.legacyAcceptedParts } : {}),
     currentness: input.currentness,
     ...(input.queryArtifacts !== undefined ? { queryArtifacts: input.queryArtifacts } : {}),
   };

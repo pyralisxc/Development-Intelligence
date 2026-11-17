@@ -133,7 +133,7 @@ Current understanding is reconstructed from one selected source graph: an exact 
 
 Canonical persistence may retain a reconstructable source graph and query artifacts for access. Existing historical review records remain stored but do not determine current source understanding. Source observations, provider observations and caller-owned expectations remain distinguishable. The old checkpoint format remains available only for explicit compatibility and migration work.
 
-**Remaining migration:** older canonical records may bundle a historical accepted graph with the source graph. The current loader still reads and validates both portions together, so an unavailable or invalid legacy portion can prevent loading the source graph. Decoupling that read while preserving the existing historical data requires a storage migration; the retirement candidate does not delete or rewrite that data to hide the dependency.
+Older canonical records may bundle a historical accepted graph with the source graph. The current loader retains the historical shard references without reading them into source understanding; an unavailable historical shard does not prevent the source graph from loading. On a later graph publication those references remain attached, so the historical data can be recovered when its storage is available. Current source shards still require identity and integrity validation.
 
 ## Exact revision context
 

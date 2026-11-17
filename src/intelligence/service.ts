@@ -220,6 +220,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
                 revision: revision.sha,
                 working: loaded.record.working,
                 accepted: loaded.record.accepted,
+                ...(loaded.record.legacyAcceptedParts ? { legacyAcceptedParts: loaded.record.legacyAcceptedParts } : {}),
                 currentness: loaded.record.currentness,
                 queryArtifacts: queryArtifactPublication.ref,
               });
@@ -337,6 +338,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           revision: revision.sha,
           working: observed.value.graph,
           accepted: observed.value.accepted,
+          ...(loaded.staleRecord?.legacyAcceptedParts ? { legacyAcceptedParts: loaded.staleRecord.legacyAcceptedParts } : {}),
           currentness: observed.value.currentness,
           queryArtifacts: queryArtifactPublication.state === 'stored' ? queryArtifactPublication.ref : null,
         });
