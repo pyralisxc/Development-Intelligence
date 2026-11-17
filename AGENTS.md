@@ -16,6 +16,8 @@ Build the complete, well-developed outcome the owner requests. Read the Confluen
 
 Use mature tools for their intended capabilities and integrate their useful outputs directly when they fit. Do not recreate their internals or add redundant wrappers and proof machinery by default. DI should establish source-derived conditions, effects, and execution facts as facts when the code and supported analysis establish them; a separate runtime witness is not a prerequisite for source-derived facts.
 
+DI builds reusable graph knowledge before questions arrive. Interpret language into general graph subjects, relationship directions, constraints and negation, and compose answers from that shared knowledge and its evidence. Repository orientation is a scope of the same model. Do not add question-specific routes, phrase-matching handlers, repository-specific cases or answer templates; improve shared graph facts, interpretation and composition instead. CLI, Workbench, visualization and MCP are first-class views over that same understanding.
+
 Do not add tests by default. The owner prefers real use and examination of real outputs as primary acceptance. Existing tests, fixtures, and workflows are implementation artifacts, not product authority; evaluate them for retirement or revision when they preserve obsolete behavior or obstruct the intended outcome. Keep CI and the documentation aligned with the actual build and release workflows.
 
 ## Documentation ownership

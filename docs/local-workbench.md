@@ -18,6 +18,7 @@ di-local build-revision --ref main --target main
 di-local build-revision --ref preview --target preview
 di-local history
 di-local query --question "What calls the graph builder?"
+di-local query --question "What calls the graph builder?" --text
 di-local query --target preview --question "What calls the graph builder?"
 di-local query --question "What calls the graph builder?" --details
 di-local compare --base preview --target working
@@ -31,6 +32,8 @@ Terminal questions use the same question route as the Workbench and MCP. The def
 Committed references resolve using the local Git repository. `main` or `preview` selects the local branch when it exists; after fetching, use `--ref origin/preview --target preview` or `--ref origin/main --target main` to select the updated remote-tracking branch explicitly. Revision builds use a disposable checkout and do not change your files. `compare` without `--base` compares main, preview and working pairwise. Use `--offset` and `--limit` to page each category. The shared comparison reports source changes, moved occurrences, unmatched producer output, analysis differences for unchanged source, and provenance separately. An ambiguous occurrence retains its source identity; graph changes do not by themselves imply a runtime behavioral change. Parity contracts also support evaluating one selected graph against supplied expectations.
 
 The `open` command starts the local Workbench and opens the browser. `serve` runs the loopback service in the foreground. `mcp` serves the same local graph through standard input/output to a compatible local agent. Connecting ChatGPT to a local process requires a supported connection or tunnel configured separately.
+
+Explore opens the graph first. Search for a subject, choose among matching identities, and select a node to inspect its source and evidence. Pan, zoom and reset the view; the status reports when the displayed neighborhood is bounded. List, table, summary and raw records remain available for the same investigation. `query --text` offers a readable terminal answer; the default JSON remains suitable for scripts and `--details` returns the full evidence response.
 
 `di-local backup --backup-dir PATH` copies retained source graphs into a new backup directory. `di-local restore --backup-dir PATH --data-dir NEW_PATH` restores them into an empty graph location. These commands do not back up repository files or accepted semantic records. Use `history` to find retained graph IDs, `activate --graph-id ID` to select a retained generation, and `unpin --target NAME` to release a comparison target for cleanup on the next build.
 

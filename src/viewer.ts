@@ -64,22 +64,24 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
 </header>
 <main class="shell">
   <aside class="nav" aria-label="Development Intelligence workspace">
-    <div class="nav-label">Workspace</div>
-    <button class="nav-button active" data-section="overview"><span class="nav-icon">O</span><span class="nav-copy"><strong>Overview</strong><span>Quick project notes and current state</span></span></button>
-    <button class="nav-button" data-section="explore"><span class="nav-icon">E</span><span class="nav-copy"><strong>Explore</strong><span>Search, list, table and graph</span></span></button>
+    <div class="nav-label">Investigate</div>
+    <button class="nav-button" data-section="explore"><span class="nav-icon">E</span><span class="nav-copy"><strong>Explore graph</strong><span>Navigate code and relationships</span></span></button>
+    <button class="nav-button" data-section="query"><span class="nav-icon">Q</span><span class="nav-copy"><strong>Ask</strong><span>Questions and evidence</span></span></button>
+    <button class="nav-button" data-section="changes"><span class="nav-icon">Δ</span><span class="nav-copy"><strong>Changes</strong><span>Compare project states</span></span></button>
+    <div class="nav-label">Project</div>
+    <button class="nav-button" data-section="overview"><span class="nav-icon">O</span><span class="nav-copy"><strong>Overview</strong><span>Project notes and current state</span></span></button>
+    <button class="nav-button" data-section="sources"><span class="nav-icon">S</span><span class="nav-copy"><strong>Sources</strong><span>Git, runtime, databases, logs</span></span></button>
+    ${process.env.DEVINT_LOCAL_SETTINGS ? '<button class="nav-button" data-section="local"><span class="nav-icon">L</span><span class="nav-copy"><strong>Local setup</strong><span>Builds, storage and recovery</span></span></button>' : ''}
+    <div class="nav-label">Advanced</div>
     <button class="nav-button" data-section="semantics"><span class="nav-icon">M</span><span class="nav-copy"><strong>Semantics</strong><span>Review and accept project meaning</span></span></button>
     <button class="nav-button" data-section="parity"><span class="nav-icon">P</span><span class="nav-copy"><strong>Parity</strong><span>Evaluate expected outcomes</span></span></button>
-    <button class="nav-button" data-section="query"><span class="nav-icon">Q</span><span class="nav-copy"><strong>Query</strong><span>Ask DI or a connected source</span></span></button>
-    <button class="nav-button" data-section="sources"><span class="nav-icon">S</span><span class="nav-copy"><strong>Sources</strong><span>Git, runtime, databases, logs</span></span></button>
-    <button class="nav-button" data-section="changes"><span class="nav-icon">Δ</span><span class="nav-copy"><strong>Changes</strong><span>Accepted vs current reality</span></span></button>
-    ${process.env.DEVINT_LOCAL_SETTINGS ? '<button class="nav-button" data-section="local"><span class="nav-icon">L</span><span class="nav-copy"><strong>Local setup</strong><span>Builds, storage and recovery</span></span></button>' : ''}
     <div class="nav-foot">The graph is one representation of the same intelligence agents query. Parity Contracts compare caller-owned expectations with observed reality without changing accepted truth.</div>
   </aside>
   <section class="workspace"><div id="section-head" class="section-head"></div><div id="content" class="content"></div></section>
   <aside class="inspector"><div class="inspector-head"><h2>Inspector</h2><span id="inspector-context" class="muted"></span></div><div id="inspector-tabs" class="inspector-tabs"></div><div id="inspector-body" class="inspector-body"><div class="empty"><div><strong>Nothing selected</strong>Choose an entity from Overview or Explore to get quick notes, connections, code, evidence and change context.</div></div></div></aside>
 </main>
 </div>
-<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedGraphId ? '' : requestedRef ?? '')},graphId:${JSON.stringify(requestedGraphId ?? '')},local:${JSON.stringify(Boolean(process.env.DEVINT_LOCAL_GRAPH_DIR))},section:'overview'};</script>
+<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedGraphId ? '' : requestedRef ?? '')},graphId:${JSON.stringify(requestedGraphId ?? '')},local:${JSON.stringify(Boolean(process.env.DEVINT_LOCAL_GRAPH_DIR))},section:${JSON.stringify(process.env.DEVINT_LOCAL_GRAPH_DIR ? 'explore' : 'overview')}};</script>
 <script src="/viewer.js?source=workbench" defer></script>
 </body></html>`;
 }

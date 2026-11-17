@@ -87,9 +87,21 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   let direction = input.direction ?? 'both';
   let eligible = graph.nodes.filter(node => kinds.size ? kinds.has(node.kind) : SUBJECT_KINDS.has(node.kind));
   let subjects: GraphNode[] = [];
-  let selection: 'scope' | 'exact-name' | 'terms' | 'none' = 'none';
+  let selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' = 'none';
+  // Repository is an ordinary graph scope, not a collection of question
+  // templates. More specific nouns, negation and explicit filters continue
+  // through the same subject/relationship selection as every other scope.
+  const repositoryTerms = new Set(['project', 'repository', 'repo', 'codebase']);
+  const repositoryScope = !input.scope && !language.negated && language.terms.length > 0
+    && language.terms.every(term => repositoryTerms.has(term))
+    && !input.nodeKinds?.length && !input.relationshipKinds?.length && !input.statuses?.length
+    && !input.direction && !input.comparisonIds?.length && !input.comparisonScope
+    && !input.comparisonKinds?.length && !input.conditionContains && input.conditionTruth === undefined
+    && !input.effectKinds?.length && (input.depth === undefined || input.depth === 1);
   const exactScope = input.scope ? byId.get(input.scope) : undefined;
-  if (exactScope) {
+  if (repositoryScope) {
+    selection = 'repository';
+  } else if (exactScope) {
     subjects = !kinds.size || kinds.has(exactScope.kind) ? [exactScope] : [];
     selection = 'scope';
   } else {
