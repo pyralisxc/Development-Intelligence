@@ -1665,7 +1665,10 @@ export async function queryWorkbenchRequest(input: {
         : [];
       const related = result.navigation.relationships.filter((item: any) => item.edge.status === 'resolved');
       const relationshipAnswer = !result.interpretation.negated && result.navigation.relationshipKinds.length && related.length
-        ? related.map((item: any) => `${item.from?.name ?? item.edge.from} ${item.edge.kind} ${item.to?.name ?? item.edge.to}`).join('; ')
+        ? related.map((item: any) => item.edge.kind === 'calls-site'
+          ? `${item.from?.name ?? item.edge.from} has source call ${item.to?.name ?? item.edge.to} at ${item.to?.locator ?? item.edge.evidence?.[0] ?? 'source'}`
+          : `${item.from?.name ?? item.edge.from} ${item.edge.kind} ${item.to?.name ?? item.edge.to}`).join('; ')
+          + (related.some((item: any) => item.edge.kind === 'calls-site') ? '. Source call occurrences do not by themselves bind target declarations.' : '')
           + ((result.page.offset + result.navigation.relationships.length < result.navigation.total)
             ? `; showing ${result.page.offset + 1}–${result.page.offset + result.navigation.relationships.length} of ${result.navigation.total} matching relationships (continue at offset ${result.page.offset + result.page.limit})` : '')
         : '';

@@ -20,7 +20,7 @@ import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMP
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.30.2-cross-platform-source-identities';
+export const ANALYZER_VERSION = '2.30.3-source-call-occurrences';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -1410,6 +1410,13 @@ async function crossFileTypeScriptGraph(
   };
 
   const resolvedCallsByOwnerAndEvidence = new Map<string, GraphNode[]>();
+  const callSites = new Map<string, GraphNode>();
+  for (const node of graphNodeById.values()) {
+    if (node.kind !== 'call-reference' || !node.sourceId.startsWith('repo:') || !node.value || typeof node.value !== 'object') continue;
+    const value = node.value as { language?: string; sourceOffset?: number; functionId?: string };
+    if (value.language === 'typescript' && typeof value.sourceOffset === 'number' && value.functionId)
+      callSites.set(`${node.sourceId}\0${value.functionId}\0${value.sourceOffset}`, node);
+  }
   for (const edge of graphEdges) {
     if (edge.kind !== 'calls' || edge.status !== 'resolved' || !edge.from || !edge.to) continue;
     const target = graphNodeById.get(edge.to);
@@ -1892,6 +1899,12 @@ async function crossFileTypeScriptGraph(
           }
         }
         if (target) {
+          const site = caller ? callSites.get(`repo:${relative}\0${caller.id}\0${node.getStart(sourceFile)}`) : undefined;
+          if (site) addedEdges.push(resolution({
+            from: site.id, to: target.id, kind: 'resolves_to', strategy: 'call-target-binding',
+            confidence: 1, status: 'resolved', evidence: [site.locator],
+            layer: 'structural', checkpoint: false,
+          }));
           if (importedTarget && caller && caller.id !== target.id) addedEdges.push(resolution({
             from: caller.id,
             to: target.id,

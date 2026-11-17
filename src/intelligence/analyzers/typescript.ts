@@ -702,6 +702,31 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
 
     if (ts.isCallExpression(node)) {
       const owner = functionOwner();
+      if (owner) {
+        const offset = node.getStart(sourceFile);
+        const callee = node.expression.getText(sourceFile);
+        const at = locator(node, `:call-offset-${offset}`);
+        const proof = evidenceRecord({
+          sourceId: context.source.id, kind: 'source-call-syntax', locator: at,
+          field: `offset:${offset}`, value: { functionId: owner.id, callee, sourceSha256, sourceOnly: true },
+          message: 'A call expression occurs in this callable; the target declaration is a separate binding question.',
+        });
+        const site = observation({
+          identity: [context.source.id, owner.id, 'call-reference', offset],
+          sourceId: context.source.id, kind: 'call-reference', locator: at,
+          name: callee, field: 'call', raw: node.getText(sourceFile),
+          value: { language: 'typescript', referenceKind: 'call', callee, sourceOffset: offset,
+            functionId: owner.id, sourceSha256, sourceOnly: true },
+          evidenceIds: [proof.id], layer: 'structural', checkpoint: false,
+        });
+        evidence.push(proof);
+        observations.push(site);
+        resolutions.push(resolution({
+          from: owner.id, to: site.id, kind: 'calls-site', strategy: 'typescript-call-syntax',
+          status: 'resolved', confidence: 1, evidence: [at], evidenceIds: [proof.id],
+          layer: 'structural', checkpoint: false,
+        }));
+      }
       const expressionText = node.expression.getText(sourceFile);
       // Recovered parse trees cannot establish an exact source fact.
       const parsed = sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
