@@ -32,6 +32,8 @@ Committed references resolve using the local Git repository. `main` or `preview`
 
 The `open` command starts the local Workbench and opens the browser. `serve` runs the loopback service in the foreground. `mcp` serves the same local graph through standard input/output to a compatible local agent. Connecting ChatGPT to a local process requires a supported connection or tunnel configured separately.
 
+The Workbench Semantics view derives its understanding from the selected graph. It does not provide separate editing, approval or verification of semantic meanings. Legacy review, promotion-gate and portfolio-bootstrap interfaces are retired; existing stored review data is not deleted. Source-graph backup does not include that old data.
+
 `di-local backup --backup-dir PATH` copies retained source graphs into a new backup directory. `di-local restore --backup-dir PATH --data-dir NEW_PATH` restores them into an empty graph location. These commands do not back up repository files or accepted semantic records. Use `history` to find retained graph IDs, `activate --graph-id ID` to select a retained generation, and `unpin --target NAME` to release a comparison target for cleanup on the next build.
 
 The Workbench's Local setup section can change the checkout, data, scratch, backup, retention, memory cache and port settings and start builds, backups and restores. Changing the port takes effect on the next launch. Registering another project currently uses the terminal. The local MCP `compare_graphs` operation exposes the same pairwise comparison to agents.

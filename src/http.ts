@@ -2,21 +2,19 @@ import http from 'node:http';
 import { computeOnly } from './config/runtimeRole.js';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { authMode, authorize, authorizeOwnerWrite, authorizeSemanticGateWrite, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
+import { authMode, authorize, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
 import { callTool, listTools } from './mcp.js';
 import { runtimeIdentity } from './runtimeIdentity.js';
 import { currentGraph } from './intelligence/service.js';
 import { localSourceGraphHistory } from './intelligence/localGraphStore.js';
 import { localLifecycleStatus, startLocalOperation, updateLocalSettings } from './intelligence/localOperations.js';
 import { compareRevisionSet, diffAcceptedToWorking, diffRevisions, pageGraphDiff, viewerProjection } from './intelligence/query.js';
-import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbenchRequest, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
+import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbenchRequest, scopeOrientation, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
 import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser, type WorkbenchProjectLink } from './viewer.js';
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
-import { bootstrapSemanticPromotionBaseline, parseSemanticAiProposal, parseSemanticLineageCommand, parseSemanticReviewCommand, reviewSemanticAiProposal, reviewSemanticLineage, reviewSemanticMeaning, semanticReviewSurface, setSemanticPromotionEnrollment, verifySemanticPromotionChange } from './intelligence/semanticWorkflow.js';
-import { bootstrapSemanticAuthorityPortfolio } from './intelligence/semanticPortfolioBootstrap.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { withVercelRequestContext } from './vercelRequestContext.js';
 
@@ -182,7 +180,6 @@ export function createDevelopmentIntelligenceServer() {
     if (computeOnly() && (
       requestUrl.pathname === '/internal/reconcile-canonical'
       || requestUrl.pathname === '/workbench/reconcile-canonical'
-      || (req.method === 'POST' && requestUrl.pathname.startsWith('/workbench/semantics/'))
     )) {
       json(res, 403, { error: 'This compute-only runtime cannot publish canonical or accepted authority', code: 'COMPUTE_ONLY_AUTHORITY_DENIED' });
       return;
@@ -382,202 +379,12 @@ export function createDevelopmentIntelligenceServer() {
             ...(paged ? { page: paged.page } : {}),
           };
         } else if (action === 'semantics') {
-          result = await semanticReviewSurface({ project, ...context, limit: numberParam(requestUrl, 'limit', 25) });
+          result = await scopeOrientation({ project, ...context, semanticDepth: 'expanded', limit: numberParam(requestUrl, 'limit', 25) });
         } else if (action === 'projects') result = await workbenchProjects();
         else throw Object.assign(new Error(`Unsupported workbench action: ${action}`), { status: 400 });
         json(res, 200, result);
       } catch (error) {
         json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (requestUrl.pathname === '/workbench/semantics/portfolio-bootstrap' && req.method === 'POST') {
-      if (!authorizeOwnerWrite(req, res)) return;
-      try {
-        const body = await readJson(req);
-        if (typeof body.rationale !== 'string' || !body.rationale.trim()) throw Object.assign(new Error('rationale must be non-empty'), { status: 400 });
-        const result = await bootstrapSemanticAuthorityPortfolio({
-          actor: { kind: 'human', id: 'human:owner' },
-          at: new Date().toISOString(),
-          rationale: body.rationale,
-          limit: 100,
-        });
-        json(res, 200, result);
-      } catch (error) {
-        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (requestUrl.pathname === '/workbench/semantics/bootstrap' && req.method === 'POST') {
-      if (!authorizeOwnerWrite(req, res)) return;
-      try {
-        const body = await readJson(req);
-        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
-        if (!Array.isArray(body.candidateIds)) throw Object.assign(new Error('candidateIds must be an array'), { status: 400 });
-        const candidateIds = [...new Set((body.candidateIds as unknown[])
-          .filter((value): value is string => typeof value === 'string')
-          .map(value => value.trim())
-          .filter(Boolean))];
-        if (candidateIds.length > 1000) throw Object.assign(new Error('candidateIds supports at most 1000 semantic candidates'), { status: 400 });
-        if (typeof body.rationale !== 'string' || !body.rationale.trim()) throw Object.assign(new Error('rationale must be non-empty'), { status: 400 });
-        if (body.expectedDigest !== undefined && body.expectedDigest !== null && typeof body.expectedDigest !== 'string') {
-          throw Object.assign(new Error('expectedDigest must be a string or null'), { status: 400 });
-        }
-        const result = await bootstrapSemanticPromotionBaseline({
-          project: body.project,
-          candidateIds,
-          actor: { kind: 'human', id: 'human:owner' },
-          at: new Date().toISOString(),
-          rationale: body.rationale,
-          ...(body.expectedDigest === undefined ? {} : { expectedDigest: body.expectedDigest }),
-        });
-        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
-      } catch (error) {
-        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (requestUrl.pathname === '/workbench/semantics/change-verify' && req.method === 'POST') {
-      const identity = authorizeSemanticGateWrite(req, res);
-      if (!identity) return;
-      try {
-        const body = await readJson(req);
-        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
-        if (typeof body.auditRef !== 'string' || !/^SEM-[0-9A-F]{8}$/u.test(body.auditRef)) throw Object.assign(new Error('auditRef must be a stable SEM identifier'), { status: 400 });
-        if (!Array.isArray(body.evidenceIds)) throw Object.assign(new Error('evidenceIds must be an array'), { status: 400 });
-        const evidenceIds: string[] = [...new Set((body.evidenceIds as unknown[]).filter((value): value is string => typeof value === 'string').map(value => value.trim()).filter(Boolean))];
-        if (!evidenceIds.length) throw Object.assign(new Error('semantic change verification requires explicit evidence ids'), { status: 400 });
-        const ref = typeof body.ref === 'string' && body.ref ? body.ref : undefined;
-        const graphId = typeof body.graphId === 'string' && body.graphId ? body.graphId : undefined;
-        if (ref && graphId) throw Object.assign(new Error('Use either ref or graphId, not both'), { status: 400 });
-        const rationale = body.rationale === undefined || body.rationale === null
-          ? undefined
-          : typeof body.rationale === 'string' ? body.rationale : (() => { throw Object.assign(new Error('rationale must be a string or null'), { status: 400 }); })();
-        if (body.expectedEtag !== undefined && body.expectedEtag !== null && typeof body.expectedEtag !== 'string') {
-          throw Object.assign(new Error('expectedEtag must be a string or null'), { status: 400 });
-        }
-        const result = await verifySemanticPromotionChange({
-          project: body.project,
-          ...(ref ? { ref } : {}),
-          ...(graphId ? { graphId } : {}),
-          auditRef: body.auditRef,
-          evidenceIds,
-          actor: identity.kind === 'human'
-            ? { kind: 'human', id: identity.id }
-            : { kind: 'ai-model', id: identity.id },
-          at: new Date().toISOString(),
-          ...(rationale === undefined ? {} : { rationale }),
-          ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
-        });
-        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
-      } catch (error) {
-        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (requestUrl.pathname === '/workbench/semantics/enrollment' && req.method === 'POST') {
-      if (!authorizeOwnerWrite(req, res)) return;
-      try {
-        const body = await readJson(req);
-        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
-        if (!['not-enrolled', 'advisory', 'enforced'].includes(body.state)) throw Object.assign(new Error('state must be not-enrolled, advisory, or enforced'), { status: 400 });
-        const rationale = body.rationale === undefined || body.rationale === null
-          ? undefined
-          : typeof body.rationale === 'string' ? body.rationale : (() => { throw Object.assign(new Error('rationale must be a string or null'), { status: 400 }); })();
-        if (body.expectedEtag !== undefined && body.expectedEtag !== null && typeof body.expectedEtag !== 'string') {
-          throw Object.assign(new Error('expectedEtag must be a string or null'), { status: 400 });
-        }
-        const result = await setSemanticPromotionEnrollment({
-          project: body.project,
-          state: body.state,
-          actor: { kind: 'human', id: 'human:owner' },
-          at: new Date().toISOString(),
-          ...(rationale === undefined ? {} : { rationale }),
-          ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
-        });
-        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
-      } catch (error) {
-        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (requestUrl.pathname === '/workbench/semantics/review' && req.method === 'POST') {
-      if (!authorizeOwnerWrite(req, res)) return;
-      try {
-        const body = await readJson(req);
-        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
-        if (typeof body.candidateId !== 'string' || !body.candidateId) throw Object.assign(new Error('candidateId must be non-empty'), { status: 400 });
-        const ref = typeof body.ref === 'string' && body.ref ? body.ref : undefined;
-        const graphId = typeof body.graphId === 'string' && body.graphId ? body.graphId : undefined;
-        if (ref && graphId) throw Object.assign(new Error('Use either ref or graphId, not both'), { status: 400 });
-        if (body.expectedEtag !== undefined && body.expectedEtag !== null && typeof body.expectedEtag !== 'string') {
-          throw Object.assign(new Error('expectedEtag must be a string or null'), { status: 400 });
-        }
-        const result = await reviewSemanticMeaning({
-          project: body.project,
-          ...(ref ? { ref } : {}),
-          ...(graphId ? { graphId } : {}),
-          candidateId: body.candidateId,
-          command: parseSemanticReviewCommand(body.command),
-          actor: { kind: 'human', id: 'human:owner' },
-          at: new Date().toISOString(),
-          ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
-        });
-        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
-      } catch (error) {
-        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (requestUrl.pathname === '/workbench/semantics/ai-proposal' && req.method === 'POST') {
-      if (!authorizeOwnerWrite(req, res)) return;
-      try {
-        const body = await readJson(req);
-        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
-        if (typeof body.candidateId !== 'string' || !body.candidateId) throw Object.assign(new Error('candidateId must be non-empty'), { status: 400 });
-        const ref = typeof body.ref === 'string' && body.ref ? body.ref : undefined;
-        const graphId = typeof body.graphId === 'string' && body.graphId ? body.graphId : undefined;
-        if (ref && graphId) throw Object.assign(new Error('Use either ref or graphId, not both'), { status: 400 });
-        if (body.expectedEtag !== undefined && body.expectedEtag !== null && typeof body.expectedEtag !== 'string') {
-          throw Object.assign(new Error('expectedEtag must be a string or null'), { status: 400 });
-        }
-        const result = await reviewSemanticAiProposal({
-          project: body.project,
-          ...(ref ? { ref } : {}),
-          ...(graphId ? { graphId } : {}),
-          candidateId: body.candidateId,
-          draft: parseSemanticAiProposal(body.draft),
-          ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
-        });
-        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
-      } catch (error) {
-        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
-    if (requestUrl.pathname === '/workbench/semantics/lineage' && req.method === 'POST') {
-      if (!authorizeOwnerWrite(req, res)) return;
-      try {
-        const body = await readJson(req);
-        if (typeof body.project !== 'string' || !body.project) throw Object.assign(new Error('project must be non-empty'), { status: 400 });
-        const ref = typeof body.ref === 'string' && body.ref ? body.ref : undefined;
-        const graphId = typeof body.graphId === 'string' && body.graphId ? body.graphId : undefined;
-        if (ref && graphId) throw Object.assign(new Error('Use either ref or graphId, not both'), { status: 400 });
-        if (body.expectedEtag !== undefined && body.expectedEtag !== null && typeof body.expectedEtag !== 'string') {
-          throw Object.assign(new Error('expectedEtag must be a string or null'), { status: 400 });
-        }
-        const result = await reviewSemanticLineage({
-          project: body.project,
-          ...(ref ? { ref } : {}),
-          ...(graphId ? { graphId } : {}),
-          command: parseSemanticLineageCommand(body.command),
-          actor: { kind: 'human', id: 'human:owner' },
-          at: new Date().toISOString(),
-          ...(body.expectedEtag === undefined ? {} : { expectedEtag: body.expectedEtag }),
-        });
-        json(res, result.state === 'conflict' ? 409 : result.state === 'not-configured' ? 503 : 200, result);
-      } catch (error) {
-        json(res, (error as any)?.status ?? 400, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
