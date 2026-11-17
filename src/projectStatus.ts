@@ -1,9 +1,15 @@
 import { getProjectConfig } from './config/registry.js';
-import { graphStatus } from './intelligence/service.js';
+import { currentGraph, graphStatus } from './intelligence/service.js';
 import { upstreamStatus } from './source/git.js';
 
 export async function projectStatus(project: string, checkUpstream = true): Promise<Record<string, unknown>> {
   const config = await getProjectConfig(project);
+  if (process.env.DEVINT_LOCAL_GRAPH_DIR) {
+    const graph = await currentGraph(project);
+    return { project, repository: config.repository, ref: graph.sourceState ? 'working-tree' : graph.repositoryRevision,
+      upstreamSha: null, upstreamError: null, graph: { graphId: graph.graphId, revision: graph.repositoryRevision,
+        sourceState: graph.sourceState ?? null, sourceFingerprint: graph.sourceFingerprint, coverage: graph.coverage ?? null }, graphError: null };
+  }
   let graph: Record<string, unknown> | null = null;
   let graphError: string | null = null;
   let upstreamSha: string | null = null;

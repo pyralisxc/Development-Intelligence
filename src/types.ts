@@ -187,6 +187,7 @@ export type GraphCoverageStatus = 'complete' | 'partial' | 'unsupported' | 'skip
 export interface GraphCoverageFile {
   path: string;
   status: GraphCoverageStatus;
+  contentSha256?: string;
   reason?: string;
 }
 
@@ -228,6 +229,8 @@ export interface IntelligenceGraph {
   role: GraphRole;
   createdAt: string;
   repositoryRevision: string | null;
+  /** Working copies have their own content identity; HEAD is context, not their revision. */
+  sourceState?: { kind: 'working-tree'; headRevision: string };
   sourceFingerprint: string | null;
   topologyFingerprint: string | null;
   evidenceFingerprint: string | null;

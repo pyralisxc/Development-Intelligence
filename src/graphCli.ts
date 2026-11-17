@@ -1,6 +1,11 @@
 import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
+import { promises as fs } from 'node:fs';
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
-import { buildLocalGraph } from './intelligence/local.js';
+import { buildLocalGraph, buildLocalRevisionGraph, buildLocalWorkingGraph } from './intelligence/local.js';
+import { activateLocalSourceGraph, backupLocalSourceGraphs, localSourceGraphHistory, readLocalSourceGraph, removeLocalGraphTarget, saveLocalSourceGraph } from './intelligence/localGraphStore.js';
+import { compareRevisionSet, diffGraphs, pageGraphDiff } from './intelligence/query.js';
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
 import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
 import { projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
 import { pageNodeTestEvents, projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
@@ -51,7 +56,127 @@ async function main(): Promise<void> {
   if (scipProjectPrefix && command !== 'scip-evidence') throw new Error('--scip-project-prefix is supported only for scip-evidence');
   if (process.argv.includes('--scip-legacy-position-encoding') && !scipLegacyEncoding) throw new Error('--scip-legacy-position-encoding requires utf8, utf16 or utf32');
   if (scipLegacyEncoding && command !== 'scip-evidence') throw new Error('--scip-legacy-position-encoding is supported only for scip-evidence');
-  if (command === 'analyze') {
+  if (command === 'working-build') {
+    const graph = await buildLocalWorkingGraph(root, project);
+    const dataDir = arg('--data-dir');
+    const retained = dataDir ? await saveLocalSourceGraph(dataDir, graph, Number(arg('--retain') ?? '3')) : undefined;
+    const { files: _files, ...coverage } = graph.coverage ?? {};
+    console.log(JSON.stringify({ project: graph.project, graphId: graph.graphId, sourceState: graph.sourceState, sourceFingerprint: graph.sourceFingerprint, nodes: graph.nodes.length, edges: graph.edges.length, coverage, producerCoverage: graph.producerCoverage, ...(retained ? { retained } : {}) }, null, 2));
+  } else if (command === 'revision-build') {
+    const ref = arg('--ref');
+    const dataDir = arg('--data-dir');
+    const target = arg('--target') ?? ref;
+    if (!ref || !target || !dataDir) throw new Error('revision-build requires --ref and --data-dir');
+    if (target === 'working') throw new Error('The working target is reserved for current local files');
+    const graph = await buildLocalRevisionGraph(root, ref, project);
+    const retained = await saveLocalSourceGraph(dataDir, graph, Number(arg('--retain') ?? '3'), target);
+    console.log(JSON.stringify({ project: graph.project, target, revision: graph.repositoryRevision, graphId: graph.graphId, nodes: graph.nodes.length, edges: graph.edges.length, retained, producerCoverage: graph.producerCoverage }, null, 2));
+  } else if (command === 'working-backup' || command === 'working-restore') {
+    const dataDir = arg('--data-dir');
+    const backupDir = arg('--backup-dir');
+    if (!dataDir || !backupDir) throw new Error(`${command} requires --data-dir and --backup-dir`);
+    if (command === 'working-backup') {
+      await backupLocalSourceGraphs(dataDir, backupDir);
+      console.log(JSON.stringify({ operation: command, sourceGraphs: path.resolve(backupDir, 'source-graphs'), includesWorkingSourceFiles: false }, null, 2));
+      return;
+    }
+    const from = path.resolve(backupDir, 'source-graphs');
+    const to = path.resolve(dataDir, 'source-graphs');
+    if (from === to || to.startsWith(`${from}${path.sep}`) || from.startsWith(`${to}${path.sep}`)) throw new Error('Backup and source graph directories must be separate');
+    await fs.mkdir(path.dirname(to), { recursive: true });
+    try { await fs.lstat(to); throw new Error(`Destination already exists: ${to}`); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    await fs.cp(from, to, { recursive: true, force: false, errorOnExist: true });
+    console.log(JSON.stringify({ operation: command, sourceGraphs: to, includesWorkingSourceFiles: false }, null, 2));
+  } else if (command === 'working-history') {
+    const dataDir = arg('--data-dir');
+    if (!dataDir || !project) throw new Error('working-history requires --data-dir and --project');
+    console.log(JSON.stringify(await localSourceGraphHistory(dataDir, project), null, 2));
+  } else if (command === 'working-activate') {
+    const dataDir = arg('--data-dir');
+    const graphId = arg('--graph-id');
+    if (!dataDir || !project || !graphId) throw new Error('working-activate requires --data-dir, --project and --graph-id');
+    await activateLocalSourceGraph(dataDir, project, graphId);
+    console.log(JSON.stringify({ project, graphId, active: true }, null, 2));
+  } else if (command === 'working-unpin') {
+    const dataDir = arg('--data-dir');
+    const target = arg('--target');
+    if (!dataDir || !project || !target) throw new Error('working-unpin requires --data-dir, --project and --target');
+    await removeLocalGraphTarget(dataDir, project, target);
+    console.log(JSON.stringify({ project, target, pinned: false }, null, 2));
+  } else if (command === 'working-compare') {
+    const dataDir = arg('--data-dir');
+    const base = arg('--base');
+    const target = arg('--target') ?? 'working';
+    if (!dataDir || !project) throw new Error('working-compare requires --data-dir and --project');
+    const offset = Number(arg('--offset') ?? '0'), limit = Number(arg('--limit') ?? '50');
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('Comparison offset must be non-negative and limit must be 1..500');
+    if (!base) {
+      process.env.DEVINT_LOCAL_GRAPH_DIR = path.resolve(dataDir);
+      process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [project]: { repository: pathToFileURL(path.resolve(root)).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
+      const refs = args('--ref');
+      console.log(JSON.stringify(await compareRevisionSet({ project, refs: refs.length ? refs : ['main', 'preview', 'working-tree'], offset, limit }), null, 2));
+      return;
+    }
+    const catalog = await localSourceGraphHistory(dataDir, project);
+    const resolve = (name: string) => catalog?.entries.find(item => item.generation === catalog.targets?.[name]);
+    const baseEntry = resolve(base), targetEntry = resolve(target);
+    if (!baseEntry || !targetEntry) throw new Error('Comparison targets must have retained graphs');
+    const [left, right] = await Promise.all([readLocalSourceGraph(dataDir, project, baseEntry.graphId, baseEntry.generation), readLocalSourceGraph(dataDir, project, targetEntry.graphId, targetEntry.generation)]);
+    const page = pageGraphDiff(diffGraphs(left, right), offset, limit);
+    console.log(JSON.stringify({ project, baseTarget: base, target, ...page }, null, 2));
+  } else if (command === 'working-query') {
+    const dataDir = arg('--data-dir');
+    const question = arg('--question');
+    if (!dataDir || !project || !question) throw new Error('working-query requires --data-dir, --project and --question');
+    const target = arg('--target');
+    const catalog = target || arg('--graph-id') ? await localSourceGraphHistory(dataDir, project) : null;
+    const generation = target ? catalog?.targets?.[target] : undefined;
+    const entry = target ? catalog?.entries.find(item => item.generation === generation) : undefined;
+    const graphId = arg('--graph-id') ?? entry?.graphId;
+    if (target && !graphId) throw new Error(`No retained graph target: ${target}`);
+    if (arg('--graph-id') && !catalog?.entries.some(item => item.graphId === graphId)) throw new Error(`Local graph is not retained: ${graphId}`);
+    process.env.DEVINT_LOCAL_GRAPH_DIR = path.resolve(dataDir);
+    process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [project]: { repository: pathToFileURL(path.resolve(root)).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
+    const offset = Number(arg('--offset') ?? '0'), limit = Number(arg('--limit') ?? '20');
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Query offset must be non-negative and limit must be 1..1000');
+    const { queryWorkbenchRequest } = await import('./intelligence/workbench.js');
+    const response = await queryWorkbenchRequest({ project, text: question, ...(graphId ? { graphId } : {}), offset, limit });
+    if (process.argv.includes('--details')) console.log(JSON.stringify(response, null, 2));
+    else if (process.argv.includes('--text')) {
+      const request = response.request as any;
+      const items = Array.isArray(response.items) ? response.items as any[] : [response];
+      console.log(`${project} · ${request?.sourceState?.kind === 'working-tree' ? 'working files (HEAD ' + request.sourceState.headRevision + ')' : request?.revision ?? graphId ?? 'selected graph'}`);
+      for (const item of items) {
+        console.log(`\n${item.question ?? question}\n${item.answer ?? item.error ?? 'No answer available.'}`);
+        const page = item.result?.page;
+        if (page?.nextOffset != null) console.log(`More results: --offset ${page.nextOffset}`);
+      }
+      console.log('\nUse --details for graph evidence and coverage.');
+    }
+    else {
+      const result = response.result as Record<string, unknown> | undefined;
+      const items = Array.isArray(response.items) ? response.items.map((item: any) => ({ question: item.question, status: item.status,
+        answer: item.answer, error: item.error, intent: item.intent, coverage: item.result?.coverage, page: item.result?.page })) : undefined;
+      console.log(JSON.stringify({ project, question, answer: response.answer, intent: response.intent, request: response.request,
+        coverage: result?.coverage, page: result?.page, ...(items ? { items } : {}), details: 'Use --details for the complete evidence response.' }, null, 2));
+    }
+  } else if (command === 'working-serve' || command === 'working-mcp') {
+    const dataDir = arg('--data-dir');
+    if (!dataDir || !project) throw new Error(`${command} requires --data-dir and --project`);
+    process.env.DEVINT_LOCAL_GRAPH_DIR = path.resolve(dataDir);
+    process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [project]: { repository: pathToFileURL(path.resolve(root)).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
+    if (command === 'working-mcp') await import('./stdio.js');
+    else {
+      process.env.DEVINT_AUTH_MODE = 'none';
+      process.env.DEVINT_ALLOW_UNAUTHENTICATED = '1';
+      const port = Number(arg('--port') ?? '8787');
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535');
+      const { createDevelopmentIntelligenceServer } = await import('./http.js');
+      const server = createDevelopmentIntelligenceServer();
+      server.listen(port, '127.0.0.1', () => console.error(`Development Intelligence Workbench: http://127.0.0.1:${port}/workbench`));
+    }
+  } else if (command === 'analyze') {
     const parityContract = parityContractPath ? await readLocalParityContract(root, parityContractPath) : undefined;
     const testClaimCatalog = testClaimCatalogPath ? await readLocalTestClaimCatalog(root, testClaimCatalogPath) : undefined;
     if (testClaimReportPath && !producerCommit) throw new Error('--producer-commit is required with --test-claim-report-path');

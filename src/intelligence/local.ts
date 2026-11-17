@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { runChecked } from '../util/process.js';
 import type { IntelligenceGraph } from '../types.js';
 import { buildRepositoryGraph } from './repository.js';
@@ -24,6 +25,39 @@ export async function buildLocalGraph(rootInput: string, project?: string, role:
   const graph = await buildRepositoryGraph({ project: name, repository, revision, root, role });
   assertGraphIntegrity(graph);
   return graph;
+}
+
+/** Build the current files, including non-ignored new files, without equating them to HEAD. */
+export async function buildLocalWorkingGraph(rootInput: string, project?: string): Promise<IntelligenceGraph> {
+  const root = path.resolve(rootInput);
+  const revision = await gitValue(root, ['rev-parse', 'HEAD']);
+  let repository = '';
+  try { repository = await gitValue(root, ['remote', 'get-url', 'origin']); } catch { repository = root; }
+  const graph = await buildRepositoryGraph({ project: project?.trim() || path.basename(root), repository, revision, root, role: 'W', workingTree: true });
+  assertGraphIntegrity(graph);
+  return graph;
+}
+
+/** Analyze a committed revision in a disposable clone without touching the user's checkout. */
+export async function buildLocalRevisionGraph(rootInput: string, ref: string, project?: string): Promise<IntelligenceGraph> {
+  const root = path.resolve(rootInput);
+  let revision: string;
+  try { revision = await gitValue(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]); }
+  catch { revision = await gitValue(root, ['rev-parse', '--verify', '--end-of-options', `refs/remotes/origin/${ref}^{commit}`]); }
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(revision)) throw new Error('Revision did not resolve to a Git commit');
+  const scratch = path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir());
+  await fs.mkdir(scratch, { recursive: true });
+  const temporary = await fs.mkdtemp(path.join(scratch, 'di-revision-'));
+  try {
+    const checkout = path.join(temporary, 'checkout');
+    await runChecked('git', ['clone', '--no-checkout', '--shared', '--', root, checkout]);
+    await runChecked('git', ['-C', checkout, 'checkout', '--detach', revision]);
+    let repository = '';
+    try { repository = await gitValue(root, ['remote', 'get-url', 'origin']); } catch { repository = root; }
+    const graph = await buildRepositoryGraph({ project: project?.trim() || path.basename(root), repository, revision, root: checkout, role: 'W' });
+    assertGraphIntegrity(graph);
+    return graph;
+  } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
 export async function sealLocalGraph(root: string, project?: string): Promise<{ graph: IntelligenceGraph; path: string }> {

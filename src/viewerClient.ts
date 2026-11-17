@@ -3,11 +3,11 @@ import Sigma from 'sigma';
 
 declare global {
   interface Window {
-    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; section?: string };
+    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; section?: string; local?: boolean };
   }
 }
 
-type Section = 'overview' | 'explore' | 'semantics' | 'parity' | 'query' | 'sources' | 'changes';
+type Section = 'overview' | 'explore' | 'semantics' | 'parity' | 'query' | 'sources' | 'changes' | 'local';
 type ExploreMode = 'summary' | 'list' | 'table' | 'graph' | 'raw';
 type GraphLens = 'architecture' | 'parity' | 'code';
 type ProjectionNode = { id: string; kind: string; layer?: string; name?: string; locator?: string; value?: unknown; evidenceIds?: string[] };
@@ -30,16 +30,19 @@ const globalForm = document.getElementById('global-query') as HTMLFormElement;
 const globalInput = document.getElementById('global-query-input') as HTMLInputElement;
 const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-section]'));
 
-let section: Section = (['overview', 'explore', 'semantics', 'parity', 'query', 'sources', 'changes'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
+let section: Section = (['overview', 'explore', 'semantics', 'parity', 'query', 'sources', 'changes', 'local'].includes(viewerConfig.section ?? '') ? viewerConfig.section : 'overview') as Section;
 let sectionEpoch = 0;
-let exploreMode: ExploreMode = 'summary';
+let exploreMode: ExploreMode = 'graph';
 let graphLens: GraphLens = 'architecture';
 let exploreQuery = '';
+let graphSelected = '';
 let lastExplore: any = null;
 let selectedInspection: any = null;
 let inspectorTab = 'summary';
 let renderer: Sigma | null = null;
 let preferredQuerySource = '';
+let queryDraft = '';
+let graphRenderSequence = 0;
 let semanticFlash = '';
 let parityContractText = `{
   "version": 1,
@@ -57,12 +60,13 @@ let parityContractText = `{
 
 const sectionCopy: Record<Section, { title: string; description: string }> = {
   overview: { title: 'Overview', description: 'Readable project intelligence: current state, quick notes, important concepts, coverage and meaningful change.' },
-  explore: { title: 'Explore', description: 'Search the same intelligence as Summary, List, Table, Graph or Raw records. Use the Inspector for the details.' },
+  explore: { title: 'Explore', description: 'Navigate connected source knowledge. Search for a subject, select a node, and inspect its evidence.' },
   semantics: { title: 'Semantics', description: 'Review evidence-derived project meaning before it becomes durable authority. Amend, accept, reject, verify and lineage changes are explicit, separately recorded actions.' },
   parity: { title: 'Parity Contracts', description: 'Compare caller-owned expected entities and relationships with observed project reality. Expectations remain ephemeral and never become accepted truth.' },
   query: { title: 'Query', description: 'Ask Development Intelligence about the project or run a bounded read-only query against a configured technical source.' },
   sources: { title: 'Sources', description: 'See what DI can actually inspect: Git, runtime origins, databases/log adapters, freshness, coverage and query capabilities.' },
   changes: { title: 'Changes', description: 'Compare accepted-to-working semantics or any two immutable historical revision selectors under the same current analyzer.' },
+  local: { title: 'Local setup', description: 'Choose storage and manage the graphs used by the Workbench, terminal and local agents.' },
 };
 
 function esc(value: unknown): string {
@@ -245,7 +249,7 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; void renderExploreResult(epoch); });
   content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
-  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); void fetchExplore(epoch); });
+  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
   await fetchExplore(epoch);
 }
 
@@ -289,23 +293,33 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 }
 
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
+  const sequence = ++graphRenderSequence;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div>`;
+  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><span class="muted">Drag to pan · scroll to zoom · select a node to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
-  const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(exploreQuery ? { query: exploreQuery } : {}), limit: '700', depth: '2' })) as Projection;
-  if (!sectionIsCurrent(epoch, 'explore')) return;
+  const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: '700', depth: '2' })) as Projection;
+  if (!sectionIsCurrent(epoch, 'explore') || sequence !== graphRenderSequence || exploreMode !== 'graph') return;
   const container = document.getElementById('graph') as HTMLElement;
   const graphStatus = document.getElementById('graph-status') as HTMLElement;
-  if (projection.ambiguous) { container.innerHTML = empty('Ambiguous search', 'Choose a result from Summary/List instead of forcing a combined graph.'); graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates`; return; }
+  if (projection.ambiguous) {
+    container.innerHTML = empty('Choose a subject', 'Several graph subjects match. Select one below to see its neighborhood.');
+    graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates`;
+    const choices = document.getElementById('graph-choices')!;
+    choices.innerHTML = `<div class="card"><h3>Matching subjects</h3><div class="list">${(projection.candidates ?? []).map(node => `<button class="row row-button" data-graph-choice="${esc(node.id)}"><span class="badge">${esc(node.kind)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.locator)}</small></span><span>→</span></button>`).join('')}</div></div>`;
+    for (const button of Array.from(choices.querySelectorAll<HTMLButtonElement>('[data-graph-choice]'))) button.addEventListener('click', () => { graphSelected = button.dataset.graphChoice!; void renderGraph(root, epoch); });
+    return;
+  }
+  if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects found', 'Try another search or choose a different view.'); graphStatus.textContent = '0 nodes'; return; }
   const graph = new MultiGraph({ allowSelfLoops: false });
   projection.nodes.forEach((node, index) => { const point = graphPoint(node, index, projection.nodes.length); graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4, color: graphColor(node), node }); });
   for (const edge of projection.edges) {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
-  renderer = new Sigma(graph, container, { renderEdgeLabels: projection.nodes.length < 120, labelDensity: .15, labelGridCellSize: 85, labelRenderedSizeThreshold: 7, zIndex: true });
+  renderer = new Sigma(graph, container, { renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
   renderer.on('clickNode', event => void openInspector(event.node));
-  graphStatus.textContent = `${projection.nodes.length} nodes · ${projection.edges.length} relationships${projection.truncated ? ' · bounded' : ''}`;
+  root.querySelector<HTMLButtonElement>('#graph-reset')?.addEventListener('click', () => void renderer?.getCamera().animatedReset());
+  graphStatus.textContent = `${projection.nodes.length} nodes · ${graph.size} drawn relationships${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}`;
 }
 
 async function renderQuery(epoch: number, prefill = ''): Promise<void> {
@@ -314,7 +328,10 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
   const sourceData = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
   if (!sectionIsCurrent(epoch, 'query')) return;
   const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
+  if (prefill) queryDraft = prefill;
+  prefill = queryDraft;
   content.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
+  (document.getElementById('query-text') as HTMLTextAreaElement).addEventListener('input', event => { queryDraft = (event.target as HTMLTextAreaElement).value; });
   const run = async (offset = 0) => {
     const text = (document.getElementById('query-text') as HTMLTextAreaElement).value.trim();
     const sourceId = (document.getElementById('query-source') as HTMLSelectElement).value;
@@ -341,6 +358,30 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
       if (!sectionIsCurrent(epoch, 'query')) return;
       const page = result.result?.page;
       target.innerHTML = `<div class="card"><h3>${esc(result.intent ?? 'query')}</h3><div class="answer">${esc(result.answer ?? '')}</div>${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
+      const visibleAnswer = (target.firstElementChild as HTMLElement).innerText;
+      const copyActions = document.createElement('div');
+      copyActions.className = 'actions';
+      copyActions.innerHTML = `<button type="button" id="copy-query-answer">Copy question and visible answer</button><span id="copy-query-status" role="status">${page && (page.offset > 0 || page.nextOffset != null) ? 'Copies this page only.' : ''}</span>`;
+      target.firstElementChild?.append(copyActions);
+      target.querySelector<HTMLButtonElement>('#copy-query-answer')?.addEventListener('click', async () => {
+        const copyText = `Question: ${text}\n\n${visibleAnswer}${page && (page.offset > 0 || page.nextOffset != null) ? '\n\nThis is one page of a paginated result.' : ''}`;
+        const status = target.querySelector<HTMLElement>('#copy-query-status');
+        let selection = copyActions.querySelector<HTMLTextAreaElement>('[aria-label="Copyable answer"]');
+        if (!selection) {
+          selection = document.createElement('textarea');
+          selection.setAttribute('aria-label', 'Copyable answer');
+          selection.readOnly = true;
+          copyActions.append(selection);
+        }
+        selection.value = copyText;
+        try {
+          await navigator.clipboard.writeText(copyText);
+          if (status) status.textContent = 'Copied in this browser. If paste does not work, select and copy the text below.';
+        } catch {
+          selection.select();
+          if (status) status.textContent = 'Select and copy the text below.';
+        }
+      });
       wireNodeButtons(target);
       target.querySelector<HTMLButtonElement>('#query-previous')?.addEventListener('click', () => void run(Math.max(0, page.offset - page.limit)));
       target.querySelector<HTMLButtonElement>('#query-next')?.addEventListener('click', () => void run(page.nextOffset));
@@ -914,6 +955,12 @@ async function renderParity(epoch: number): Promise<void> {
 
 function renderQueryResult(result: any): string {
   if (!result) return '';
+  if (result.projection?.kind === 'repository-semantic-summary') {
+    const understanding = result.semanticUnderstanding ?? {};
+    const items = understanding.meanings ?? understanding.concepts ?? understanding.candidates ?? [];
+    const evidence = items.map((item: any) => `<div class="row"><span class="badge">${esc(item.kind ?? 'source evidence')}</span><span class="row-main"><strong>${esc(item.name ?? item.scope ?? item.id)}</strong>${item.description ? `<small>${esc(item.description)}</small>` : ''}${item.locator ? `<small>${esc(item.locator)}</small>` : ''}</span></div>`).join('');
+    return `${evidence ? `<h4>Evidence-backed areas</h4><div class="list">${evidence}</div>` : '<p class="muted">No source-backed semantic areas were selected.</p>'}<details><summary class="muted">Evidence and coverage details</summary><pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre></details>`;
+  }
   if (Array.isArray(result.sourceFamilies)) {
     const language = result.interpretation?.negated
       ? `<p class="muted">Negative wording: ${esc((result.interpretation.negativeTerms ?? []).join(', ') || 'not')}</p>` : '';
@@ -940,40 +987,98 @@ async function renderSources(epoch: number): Promise<void> {
 
 async function renderChanges(epoch: number): Promise<void> {
   setHead();
-  const defaultHead = viewerConfig.ref || 'HEAD';
-  content.innerHTML = `<div class="card"><h3>Historical comparison</h3><h2>Compare any two repository states</h2><p>Leave the base empty for accepted → working semantic change. Historical comparisons replay both exact revisions through the same current analyzer.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
+  const defaultHead = viewerConfig.ref || (viewerConfig.local ? 'working-tree' : 'HEAD');
+  content.innerHTML = `<div class="card"><h3>Graph comparison</h3><h2>Compare repository states</h2><p>${viewerConfig.local ? 'Compare the retained main, preview and working graphs, or choose two targets below.' : 'Leave the base empty for accepted → working semantic change. Historical comparisons replay both exact revisions through the same current analyzer.'}</p>${viewerConfig.local ? '<button class="primary" id="compare-three" type="button">Compare main, preview and working</button>' : ''}<div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare two</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
+  let offset = 0;
+  const detailPageSize = 10;
+  let requestNumber = 0;
   const run = async () => {
+    const request = ++requestNumber;
     const baseRef = (document.getElementById('change-base') as HTMLInputElement).value.trim();
     const headRef = (document.getElementById('change-head') as HTMLInputElement).value.trim();
     const target = document.getElementById('change-result') as HTMLElement;
-    target.innerHTML = empty('Loading change intelligence', baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing accepted semantic topology with current working reality…');
+    target.innerHTML = empty('Loading change intelligence', viewerConfig.local ? 'Comparing the selected graph targets…' : baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing accepted semantic topology with current working reality…');
     try {
-      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}) }));
-      if (!sectionIsCurrent(epoch, 'changes')) return;
+      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}), ...(viewerConfig.local ? { offset: String(offset), limit: String(detailPageSize) } : {}) }));
+      if (!sectionIsCurrent(epoch, 'changes') || request !== requestNumber) return;
       const counts = data.counts ?? {};
       const baseIdentity = data.detail?.base?.identity;
       const headIdentity = data.detail?.head?.identity;
       const identity = baseIdentity && headIdentity ? `<p class="muted">${esc(baseIdentity.selector)} → ${esc(headIdentity.selector)}<br>${esc(baseIdentity.sha)} → ${esc(headIdentity.sha)}</p>` : '';
-      target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Historical replay' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? 'Both revisions use the same current analyzer so project change is not confused with analyzer evolution.' : 'Accepted semantic comparison ignores line movement and provenance-only churn.'}</p></div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${renderChangeBucket(data.detail)}</div>`;
+      target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Graph comparison' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Accepted → working')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? data.detail?.analyzerChanged ? 'These graphs use different analyzer versions; rebuild the targets to compare with one analyzer.' : 'Both graphs use the same analyzer.' : 'Accepted semantic comparison ignores line movement and provenance-only churn.'}</p>${data.detail?.comparisonNote ? `<p class="muted">${esc(data.detail.comparisonNote)}</p>` : ''}</div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${data.page ? `<p class="muted">Showing up to ${data.page.limit} items per change category, starting at ${data.page.offset + 1}.</p><button id="change-previous" ${offset === 0 ? 'disabled' : ''}>Previous</button> <button id="change-next" ${data.page.nextOffset === null ? 'disabled' : ''}>Next</button>` : ''}${renderChangeBucket(data.detail)}</div>`;
       wireNodeButtons(target);
+      target.querySelector('#change-previous')?.addEventListener('click', () => { offset = Math.max(0, offset - detailPageSize); void run(); });
+      target.querySelector('#change-next')?.addEventListener('click', () => { offset = data.page.nextOffset; void run(); });
     } catch (error) {
+      if (request !== requestNumber) return;
       target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
     }
   };
-  (document.getElementById('compare-revisions') as HTMLButtonElement).addEventListener('click', () => void run());
-  await run();
+  const runAll = async () => {
+    const request = ++requestNumber;
+    const target = document.getElementById('change-result') as HTMLElement;
+    target.innerHTML = empty('Comparing graph targets', 'Comparing each pair using the same graph operation…');
+    try {
+      const comparisons: any[] = [];
+      const pairs = [['main', 'preview'], ['main', 'working-tree'], ['preview', 'working-tree']];
+      for (const [baseRef, ref] of pairs) {
+        const result = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', baseRef: baseRef!, headRef: ref!, offset: '0', limit: '1' }));
+        if (!sectionIsCurrent(epoch, 'changes') || request !== requestNumber) return;
+        comparisons.push({ baseRef, ref, page: result.page, detail: result.detail });
+        target.innerHTML = `<div class="card"><p>Source changes, moved records, analysis changes, ambiguous occurrences and provenance changes are separate. Select a pair to inspect all of its paged evidence.${comparisons.length < pairs.length ? ' Comparing remaining pairs…' : ''}</p></div>${comparisons.map((item: any) => { const t = item.page?.totals ?? {}; const count = (name: string) => Number(t['nodes.' + name] ?? 0) + Number(t['edges.' + name] ?? 0); const identity = (graph: any) => graph?.revision ?? `working ${String(graph?.sourceFingerprint ?? '').slice(0, 12)}`; return `<div class="card" style="margin-top:13px"><h3>${esc(item.baseRef)} → ${esc(item.ref)}</h3><p class="muted">${esc(identity(item.detail?.base))} → ${esc(identity(item.detail?.head))}${item.detail?.analyzerChanged ? ' · Different analyzers; rebuild targets' : ''}</p><div class="metric-grid">${metric('added', count('added'))}${metric('removed', count('removed'))}${metric('changed', count('changed'))}${metric('moved', count('moved'))}${metric('analysis added', count('analysisAdded'))}${metric('analysis removed', count('analysisRemoved'))}${metric('analysis changed', count('analysisChanged'))}${metric('ambiguous additions', count('ambiguousAdded'))}${metric('ambiguous removals', count('ambiguousRemoved'))}${metric('provenance', count('provenanceChanged'))}</div><button class="primary" data-change-base="${esc(item.baseRef)}" data-change-head="${esc(item.ref)}">Inspect this pair</button></div>`; }).join('')}`;
+        for (const button of Array.from(target.querySelectorAll<HTMLButtonElement>('[data-change-base]'))) button.addEventListener('click', () => {
+          (document.getElementById('change-base') as HTMLInputElement).value = button.dataset.changeBase ?? '';
+          (document.getElementById('change-head') as HTMLInputElement).value = button.dataset.changeHead ?? '';
+          offset = 0; void run();
+        });
+      }
+    } catch (error) { if (request === requestNumber) target.innerHTML = `<div class="card"><h3>Comparison failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`; }
+  };
+  (document.getElementById('compare-revisions') as HTMLButtonElement).addEventListener('click', () => { offset = 0; void run(); });
+  document.getElementById('compare-three')?.addEventListener('click', () => { offset = 0; void runAll(); });
+  if (viewerConfig.local) await runAll(); else await run();
 }
 
 function renderChangeBucket(detail: any): string {
   const semantic = detail?.semantic ?? (detail?.nodes && detail?.edges ? detail : null);
   if (!semantic) return `<pre class="raw">${esc(JSON.stringify(detail, null, 2))}</pre>`;
-  const nodes = [
-    ...(semantic.nodes?.added ?? []).map((item: any) => ({ ...item, _change: 'added' })),
-    ...(semantic.nodes?.removed ?? []).map((item: any) => ({ ...item, _change: 'removed' })),
-    ...(semantic.nodes?.changed ?? []).map((item: any) => ({ ...(item.after ?? item.before), _change: 'changed' })),
-  ];
-  if (!nodes.length) return empty('No semantic entity changes', 'Accepted and working semantic topology agree. Structural/code differences can still exist.');
-  return `<div class="list">${nodes.map((node: any) => `<button class="row row-button" data-node="${esc(node.id)}"><span class="badge ${node._change === 'added' ? 'status-good' : node._change === 'removed' ? 'status-bad' : 'status-warn'}">${esc(node._change)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.kind ?? '')}</small></span></button>`).join('')}</div>`;
+  const changes = ['added', 'removed', 'changed', 'moved', 'analysisAdded', 'analysisRemoved', 'analysisChanged', 'ambiguousAdded', 'ambiguousRemoved', 'provenanceChanged'];
+  const nodes = changes.flatMap(change => (semantic.nodes?.[change] ?? []).map((item: any) => ({ ...(item.after ?? item.before ?? item), _change: change, _comparison: item.before && item.after ? item : null })));
+  const edges = changes.flatMap(change => (semantic.edges?.[change] ?? []).map((item: any) => ({ ...(item.after ?? item.before ?? item), _change: change, _comparison: item.before && item.after ? item : null })));
+  if (!nodes.length && !edges.length) return empty('No changes on this page', 'Use the page controls to inspect other changes.');
+  const beforeAfter = (pair: any) => pair ? `<details><summary>Before and after</summary><pre class="raw">${esc(JSON.stringify(pair, null, 2))}</pre></details>` : '';
+  return `<div class="list">${nodes.map((node: any) => `<div><button class="row row-button" data-node="${esc(node.id)}"><span class="badge ${node._change === 'added' ? 'status-good' : node._change === 'removed' ? 'status-bad' : 'status-warn'}">${esc(node._change)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.kind ?? '')}</small></span></button>${beforeAfter(node._comparison)}</div>`).join('')}${edges.map((edge: any) => `<div><div class="row"><span class="badge">${esc(edge._change)}</span><span class="row-main"><strong>${esc(edge.kind ?? 'relationship')}</strong><small>${esc(edge.from ?? '?')} → ${esc(edge.to ?? '?')}</small></span></div>${beforeAfter(edge._comparison)}</div>`).join('')}</div>`;
+}
+
+async function renderLocal(epoch: number): Promise<void> {
+  setHead();
+  const state = await getJson('/workbench/local', new URLSearchParams());
+  if (!sectionIsCurrent(epoch, 'local')) return;
+  const settings = state.settings;
+  const field = (label: string, id: string, value: unknown) => `<label style="display:block;margin:10px 0"><span class="muted">${esc(label)}</span><input id="${id}" value="${esc(value)}" style="display:block;width:100%;border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:9px;padding:9px"></label>`;
+  content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Graphs cached in memory (0 disables cache)', 'local-cache', settings.cacheSize ?? 3)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Build current files and keep selected committed revisions as comparison targets.</p><button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}${field('Target name', 'local-target', 'preview')}<button data-local-action="build-revision">Build revision target</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
+  const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
+  const show = (data: any) => {
+    const history = document.getElementById('local-history');
+    if (history) history.textContent = data.history?.targets ? `Retained targets: ${Object.keys(data.history.targets).join(', ')}` : 'No graphs built at this location yet.';
+    const target = document.getElementById('local-job');
+    if (target) target.textContent = data.job ? `${data.job.action}: ${data.job.state}${data.job.output ? `\n${data.job.output}` : ''}` : 'No operation running.';
+  };
+  show(state);
+  const poll = async () => {
+    if (!sectionIsCurrent(epoch, 'local')) return;
+    try { const current = await getJson('/workbench/local', new URLSearchParams()); show(current); if (current.job?.state === 'running') window.setTimeout(() => void poll(), 2000); }
+    catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
+  };
+  (document.getElementById('local-save') as HTMLButtonElement).addEventListener('click', async () => {
+    try { await postJson('/workbench/local', { action: 'settings', repoPath: value('local-repo'), dataDir: value('local-data'), scratchDir: value('local-scratch'), backupDir: value('local-backup'), retain: Number(value('local-retain')), cacheSize: Number(value('local-cache')), port: Number(value('local-port')) }); await poll(); }
+    catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
+  });
+  for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-local-action]'))) button.addEventListener('click', async () => {
+    try { await postJson('/workbench/local', { action: button.dataset.localAction, ref: value('local-ref'), target: value('local-target'), backupDir: value('local-backup') }); await poll(); }
+    catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
+  });
+  if (state.job?.state === 'running') window.setTimeout(() => void poll(), 2000);
 }
 
 async function activateSection(next: Section, queryPrefill = ''): Promise<void> {
@@ -988,6 +1093,7 @@ async function activateSection(next: Section, queryPrefill = ''): Promise<void> 
     else if (section === 'parity') await renderParity(epoch);
     else if (section === 'query') await renderQuery(epoch, queryPrefill);
     else if (section === 'sources') await renderSources(epoch);
+    else if (section === 'local') await renderLocal(epoch);
     else await renderChanges(epoch);
   } catch (error) {
     if (!sectionIsCurrent(epoch, next)) return;

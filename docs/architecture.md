@@ -34,7 +34,7 @@ Development Intelligence owns one graph model. Code inspection, Architecture, Pa
 
 ## Authority and independence
 
-Git/source owns implementation truth. DI produces rebuildable technical and semantic projections of exact Git revisions.
+Git/source owns implementation truth. DI produces rebuildable technical and semantic projections of exact Git revisions or of a fingerprinted local working state. Local working graphs include current non-ignored files and record HEAD as context, not as a claim that those files equal the commit. Accepted semantic authority remains bound to an exact Git revision.
 
 External tools may contribute evidence. They do not own DI identity, graph semantics, lifecycle, storage, query contracts, or product intent. No production analyzer may branch on project identity.
 
@@ -144,7 +144,7 @@ Runtime observations never automatically become accepted semantics because they 
 
 ### Current semantic understanding (Preview)
 
-Ordinary DI source and semantic understanding is reconstructed from **one selected exact-revision graph**. The versioned `intrinsic-technical-scope.v1` rule establishes independently proven literal technical scopes directly; source-declared concepts and supported source interpretations form further layers of that same graph. Facts that are proven do not require historical acceptance records or a human review gate to be used. Lexical API, persistence, and motif signals may identify source-supported interpretations but do not prove desired product intent or runtime behavior.
+Ordinary DI source and semantic understanding is reconstructed from **one selected source graph**: an exact Git revision or an explicitly fingerprinted local working state. The versioned `intrinsic-technical-scope.v1` rule establishes independently proven literal technical scopes directly; source-declared concepts and supported source interpretations form further layers of that same graph. Facts that are proven do not require historical acceptance records or a human review gate to be used. Lexical API, persistence, and motif signals may identify source-supported interpretations but do not prove desired product intent or runtime behavior.
 
 A changed source revision, compiler, analyzer, or coverage can add, weaken or eliminate technical meaning. DI does not retain or replay prior accepted descriptions as evidence for today's code. Canonical `scan_graph` no longer maintains a separate derived-semantic ledger; ordinary Workbench and project orientation project current meaning from the selected graph. Historical questions select their own Git revision and rerun the same derivation.
 
