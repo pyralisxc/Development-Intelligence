@@ -82,13 +82,13 @@ export async function searchCode(input: {
       throw new Error('Source context must be non-negative and limit must be a positive integer');
     const matches: Array<Record<string, unknown>> = [];
     let total = 0;
-    let oversized = 0, unreadable = 0, binary = 0, unsupportedSyntax = 0;
+    let oversized = 0, unreadable = 0, binary = 0, nonRegular = 0, unsupportedSyntax = 0;
     for (const relative of files) {
       if (pathMatcher && !pathMatcher.test(relative)) continue;
       const absolute = path.join(checkout.root, relative);
       let stat;
       try { stat = await fs.lstat(absolute); } catch { unreadable += 1; continue; }
-      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      if (!stat.isFile() || stat.isSymbolicLink()) { nonRegular += 1; continue; }
       if (stat.size > MAX_FILE_BYTES) { oversized += 1; continue; }
       let text: string;
       try { text = await fs.readFile(absolute, 'utf8'); } catch { unreadable += 1; continue; }
@@ -136,7 +136,7 @@ export async function searchCode(input: {
     }
     return { project: input.project, graphId: input.graphId ?? null, ref: checkout.ref, revision: checkout.sha, matches, total,
       returned: matches.length, limit, truncated: total > matches.length,
-      omittedFiles: { oversized, unreadable, binary, unsupportedSyntax },
+      omittedFiles: { oversized, unreadable, binary, nonRegular, unsupportedSyntax },
       ...(input.syntacticCall ? { sourceValidationScope: 'whole-file-ast-call-and-first-operand-syntax-only' } : {}),
     };
   });
