@@ -1047,7 +1047,9 @@ export async function graphContext(project: string, options: { ref?: string; gra
         return { graph: repository.graph, revision: repository.revision };
       }
       try {
-        const current = await buildCachedRepositoryGraph(project);
+        // An explicit graph-id lookup is a read. Loading a current saved graph
+        // must not trigger artifact migration or publication as a side effect.
+        const current = await loadCachedRepositoryGraphForRead(project);
         if (current.revision.sha === sha && current.graph.graphId === options.graphId) {
           return { graph: current.graph, revision: current.revision };
         }
