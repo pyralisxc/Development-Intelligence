@@ -282,6 +282,17 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       focusedFacts, facts: selectedFacts }];
   });
   const directEdges = edges.filter(edge => traversed.has(edge.id));
+  // Source occurrences are distinct even when they share a callee; present
+  // them in source order before bound declaration relationships.
+  directEdges.sort((a, b) => {
+    if (a.kind === 'calls-site' && b.kind !== 'calls-site') return -1;
+    if (a.kind !== 'calls-site' && b.kind === 'calls-site') return 1;
+    if (a.kind !== 'calls-site') return 0;
+    const left = a.to ? byId.get(a.to) : undefined;
+    const right = b.to ? byId.get(b.to) : undefined;
+    const fileOrder = (left?.sourceId ?? '').localeCompare(right?.sourceId ?? '');
+    return fileOrder || Number((left?.value as any)?.sourceOffset ?? 0) - Number((right?.value as any)?.sourceOffset ?? 0);
+  });
   const navigation = { operation: operationToken?.lemma ?? null, direction,
     relationshipKinds: [...relationshipKinds], polarity: language.negated ? 'negative' : 'positive',
     total: directEdges.length,

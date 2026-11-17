@@ -42,6 +42,8 @@ let inspectorTab = 'summary';
 let renderer: Sigma | null = null;
 let preferredQuerySource = '';
 let queryDraft = '';
+const queryPanel = document.createElement('div');
+let queryPanelReady = false;
 let graphRenderSequence = 0;
 let parityContractText = `{
   "version": 1,
@@ -245,10 +247,11 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   exploreQuery = query;
   setHead(exploreActions());
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; void renderExploreResult(epoch); });
-  content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div>`;
+  content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div class="investigation-layout"><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
   form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
-  await fetchExplore(epoch);
+  const queryHost = document.getElementById('investigation-query') as HTMLElement;
+  await Promise.all([fetchExplore(epoch), renderQuery(epoch, '', queryHost)]);
 }
 
 async function fetchExplore(epoch: number): Promise<void> {
@@ -293,10 +296,15 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const sequence = ++graphRenderSequence;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><span class="muted">Drag to pan · scroll to zoom · select a node to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><button id="graph-scope" type="button" disabled>Use selected subject for question</button><span id="graph-selected-label" class="muted"></span><span class="muted">Drag to pan · scroll to zoom · select a node to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: '700', depth: '2' })) as Projection;
   if (!sectionIsCurrent(epoch, 'explore') || sequence !== graphRenderSequence || exploreMode !== 'graph') return;
+  if (!projection.nodes.length && !projection.ambiguous && graphLens === 'architecture') {
+    graphLens = 'code';
+    await renderGraph(root, epoch);
+    return;
+  }
   const container = document.getElementById('graph') as HTMLElement;
   const graphStatus = document.getElementById('graph-status') as HTMLElement;
   if (projection.ambiguous) {
@@ -308,6 +316,12 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     return;
   }
   if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects found', 'Try another search or choose a different view.'); graphStatus.textContent = '0 nodes'; return; }
+  if (graphSelected && projection.nodes.some(node => node.id === graphSelected)) {
+    const button = root.querySelector<HTMLButtonElement>('#graph-scope');
+    if (button) button.disabled = false;
+    const label = root.querySelector<HTMLElement>('#graph-selected-label');
+    if (label) label.textContent = `Selected: ${projection.nodes.find(node => node.id === graphSelected)?.name ?? graphSelected}`;
+  }
   const graph = new MultiGraph({ allowSelfLoops: false });
   projection.nodes.forEach((node, index) => { const point = graphPoint(node, index, projection.nodes.length); graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4, color: graphColor(node), node }); });
   for (const edge of projection.edges) {
@@ -315,21 +329,39 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
   renderer = new Sigma(graph, container, { renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
-  renderer.on('clickNode', event => void openInspector(event.node));
+  renderer.on('clickNode', event => {
+    graphSelected = event.node;
+    const button = root.querySelector<HTMLButtonElement>('#graph-scope');
+    if (button) button.disabled = false;
+    const label = root.querySelector<HTMLElement>('#graph-selected-label');
+    if (label) label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}`;
+    void openInspector(event.node);
+  });
+  root.querySelector<HTMLButtonElement>('#graph-scope')?.addEventListener('click', () => {
+    const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope');
+    if (scope && graphSelected) { scope.value = graphSelected; scope.closest('details')!.open = true; queryPanel.querySelector<HTMLTextAreaElement>('#query-text')?.focus(); }
+  });
   root.querySelector<HTMLButtonElement>('#graph-reset')?.addEventListener('click', () => void renderer?.getCamera().animatedReset());
   graphStatus.textContent = `${projection.nodes.length} nodes · ${graph.size} drawn relationships${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}`;
 }
 
-async function renderQuery(epoch: number, prefill = ''): Promise<void> {
-  setHead();
-  content.innerHTML = empty('Loading sources', 'Preparing Development Intelligence and configured read-only technical sources…');
+async function renderQuery(epoch: number, prefill = '', host: HTMLElement = content): Promise<void> {
+  if (host === content) setHead();
+  if (prefill) queryDraft = prefill;
+  host.append(queryPanel);
+  if (queryPanelReady) {
+    if (prefill) queryPanel.querySelector<HTMLTextAreaElement>('#query-text')!.value = prefill;
+    return;
+  }
+  queryPanel.innerHTML = empty('Loading sources', 'Preparing Development Intelligence and configured read-only technical sources…');
   const sourceData = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
-  if (!sectionIsCurrent(epoch, 'query')) return;
+  if (sectionEpoch !== epoch || !queryPanel.isConnected) return;
   const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
   if (prefill) queryDraft = prefill;
   prefill = queryDraft;
-  content.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
-  (document.getElementById('query-text') as HTMLTextAreaElement).addEventListener('input', event => { queryDraft = (event.target as HTMLTextAreaElement).value; });
+  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Try: How is assessment intelligence realized? What changed? What depends on query_parity? Show code for ownerPasswordMatches.">${esc(prefill)}</textarea><select id="query-source"><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
+  queryPanelReady = true;
+  (queryPanel.querySelector('#query-text') as HTMLTextAreaElement).addEventListener('input', event => { queryDraft = (event.target as HTMLTextAreaElement).value; });
   const run = async (offset = 0) => {
     const text = (document.getElementById('query-text') as HTMLTextAreaElement).value.trim();
     const sourceId = (document.getElementById('query-source') as HTMLSelectElement).value;
@@ -353,7 +385,6 @@ async function renderQuery(epoch: number, prefill = ''): Promise<void> {
       const result = await postJson('/workbench/query', { text, offset, depth, ...(direction ? { direction } : {}),
         ...(scope ? { scope } : {}), ...(nodeKinds.length ? { nodeKinds } : {}),
         ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) });
-      if (!sectionIsCurrent(epoch, 'query')) return;
       const page = result.result?.page;
       target.innerHTML = `<div class="card"><h3>${esc(result.intent ?? 'query')}</h3><div class="answer">${esc(result.answer ?? '')}</div>${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
       const visibleAnswer = (target.firstElementChild as HTMLElement).innerText;
@@ -571,6 +602,8 @@ async function activateSection(next: Section, queryPrefill = ''): Promise<void> 
   section = next;
   for (const button of navButtons) button.classList.toggle('active', button.dataset.section === section);
   renderer?.kill(); renderer = null;
+  queryPanel.remove();
+  content.replaceChildren();
   try {
     if (section === 'overview') await renderOverview(epoch);
     else if (section === 'explore') await loadExplore(epoch);

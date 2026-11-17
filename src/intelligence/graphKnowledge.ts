@@ -117,6 +117,8 @@ define(['connected-to'], 'reference', 'dependency', true, 'bound-source');
 define(['callback-argument'], 'reference', 'dependency', false, 'syntax',
   ['callable'], ['callable']);
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
+// A call occurrence is established by syntax even when its target cannot be bound.
+define(['calls-site'], 'invocation', 'execution', false, 'syntax', ['callable'], ['source-site']);
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
   'automated-by', 'constructs'], 'invocation', 'execution', true, 'bound-source');
 define(['has-source-control'], 'condition', 'composition-context', false, 'source-conditional',
