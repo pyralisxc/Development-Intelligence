@@ -60,7 +60,7 @@ export interface SemanticBootstrapProjection {
   candidates: SemanticCandidate[];
   capacity: {
     requestedLimit: number;
-    operationalLimit: 1000;
+    operationalLimit: null;
     groupedScopeCount: number;
     eligibleCandidateCount: number;
     rejectedScopeCount: number;
@@ -267,8 +267,9 @@ function addUnique<T>(target: T[], value: T): void {
 }
 
 export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: { limit?: number } = {}): SemanticBootstrapProjection {
-  const operationalLimit = 1000 as const;
-  const limit = Math.max(1, Math.min(options.limit ?? 12, operationalLimit));
+  const operationalLimit = null;
+  const limit = options.limit ?? 12;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Semantic candidate limit must be a positive integer');
   const groups = new Map<string, CandidateGroup>();
   const nodeScope = new Map<string, string>();
   const sourceOnlyNodeIds = new Set<string>();
@@ -450,7 +451,7 @@ export function bootstrapSemanticCandidates(graph: IntelligenceGraph, options: {
   });
 
   excludedScopes.sort((a, b) => a.scope.localeCompare(b.scope));
-  const visibleExcludedScopes = excludedScopes.slice(0, 100);
+  const visibleExcludedScopes = excludedScopes;
   const semanticNodes = graph.nodes.filter(node => (node.layer ?? 'structural') === 'semantic');
   const declaredSemanticCount = semanticNodes.filter(node => node.tags?.includes('declared')).length;
   const returnedCandidates = candidates.slice(0, limit);

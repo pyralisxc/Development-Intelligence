@@ -16,11 +16,11 @@ import { evidenceRecord, observation, resolution, semanticEntity, semanticRelati
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
-import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS, TYPESCRIPT_COMPILER_MAX_FILES } from './typescriptCompilerLens.js';
+import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.30.3-source-call-occurrences';
+export const ANALYZER_VERSION = '2.31.0-compiler-call-bindings';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -1410,6 +1410,9 @@ async function crossFileTypeScriptGraph(
   };
 
   const resolvedCallsByOwnerAndEvidence = new Map<string, GraphNode[]>();
+  const compilerBoundSites = new Set(graphEdges.filter(edge => edge.kind === 'resolves_to'
+    && edge.strategy === TYPESCRIPT_COMPILER_LENS && edge.status === 'resolved' && edge.from && edge.to)
+    .map(edge => `${edge.from}\0${edge.to}`));
   const callSites = new Map<string, GraphNode>();
   for (const node of graphNodeById.values()) {
     if (node.kind !== 'call-reference' || !node.sourceId.startsWith('repo:') || !node.value || typeof node.value !== 'object') continue;
@@ -1900,12 +1903,13 @@ async function crossFileTypeScriptGraph(
         }
         if (target) {
           const site = caller ? callSites.get(`repo:${relative}\0${caller.id}\0${node.getStart(sourceFile)}`) : undefined;
-          if (site) addedEdges.push(resolution({
+          const compilerBound = Boolean(site && compilerBoundSites.has(`${site.id}\0${target.id}`));
+          if (site && importedTarget && !compilerBound) addedEdges.push(resolution({
             from: site.id, to: target.id, kind: 'resolves_to', strategy: 'call-target-binding',
             confidence: 1, status: 'resolved', evidence: [site.locator],
             layer: 'structural', checkpoint: false,
           }));
-          if (importedTarget && caller && caller.id !== target.id) addedEdges.push(resolution({
+          if (importedTarget && caller && caller.id !== target.id && !compilerBound) addedEdges.push(resolution({
             from: caller.id,
             to: target.id,
             kind: 'calls',
@@ -2476,41 +2480,40 @@ export async function advanceRepositoryGraph(input: {
     return { graph: null, strategy: 'fallback', reason: 'incremental frontier did not retain complete coverage', changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
   }
 
-  if (sourceTexts.size) {
-    await deriveCrossFileAndFrameworkFacts({
-      root: input.root, sourceTexts, nodes, edges, evidence, fileNodes,
-    });
-  }
-
   if (compilerSensitive) {
     // The TypeChecker observes the entire TS project, not only the changed
     // frontier. Replace prior compiler-only proof and reconstruct its exact
     // current relationships while retaining the ordinary incremental graph.
     edges = edges.filter(edge => edge.strategy !== TYPESCRIPT_COMPILER_LENS);
+    nodes = nodes.filter(node => !(node.value && typeof node.value === 'object'
+      && (node.value as { producer?: string }).producer === TYPESCRIPT_COMPILER_LENS));
     const allTypescript = new Map<string, string>();
     const trackedCode = tracked.filter(file => CODE_EXTENSIONS.has(path.extname(file.path).toLowerCase())
       && file.mode !== '120000' && file.mode !== '160000');
-    if (trackedCode.length <= TYPESCRIPT_COMPILER_MAX_FILES) {
-      for (const file of trackedCode) {
-        const absolute = path.join(input.root, file.path);
-        try {
-          const stat = await fs.lstat(absolute);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) continue;
-          allTypescript.set(file.path, await fs.readFile(absolute, 'utf8'));
-        } catch {
-          return { graph: null, strategy: 'fallback', reason: 'compiler source refresh could not read tracked input',
-            changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
-        }
+    for (const file of trackedCode) {
+      const absolute = path.join(input.root, file.path);
+      try {
+        const stat = await fs.lstat(absolute);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) continue;
+        allTypescript.set(file.path, await fs.readFile(absolute, 'utf8'));
+      } catch {
+        return { graph: null, strategy: 'fallback', reason: 'compiler source refresh could not read tracked input',
+          changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
       }
     }
     const compiler = compilerTypeScriptReferences({
       root: input.root, sourceTexts: allTypescript, nodes, fileNodes, options: loadCompilerOptions(input.root),
     });
+    nodes.push(...compiler.nodes);
     edges.push(...compiler.edges);
-    const warning = trackedCode.length > TYPESCRIPT_COMPILER_MAX_FILES
-      ? `Optional TypeScript compiler symbol evidence bounded-out: tracked JS/TS source exceeds the ${TYPESCRIPT_COMPILER_MAX_FILES}-file precision limit. Syntax/source graph remains available; compiler-level negative or exhaustive conclusions are not established.`
-      : compilerPrecisionWarning(compiler);
+    const warning = compilerPrecisionWarning(compiler);
     if (warning) warnings.push(warning);
+  }
+
+  if (sourceTexts.size) {
+    await deriveCrossFileAndFrameworkFacts({
+      root: input.root, sourceTexts, nodes, edges, evidence, fileNodes,
+    });
   }
 
   nodes.push(...ensureSemanticTargets(nodes, edges));
@@ -2702,14 +2705,14 @@ export async function buildRepositoryGraph(input: {
   resolveCSharpReferences({ nodes, edges });
   resolveUnityReverseUsage({ nodes, edges, fileNodes });
 
-  await deriveCrossFileAndFrameworkFacts({
-    root: input.root, sourceTexts, nodes, edges, evidence, fileNodes,
-  });
   const compiler = compilerTypeScriptReferences({
     root: input.root, sourceTexts, nodes, fileNodes, options: loadCompilerOptions(input.root),
   });
   nodes.push(...compiler.nodes);
   edges.push(...compiler.edges);
+  await deriveCrossFileAndFrameworkFacts({
+    root: input.root, sourceTexts, nodes, edges, evidence, fileNodes,
+  });
   const compilerWarning = compilerPrecisionWarning(compiler);
   if (compilerWarning) {
     warnings.push(compilerWarning);

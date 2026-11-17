@@ -138,7 +138,8 @@ export function auditSemanticCandidates(
   bootstrap: SemanticBootstrapProjection,
   options: { limit?: number } = {},
 ): SemanticAuditProjection {
-  const limit = Math.max(1, Math.min(options.limit ?? 24, 200));
+  const limit = options.limit ?? 24;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Semantic audit limit must be a positive integer');
   const candidateById = new Map(bootstrap.candidates.map(candidate => [candidate.id, candidate]));
   const wantedNodeIds = new Set<string>();
   const wantedEdgeIds = new Set<string>();
