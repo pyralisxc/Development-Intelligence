@@ -44,7 +44,7 @@ export function questionSelection(graph: IntelligenceGraph, result: any) {
   const subjects = grouped ? result.connectedGroups.flatMap((group: any) => group.subjects ?? []) : result.subjects ?? [];
   const links = grouped ? result.connectedGroups.flatMap((group: any) => group.links ?? [])
     : (result.navigation?.relationships ?? []).map((item: any) => item.edge);
-  const focus = observedGraphIds(graph, { subjects, links });
+  const focus = observedGraphIds(graph, { subjects, links, comparison: result.comparison?.items });
   const context = observedGraphIds(graph, result.sourceFamilies);
   const selectedNodes = new Set([...focus.nodeIds, ...context.nodeIds]);
   const factEdges = graph.edges.filter(edge => edge.from && edge.to && selectedNodes.has(edge.from) && selectedNodes.has(edge.to)
