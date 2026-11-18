@@ -56,12 +56,15 @@ export function questionSelection(graph: IntelligenceGraph, result: any) {
 /** Select only the records on the requested page and on the appropriate side. */
 export function comparisonSelection(graph: IntelligenceGraph, detail: any, side: 'base' | 'head', page?: unknown) {
   const delta = detail?.semantic ?? detail;
-  const records: unknown[] = [];
-  for (const kind of ['nodes', 'edges']) for (const [change, values] of Object.entries(delta?.[kind] ?? {})) {
+  const nodeIds: string[] = [], edgeIds: string[] = [];
+  for (const kind of ['nodes', 'edges'] as const) for (const [change, values] of Object.entries(delta?.[kind] ?? {})) {
     if (!Array.isArray(values)) continue;
     if (side === 'base' && ['added', 'analysisAdded', 'ambiguousAdded'].includes(change)) continue;
     if (side === 'head' && ['removed', 'analysisRemoved', 'ambiguousRemoved'].includes(change)) continue;
-    for (const value of values) records.push(value?.before && value?.after ? (side === 'base' ? value.before : value.after) : value);
+    for (const value of values) {
+      const record = value?.before && value?.after ? (side === 'base' ? value.before : value.after) : value;
+      if (typeof record?.id === 'string') (kind === 'nodes' ? nodeIds : edgeIds).push(record.id);
+    }
   }
-  return investigationSelection(graph, 'comparison-' + side, { ...observedGraphIds(graph, records), page });
+  return investigationSelection(graph, 'comparison-' + side, { nodeIds, edgeIds, page });
 }
