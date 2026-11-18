@@ -189,7 +189,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         const described = Boolean(description && language.termGroups.every(group => group.some(term => includesTerm(description, words(term)))));
         if (score) scored.push({ node, groups, described, score: score
           + (['function', 'method', 'constructor'].includes(node.kind) ? 4 : 0)
-          + (sourceFamilies.has(node.id) ? 2 : 0) });
+          + (sourceFamilies.has(node.id) ? 10 : 0)
+          + ((node.families ?? []).some(family => family.id === node.id) ? 4 : 0) });
       }
       scored.sort((a, b) => Number(b.described) - Number(a.described) || b.score - a.score || a.node.id.localeCompare(b.node.id));
       const minimum = Math.min(2, language.termGroups.length);
@@ -234,6 +235,103 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       || (operationToken.start > subjectEnd && /\b(?:is|are|was|were|be|been|being)\s*$/iu.test(input.text.slice(0, subjectStart)));
     direction = operationToken.start < subjectStart ? (passive ? 'outbound' : 'inbound') : (passive ? 'inbound' : 'outbound');
   }
+  // Group term-matched subjects only when the graph directly connects them.
+  // Sharing a common dependency alone does not merge unrelated workflows.
+  const groupedSelection = selection === 'terms' && !language.negated && !operationToken
+    && !input.relationshipKinds?.length && !input.statuses?.length && !input.direction;
+  const ranked = new Map(subjects.map((node, index) => [node.id, index]));
+  const parents = new Map(subjects.map(node => [node.id, node.id]));
+  const groupEdges: typeof graph.edges = [];
+  const root = (id: string): string => {
+    let current = id;
+    while (parents.get(current) !== current) current = parents.get(current)!;
+    while (id !== current) { const next = parents.get(id)!; parents.set(id, current); id = next; }
+    return current;
+  };
+  if (groupedSelection) {
+    const wantedEdges = new Set(subjects.flatMap(node => (node.families ?? [])
+      .filter(family => parents.has(family.id) && family.roles.includes('dependency')).flatMap(family => family.via)));
+    const byEdgeId = new Map(graph.edges.filter(edge => wantedEdges.has(edge.id)).map(edge => [edge.id, edge]));
+    const lexical = new Map<string, typeof graph.edges>();
+    const addLink = (left: string, right: string, path: typeof graph.edges): void => {
+      groupEdges.push(...path);
+      const a = root(left), b = root(right);
+      if (a !== b) parents.set(b, a);
+    };
+    for (const edge of graph.edges) {
+      if (edge.status !== 'resolved' || !edge.from || !edge.to) continue;
+      if (['handled_by', 'callback-argument'].includes(edge.kind)) {
+        const edges = lexical.get(edge.from) ?? [];
+        edges.push(edge); lexical.set(edge.from, edges);
+      }
+      if (parents.has(edge.from) && parents.has(edge.to)
+        && ['calls', 'invokes', 'handled_by', 'implemented-by', 'exposes', 'composes'].includes(edge.kind))
+        addLink(edge.from, edge.to, [edge]);
+    }
+    // An inline handler/callback is a lexical component of its owner. A
+    // resolved call from that component can connect two matched subjects;
+    // preserve the complete path rather than creating a synthetic call.
+    for (const node of subjects) for (const membership of node.families ?? []) {
+      if (!parents.has(membership.id) || membership.id === node.id || !membership.roles.includes('dependency')) continue;
+      for (const id of membership.via) {
+        const edge = byEdgeId.get(id);
+        if (!edge || edge.status !== 'resolved' || edge.to !== node.id || !edge.from || edge.from === membership.id) continue;
+        const queue: Array<{ id: string; path: typeof graph.edges }> = [{ id: membership.id, path: [] }];
+        const seen = new Set([membership.id]);
+        for (let i = 0; i < queue.length; i += 1) {
+          const item = queue[i]!;
+          if (item.id === edge.from) { addLink(membership.id, node.id, [...item.path, edge]); break; }
+          for (const next of lexical.get(item.id) ?? []) if (next.to && !seen.has(next.to)) {
+            seen.add(next.to); queue.push({ id: next.to, path: [...item.path, next] });
+          }
+        }
+      }
+    }
+  }
+  const pathParents = new Map<string, string>();
+  const pathRoot = (id: string): string => {
+    let current = id;
+    while (pathParents.get(current) !== current) current = pathParents.get(current)!;
+    while (id !== current) { const next = pathParents.get(id)!; pathParents.set(id, current); id = next; }
+    return current;
+  };
+  for (const edge of groupEdges) if (edge.from && edge.to) {
+    if (!pathParents.has(edge.from)) pathParents.set(edge.from, edge.from);
+    if (!pathParents.has(edge.to)) pathParents.set(edge.to, edge.to);
+    const a = pathRoot(edge.from), b = pathRoot(edge.to);
+    if (a !== b) pathParents.set(b, a);
+  }
+  const firstInPath = new Map<string, string>();
+  for (const node of subjects) if (pathParents.has(node.id)) {
+    const component = pathRoot(node.id), first = firstInPath.get(component);
+    if (first) { const a = root(first), b = root(node.id); if (a !== b) parents.set(b, a); }
+    else firstInPath.set(component, node.id);
+  }
+  const groupsByRoot = new Map<string, GraphNode[]>();
+  for (const node of subjects) {
+    const id = root(node.id);
+    const group = groupsByRoot.get(id) ?? [];
+    group.push(node); groupsByRoot.set(id, group);
+  }
+  const edgesByComponent = new Map<string, Map<string, (typeof graph.edges)[number]>>();
+  for (const edge of groupEdges) if (edge.from && pathParents.has(edge.from)) {
+    const component = pathRoot(edge.from), links = edgesByComponent.get(component) ?? new Map();
+    links.set(edge.id, edge); edgesByComponent.set(component, links);
+  }
+  const connectedGroups = [...groupsByRoot.values()].map(nodes => {
+    nodes.sort((a, b) => ranked.get(a.id)! - ranked.get(b.id)!);
+    const ids = new Set(nodes.map(node => node.id));
+    const components = new Set(nodes.filter(node => pathParents.has(node.id)).map(node => pathRoot(node.id)));
+    const links = [...components].flatMap(component => [...(edgesByComponent.get(component)?.values() ?? [])]);
+    const connected = new Set(links.flatMap(edge => [edge.from, edge.to]).filter((id): id is string => Boolean(id)));
+    const linkNodes = [...connected].filter(id => !ids.has(id)).map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
+    return { subjects: nodes, links, linkNodes, rank: ranked.get(nodes[0]!.id)! };
+  }).sort((a, b) => a.rank - b.rank);
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const limit = input.limit ?? 20;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Graph page size must be a positive integer');
+  const groupPage = groupedSelection ? connectedGroups.slice(offset, offset + limit) : [];
+  const subjectPage = groupedSelection ? groupPage.flatMap(group => group.subjects) : subjects.slice(offset, offset + limit);
   const subjectIds = new Set(subjects.map(node => node.id));
   const adjacentIds = new Set(subjectIds);
   const factsBySubject = new Map<string, string[]>();
@@ -284,10 +382,6 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     for (const id of factsBySubject.get(subject.id) ?? []) include(byId.get(id));
   }
   for (const node of graph.nodes) if (adjacentIds.has(node.id)) include(node);
-  const offset = Math.max(0, Math.floor(input.offset ?? 0));
-  const limit = input.limit ?? 20;
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Graph page size must be a positive integer');
-  const subjectPage = subjects.slice(offset, offset + limit);
   // Return the prebuilt family for each selected subject. Membership records
   // refer to existing nodes/edges and never reinterpret a dependency as a call.
   const familySubjects = selection === 'exact-name' || selection === 'scope' ? subjects : subjectPage;
@@ -305,14 +399,18 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     const priority = (roles: string[]) => roles.includes('callback') ? 0 : roles.includes('dependency') ? 1 : roles.includes('caller') ? 2 : roles.includes('related') ? 3 : 4;
     members.sort((a, b) => priority(a.roles) - priority(b.roles) || a.locator.localeCompare(b.locator) || a.id.localeCompare(b.id));
     return { id: subject.id, name: subject.name ?? subject.id, kind: subject.kind,
-      locator: subject.locator, total: members.length, members: members.slice(offset, offset + limit),
-      nextOffset: offset + limit < members.length ? offset + limit : null };
+      locator: subject.locator, total: members.length, members: groupedSelection ? members : members.slice(offset, offset + limit),
+      nextOffset: groupedSelection ? null : offset + limit < members.length ? offset + limit : null };
   });
   const negativeTerms = [...new Set(language.tokens.filter(token => token.negated)
     .flatMap(token => [token.text.toLowerCase(), token.lemma]).filter(term => term.length > 1))];
   const effectVocabulary = new Set(['call', 'return', 'write', 'throw']);
   const requestedEffects = [...new Set(language.tokens.map(token => token.lemma).filter(term => effectVocabulary.has(term)))];
-  const sourceFamilies = familyOwners.slice(offset, offset + limit).flatMap(subject => {
+  const displayedIds = new Set(subjectPage.map(node => node.id));
+  const sourceOwners = groupedSelection ? familyOwners.filter(node => displayedIds.has(node.id)
+    || (node.families ?? []).some(family => displayedIds.has(family.id) && family.roles.includes('callback')))
+    : familyOwners.slice(offset, offset + limit);
+  const sourceFamilies = sourceOwners.flatMap(subject => {
     const facts = (factsBySubject.get(subject.id) ?? []).map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
     if (!facts.length) return [];
     facts.sort((a, b) => Number((a.value as any)?.sourceOffset ?? 0) - Number((b.value as any)?.sourceOffset ?? 0) || a.id.localeCompare(b.id));
@@ -459,6 +557,9 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     navigation, comparison,
     subjectTotal: subjects.length,
     subjects: subjectPage,
+    ...(groupedSelection ? { connectedGroupTotal: connectedGroups.length, connectedGroups: groupPage.map(group => ({
+      subjects: group.subjects, links: group.links, linkNodes: group.linkNodes,
+    })) } : {}),
     families,
     sourceFamilies,
     sourceFamilyTotal: familyOwners.filter(subject => factsBySubject.has(subject.id)).length,
@@ -466,7 +567,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     nodes: allNodes.slice(offset, offset + limit),
     edgeTotal: edges.length,
     edges: edges.slice(offset, offset + limit),
-    page: { offset, limit, nextOffset: offset + limit < Math.max(subjects.length, familyOwners.length, allNodes.length, edges.length, comparisonTotal) ? offset + limit : null },
+    page: { offset, limit, nextOffset: offset + limit < (groupedSelection ? connectedGroups.length : Math.max(subjects.length, familyOwners.length, allNodes.length, edges.length, comparisonTotal)) ? offset + limit : null },
     scope: { direction, depth, depthReached, furtherNodesPossible: frontier.size > 0, includesEdgesAmongNeighbors: direction === 'both',
       nodeKinds: [...kinds], relationshipKinds: [...relationshipKinds], statuses: [...statuses],
       conditionContains: input.conditionContains ?? null, conditionTruth: input.conditionTruth ?? null,

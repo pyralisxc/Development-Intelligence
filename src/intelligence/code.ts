@@ -7,7 +7,7 @@ import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/g
 import { runChecked } from '../util/process.js';
 import { graphContext } from './service.js';
 import { locatorFileAndLine } from './query.js';
-import { isRepositoryAnalysisIgnoredPath } from './repository.js';
+import { isRepositoryAnalysisIgnoredPath, sourceFingerprint } from './repository.js';
 
 const MAX_FILE_BYTES = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? Number.MAX_SAFE_INTEGER);
 
@@ -51,9 +51,10 @@ function fileMatcher(pattern: string | undefined, mode: FilePatternMode): RegExp
   }
 }
 
-async function trackedTextFiles(root: string): Promise<string[]> {
-  const result = await runChecked('git', ['-C', root, 'ls-files', '-z']);
-  return result.stdout.split('\0').filter(Boolean).filter(file => !isRepositoryAnalysisIgnoredPath(file));
+async function trackedTextFiles(root: string, workingTree = false): Promise<string[]> {
+  const args = workingTree ? ['ls-files', '--cached', '--others', '--exclude-standard', '-z'] : ['ls-files', '-z'];
+  const result = await runChecked('git', ['-C', root, ...args]);
+  return [...new Set(result.stdout.split('\0').filter(Boolean))].filter(file => !isRepositoryAnalysisIgnoredPath(file));
 }
 
 export async function searchCode(input: {
@@ -71,11 +72,16 @@ export async function searchCode(input: {
 }): Promise<Record<string, unknown>> {
   if (!input.pattern) throw new Error('pattern must be a non-empty string');
   if (input.ref && input.graphId) throw new Error('Use either ref or graphId, not both');
-  const revision = input.graphId
-    ? (await graphContext(input.project, { graphId: input.graphId })).revision
-    : await resolveProjectRevision(input.project, input.ref);
-  return await withResolvedProjectCheckout(revision, async checkout => {
-    const files = await trackedTextFiles(checkout.root);
+  const selected = input.graphId || input.ref === 'working-tree' || (!input.ref && process.env.DEVINT_LOCAL_GRAPH_DIR?.trim())
+    ? await graphContext(input.project, { ...(input.graphId ? { graphId: input.graphId } : {}), ...(input.ref ? { ref: input.ref } : {}) })
+    : null;
+  const revision = selected?.revision ?? await resolveProjectRevision(input.project, input.ref);
+  const search = async (checkout: { root: string; ref: string; sha: string | null }) => {
+    const working = Boolean(selected?.graph.sourceState);
+    const expected = selected?.graph.sourceFingerprint;
+    if (working && (!expected || await sourceFingerprint(checkout.root, true) !== expected))
+      throw new Error('Working source no longer matches the selected graph. Rebuild the working graph to search current source.');
+    const files = await trackedTextFiles(checkout.root, working);
     const matcher = input.regex ? new RegExp(input.pattern, 'i') : null;
     const pathMatcher = fileMatcher(input.filePattern, input.filePatternMode ?? 'regex');
     const context = input.context ?? 2;
@@ -89,7 +95,10 @@ export async function searchCode(input: {
       if (pathMatcher && !pathMatcher.test(relative)) continue;
       const absolute = path.join(checkout.root, relative);
       let stat;
-      try { stat = await fs.lstat(absolute); } catch { unreadable += 1; continue; }
+      try { stat = await fs.lstat(absolute); } catch (error) {
+        if (!working || (error as NodeJS.ErrnoException).code !== 'ENOENT') unreadable += 1;
+        continue;
+      }
       if (!stat.isFile() || stat.isSymbolicLink()) { nonRegular += 1; continue; }
       if (stat.size > MAX_FILE_BYTES) { oversized += 1; continue; }
       let text: string;
@@ -136,12 +145,22 @@ export async function searchCode(input: {
         });
       }
     }
-    return { project: input.project, graphId: input.graphId ?? null, ref: checkout.ref, revision: checkout.sha, matches, total,
+    if (working && await sourceFingerprint(checkout.root, true) !== expected)
+      throw new Error('Working source changed during search. Rebuild the working graph to search current source.');
+    return { project: input.project, graphId: selected?.graph.graphId ?? input.graphId ?? null, ref: checkout.ref, revision: checkout.sha, matches, total,
+      ...(working ? { sourceState: selected!.graph.sourceState, sourceFingerprint: expected } : {}),
       returned: matches.length, limit, truncated: total > matches.length,
       omittedFiles: { oversized, unreadable, binary, nonRegular, unsupportedSyntax },
       ...(input.syntacticCall ? { sourceValidationScope: 'whole-file-ast-call-and-first-operand-syntax-only' } : {}),
     };
-  });
+  };
+  if (selected?.graph.sourceState) {
+    let root: string;
+    try { root = fileURLToPath(revision.repository); }
+    catch { throw new Error('Working graph source requires a local repository binding'); }
+    return await search({ root, ref: 'working-tree', sha: null });
+  }
+  return await withResolvedProjectCheckout(revision, search);
 }
 
 export async function getCodeSnippet(input: {
