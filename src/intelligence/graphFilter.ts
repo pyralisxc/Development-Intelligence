@@ -2,6 +2,8 @@ import winkNLP from 'wink-nlp';
 import model from 'wink-eng-lite-web-model';
 import type { GraphNode, IntelligenceGraph } from '../types.js';
 import { availableRelationshipContracts } from './graphKnowledge.js';
+import { isWrittenTestSource } from './independentSourceVerification.js';
+import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 
 const nlp = winkNLP(model);
 const its = nlp.its;
@@ -70,8 +72,22 @@ function termMatcher(): (value: string, term: string) => boolean {
   let pattern = patterns.get(term);
   if (!pattern) {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-    const stem = escaped.endsWith('e') ? escaped.slice(0, -1) : escaped;
-    pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}_])(?:${escaped}|${escaped}s|${escaped}ed|${stem}ed|${escaped}ing|${stem}ing)(?=$|[^\\p{L}\\p{N}_])`, 'u');
+    // Normalize both the question form and identifier form. Wink can return
+    // an incomplete lemma for gerunds (e.g. routing → rout); retaining the
+    // plausible silent-e form lets it match route, routed and router too.
+    const bases = new Set([escaped]);
+    if (escaped.length > 5 && escaped.endsWith('ing')) {
+      const base = escaped.slice(0, -3); bases.add(base); bases.add(base + 'e');
+    }
+    if (escaped.length > 4 && escaped.endsWith('ed')) {
+      const base = escaped.slice(0, -2); bases.add(base); bases.add(base + 'e');
+    }
+    const variants = new Set<string>();
+    for (const base of bases) {
+      const stem = base.endsWith('e') ? base.slice(0, -1) : base;
+      for (const form of [base, base + 's', base + 'ed', stem + 'ed', base + 'ing', stem + 'ing', stem + 'er', stem + 'ers']) variants.add(form);
+    }
+    pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}_])(?:${[...variants].join('|')})(?=$|[^\\p{L}\\p{N}_])`, 'u');
     patterns.set(term, pattern);
   }
   return pattern.test(value);
@@ -99,6 +115,8 @@ const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'in
 export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): Record<string, unknown> {
   const includesTerm = termMatcher();
   const language = interpret(input.text);
+  const preferTestSources = language.tokens.some(token => ['test', 'tests', 'spec', 'specs'].includes(token.lemma))
+    || Boolean(input.scope && isWrittenTestSource(input.scope));
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
   const kinds = new Set(input.nodeKinds ?? []);
   let relationshipKinds = new Set(input.relationshipKinds ?? []);
@@ -192,7 +210,11 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
           + (sourceFamilies.has(node.id) ? 10 : 0)
           + ((node.families ?? []).some(family => family.id === node.id) ? 4 : 0) });
       }
-      scored.sort((a, b) => Number(b.described) - Number(a.described) || b.score - a.score || a.node.id.localeCompare(b.node.id));
+      scored.sort((a, b) => {
+        const sourceOrder = Number(isWrittenTestSource(a.node.sourceId)) - Number(isWrittenTestSource(b.node.sourceId));
+        return (preferTestSources ? -sourceOrder : sourceOrder) || Number(b.described) - Number(a.described)
+          || b.score - a.score || a.node.id.localeCompare(b.node.id);
+      });
       const minimum = Math.min(2, language.termGroups.length);
       const intersected = scored.filter(item => item.groups >= minimum);
       subjects = (intersected.length ? intersected : scored).map(item => item.node);
@@ -265,6 +287,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         edges.push(edge); lexical.set(edge.from, edges);
       }
       if (parents.has(edge.from) && parents.has(edge.to)
+        && isWrittenTestSource(byId.get(edge.from)?.sourceId ?? '') === isWrittenTestSource(byId.get(edge.to)?.sourceId ?? '')
         && ['calls', 'invokes', 'handled_by', 'implemented-by', 'exposes', 'composes'].includes(edge.kind))
         addLink(edge.from, edge.to, [edge]);
     }
@@ -272,7 +295,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     // resolved call from that component can connect two matched subjects;
     // preserve the complete path rather than creating a synthetic call.
     for (const node of subjects) for (const membership of node.families ?? []) {
-      if (!parents.has(membership.id) || membership.id === node.id || !membership.roles.includes('dependency')) continue;
+      if (!parents.has(membership.id) || membership.id === node.id || !membership.roles.includes('dependency')
+        || isWrittenTestSource(byId.get(membership.id)?.sourceId ?? '') !== isWrittenTestSource(node.sourceId)) continue;
       for (const id of membership.via) {
         const edge = byEdgeId.get(id);
         if (!edge || edge.status !== 'resolved' || edge.to !== node.id || !edge.from || edge.from === membership.id) continue;
@@ -281,7 +305,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         for (let i = 0; i < queue.length; i += 1) {
           const item = queue[i]!;
           if (item.id === edge.from) { addLink(membership.id, node.id, [...item.path, edge]); break; }
-          for (const next of lexical.get(item.id) ?? []) if (next.to && !seen.has(next.to)) {
+          for (const next of lexical.get(item.id) ?? []) if (next.to && !seen.has(next.to)
+            && isWrittenTestSource(byId.get(next.to)?.sourceId ?? '') === isWrittenTestSource(node.sourceId)) {
             seen.add(next.to); queue.push({ id: next.to, path: [...item.path, next] });
           }
         }
@@ -325,7 +350,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     const links = [...components].flatMap(component => [...(edgesByComponent.get(component)?.values() ?? [])]);
     const connected = new Set(links.flatMap(edge => [edge.from, edge.to]).filter((id): id is string => Boolean(id)));
     const linkNodes = [...connected].filter(id => !ids.has(id)).map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
-    return { subjects: nodes, links, linkNodes, rank: ranked.get(nodes[0]!.id)! };
+    return { subjects: nodes, links, linkNodes, sourceCategory: isWrittenTestSource(nodes[0]!.sourceId) ? 'test-source' : 'other-source', rank: ranked.get(nodes[0]!.id)! };
   }).sort((a, b) => a.rank - b.rank);
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
   const limit = input.limit ?? 20;
@@ -550,15 +575,19 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         items: results.slice(offset, offset + limit) };
     }
   }
+  const sourceExtensions = new Set(subjectPage.map(node => /\.([a-z0-9]+)$/iu.exec(node.sourceId)?.[0]?.toLowerCase()).filter((value): value is string => Boolean(value)));
+  const sourceAnalysis = SOURCE_ANALYSIS_SUPPORT.filter(entry => entry.extensions.some(extension => sourceExtensions.has(extension)))
+    .map(entry => ({ technology: entry.technology, precision: entry.precision }));
   return {
     question: input.text,
+    sourceAnalysis,
     interpretation: { engine: 'wink-nlp', tokens: language.tokens, terms: language.terms, termGroups: language.termGroups,
       negated: language.negated, negativeTerms, requestedEffects, selection },
     navigation, comparison,
     subjectTotal: subjects.length,
     subjects: subjectPage,
     ...(groupedSelection ? { connectedGroupTotal: connectedGroups.length, connectedGroups: groupPage.map(group => ({
-      subjects: group.subjects, links: group.links, linkNodes: group.linkNodes,
+      subjects: group.subjects, links: group.links, linkNodes: group.linkNodes, sourceCategory: group.sourceCategory,
     })) } : {}),
     families,
     sourceFamilies,

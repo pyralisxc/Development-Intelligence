@@ -23,7 +23,7 @@ export const SOURCE_ANALYSIS_SUPPORT = [
   {
     technology: 'C#',
     extensions: ['.cs'],
-    precision: 'tree-sitter declarations, overload-aware identities, lexical containment, namespaces, and import bindings',
+    precision: 'tree-sitter declarations, overload-aware identities, lexical containment, namespaces, imports and conservatively bound calls and constructors; control-flow conditions and effects are not captured',
   },
   {
     technology: 'Java',
@@ -38,7 +38,7 @@ export const SOURCE_ANALYSIS_SUPPORT = [
   {
     technology: 'Go',
     extensions: ['.go'],
-    precision: 'package, type/struct/interface, function/method identities, lexical source containment, imports, and conservative module relationships',
+    precision: 'package, type/struct/interface, function/method identities, lexical source containment, imports and conservative module relationships; call relationships and control-flow effects are not captured',
   },
   {
     technology: 'Python',
