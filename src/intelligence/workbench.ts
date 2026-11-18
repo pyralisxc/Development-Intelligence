@@ -1698,28 +1698,35 @@ export async function queryWorkbenchRequest(input: {
         const family = result.families.find((value: any) => value.id === item.id);
         const linked = (family?.members ?? []).filter((member: any) =>
           member.roles.some((role: string) => ['dependency', 'caller', 'callback', 'related'].includes(role)));
-        const connections = linked.map((member: any) => `${member.roles.includes('callback') ? 'callback' : member.name ?? member.kind} (${member.locator})`).join(', ');
+        const connections = linked.map((member: any) => `${member.roles.filter((role: string) => ['dependency', 'caller', 'callback', 'related'].includes(role)).join('/')} ${member.name ?? member.kind} (${member.locator})`).join(', ');
         const familyIds = new Set([item.id, ...linked.filter((member: any) => member.roles.includes('callback')).map((member: any) => member.id)]);
         const families = result.sourceFamilies.filter((value: any) => familyIds.has(value.subjectId));
         const available = families.flatMap((value: any) => value.facts ?? [])
           .filter((fact: any) => typeof fact.expression === 'string');
-        const matching = available.filter((fact: any) => fact.matchedTerms?.length);
-        const facts = matching.length ? matching : available.filter((fact: any) => fact.kind === 'source-effect');
+        const facts = available.filter((fact: any) => fact.kind === 'source-effect'
+          && result.interpretation.termGroups.every((group: string[]) => group.some(term => fact.matchedTerms?.includes(term))));
+        const remainingFacts = available.length - facts.length;
         const details = facts.map((fact: any) => {
           const lines = String(fact.expression).split(/\r?\n/u);
           const expression = lines.length > 1 ? `${lines[0]} … (full source in details)` : lines[0];
           return `${expression}${fact.requirements?.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`;
         }).join('; ');
         const description = typeof item.value?.description === 'string' ? item.value.description : '';
-        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${connections ? `; connected: ${connections}` : ''}${details ? `; source facts: ${details}` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more family members at offset ${family.nextOffset}` : ''}`;
+        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${connections ? `; connected: ${connections}` : ''}${details ? `; matching source facts: ${details}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more family members at offset ${family.nextOffset}` : ''}`;
       };
       // Broad term matches are a ranked source scope, not one bound subject.
       // Compose visible source facts for that scope instead of asserting that
       // every incident relationship answers the question.
       const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
-        ? `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): `
-          + result.subjects.map(describeFamily).join(' | ')
-          + '. These are grouped graph subjects; inspect their family and source details for the complete records.'
+        ? (Array.isArray(result.connectedGroups)
+          ? `Connected source groups (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
+            + result.connectedGroups.map((group: any) => {
+              const names = new Map([...group.subjects, ...(group.linkNodes ?? [])].map((item: any) => [item.id, item.name ?? item.id]));
+              const links = group.links.map((edge: any) => `${names.get(edge.from) ?? edge.from} ${edge.kind} ${names.get(edge.to) ?? edge.to}`).join('; ');
+              return `${group.subjects.map((item: any) => `• ${describeFamily(item)}`).join('\n')}${links ? `\n  Relationships: ${links}` : ''}`;
+            }).join('\n\n')
+          : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map(describeFamily).join(' | ')}`)
+          + '. Groups follow resolved relationships; inspect source and family details for full records.'
         : '';
       const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation
         && result.families.some((family: any) => family.id === subject.id && family.total)

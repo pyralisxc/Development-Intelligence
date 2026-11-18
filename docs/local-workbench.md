@@ -39,6 +39,8 @@ Explore opens the graph first. Search for a subject, choose among matching ident
 
 Select a relationship line for its source and evidence, or use the inspector's Connections tab to inspect it from the keyboard. Node summaries show their graph-built families, family members and producer contributions; Graph source and coverage shows the selected source state and analysis coverage. A family can include a shared helper without merging that helper's other workflows into it.
 
+Source search against a selected working graph uses that graph’s local working files, including untracked files. It verifies the working source fingerprint before and after searching; if the files no longer match, rebuild the working graph before searching that graph. A selected committed graph continues to search its Git revision.
+
 The graph's Nodes and Depth controls set the displayed neighborhood per project on this device; they do not limit graph construction. Question filters include a results-per-page setting, and the terminal accepts `query --limit N` with `--offset` for the same graph filter. TypeScript compiler analysis has no fixed default file, byte or binding cutoff. An explicitly supplied graph file limit remains an operator choice and is reported in coverage.
 
 `di-local backup --backup-dir PATH` copies retained source graphs into a new backup directory. `di-local restore --backup-dir PATH --data-dir NEW_PATH` restores them into an empty graph location. These commands do not back up repository files or accepted semantic records. Use `history` to find retained graph IDs, `activate --graph-id ID` to select a retained generation, and `unpin --target NAME` to release a comparison target for cleanup on the next build.
