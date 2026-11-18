@@ -1259,12 +1259,15 @@ export async function viewerProjection(input: {
   if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(depth) || depth < 1)
     throw new Error('Graph display size and depth must be positive integers');
   const requested = input.node ?? input.query;
+  const graphContext = { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision,
+    ...(graph.sourceState ? { sourceState: graph.sourceState } : {}), sourceFingerprint: graph.sourceFingerprint,
+    analyzerVersion: graph.analyzerVersion, coverage: coverageSummary(graph), view };
   if (requested) {
     const candidates = findGraphNodeCandidates(graph, requested, Math.min(Number.MAX_SAFE_INTEGER, limit + 1));
     const candidateLimitReached = candidates.length > limit;
-    if (!candidates.length) return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, query: requested, nodes: [], edges: [], candidates: [] };
+    if (!candidates.length) return { ...graphContext, query: requested, nodes: [], edges: [], candidates: [] };
     if (candidates.length > 1 && !candidates.some(node => node.id === requested)) {
-      return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, query: requested, ambiguous: true, candidatesTruncated: candidateLimitReached, candidates: candidates.slice(0, limit).map(node => ({ id: node.id, kind: node.kind, layer: node.layer ?? 'structural', name: node.name ?? null, locator: node.locator })), nodes: [], edges: [] };
+      return { ...graphContext, query: requested, ambiguous: true, candidatesTruncated: candidateLimitReached, candidates: candidates.slice(0, limit).map(node => ({ id: node.id, kind: node.kind, layer: node.layer ?? 'structural', name: node.name ?? null, locator: node.locator })), nodes: [], edges: [] };
     }
     const selected = candidates.find(node => node.id === requested) ?? candidates[0]!;
     const neighborhood = boundedNeighborhood(graph, context, [selected.id], depth, limit);
@@ -1272,7 +1275,7 @@ export async function viewerProjection(input: {
       ...neighborhood.nodes.flatMap(node => node.evidenceIds ?? []),
       ...neighborhood.edges.flatMap(edge => edge.evidenceIds ?? []),
     ]);
-    return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, selected: selected.id, nodes: neighborhood.nodes, edges: neighborhood.edges, evidence: graph.evidence.filter(item => evidenceIds.has(item.id)), coverage: coverageSummary(graph), truncated: neighborhood.nodes.length >= limit };
+    return { ...graphContext, selected: selected.id, nodes: neighborhood.nodes, edges: neighborhood.edges, evidence: graph.evidence.filter(item => evidenceIds.has(item.id)), truncated: neighborhood.nodes.length >= limit };
   }
 
   let seedNodes: GraphNode[];
@@ -1294,7 +1297,7 @@ export async function viewerProjection(input: {
   // Include the neighborhood of the selected concepts: relationships often
   // end at implementation nodes outside the semantic seed kinds.
   const neighborhood = boundedNeighborhood(graph, context, seedNodes.map(node => node.id), 1, limit);
-  return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, view, nodes: neighborhood.nodes, edges: neighborhood.edges, coverage: coverageSummary(graph), truncated: seedsTruncated || neighborhood.nodes.length >= limit };
+  return { ...graphContext, nodes: neighborhood.nodes, edges: neighborhood.edges, truncated: seedsTruncated || neighborhood.nodes.length >= limit };
 }
 
 const SYMBOL_KINDS_FOR_VIEW = new Set(['function', 'method', 'class', 'interface', 'type', 'declaration']);

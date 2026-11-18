@@ -32,7 +32,7 @@ export function observation(input: ObservationInput): Observation {
   const { id, identity, raw: suppliedRaw, ...rest } = input;
   const raw = suppliedRaw ?? stringifyValue(rest.value);
   const defaultIdentity = [rest.sourceId, rest.kind, rest.locator, rest.field ?? null];
-  return { ...rest, raw, id: id ?? stableHash(identity ?? defaultIdentity) };
+  return { ...rest, ...(raw === rest.name && raw === rest.value ? {} : { raw }), id: id ?? stableHash(identity ?? defaultIdentity) };
 }
 
 export function evidenceRecord(input: Omit<EvidenceRecord, 'id'> & { id?: string }): EvidenceRecord {

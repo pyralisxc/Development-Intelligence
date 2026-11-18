@@ -8,7 +8,7 @@ import { runtimeIdentity } from './runtimeIdentity.js';
 import { currentGraph } from './intelligence/service.js';
 import { localSourceGraphHistory } from './intelligence/localGraphStore.js';
 import { localLifecycleStatus, startLocalOperation, updateLocalSettings } from './intelligence/localOperations.js';
-import { compareRevisionSet, diffDefaultToSelected, diffRevisions, pageGraphDiff, viewerProjection } from './intelligence/query.js';
+import { compareRevisionSet, diffDefaultToSelected, diffRevisions, graphEvidence, pageGraphDiff, viewerProjection } from './intelligence/query.js';
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbenchRequest, scopeOrientation, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
 import { handleOAuthHttpRequest } from './oauthHttp.js';
@@ -344,6 +344,10 @@ export function createDevelopmentIntelligenceServer() {
           const node = requestUrl.searchParams.get('node');
           if (!node) throw Object.assign(new Error('Missing ?node='), { status: 400 });
           result = await inspectEntity({ project, node, ...context });
+        } else if (action === 'relationship') {
+          const edge = requestUrl.searchParams.get('edge');
+          if (!edge) throw Object.assign(new Error('Missing ?edge='), { status: 400 });
+          result = await graphEvidence({ project, edge, ...context });
         } else if (action === 'explore') {
           result = await exploreWorkbench({ project, query: requestUrl.searchParams.get('query') ?? undefined, limit: numberParam(requestUrl, 'limit', 250), ...context });
         } else if (action === 'sources') result = await workbenchSources(project, context.ref, context.graphId);

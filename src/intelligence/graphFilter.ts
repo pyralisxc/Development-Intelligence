@@ -62,9 +62,20 @@ function words(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/gu, '$1 $2').replace(/[_./:#-]+/gu, ' ').toLowerCase();
 }
 
-function includesTerm(value: string, term: string): boolean {
-  if (term.length > 2) return value.includes(term);
-  return value.split(/\s+/u).includes(term);
+function termMatcher(): (value: string, term: string) => boolean {
+  const patterns = new Map<string, RegExp>();
+  return (value, term) => {
+  // Match words and ordinary inflections, not arbitrary substrings inside a
+  // different identifier (for example, an icon name ending in a digit).
+  let pattern = patterns.get(term);
+  if (!pattern) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const stem = escaped.endsWith('e') ? escaped.slice(0, -1) : escaped;
+    pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}_])(?:${escaped}|${escaped}s|${escaped}ed|${stem}ed|${escaped}ing|${stem}ing)(?=$|[^\\p{L}\\p{N}_])`, 'u');
+    patterns.set(term, pattern);
+  }
+  return pattern.test(value);
+  };
 }
 
 function containsName(question: string, name: string): boolean {
@@ -81,11 +92,12 @@ function containsName(question: string, name: string): boolean {
   return false;
 }
 
-const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'provider', 'mcp-tool', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference']);
+const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference']);
 
 /** Language proposes terms and exact names; selection and navigation operate
  * exclusively on the graph's existing nodes and relationships. */
 export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): Record<string, unknown> {
+  const includesTerm = termMatcher();
   const language = interpret(input.text);
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
   const kinds = new Set(input.nodeKinds ?? []);
@@ -146,7 +158,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         for (const term of matching) group.add(term);
         factTerms.set(value.functionId, group);
       }
-      const scored: Array<{ node: GraphNode; score: number; groups: number }> = [];
+      const scored: Array<{ node: GraphNode; score: number; groups: number; described: boolean }> = [];
       for (const node of eligible) {
         // Source occurrences are good exact subjects, but letting every call
         // site compete with its owner swamps broad feature searches.
@@ -154,6 +166,9 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         const name = words(node.name ?? '');
         const locator = words(node.locator);
         const raw = words(node.raw ?? '');
+        const descriptionValue = node.value && typeof node.value === 'object'
+          ? (node.value as { description?: unknown }).description : undefined;
+        const description = typeof descriptionValue === 'string' ? words(descriptionValue) : '';
         let score = 0;
         let groups = 0;
         for (const group of language.termGroups) {
@@ -166,11 +181,17 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
           if (includesTerm(raw, term)) score += 1;
           if (factTerms.get(node.id)?.has(term)) score += 3;
         }
-        if (score) scored.push({ node, groups, score: score
+        // In a noun phrase the final meaningful noun generally names the
+        // subject; earlier words refine it. Prefer that name over incidental
+        // matches inside a large source expression.
+        const head = language.termGroups.at(-1) ?? [];
+        if (head.some(term => includesTerm(name, words(term)))) score += 6;
+        const described = Boolean(description && language.termGroups.every(group => group.some(term => includesTerm(description, words(term)))));
+        if (score) scored.push({ node, groups, described, score: score
           + (['function', 'method', 'constructor'].includes(node.kind) ? 4 : 0)
           + (sourceFamilies.has(node.id) ? 2 : 0) });
       }
-      scored.sort((a, b) => b.score - a.score || a.node.id.localeCompare(b.node.id));
+      scored.sort((a, b) => Number(b.described) - Number(a.described) || b.score - a.score || a.node.id.localeCompare(b.node.id));
       const minimum = Math.min(2, language.termGroups.length);
       const intersected = scored.filter(item => item.groups >= minimum);
       subjects = (intersected.length ? intersected : scored).map(item => item.node);
@@ -255,8 +276,9 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const include = (node: GraphNode | undefined): void => {
     if (node && !listed.has(node.id)) { listed.add(node.id); allNodes.push(node); }
   };
-  const familyOwners = [...subjects, ...(depth > 1 ? graph.nodes.filter(node => adjacentIds.has(node.id)
-    && !subjectIds.has(node.id) && factsBySubject.has(node.id)) : [])];
+  const familyOwners = [...subjects, ...graph.nodes.filter(node => adjacentIds.has(node.id)
+    && !subjectIds.has(node.id) && factsBySubject.has(node.id)
+    && (depth > 1 || (node.families ?? []).some(family => subjectIds.has(family.id) && family.roles.includes('callback'))))];
   for (const subject of familyOwners) {
     include(subject);
     for (const id of factsBySubject.get(subject.id) ?? []) include(byId.get(id));
@@ -266,6 +288,26 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const limit = input.limit ?? 20;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Graph page size must be a positive integer');
   const subjectPage = subjects.slice(offset, offset + limit);
+  // Return the prebuilt family for each selected subject. Membership records
+  // refer to existing nodes/edges and never reinterpret a dependency as a call.
+  const familySubjects = selection === 'exact-name' || selection === 'scope' ? subjects : subjectPage;
+  const requestedFamilies = new Set(familySubjects.map(item => item.id));
+  const familyMembers = new Map<string, Array<{ id: string; kind: string; name: string | null; locator: string; roles: string[]; via: string[] }>>();
+  if (requestedFamilies.size) for (const node of graph.nodes) for (const membership of node.families ?? []) {
+    if (!requestedFamilies.has(membership.id) || membership.id === node.id) continue;
+    const items = familyMembers.get(membership.id) ?? [];
+    items.push({ id: node.id, kind: node.kind, name: node.name ?? null, locator: node.locator,
+      roles: membership.roles, via: membership.via });
+    familyMembers.set(membership.id, items);
+  }
+  const families = familySubjects.map(subject => {
+    const members = familyMembers.get(subject.id) ?? [];
+    const priority = (roles: string[]) => roles.includes('callback') ? 0 : roles.includes('dependency') ? 1 : roles.includes('caller') ? 2 : roles.includes('related') ? 3 : 4;
+    members.sort((a, b) => priority(a.roles) - priority(b.roles) || a.locator.localeCompare(b.locator) || a.id.localeCompare(b.id));
+    return { id: subject.id, name: subject.name ?? subject.id, kind: subject.kind,
+      locator: subject.locator, total: members.length, members: members.slice(offset, offset + limit),
+      nextOffset: offset + limit < members.length ? offset + limit : null };
+  });
   const negativeTerms = [...new Set(language.tokens.filter(token => token.negated)
     .flatMap(token => [token.text.toLowerCase(), token.lemma]).filter(term => term.length > 1))];
   const effectVocabulary = new Set(['call', 'return', 'write', 'throw']);
@@ -282,8 +324,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       return { id: node.id, kind: node.kind, effectKind,
         locator: node.locator, sourceId: node.sourceId, evidenceIds: node.evidenceIds ?? [], expression: node.raw,
         controlContext: value?.controlContext ?? [], requirementsComplete: value?.requirementsComplete ?? true,
-        matchedTerms: language.terms.filter(term => includesTerm(words(node.raw), words(term))),
-        matchedNegativeTerms: negativeTerms.filter(term => includesTerm(words(node.raw), words(term))),
+        matchedTerms: language.terms.filter(term => includesTerm(words(node.raw ?? ''), words(term))),
+        matchedNegativeTerms: negativeTerms.filter(term => includesTerm(words(node.raw ?? ''), words(term))),
         requirements: (value?.requiredConditions ?? []).map(requirement => ({
           conditionId: requirement.conditionId, expectedTruth: requirement.expectedTruth,
           predicate: conditions.get(requirement.conditionId)?.raw ?? null,
@@ -417,6 +459,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     navigation, comparison,
     subjectTotal: subjects.length,
     subjects: subjectPage,
+    families,
     sourceFamilies,
     sourceFamilyTotal: familyOwners.filter(subject => factsBySubject.has(subject.id)).length,
     nodeTotal: allNodes.length,

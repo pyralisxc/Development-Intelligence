@@ -433,6 +433,28 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     let pushedFunction = false;
     let pushedScope = false;
 
+    // Declarative tool registries can expose the same source relationship as
+    // a registration call. Keep the registration distinct from its inline
+    // handler; the handler's body is analyzed as its own callable below.
+    if (ts.isObjectLiteralExpression(node) && ts.isArrayLiteralExpression(node.parent)) {
+      const properties = objectProperties(node);
+      const name = staticString(properties.get('name'));
+      const description = staticString(properties.get('description'));
+      const handler = unwrap(properties.get('handler'));
+      if (name && properties.has('inputSchema') && handler && (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler))) {
+        const registration = observation({ sourceId: context.source.id, kind: 'tool-registration',
+          locator: locator(node, ':tool-registration'), name, field: 'tool',
+          value: { name, ...(description ? { description } : {}) },
+          raw: description ?? name, layer: 'representation', checkpoint: false });
+        observations.push(registration);
+        resolutions.push(resolution({ from: registration.id,
+          to: `symbol:${context.locatorBase}#function:isolated-callback-${handler.getStart(sourceFile)}`,
+          kind: 'handled_by', strategy: 'declarative-tool-handler', confidence: 1,
+          status: 'resolved', evidence: [registration.locator, locator(handler)],
+          layer: 'representation', checkpoint: false }));
+      }
+    }
+
     if (ts.isFunctionDeclaration(node) && node.name) {
       const symbol = addSymbol(node.name.text, 'function', node);
       const props = destructuredParameterNames(node.parameters);
@@ -589,8 +611,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       const isolated = observation({
         id: `symbol:${context.locatorBase}#function:isolated-callback-${node.getStart(sourceFile)}`,
         sourceId: context.source.id, kind: 'function', locator: locator(node),
-        name: 'unresolved callback', field: 'identifier',
-        value: { invoked: false }, layer: 'structural', checkpoint: false,
+        name: 'callback', field: 'identifier',
+        value: {}, layer: 'structural', checkpoint: false,
       });
       observations.push(isolated);
       functionStack.push(isolated);
