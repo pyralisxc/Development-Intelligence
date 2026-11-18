@@ -1,3 +1,4 @@
+import { isEndpoint, isInteractionPoint } from './graphKnowledge.js';
 import type { GraphEdge, GraphFamilyMembership, GraphNode, IntelligenceGraph } from '../types.js';
 import ts from 'typescript';
 import { TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
@@ -8,11 +9,11 @@ import { TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
  * target's other callers or dependencies. Nested callback bodies are lexical
  * members of their owner, independent of whether invocation was established. */
 const SUBJECTS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type',
-  'feature', 'capability', 'route', 'api', 'mcp', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function']);
+  'feature', 'capability', 'ui-element', 'dom-interaction', 'route', 'api', 'mcp', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function']);
 const OWNED = new Set(['has-parameter', 'has-condition', 'has-effect', 'has-source-control',
-  'has-argument', 'argument-for', 'calls-site', 'callback-argument', 'declares']);
+  'has-argument', 'argument-for', 'spreads-properties', 'has-interaction', 'registers-interaction', 'calls-site', 'callback-argument', 'declares']);
 const DIRECT = new Set(['calls', 'invokes', 'handled_by', 'registered-as', 'implemented-by',
-  'exposes', 'composes', 'uses-feature', 'automated-by', 'same-routine-name', 'candidate-sql-definition']);
+  'exposes', 'binds_to', 'composes', 'uses-feature', 'automated-by', 'same-routine-name', 'candidate-sql-definition']);
 
 type Builder = { roles: Set<string>; via: Set<string> };
 
@@ -74,7 +75,11 @@ export function buildGraphFamilies(graph: IntelligenceGraph): IntelligenceGraph 
       if (OWNED.has(edge.kind)) queueComponent(edge.to, current.family, edge.kind === 'callback-argument');
     }
   }
-  const result: GraphNode[] = graph.nodes.map(node => {
+  const result: GraphNode[] = graph.nodes.map(original => {
+    const tags = new Set(original.tags ?? []);
+    if (isInteractionPoint(original)) tags.add('interaction-point');
+    if (isEndpoint(original)) tags.add('endpoint');
+    const node = tags.size !== (original.tags?.length ?? 0) ? { ...original, tags: [...tags] } : original;
     const families = memberships.get(node.id);
     const contribution = compilerSubjects.has(node.id) ? { producer: 'typescript-checker', version: ts.version,
       symbol: node.name ?? node.id, locator: node.locator } : null;

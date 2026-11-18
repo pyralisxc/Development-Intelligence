@@ -224,6 +224,11 @@ This syntax-derived structure remains structural, not semantic. C#, Java, and Py
 
 ## Parity intelligence
 
+Interaction parity compares two selected graph states without requiring a question or expectation contract. Concrete interaction subjects (including source-backed UI elements, event registrations, routes and tool registrations) retain their own identities and an `interaction-point` classification. An optional source/name filter narrows its interaction subjects. The comparison follows captured directed execution, binding, condition, effect and state relationships for each paged interaction, returns revision-bound graph selections and distinguishes changed, added, removed, ambiguous, incomplete and matching captured paths. It does not equate a matching captured path with complete behavior or establish retirement intent. Candidate component-prop handoffs remain visible as unresolved possibilities until their instance context is established. The Workbench, `compare_interactions` MCP operation and `di-local parity` use the same graph comparison; existing expectation contracts remain an optional separate overlay.
+
+The TypeScript analyzer captures JSX event attributes, property spreads and DOM event registrations as source occurrences, preserving their event and callback bindings; the compiler contributes candidate spread-value and cross-component callback handoffs and source-bound reads of statically initialized values. The repository audit can also find callables with no resolved path from captured interaction roots. This is an investigation over the current graph, not proof that code is dead: uncaptured entry points, dynamic dispatch and incomplete source or relationship coverage remain relevant.
+
+
 Parity describes observed representations around semantic entities, for example:
 
 ```text
@@ -340,6 +345,6 @@ DI supports bearer, trusted-proxy, private owner-session, native single-owner OA
 
 ### Investigation selections
 
-An investigation binds an operation to an exact graph identity and source state, then selects graph nodes and relationships. Question filters, inspection, parity and audit retain their own result semantics while exposing the selected records and their attached evidence, coverage and page or scope. The selection is an ephemeral projection, not a graph store or an additional fact authority. Relationship endpoints are included as context; focus identifies the records selected by the operation. Missing expectations remain in parity results without creating graph entities.
+An investigation binds an operation to an exact graph identity and source state, then selects graph nodes and relationships. Question filters, inspection, trace, parity and audit retain their own result semantics while exposing the selected records and their attached evidence, coverage and page or scope. The selection is an ephemeral projection, not a graph store or an additional fact authority. Relationship endpoints are included as context; focus identifies the records selected by the operation. Missing expectations remain in parity results without creating graph entities.
 
 A comparison has separate selections for its base and head graphs. Its page determines which change records are selected on each side; a moved or changed record is taken from the corresponding source state. Workbench graph following, node and edge inspection, and subsequent questions use the selection's graph identity. The graph renderer displays those records rather than re-running a different search; switching back to context is explicit. Unresolved and candidate relationships retain their status. Building and animating graphs are separate from this investigation sequence.

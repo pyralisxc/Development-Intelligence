@@ -127,7 +127,22 @@ export function compilerTypeScriptReferences(input: {
 
   const native = new Map<string, GraphNode[]>();
   const callSites = new Map<string, GraphNode>();
+  const propBindings = new Map<string, GraphNode>();
+  const initialBindings = new Map<string, GraphNode>();
+  const jsxSpreads = new Map<string, GraphNode>();
   for (const node of input.nodes) {
+    if (node.kind === 'jsx-prop-spread' && node.sourceId.startsWith('repo:') && node.value && typeof node.value === 'object') {
+      const offset = (node.value as { sourceOffset?: unknown }).sourceOffset;
+      if (typeof offset === 'number') jsxSpreads.set([node.sourceId.slice(5), offset].join('\0'), node);
+    }
+    if (node.kind === 'state-binding' && node.field === 'initial-value' && node.name && node.sourceId.startsWith('repo:')) {
+      const file = node.sourceId.slice(5), line = graphNodeLine(node, file);
+      if (line !== null) initialBindings.set([file, line, node.name].join('\0'), node);
+    }
+    if (node.kind === 'component-prop-binding' && node.name && node.sourceId.startsWith('repo:')) {
+      const file = node.sourceId.slice(5), line = graphNodeLine(node, file);
+      if (line !== null) propBindings.set([file, line, node.name].join('\0'), node);
+    }
     if (node.kind === 'call-reference' && node.sourceId.startsWith('repo:') && node.value && typeof node.value === 'object') {
       const value = node.value as { language?: string; sourceOffset?: number; functionId?: string };
       if (value.language === 'typescript' && typeof value.sourceOffset === 'number' && value.functionId)
@@ -171,6 +186,19 @@ export function compilerTypeScriptReferences(input: {
         evidence: [item.locator], layer: 'structural', checkpoint: false }));
       return item;
     };
+    const componentCalls = new Map<string, GraphNode[]>();
+    const componentBindings = new Map<string, GraphNode[]>();
+    const componentKey = (declaration: ts.Declaration, prop: string): string | null => {
+      const fn = ts.isVariableDeclaration(declaration) && declaration.initializer
+        && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))
+        ? declaration.initializer : declaration;
+      if (!ts.isFunctionDeclaration(fn) && !ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return null;
+      const location = declarationLocation(input.root, fn, tracked);
+      return location ? [location.file, location.name, location.line, prop].join('\0') : null;
+    };
+    const addComponent = (map: Map<string, GraphNode[]>, key: string, item: GraphNode) => {
+      const group = map.get(key) ?? []; group.push(item); map.set(key, group);
+    };
     let resolvedBindings = 0;
     for (const file of relatives) {
       if (resolvedBindings >= budget.maxBindings) break;
@@ -187,6 +215,18 @@ export function compilerTypeScriptReferences(input: {
               ? node.expression.name : node.expression);
             const calleeSymbol = referenced && (referenced.flags & ts.SymbolFlags.Alias)
               ? checker.getAliasedSymbol(referenced) : referenced;
+            if (site && ts.isIdentifier(node.expression)) {
+              const binding = calleeSymbol?.valueDeclaration;
+              if (binding && ts.isBindingElement(binding) && !binding.initializer
+                  && ts.isObjectBindingPattern(binding.parent) && ts.isParameter(binding.parent.parent)) {
+                const parameter = binding.parent.parent, component = parameter.parent;
+                const prop = binding.propertyName && ts.isIdentifier(binding.propertyName) ? binding.propertyName.text
+                  : ts.isIdentifier(binding.name) ? binding.name.text : null;
+                const key = prop && componentKey(component, prop);
+                if (key) addComponent(componentCalls, key, site);
+              }
+            }
+
             if (site && ts.isIdentifier(node.expression)) {
               const parameter = calleeSymbol?.declarations?.find(ts.isParameter);
               if (parameter && ts.isFunctionLike(parameter.parent)) {
@@ -274,9 +314,68 @@ export function compilerTypeScriptReferences(input: {
             }
           }
         }
+        if (ts.isIdentifier(node) && !(ts.isVariableDeclaration(node.parent) && node.parent.name === node)) {
+          const symbol = checker.getSymbolAtLocation(node);
+          const declaration = symbol?.valueDeclaration;
+          if (declaration && ts.isVariableDeclaration(declaration)) {
+            const declarationSource = declaration.getSourceFile();
+            const declarationFile = relativeFile(input.root, declarationSource.fileName);
+            const declarationLine = declarationSource.getLineAndCharacterOfPosition(declaration.getStart(declarationSource)).line + 1;
+            const state = declarationFile ? initialBindings.get([declarationFile, declarationLine, node.text].join('\0')) : undefined;
+            if (state) {
+              let ownerNode: ts.Node | undefined = node.parent;
+              while (ownerNode && ownerNode !== source && !ts.isFunctionDeclaration(ownerNode)
+                && !ts.isMethodDeclaration(ownerNode) && !ts.isArrowFunction(ownerNode) && !ts.isFunctionExpression(ownerNode)) ownerNode = ownerNode.parent;
+              const location = ownerNode && ownerNode !== source ? declarationLocation(input.root, ownerNode as ts.SignatureDeclaration, tracked) : null;
+              const owners = location ? native.get([location.file, location.name, location.line].join('\0')) ?? [] : [];
+              const assignment = ts.isBinaryExpression(node.parent) && node.parent.left === node
+                && node.parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+              if (owners.length === 1 && !assignment) resultEdges.push(resolution({ from: owners[0]!.id, to: state.id,
+                kind: 'reads', strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved',
+                evidence: [`${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`, state.locator], layer: 'structural', checkpoint: false }));
+            }
+          }
+        }
+        if (ts.isJsxSpreadAttribute(node)) {
+          const spread = jsxSpreads.get([file, node.getStart(source)].join('\0'));
+          let expression: ts.Expression = node.expression;
+          while (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) || ts.isNonNullExpression(expression)
+              || ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) expression = expression.expression;
+          if (spread && ts.isIdentifier(expression)) {
+            const symbol = checker.getSymbolAtLocation(expression), declaration = symbol?.valueDeclaration;
+            if (declaration && ts.isVariableDeclaration(declaration) && ts.isVariableDeclarationList(declaration.parent)
+                && (declaration.parent.flags & ts.NodeFlags.Const) !== 0 && declaration.initializer && ts.isCallExpression(declaration.initializer)
+                && declaration.getSourceFile() === source) {
+              const site = callSites.get([file, declaration.initializer.getStart(source)].join('\0'));
+              if (site) resultEdges.push(resolution({ from: spread.id, to: site.id, kind: 'potential-value-from',
+                strategy: 'typescript-jsx-spread-binding', confidence: null, status: 'candidate',
+                evidence: [spread.locator, site.locator, 'TypeScript binds the spread receiver to this const call result; the property value and rendering context may change.'],
+                layer: 'representation', checkpoint: false }));
+            }
+          }
+        }
+        if (ts.isJsxAttribute(node) && /^on[A-Z]/u.test(node.name.getText(source))) {
+          const opening = node.parent.parent;
+          if (ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening)) {
+            const tag = opening.tagName.getText(source), prop = node.name.getText(source);
+            const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+            const binding = propBindings.get([file, line, `${tag}.${prop}`].join('\0'));
+            const symbol = checker.getSymbolAtLocation(opening.tagName);
+            const target = symbol && (symbol.flags & ts.SymbolFlags.Alias) ? checker.getAliasedSymbol(symbol) : symbol;
+            const declaration = target?.valueDeclaration;
+            const key = declaration && componentKey(declaration, prop);
+            if (binding && key) addComponent(componentBindings, key, binding);
+          }
+        }
         ts.forEachChild(node, visit);
       };
       visit(source);
+    }
+    for (const [key, sites] of componentCalls) for (const site of sites) for (const binding of componentBindings.get(key) ?? []) {
+      resultEdges.push(resolution({ from: site.id, to: binding.id, kind: 'potentially-provided-by',
+        strategy: 'typescript-component-prop', confidence: null, status: 'candidate',
+        evidence: [site.locator, binding.locator, 'TypeScript resolves the component and prop; the active component instance is not established.'],
+        layer: 'structural', checkpoint: false }));
     }
     const saturated = resolvedBindings >= budget.maxBindings;
     return { nodes: [...resultNodes.values()], edges: resultEdges, sourceFiles: relatives.length, resolvedBindings,

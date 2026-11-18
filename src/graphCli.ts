@@ -1,3 +1,4 @@
+import { compareInteractionGraphs } from './intelligence/interactionParity.js';
 import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
 import { promises as fs } from 'node:fs';
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
@@ -104,6 +105,15 @@ async function main(): Promise<void> {
     if (!dataDir || !project || !target) throw new Error('working-unpin requires --data-dir, --project and --target');
     await removeLocalGraphTarget(dataDir, project, target);
     console.log(JSON.stringify({ project, target, pinned: false }, null, 2));
+  } else if (command === 'working-parity') {
+    const dataDir = arg('--data-dir'), base = arg('--base'), target = arg('--target') ?? 'working';
+    if (!dataDir || !project || !base) throw new Error('working-parity requires --data-dir, --project and --base');
+    const catalog = await localSourceGraphHistory(dataDir, project);
+    const resolve = (name: string) => catalog?.entries.find(item => item.generation === catalog.targets?.[name]);
+    const before = resolve(base), after = resolve(target);
+    if (!before || !after) throw new Error('Parity targets must have retained graphs');
+    const [left, right] = await Promise.all([readLocalSourceGraph(dataDir, project, before.graphId, before.generation), readLocalSourceGraph(dataDir, project, after.graphId, after.generation)]);
+    console.log(JSON.stringify(compareInteractionGraphs(left, right, Number(arg('--offset') ?? '0'), Number(arg('--limit') ?? '20'), arg('--scope')), null, 2));
   } else if (command === 'working-compare') {
     const dataDir = arg('--data-dir');
     const base = arg('--base');

@@ -1,3 +1,4 @@
+import { compareInteractionRevisions } from './intelligence/interactionParity.js';
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import http from 'node:http';
@@ -352,9 +353,13 @@ export function createDevelopmentIntelligenceServer() {
           result = await graphEvidence({ project, edge, ...context });
         } else if (action === 'explore') {
           result = await exploreWorkbench({ project, query: requestUrl.searchParams.get('query') ?? undefined, limit: numberParam(requestUrl, 'limit', 250), ...context });
-        } else if (action === 'audit') result = await repositoryAudit({ project, ...context });
+        } else if (action === 'audit') result = await repositoryAudit({ project, ...context, offset: numberParam(requestUrl, 'offset', 0), limit: numberParam(requestUrl, 'limit', 20) });
         else if (action === 'sources') result = await workbenchSources(project, context.ref, context.graphId);
-        else if (action === 'compare-graphs') {
+        else if (action === 'interaction-parity') {
+          const baseRef = requestUrl.searchParams.get('baseRef') ?? 'main';
+          const ref = requestUrl.searchParams.get('headRef') ?? 'preview';
+          result = await compareInteractionRevisions({ project, baseRef, ref, scope: requestUrl.searchParams.get('scope') ?? undefined, offset: numberParam(requestUrl, 'offset', 0), limit: numberParam(requestUrl, 'limit', 20) });
+        } else if (action === 'compare-graphs') {
           const refs = requestUrl.searchParams.getAll('refs');
           const offset = Number(requestUrl.searchParams.get('offset') ?? 0), limit = Number(requestUrl.searchParams.get('limit') ?? 50);
           result = await compareRevisionSet({ project, refs: refs.length ? refs : ['main', 'preview', 'working-tree'], offset, limit });

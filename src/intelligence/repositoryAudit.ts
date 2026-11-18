@@ -1,3 +1,4 @@
+import { interactionReachability } from './interactionParity.js';
 import { investigationSelection, observedGraphIds } from './investigation.js';
 import type { GraphEdge, GraphNode, GraphCoverageStatus, IntelligenceGraph } from '../types.js';
 import { auditGraph, type AuditFinding } from './assessment.js';
@@ -13,6 +14,7 @@ const BOUNDARY_RELATIONSHIP_KINDS = new Set([
 
 interface RepositoryAuditOptions {
   limit?: number;
+  offset?: number;
 }
 
 function compactCoverage(graph: IntelligenceGraph): Record<string, unknown> | null {
@@ -327,6 +329,7 @@ function triageInvestigationTarget(item: Record<string, unknown>) {
     why: 'An unresolved or candidate relationship can reflect a missing static binding, dynamic dispatch, or absent evidence, not necessarily incorrect source code.',
     };
   }
+  if (kind === 'unconnected-callables') return { route: 'investigate-reachability', confidence: 'captured-graph-only', developerDecisionRequired: null, why: 'An uncaptured entry point or dynamic connection may reach this code; inspect the source and graph before deciding it is unused.' };
   if (kind === 'architecture-boundary') return {
     route: 'developer-judgment-after-evidence',
     confidence: 'investigation-signal',
@@ -355,6 +358,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
   const blockers = coverageBlockers(graph, limit);
   const architectureBoundaries = bidirectionalArchitectureBoundaries(graph, limit, indexes);
   const precisionLimits = analyzerPrecisionLimits(graph);
+  const reachability = interactionReachability(graph, limit, options.offset ?? 0);
   const targets: Array<Record<string, unknown>> = [];
 
   for (const signal of precisionLimits) targets.push({
@@ -399,6 +403,14 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
       : 'Inspect the conflicting observed values and their source evidence before selecting or accepting one value.',
   });
 
+  if (reachability.interactionRoots && reachability.unconnectedCallableCount) targets.push({
+    kind: 'unconnected-callables', basis: 'derived-investigation', count: reachability.unconnectedCallableCount,
+    summary: `${reachability.unconnectedCallableCount} callable(s) have no resolved behavior path from captured interaction points.`,
+    evidence: { interactionRoots: reachability.interactionRoots, candidates: reachability.candidates },
+    fixSurface: fixSurface(indexes, reachability.candidates.map(item => item.id)),
+    nextEvidence: reachability.meaning,
+  });
+
   for (const boundary of architectureBoundaries) targets.push({
     kind: 'architecture-boundary',
     basis: 'derived-investigation',
@@ -421,6 +433,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     relationshipConcentrations: relationships,
     coverageBlockers: blockers,
     architectureBoundaries,
+    interactionReachability: reachability,
     investigationTargets: targets.slice(0, limit).map(item => ({
       ...item, triage: triageInvestigationTarget(item),
     })),
@@ -447,8 +460,10 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
   };
 }
 
-export async function repositoryAudit(input: { project: string; ref?: string; graphId?: string; limit?: number }): Promise<Record<string, unknown>> {
+export async function repositoryAudit(input: { project: string; ref?: string; graphId?: string; limit?: number; offset?: number }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const result = synthesizeRepositoryAudit(graph, { ...(typeof input.limit === 'number' ? { limit: input.limit } : {}) }) as any;
-  return { ...result, investigation: investigationSelection(graph, 'audit', observedGraphIds(graph, [result.findings, result.investigationTargets])) };
+  const result = synthesizeRepositoryAudit(graph, { ...(typeof input.limit === 'number' ? { limit: input.limit } : {}), ...(typeof input.offset === 'number' ? { offset: input.offset } : {}) }) as any;
+  const indexes = { nodeIds: new Set(graph.nodes.map(node => node.id)), edgeIds: new Set(graph.edges.map(edge => edge.id)) };
+  const selection = investigationSelection(graph, 'audit', observedGraphIds(graph, [result.findings, result.investigationTargets], indexes));
+  return { ...result, investigationTargets: result.investigationTargets.map((item: unknown) => ({ ...(item as object), investigation: investigationSelection(graph, 'audit-target', observedGraphIds(graph, item, indexes)) })), investigation: selection };
 }

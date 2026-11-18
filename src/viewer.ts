@@ -74,8 +74,8 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
     ${process.env.DEVINT_LOCAL_SETTINGS ? '<button class="nav-button" data-section="local"><span class="nav-icon">L</span><span class="nav-copy"><strong>Local setup</strong><span>Builds, storage and recovery</span></span></button>' : ''}
     <div class="nav-label">Advanced</div>
     <button class="nav-button" data-section="semantics"><span class="nav-icon">M</span><span class="nav-copy"><strong>Semantics</strong><span>Explore source-derived meaning</span></span></button>
-    <button class="nav-button" data-section="parity"><span class="nav-icon">P</span><span class="nav-copy"><strong>Parity</strong><span>Evaluate expected outcomes</span></span></button>
-    <div class="nav-foot">The graph is one representation of the same intelligence agents query. Parity Contracts compare caller-owned expectations with observed reality without changing source evidence.</div>
+    <button class="nav-button" data-section="parity"><span class="nav-icon">P</span><span class="nav-copy"><strong>Parity</strong><span>Compare interaction paths</span></span></button>
+    <div class="nav-foot">The graph is one representation of the same intelligence agents query. Parity follows interaction paths across revisions; optional expectations use the same graph evidence.</div>
   </aside>
   <section class="workspace"><div id="section-head" class="section-head"></div><div id="content" class="content"></div></section>
   <aside class="inspector"><div class="inspector-head"><h2>Inspector</h2><span id="inspector-context" class="muted"></span></div><div id="inspector-tabs" class="inspector-tabs"></div><div id="inspector-body" class="inspector-body"><div class="empty"><div><strong>Nothing selected</strong>Choose an entity from Overview or Explore to get quick notes, connections, code, evidence and change context.</div></div></div></aside>

@@ -17,6 +17,16 @@ export type NodeTrait = 'container' | 'callable' | 'symbol' | 'source-site'
 export type RealizationFacet = 'human' | 'agent' | 'transport'
   | 'implementation' | 'persistence' | 'provider';
 
+/** Shared role vocabulary; an interaction retains its concrete graph kind. */
+const INTERACTION_POINT_KINDS = new Set(['ui-element', 'dom-interaction', 'route', 'api', 'mcp-tool', 'tool-registration']);
+const ENDPOINT_KINDS = new Set(['route', 'api', 'mcp-tool']);
+export function isInteractionPoint(node: GraphNode): boolean {
+  return Boolean(node.tags?.includes('interaction-point')) || INTERACTION_POINT_KINDS.has(node.kind);
+}
+export function isEndpoint(node: GraphNode): boolean {
+  return Boolean(node.tags?.includes('endpoint')) || ENDPOINT_KINDS.has(node.kind);
+}
+
 export interface RelationshipKindContract {
   kind: string;
   family: KnowledgeFamily;
@@ -41,7 +51,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'css-class-reference': ['source-site'], 'css-selector': ['resource'],
   'unity-object': ['container', 'resource'], 'unity-asset-guid': ['resource'],
   'component-prop-handler': ['source-site', 'boundary'],
-  'component-prop-binding': ['source-site'],
+  'component-prop-binding': ['source-site'], 'jsx-prop-spread': ['source-site'],
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
   'rpc-call': ['source-site', 'boundary'], 'navigation-call': ['source-site'],
   'source-try-return': ['source-site', 'effect', 'source-control'],
@@ -51,7 +61,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'source-effect': ['source-site', 'effect', 'source-control'],
   'state-write': ['source-site', 'effect'], 'state-binding': ['resource'],
   'sql-table': ['resource'], 'sql-reference': ['resource'],
-  'ui-element': ['source-site', 'boundary'], 'mcp-tool': ['boundary'],
+  'ui-element': ['source-site', 'boundary'], 'dom-interaction': ['source-site', 'boundary'], 'interaction-handler': ['source-site'], 'mcp-tool': ['boundary'],
   feature: ['technical-concept'], capability: ['technical-concept'],
   domain: ['technical-concept'], surface: ['technical-concept', 'boundary'],
   action: ['technical-concept'], workflow: ['technical-concept'],
@@ -103,9 +113,9 @@ define(['has-component', 'attached-to', 'child-of'],
 // realization before this registry; preserve their factual reach.
 define(['references-symbol', 'depends-on', 'links_to'],
   'reference', 'dependency', true, 'bound-source');
-define(['candidate-sql-definition'], 'reference', 'dependency', false, 'syntax');
+define(['candidate-sql-definition', 'potentially-provided-by', 'potential-value-from'], 'reference', 'dependency', false, 'syntax');
 define(['same-routine-name'], 'reference', 'dependency', false, 'syntax');
-define(['binds_to', 'bound_by'], 'surface', 'surface', true, 'bound-source');
+define(['binds_to', 'bound_by', 'has-interaction', 'registers-interaction', 'spreads-properties'], 'surface', 'surface', true, 'bound-source');
 define(['uses_classes'], 'surface', 'surface', true, 'syntax', ['callable'], ['source-site']);
 define(['styled_by'], 'surface', 'surface', true, 'bound-source', ['source-site'], ['resource']);
 define(['composes', 'uses-feature'], 'reference', 'dependency', true, 'bound-source', ['boundary'], ['technical-concept']);

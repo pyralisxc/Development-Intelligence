@@ -779,6 +779,7 @@ function fullTraceGraphResult(
     }
     frontier = next;
   }
+  const projection = traceResponseProjection(context, visited, selectedEdges, limit, maxDepth, frontier);
   return {
     project: input.project,
     graphId: graph.graphId,
@@ -786,7 +787,8 @@ function fullTraceGraphResult(
     coverage: coverageSummary(graph),
     ambiguous: false,
     start,
-    ...traceResponseProjection(context, visited, selectedEdges, limit, maxDepth, frontier),
+    ...projection,
+    investigation: investigationSelection(graph, 'trace', { nodeIds: visited, edgeIds: (projection.edges as GraphEdge[]).map(edge => edge.id), scope: { node: start.id, direction, depth: maxDepth }, page: projection.traceProjection }),
     ...(queryPlane ? { queryPlane } : {}),
   };
 }
@@ -971,6 +973,7 @@ async function adaptiveCurrentTrace(
 
   partial = queryArtifactSearchGraph(loaded.index as any, shards);
   const context = graphQueryContext(partial);
+  const projection = traceResponseProjection(context, visited, selectedEdges, limit, maxDepth, frontier);
   return {
     result: {
       project: input.project,
@@ -979,7 +982,8 @@ async function adaptiveCurrentTrace(
       coverage: queryArtifactCoverage(loaded.index),
       ambiguous: false,
       start,
-      ...traceResponseProjection(context, visited, selectedEdges, limit, maxDepth, frontier),
+      ...projection,
+      investigation: { ...investigationSelection(partial, 'trace', { nodeIds: visited, edgeIds: (projection.edges as GraphEdge[]).map(edge => edge.id), scope: { node: start.id, direction, depth: maxDepth }, page: projection.traceProjection }), coverage: queryArtifactCoverage(loaded.index) },
       queryPlane: queryPlane(),
     },
     reason: 'adaptive',
