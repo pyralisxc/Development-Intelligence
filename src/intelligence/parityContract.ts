@@ -1,3 +1,4 @@
+import { investigationSelection, observedGraphIds } from './investigation.js';
 import type {
   GraphCoverage,
   GraphEdge,
@@ -454,6 +455,7 @@ export function evaluateParityContractGraph(graph: IntelligenceGraph, contractIn
     passed: counts.missing === 0 && counts.forbiddenPresent === 0 && counts.unproven === 0 && counts.notApplicable === 0,
     counts,
     results,
+    investigation: investigationSelection(graph, 'parity-expectations', observedGraphIds(graph, results)),
     coverage: graph.coverage ?? null,
     claimCoverage,
     note: 'This caller-owned expectation overlay is evaluated ephemerally. Candidate or unresolved relationships never satisfy proof, and non-exhaustive claim coverage keeps absence unproven. It does not modify or become accepted graph truth.',

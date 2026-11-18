@@ -1,3 +1,4 @@
+import { comparisonSelection, investigationSelection } from './investigation.js';
 import path from 'node:path';
 import { getProjectConfig } from '../config/registry.js';
 import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
@@ -156,7 +157,9 @@ export async function compareRevisionSet(input: { project: string; refs: string[
     for (let head = base + 1; head < input.refs.length; head++) {
       const baseRef = input.refs[base]!, ref = input.refs[head]!;
       const result = await diffRevisions({ project: input.project, baseRef, ref });
-      comparisons.push({ baseRef, ref, ...pageGraphDiff(result, offset, limit) });
+      const paged = pageGraphDiff(result, offset, limit);
+      const [baseGraph, headGraph] = await Promise.all([currentGraph(input.project, baseRef), currentGraph(input.project, ref)]);
+      comparisons.push({ baseRef, ref, ...paged, investigations: [comparisonSelection(baseGraph, paged.detail, 'base', paged.page), comparisonSelection(headGraph, paged.detail, 'head', paged.page)] });
     }
   }
   return { project: input.project, refs: input.refs, comparisons };
@@ -1193,6 +1196,7 @@ function parityLensResult(graph: IntelligenceGraph, context: GraphQueryContext, 
     relationships,
     representations,
     namingDivergences: graph.namingDivergences.filter(item => !query || `${item.fromName} ${item.toName}`.toLowerCase().includes(query)).slice(offset, offset + limit),
+    investigation: investigationSelection(graph, 'parity', { nodeIds: selected.map(node => node.id), edgeIds: relationships.map(edge => edge.id), page: { offset, limit, nextOffset: offset + limit < semantic.length ? offset + limit : null } }),
     unmatchedNodeIds: graph.unmatchedNodeIds.slice(offset, offset + limit),
     unavailableSourceIds: graph.unavailableSourceIds,
   };
@@ -1367,7 +1371,7 @@ export async function graphEvidence(input: {
   evidenceIds?: string[];
 }): Promise<Record<string, unknown>> {
   const indexed = await indexedGraphEvidence(input);
-  if (indexed) return indexed;
+  if (indexed && !input.edge && !input.node) return indexed;
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const ids = new Set(input.evidenceIds ?? []);
   let node: GraphNode | undefined;
@@ -1393,7 +1397,7 @@ export async function graphEvidence(input: {
     for (const id of edge?.evidenceIds ?? []) ids.add(id);
   }
   const evidence = graph.evidence.filter(item => ids.has(item.id));
-  return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, coverage: coverageSummary(graph), ambiguous: false, node: node ?? null, edge: edge ?? null, evidence };
+  return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, coverage: coverageSummary(graph), ambiguous: false, node: node ?? null, edge: edge ?? null, evidence, investigation: investigationSelection(graph, input.edge ? 'inspect-edge' : 'inspect-node', { nodeIds: node ? [node.id] : [], edgeIds: edge ? [edge.id] : [] }) };
 }
 
 
