@@ -9,6 +9,9 @@ import { currentGraph } from './service.js';
 const PATH_RELATIONS = new Set(['has-interaction', 'spreads-properties', 'potential-value-from', 'registers-interaction', 'potentially-provided-by', 'handled_by', 'binds_to', 'calls', 'calls-site', 'resolves_to', 'invokes', 'dispatches', 'triggers', 'routes-to', 'links_to', 'registered-as', 'handles-method', 'implemented-by', 'has-condition', 'has-effect', 'requires-condition', 'guarded-by', 'under-condition', 'declares-state', 'writes', 'reads', 'persists']);
 
 type Indexed = { graph: IntelligenceGraph; nodes: Map<string, GraphNode>; outgoing: Map<string, GraphEdge[]>; interactions: Map<string, GraphNode[]> };
+// Disposable indexes follow the lifetime of their immutable graph snapshots.
+const interactionIndexes = new WeakMap<IntelligenceGraph, Indexed>();
+const affectedPairs = new WeakMap<IntelligenceGraph, WeakMap<IntelligenceGraph, Set<string>>>();
 function value(node: GraphNode): Record<string, unknown> {
   return node.value && typeof node.value === 'object' && !Array.isArray(node.value) ? node.value as Record<string, unknown> : {};
 }
@@ -19,6 +22,8 @@ function identity(node: GraphNode): string {
   return JSON.stringify([node.sourceId, node.kind, node.name ?? '', v.tag ?? '', v.receiver ?? '', v.event ?? '', v.href ?? '', v.owner ?? '']);
 }
 function index(graph: IntelligenceGraph): Indexed {
+  const cached = interactionIndexes.get(graph);
+  if (cached) return cached;
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
   const outgoing = new Map<string, GraphEdge[]>();
   const interactions = new Map<string, GraphNode[]>();
@@ -31,7 +36,9 @@ function index(graph: IntelligenceGraph): Indexed {
     const group = outgoing.get(edge.from) ?? [];
     group.push(edge); outgoing.set(edge.from, group);
   }
-  return { graph, nodes, outgoing, interactions };
+  const indexed = { graph, nodes, outgoing, interactions };
+  interactionIndexes.set(graph, indexed);
+  return indexed;
 }
 function fact(node: GraphNode): string {
   const v = value(node);
@@ -87,6 +94,8 @@ export function interactionReachability(graph: IntelligenceGraph, sampleLimit = 
 /** Find affected roots over the entire graph before paging. Hashing semantic
  * endpoints avoids retaining a second full copy of edge records. */
 function affectedInteractionKeys(left: Indexed, right: Indexed): Set<string> {
+  const cached = affectedPairs.get(left.graph)?.get(right.graph);
+  if (cached) return cached;
   const describe = (index: Indexed) => {
     const nodeHashes = new Map<string, string>();
     const signature = (edge: GraphEdge): string | null => {
@@ -133,6 +142,9 @@ function affectedInteractionKeys(left: Indexed, right: Indexed): Set<string> {
     if (!other || nodes.length !== 1 || other.length !== 1 || fact(nodes[0]!) !== fact(other[0]!)) affected.add(key);
   }
   for (const key of right.interactions.keys()) if (!left.interactions.has(key)) affected.add(key);
+  let pairs = affectedPairs.get(left.graph);
+  if (!pairs) { pairs = new WeakMap(); affectedPairs.set(left.graph, pairs); }
+  pairs.set(right.graph, affected);
   return affected;
 }
 
