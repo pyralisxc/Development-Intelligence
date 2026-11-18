@@ -19,7 +19,8 @@ export function isWrittenTestSource(value: string): boolean {
   const clean = value.replace(/^(?:repo:|file:|symbol:)/u, '')
     .replaceAll('\\', '/').split('#', 1)[0]!;
   return /(?:^|\/)(?:tests?|__tests__|specs?|__specs__|test-fixtures|__fixtures__)(?:\/|$)/iu.test(clean)
-    || /(?:^|\/)[^/]+\.(?:test|spec)\.(?:[cm]?[jt]sx?)(?=$|:\d+)/iu.test(clean);
+    || /(?:^|\/)[^/]+\.(?:test|spec)\.(?:[cm]?[jt]sx?)(?=$|:\d+)/iu.test(clean)
+    || /(?:^|\/)[^/]+_test\.go(?=$|:\d+)/iu.test(clean);
 }
 
 function contractIdentities(contract: ReturnType<typeof normalizeParityContract>): string[] {
