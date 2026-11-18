@@ -405,7 +405,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
 
   if (reachability.interactionRoots && reachability.unconnectedCallableCount) targets.push({
     kind: 'unconnected-callables', basis: 'derived-investigation', count: reachability.unconnectedCallableCount,
-    summary: `${reachability.unconnectedCallableCount} callable(s) have no resolved path from captured interaction points.`,
+    summary: `${reachability.unconnectedCallableCount} callable(s) have no resolved behavior path from captured interaction points.`,
     evidence: { interactionRoots: reachability.interactionRoots, candidates: reachability.candidates },
     fixSurface: fixSurface(indexes, reachability.candidates.map(item => item.id)),
     nextEvidence: reachability.meaning,

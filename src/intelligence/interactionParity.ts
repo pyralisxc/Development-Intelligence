@@ -78,10 +78,10 @@ export function interactionReachability(graph: IntelligenceGraph, sampleLimit = 
     }
   }
   const candidates = graph.nodes.filter(node => (node.kind === 'function' || node.kind === 'method') && !visited.has(node.id));
-  return { interactionRoots: roots.length, reachedNodes: visited.size, unconnectedCallableCount: candidates.length,
+  return { interactionRoots: roots.length, reachedNodes: visited.size, unconnectedCallableCount: candidates.length, relationshipKinds: [...PATH_RELATIONS],
     candidates: candidates.slice(offset, offset + sampleLimit).map(node => ({ id: node.id, name: node.name, kind: node.kind, locator: node.locator })),
     page: { offset, limit: sampleLimit, total: candidates.length, nextOffset: offset + sampleLimit < candidates.length ? offset + sampleLimit : null },
-    meaning: 'No resolved path from the captured interaction points was found. This is a candidate for investigation, not proof of dead code; uncaptured entry points and dynamic connections can make source reachable.' };
+    meaning: 'No resolved path using the listed behavior relationships from captured interaction points was found. This is a candidate for investigation, not proof of dead code; uncaptured entry points and dynamic connections can make source reachable.' };
 }
 
 /** Find affected roots over the entire graph before paging. Hashing semantic
@@ -140,11 +140,15 @@ function difference(left: Map<string, number>, right: Map<string, number>): Arra
   return [...left].flatMap(([fact, count]) => { const occurrences = count - (right.get(fact) ?? 0); return occurrences > 0 ? [{ fact, occurrences }] : []; });
 }
 
-export function compareInteractionGraphs(base: IntelligenceGraph, head: IntelligenceGraph, offset = 0, limit = 20) {
+export function compareInteractionGraphs(base: IntelligenceGraph, head: IntelligenceGraph, offset = 0, limit = 20, scope?: string) {
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1) throw new Error('Parity offset and limit must be non-negative and positive integers');
   const left = index(base), right = index(head);
   const affected = affectedInteractionKeys(left, right);
-  const keys = [...new Set([...left.interactions.keys(), ...right.interactions.keys()])].sort((a, b) => Number(affected.has(b)) - Number(affected.has(a)) || a.localeCompare(b));
+  const needle = scope?.trim().toLowerCase() ?? '';
+  const keys = [...new Set([...left.interactions.keys(), ...right.interactions.keys()])]
+    .filter(key => !needle || [...(left.interactions.get(key) ?? []), ...(right.interactions.get(key) ?? [])]
+      .some(node => [node.name, node.sourceId, node.locator, node.kind].some(value => value?.toLowerCase().includes(needle))))
+    .sort((a, b) => Number(affected.has(b)) - Number(affected.has(a)) || a.localeCompare(b));
   const items = keys.slice(offset, offset + limit).map(key => {
     const before = left.interactions.get(key) ?? [], after = right.interactions.get(key) ?? [];
     if (before.length > 1 || after.length > 1) return { status: 'ambiguous', before, after,
@@ -168,11 +172,11 @@ export function compareInteractionGraphs(base: IntelligenceGraph, head: Intellig
       investigations: [investigationSelection(base, 'parity-base', { nodeIds: previous.nodeIds, edgeIds: previous.edgeIds }), investigationSelection(head, 'parity-head', { nodeIds: current.nodeIds, edgeIds: current.edgeIds })] };
   });
   return { project: head.project, base: { graphId: base.graphId, revision: base.repositoryRevision, sourceState: base.sourceState ?? null, sourceFingerprint: base.sourceFingerprint, coverage: base.coverage }, head: { graphId: head.graphId, revision: head.repositoryRevision, sourceState: head.sourceState ?? null, sourceFingerprint: head.sourceFingerprint, coverage: head.coverage },
-    analyzerChanged: base.analyzerVersion !== head.analyzerVersion, potentiallyAffected: affected.size, items, page: { offset, limit, total: keys.length, nextOffset: offset + limit < keys.length ? offset + limit : null },
+    analyzerChanged: base.analyzerVersion !== head.analyzerVersion, scope: scope?.trim() || null, relationshipKinds: [...PATH_RELATIONS], potentiallyAffected: keys.filter(key => affected.has(key)).length, items, page: { offset, limit, total: keys.length, nextOffset: offset + limit < keys.length ? offset + limit : null },
     note: 'Compares captured source relationships and conditions. An unchanged captured path does not establish complete behavior; missing or ambiguous graph coverage remains visible.' };
 }
-export async function compareInteractionRevisions(input: { project: string; baseRef: string; ref: string; offset?: number | undefined; limit?: number | undefined }) {
+export async function compareInteractionRevisions(input: { project: string; baseRef: string; ref: string; offset?: number | undefined; limit?: number | undefined; scope?: string | undefined }) {
   if (input.baseRef === input.ref) throw new Error('Choose two different revision targets');
   const [base, head] = await Promise.all([currentGraph(input.project, input.baseRef), currentGraph(input.project, input.ref)]);
-  return compareInteractionGraphs(base, head, input.offset, input.limit);
+  return compareInteractionGraphs(base, head, input.offset, input.limit, input.scope);
 }

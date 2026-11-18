@@ -358,7 +358,7 @@ export function createDevelopmentIntelligenceServer() {
         else if (action === 'interaction-parity') {
           const baseRef = requestUrl.searchParams.get('baseRef') ?? 'main';
           const ref = requestUrl.searchParams.get('headRef') ?? 'preview';
-          result = await compareInteractionRevisions({ project, baseRef, ref, offset: numberParam(requestUrl, 'offset', 0), limit: numberParam(requestUrl, 'limit', 20) });
+          result = await compareInteractionRevisions({ project, baseRef, ref, scope: requestUrl.searchParams.get('scope') ?? undefined, offset: numberParam(requestUrl, 'offset', 0), limit: numberParam(requestUrl, 'limit', 20) });
         } else if (action === 'compare-graphs') {
           const refs = requestUrl.searchParams.getAll('refs');
           const offset = Number(requestUrl.searchParams.get('offset') ?? 0), limit = Number(requestUrl.searchParams.get('limit') ?? 50);

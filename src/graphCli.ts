@@ -113,7 +113,7 @@ async function main(): Promise<void> {
     const before = resolve(base), after = resolve(target);
     if (!before || !after) throw new Error('Parity targets must have retained graphs');
     const [left, right] = await Promise.all([readLocalSourceGraph(dataDir, project, before.graphId, before.generation), readLocalSourceGraph(dataDir, project, after.graphId, after.generation)]);
-    console.log(JSON.stringify(compareInteractionGraphs(left, right, Number(arg('--offset') ?? '0'), Number(arg('--limit') ?? '20')), null, 2));
+    console.log(JSON.stringify(compareInteractionGraphs(left, right, Number(arg('--offset') ?? '0'), Number(arg('--limit') ?? '20'), arg('--scope')), null, 2));
   } else if (command === 'working-compare') {
     const dataDir = arg('--data-dir');
     const base = arg('--base');
