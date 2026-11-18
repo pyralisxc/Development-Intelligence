@@ -1,3 +1,4 @@
+import { isEndpoint, isInteractionPoint } from './graphKnowledge.js';
 import type { GraphEdge, GraphFamilyMembership, GraphNode, IntelligenceGraph } from '../types.js';
 import ts from 'typescript';
 import { TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
@@ -74,11 +75,10 @@ export function buildGraphFamilies(graph: IntelligenceGraph): IntelligenceGraph 
       if (OWNED.has(edge.kind)) queueComponent(edge.to, current.family, edge.kind === 'callback-argument');
     }
   }
-  const interactionKinds = new Set(['ui-element', 'dom-interaction', 'route', 'api', 'mcp-tool', 'tool-registration']);
   const result: GraphNode[] = graph.nodes.map(original => {
     const tags = new Set(original.tags ?? []);
-    if (interactionKinds.has(original.kind)) tags.add('interaction-point');
-    if (['route', 'api', 'mcp-tool'].includes(original.kind)) tags.add('endpoint');
+    if (isInteractionPoint(original)) tags.add('interaction-point');
+    if (isEndpoint(original)) tags.add('endpoint');
     const node = tags.size !== (original.tags?.length ?? 0) ? { ...original, tags: [...tags] } : original;
     const families = memberships.get(node.id);
     const contribution = compilerSubjects.has(node.id) ? { producer: 'typescript-checker', version: ts.version,

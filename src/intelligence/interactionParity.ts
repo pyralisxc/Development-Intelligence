@@ -1,11 +1,11 @@
+import { isInteractionPoint } from './graphKnowledge.js';
 import { createHash } from 'node:crypto';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { investigationSelection } from './investigation.js';
 import { currentGraph } from './service.js';
 
-// These are existing concrete source subjects, not a parallel graph or an
-// assertion that every event registration is reachable at runtime.
-const INTERACTIONS = new Set(['ui-element', 'dom-interaction', 'route', 'api', 'mcp-tool', 'tool-registration']);
+// Interaction classifications are properties of canonical graph subjects;
+// their presence does not establish runtime reachability.
 const PATH_RELATIONS = new Set(['has-interaction', 'registers-interaction', 'potentially-provided-by', 'handled_by', 'binds_to', 'calls', 'calls-site', 'resolves_to', 'invokes', 'dispatches', 'triggers', 'routes-to', 'links_to', 'registered-as', 'handles-method', 'implemented-by', 'has-condition', 'has-effect', 'requires-condition', 'guarded-by', 'under-condition', 'declares-state', 'writes', 'reads', 'persists']);
 
 type Indexed = { graph: IntelligenceGraph; nodes: Map<string, GraphNode>; outgoing: Map<string, GraphEdge[]>; interactions: Map<string, GraphNode[]> };
@@ -22,7 +22,7 @@ function index(graph: IntelligenceGraph): Indexed {
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
   const outgoing = new Map<string, GraphEdge[]>();
   const interactions = new Map<string, GraphNode[]>();
-  for (const node of graph.nodes) if (INTERACTIONS.has(node.kind)) {
+  for (const node of graph.nodes) if (isInteractionPoint(node)) {
     const key = identity(node), group = interactions.get(key) ?? [];
     group.push(node); interactions.set(key, group);
   }

@@ -17,6 +17,16 @@ export type NodeTrait = 'container' | 'callable' | 'symbol' | 'source-site'
 export type RealizationFacet = 'human' | 'agent' | 'transport'
   | 'implementation' | 'persistence' | 'provider';
 
+/** Shared role vocabulary; an interaction retains its concrete graph kind. */
+const INTERACTION_POINT_KINDS = new Set(['ui-element', 'dom-interaction', 'route', 'api', 'mcp-tool', 'tool-registration']);
+const ENDPOINT_KINDS = new Set(['route', 'api', 'mcp-tool']);
+export function isInteractionPoint(node: GraphNode): boolean {
+  return Boolean(node.tags?.includes('interaction-point')) || INTERACTION_POINT_KINDS.has(node.kind);
+}
+export function isEndpoint(node: GraphNode): boolean {
+  return Boolean(node.tags?.includes('endpoint')) || ENDPOINT_KINDS.has(node.kind);
+}
+
 export interface RelationshipKindContract {
   kind: string;
   family: KnowledgeFamily;
