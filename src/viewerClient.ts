@@ -368,7 +368,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     savePositiveSetting('graphNodes', size); savePositiveSetting('graphDepth', depth);
     void renderGraph(root, epoch);
   });
-  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { investigationVisible = !investigationVisible; graphSelected = ''; void renderGraph(root, epoch); });
+  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { investigationVisible = !investigationVisible; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
   const selected = investigationVisible && activeInvestigation;
   const projection = selected ? { ...selected.graph, nodes: selected.nodes, edges: selected.edges, evidence: selected.evidence, coverage: selected.coverage } as Projection
     : await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) })) as Projection;
@@ -488,7 +488,7 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
         ...(scope ? { scope } : {}), ...(nodeKinds.length ? { nodeKinds } : {}),
         ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) });
       const page = result.result?.page;
-      activeInvestigation = result.investigation ?? null; investigationVisible = true;
+      activeInvestigation = result.investigation ?? null; investigationVisible = true; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear();
       if (section === 'explore' && exploreMode === 'graph') void renderExploreResult(sectionEpoch);
       target.innerHTML = `<div class="card"><h3>${esc(result.intent ?? 'query')}</h3><div class="answer">${esc(result.answer ?? '')}</div>${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
       if (result.investigation && section !== 'explore') {
