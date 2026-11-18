@@ -69,7 +69,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   mcp: ['boundary'], tool: ['boundary'],
 };
 const FACET_KINDS: Record<RealizationFacet, readonly string[]> = {
-  human: ['surface', 'ui-element', 'dom-interaction', 'component-prop-handler', 'component-prop-binding'],
+  human: ['surface', 'ui-element', 'component-prop-handler', 'component-prop-binding'],
   agent: ['mcp', 'tool', 'mcp-tool'],
   transport: ['api', 'route', 'http-call', 'rpc-call', 'navigation-call'],
   implementation: ['feature', 'function', 'method', 'class', 'sql-function'],
