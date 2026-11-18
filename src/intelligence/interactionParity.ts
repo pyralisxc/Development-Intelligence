@@ -41,6 +41,11 @@ function fact(node: GraphNode): string {
 }
 function pathOf(indexed: Indexed, root: GraphNode) {
   const visited = new Set<string>([root.id]), edgeIds = new Set<string>(), unresolved = new Set<string>(), facts = new Map<string, number>([[fact(root), 1]]);
+  const describeNode = (node: GraphNode) => ({ id: node.id, name: node.name ?? node.id, kind: node.kind, locator: node.locator,
+    ...(['source-condition', 'source-effect', 'state-binding'].includes(node.kind) ? { raw: node.raw ?? null } : {}),
+    ...(node.kind === 'state-binding' ? { initialValue: value(node).initialValue ?? null } : {}),
+    ...(node.kind === 'source-effect' ? { requiredConditions: value(node).requiredConditions ?? [] } : {}) });
+  const descriptions = new Map<string, unknown>([[fact(root), { node: describeNode(root) }]]);
   const queue = [root.id];
   for (let at = 0; at < queue.length; at++) {
     const from = queue[at]!;
@@ -52,10 +57,11 @@ function pathOf(indexed: Indexed, root: GraphNode) {
       if (!target) { unresolved.add(edge.id); continue; }
       const item = JSON.stringify([edge.kind, edge.status, fact(indexed.nodes.get(from)!), fact(target)]);
       facts.set(item, (facts.get(item) ?? 0) + 1);
+      if (!descriptions.has(item)) descriptions.set(item, { edgeId: edge.id, kind: edge.kind, status: edge.status, from: describeNode(indexed.nodes.get(from)!), to: describeNode(target), evidence: edge.evidence, evidenceIds: edge.evidenceIds ?? [] });
       if (!visited.has(target.id)) { visited.add(target.id); queue.push(target.id); }
     }
   }
-  return { nodeIds: [...visited], edgeIds: [...edgeIds], unresolved: [...unresolved], facts };
+  return { nodeIds: [...visited], edgeIds: [...edgeIds], unresolved: [...unresolved], facts, descriptions };
 }
 /** Reachability is a graph investigation, not an assertion that unconnected
  * source can never execute through external, dynamic or uncaptured entries. */
@@ -158,7 +164,7 @@ export function compareInteractionGraphs(base: IntelligenceGraph, head: Intellig
     const removed = difference(previous.facts, current.facts), added = difference(current.facts, previous.facts);
     return { status: previous.nodeIds.length > 1 && current.nodeIds.length === 1 ? 'captured-connection-lost' : added.length || removed.length ? 'changed' : previous.unresolved.length || current.unresolved.length || previous.nodeIds.length === 1 || current.nodeIds.length === 1 ? 'incomplete-path' : 'same-captured-path', before: before[0], after: after[0],
       path: { beforeNodes: previous.nodeIds.length, afterNodes: current.nodeIds.length, addedFacts: added.length, removedFacts: removed.length, beforeUnresolved: previous.unresolved.length, afterUnresolved: current.unresolved.length },
-      changes: { added, removed },
+      changes: { added: added.map(item => ({ occurrences: item.occurrences, detail: current.descriptions.get(item.fact) })), removed: removed.map(item => ({ occurrences: item.occurrences, detail: previous.descriptions.get(item.fact) })) },
       investigations: [investigationSelection(base, 'parity-base', { nodeIds: previous.nodeIds, edgeIds: previous.edgeIds }), investigationSelection(head, 'parity-head', { nodeIds: current.nodeIds, edgeIds: current.edgeIds })] };
   });
   return { project: head.project, base: { graphId: base.graphId, revision: base.repositoryRevision, sourceState: base.sourceState ?? null, sourceFingerprint: base.sourceFingerprint, coverage: base.coverage }, head: { graphId: head.graphId, revision: head.repositoryRevision, sourceState: head.sourceState ?? null, sourceFingerprint: head.sourceFingerprint, coverage: head.coverage },
