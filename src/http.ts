@@ -1,3 +1,5 @@
+import { comparisonSelection } from './intelligence/investigation.js';
+import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import http from 'node:http';
 import { computeOnly } from './config/runtimeRole.js';
 import { promises as fs } from 'node:fs';
@@ -350,7 +352,8 @@ export function createDevelopmentIntelligenceServer() {
           result = await graphEvidence({ project, edge, ...context });
         } else if (action === 'explore') {
           result = await exploreWorkbench({ project, query: requestUrl.searchParams.get('query') ?? undefined, limit: numberParam(requestUrl, 'limit', 250), ...context });
-        } else if (action === 'sources') result = await workbenchSources(project, context.ref, context.graphId);
+        } else if (action === 'audit') result = await repositoryAudit({ project, ...context });
+        else if (action === 'sources') result = await workbenchSources(project, context.ref, context.graphId);
         else if (action === 'compare-graphs') {
           const refs = requestUrl.searchParams.getAll('refs');
           const offset = Number(requestUrl.searchParams.get('offset') ?? 0), limit = Number(requestUrl.searchParams.get('limit') ?? 50);
@@ -374,7 +377,13 @@ export function createDevelopmentIntelligenceServer() {
           const paged = process.env.DEVINT_LOCAL_GRAPH_DIR
             ? pageGraphDiff(detail, Number.isSafeInteger(offsetValue) && offsetValue >= 0 ? offsetValue : 0,
               Number.isSafeInteger(limitValue) && limitValue > 0 ? Math.min(limitValue, 500) : 50) : null;
+          const selectionDetail = paged?.detail ?? detail;
+          const [baseGraph, headGraph] = await Promise.all([
+            currentGraph(project, undefined, (detail as any).base.graphId),
+            currentGraph(project, undefined, (detail as any).head.graphId),
+          ]);
           result = {
+            investigations: [comparisonSelection(baseGraph, selectionDetail, 'base', paged?.page), comparisonSelection(headGraph, selectionDetail, 'head', paged?.page)],
             project,
             mode: historical ? 'revision-to-revision' : 'default-to-selected',
             counts,

@@ -1,3 +1,4 @@
+import { investigationSelection, observedGraphIds } from './investigation.js';
 import type { GraphEdge, GraphNode, GraphCoverageStatus, IntelligenceGraph } from '../types.js';
 import { auditGraph, type AuditFinding } from './assessment.js';
 import { currentGraph } from './service.js';
@@ -448,5 +449,6 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
 
 export async function repositoryAudit(input: { project: string; ref?: string; graphId?: string; limit?: number }): Promise<Record<string, unknown>> {
   const graph = await currentGraph(input.project, input.ref, input.graphId);
-  return synthesizeRepositoryAudit(graph, { ...(typeof input.limit === 'number' ? { limit: input.limit } : {}) });
+  const result = synthesizeRepositoryAudit(graph, { ...(typeof input.limit === 'number' ? { limit: input.limit } : {}) }) as any;
+  return { ...result, investigation: investigationSelection(graph, 'audit', observedGraphIds(graph, [result.findings, result.investigationTargets])) };
 }

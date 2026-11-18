@@ -58,6 +58,21 @@ let queryDraft = '';
 const queryPanel = document.createElement('div');
 let queryPanelReady = false;
 let graphRenderSequence = 0;
+let activeInvestigation: any = null;
+let investigationVisible = true;
+let selectedGraphNodes = new Set<string>();
+let selectedGraphEdges = new Set<string>();
+
+function followInvestigation(selection: any): void {
+  if (!selection?.graph?.graphId || !Array.isArray(selection.nodes) || !Array.isArray(selection.edges)) return;
+  activeInvestigation = selection; investigationVisible = true; selectedGraphNodes.clear(); selectedGraphEdges.clear(); graphSelected = '';
+  exploreMode = 'graph';
+  if (section === 'explore') void renderExploreResult(sectionEpoch);
+  else void activateSection('explore');
+}
+function investigationGraphId(): string | undefined {
+  return investigationVisible ? activeInvestigation?.graph?.graphId : undefined;
+}
 let parityContractText = `{
   "version": 1,
   "name": "Feature parity",
@@ -89,8 +104,10 @@ function esc(value: unknown): string {
 
 function withContext(params: URLSearchParams): URLSearchParams {
   params.set('project', viewerConfig.project);
-  if (viewerConfig.graphId) params.set('graphId', viewerConfig.graphId);
-  else if (viewerConfig.ref) params.set('ref', viewerConfig.ref);
+  if (!params.has('graphId') && !params.has('ref')) {
+    if (viewerConfig.graphId) params.set('graphId', viewerConfig.graphId);
+    else if (viewerConfig.ref) params.set('ref', viewerConfig.ref);
+  }
   return params;
 }
 
@@ -102,7 +119,7 @@ async function getJson(path: string, params: URLSearchParams): Promise<any> {
 }
 
 async function postJson(path: string, body: Record<string, unknown>): Promise<any> {
-  const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ project: viewerConfig.project, ...(viewerConfig.ref ? { ref: viewerConfig.ref } : {}), ...(viewerConfig.graphId ? { graphId: viewerConfig.graphId } : {}), ...body }) });
+  const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ project: viewerConfig.project, ...(!body.graphId && viewerConfig.ref ? { ref: viewerConfig.ref } : {}), ...(!body.graphId && viewerConfig.graphId ? { graphId: viewerConfig.graphId } : {}), ...body }) });
   if (response.status === 401) { window.location.assign(`/login?returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`); throw new Error('Authentication required'); }
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
@@ -211,6 +228,7 @@ function renderInspector(): void {
     const facts = (data.facts ?? []).map((item: any) => `<button class="row row-button" data-node="${esc(item.fact.id)}"><span class="row-main"><strong>${esc(item.relationship.kind)}</strong><small>${esc(String(item.fact.raw ?? item.fact.name ?? '').split('\n')[0])}${String(item.fact.raw ?? item.fact.name ?? '').includes('\n') ? ' …' : ''}</small></span></button>`).join('');
     inspectorBody.innerHTML = `<div class="inspector-title">${esc(entity.name ?? entity.id)}</div><div class="inspector-sub">${esc(entity.locator ?? '')}</div><div style="margin:10px 0"><span class="badge">${esc(entity.kind)}</span> <span class="badge">${esc(entity.layer ?? 'structural')}</span></div>${(data.quickNotes ?? []).map((note: string) => `<div class="quick-note">${esc(note)}</div>`).join('')}${facts ? `<h3>Source facts</h3><div class="list">${facts}</div>` : ''}${families.length ? `<h3>Families</h3><div class="list">${families.map((family: any) => `<button class="row row-button" data-node="${esc(family.id)}"><span class="row-main"><strong>${esc(family.subject.name)}</strong><small>${esc(family.roles.join(', '))} · ${esc(family.subject.locator)}</small></span></button>`).join('')}</div>` : ''}${(data.familyMembers ?? []).length ? `<details><summary>Family members (${data.familyMembers.length})</summary><div class="list">${data.familyMembers.map((member: any) => `<button class="row row-button" data-node="${esc(member.id)}"><span class="row-main"><strong>${esc(member.name)}</strong><small>${esc(member.roles.join(', '))} · ${esc(member.locator)}</small></span></button>`).join('')}</div></details>` : ''}${(entity.contributions ?? []).length ? `<h3>Producer contributions</h3>${entity.contributions.map((item: any) => `<div class="quick-note">${esc(item.producer)} ${esc(item.version)} · ${esc(item.locator)}</div>`).join('')}` : ''}${renderAssessment(data.assessment, true)}<details style="margin-top:12px"><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(entity, null, 2))}</pre></details>`;
     wireNodeButtons(inspectorBody);
+    if (data.investigation) { const button = document.createElement('button'); button.textContent = 'Show connections on graph'; button.addEventListener('click', () => followInvestigation(data.investigation)); inspectorBody.prepend(button); }
     return;
   }
   if (inspectorTab === 'connections') {
@@ -242,7 +260,7 @@ function renderInspector(): void {
 async function openInspector(node: string): Promise<void> {
   inspectorContext.textContent = 'Loading…';
   inspectorBody.innerHTML = empty('Inspecting', 'Loading quick notes, connections, code, evidence and change context…');
-  selectedInspection = await getJson('/workbench/data', new URLSearchParams({ action: 'inspect', node }));
+  selectedInspection = await getJson('/workbench/data', new URLSearchParams({ action: 'inspect', node, ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
   inspectorTab = 'summary';
   renderInspector();
 }
@@ -251,7 +269,7 @@ async function openRelationship(edge: ProjectionEdge, from: string, to: string):
   inspectorContext.textContent = 'Relationship';
   inspectorTabs.innerHTML = '';
   inspectorBody.innerHTML = empty('Inspecting relationship', 'Loading its source and evidence…');
-  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'relationship', edge: edge.id })) as any;
+  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'relationship', edge: edge.id, ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) })) as any;
   const record = data.edge ?? edge;
   inspectorBody.innerHTML = `<div class="inspector-title">${esc(from)} → ${esc(to)}</div><div class="inspector-sub">${esc(record.kind)} · ${esc(record.status)}</div>${record.strategy ? `<div class="quick-note">Source: ${esc(record.strategy)}</div>` : ''}<h3>Evidence</h3>${(data.evidence ?? []).map((item: any) => `<div class="evidence-item"><strong>${esc(item.message ?? item.kind ?? 'evidence')}</strong><br><span class="muted">${esc(item.locator ?? item.sourceId ?? '')}</span></div>`).join('')}${(record.evidence ?? []).map((item: string) => `<div class="quick-note">${esc(item)}</div>`).join('') || (!(data.evidence ?? []).length ? '<p>No attached evidence records.</p>' : '')}<details><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(record, null, 2))}</pre></details>`;
 }
@@ -279,9 +297,17 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   exploreQuery = query;
   setHead(exploreActions());
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; void renderExploreResult(epoch); });
-  content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div class="investigation-layout"><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
+  content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div class="investigation-layout"><button type="button" id="explore-audit">Investigate repository audit</button><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
   form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
+  document.getElementById('explore-audit')?.addEventListener('click', async () => {
+    try {
+      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'audit', ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
+      const panel = document.getElementById('query-result');
+      if (panel) panel.innerHTML = `<div class="card"><h3>Repository audit</h3><p>${esc(result.findingSummary?.total ?? 0)} findings · ${(result.investigationTargets ?? []).length} investigation targets shown</p>${(result.investigationTargets ?? []).map((item: any) => `<p>${esc(item.summary ?? item.title ?? item.kind ?? '')}</p>`).join('')}</div>`;
+      if (result.investigation) followInvestigation(result.investigation);
+    } catch (error) { const panel = document.getElementById('query-result'); if (panel) panel.textContent = String(error); }
+  });
   const queryHost = document.getElementById('investigation-query') as HTMLElement;
   await Promise.all([fetchExplore(epoch), renderQuery(epoch, '', queryHost)]);
 }
@@ -328,7 +354,7 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const sequence = ++graphRenderSequence;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button><button id="graph-scope" type="button" disabled>Use selected subject for question</button><span id="graph-selected-label" class="muted"></span><span class="muted">Drag to pan · scroll to zoom · select a node or relationship to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}<label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button><button id="graph-scope" type="button" disabled>Use selected subject for question</button><button id="graph-compare-selection" type="button">Use selected nodes for comparison</button><span id="graph-selected-label" class="muted"></span><span class="muted">Drag to pan · scroll to zoom · select to inspect · shift-click to select multiple nodes</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
     const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
@@ -342,9 +368,12 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     savePositiveSetting('graphNodes', size); savePositiveSetting('graphDepth', depth);
     void renderGraph(root, epoch);
   });
-  const projection = await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) })) as Projection;
+  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { investigationVisible = !investigationVisible; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
+  const selected = investigationVisible && activeInvestigation;
+  const projection = selected ? { ...selected.graph, nodes: selected.nodes, edges: selected.edges, evidence: selected.evidence, coverage: selected.coverage } as Projection
+    : await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) })) as Projection;
   if (!sectionIsCurrent(epoch, 'explore') || sequence !== graphRenderSequence || exploreMode !== 'graph') return;
-  if (!projection.nodes.length && !projection.ambiguous && graphLens === 'architecture') {
+  if (!selected && !projection.nodes.length && !projection.ambiguous && graphLens === 'architecture') {
     graphLens = 'code';
     await renderGraph(root, epoch);
     return;
@@ -365,7 +394,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     for (const button of Array.from(choices.querySelectorAll<HTMLButtonElement>('[data-graph-choice]'))) button.addEventListener('click', () => { graphSelected = button.dataset.graphChoice!; void renderGraph(root, epoch); });
     return;
   }
-  if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects found', 'Try another search or choose a different view.'); graphStatus.textContent = '0 nodes'; return; }
+  if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects selected', selected ? 'This result has no graph records to display. Its findings or missing expectations remain in the result.' : 'Try another search or choose a different view.'); graphStatus.textContent = '0 nodes'; return; }
   if (graphSelected && projection.nodes.some(node => node.id === graphSelected)) {
     const button = root.querySelector<HTMLButtonElement>('#graph-scope');
     if (button) button.disabled = false;
@@ -373,7 +402,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     if (label) label.textContent = `Selected: ${projection.nodes.find(node => node.id === graphSelected)?.name ?? graphSelected}`;
   }
   const graph = new MultiGraph({ allowSelfLoops: false });
-  projection.nodes.forEach((node, index) => { const point = graphPoint(node, index, projection.nodes.length); graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4, color: graphColor(node), node }); });
+  projection.nodes.forEach((node, index) => { const point = graphPoint(node, index, projection.nodes.length); graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4, color: selected?.focusNodeIds?.includes(node.id) ? '#f6c95f' : graphColor(node), node }); });
   for (const edge of projection.edges) {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
@@ -381,13 +410,19 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   renderer = new Sigma(graph, container, { enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
   renderer.on('clickNode', event => {
     graphSelected = event.node;
+    if (event.event.original.shiftKey) { if (selectedGraphNodes.has(event.node)) selectedGraphNodes.delete(event.node); else selectedGraphNodes.add(event.node); }
+    else { selectedGraphNodes.clear(); selectedGraphNodes.add(event.node); }
+    graph.forEachNode(id => graph.setNodeAttribute(id, 'color', selectedGraphNodes.has(id) ? '#f6c95f' : selected?.focusNodeIds?.includes(id) ? '#f6c95f' : graphColor(graph.getNodeAttribute(id, 'node'))));
     const button = root.querySelector<HTMLButtonElement>('#graph-scope');
     if (button) button.disabled = false;
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
-    if (label) label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}`;
+    if (label) label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}${selectedGraphNodes.size > 1 ? ` · ${selectedGraphNodes.size} selected` : ''}`;
     void openInspector(event.node);
   });
   renderer.on('clickEdge', event => {
+    if (event.event.original.shiftKey) { if (selectedGraphEdges.has(event.edge)) selectedGraphEdges.delete(event.edge); else selectedGraphEdges.add(event.edge); }
+    else { selectedGraphEdges.clear(); selectedGraphEdges.add(event.edge); }
+    graph.forEachEdge(id => { const item = graph.getEdgeAttribute(id, 'edge') as ProjectionEdge; graph.setEdgeAttribute(id, 'color', selectedGraphEdges.has(id) ? '#f6c95f' : item.status === 'resolved' ? '#53667e' : item.status === 'candidate' ? '#b9823c' : '#b94f56'); });
     const edge = graph.getEdgeAttribute(event.edge, 'edge') as ProjectionEdge;
     const from = graph.getNodeAttribute(graph.source(event.edge), 'label') as string;
     const to = graph.getNodeAttribute(graph.target(event.edge), 'label') as string;
@@ -397,8 +432,12 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope');
     if (scope && graphSelected) { scope.value = graphSelected; scope.closest('details')!.open = true; queryPanel.querySelector<HTMLTextAreaElement>('#query-text')?.focus(); }
   });
+  root.querySelector<HTMLButtonElement>('#graph-compare-selection')?.addEventListener('click', () => {
+    const comparison = queryPanel.querySelector<HTMLInputElement>('#query-comparison-ids');
+    if (comparison && selectedGraphNodes.size) { comparison.value = [...selectedGraphNodes].join(', '); comparison.closest('details')!.open = true; queryPanel.querySelector<HTMLTextAreaElement>('#query-text')?.focus(); }
+  });
   root.querySelector<HTMLButtonElement>('#graph-reset')?.addEventListener('click', () => void renderer?.getCamera().animatedReset());
-  graphStatus.textContent = `${projection.nodes.length} nodes · ${graph.size} drawn relationships${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}`;
+  graphStatus.textContent = `${selected ? `Following ${selected.operation}${selected.page?.nextOffset != null ? ' · more results available' : ''} · ` : ''}${projection.nodes.length} nodes · ${graph.size} drawn relationships${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}`;
 }
 
 async function renderQuery(epoch: number, prefill = '', host: HTMLElement = content): Promise<void> {
@@ -445,11 +484,17 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
       const limit = Number((document.getElementById('query-limit') as HTMLInputElement).value);
       if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Results per page must be a positive whole number');
       queryPageSize = limit; savePositiveSetting('queryPageSize', limit);
-      const result = await postJson('/workbench/query', { text, offset, depth, limit, ...(direction ? { direction } : {}),
+      const result = await postJson('/workbench/query', { text, offset, depth, limit, ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}), ...(direction ? { direction } : {}),
         ...(scope ? { scope } : {}), ...(nodeKinds.length ? { nodeKinds } : {}),
         ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) });
       const page = result.result?.page;
+      activeInvestigation = result.investigation ?? null; investigationVisible = true; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear();
+      if (section === 'explore' && exploreMode === 'graph') void renderExploreResult(sectionEpoch);
       target.innerHTML = `<div class="card"><h3>${esc(result.intent ?? 'query')}</h3><div class="answer">${esc(result.answer ?? '')}</div>${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
+      if (result.investigation && section !== 'explore') {
+        const follow = document.createElement('button'); follow.textContent = 'Show this result on the graph';
+        follow.addEventListener('click', () => followInvestigation(result.investigation)); target.firstElementChild?.append(follow);
+      }
       const visibleAnswer = (target.firstElementChild as HTMLElement).innerText;
       const copyActions = document.createElement('div');
       copyActions.className = 'actions';
@@ -525,6 +570,7 @@ async function renderParity(epoch: number): Promise<void> {
       const result = await postJson('/workbench/parity', { contract });
       if (!sectionIsCurrent(epoch, 'parity')) return;
       target.innerHTML = renderParityEvaluation(result);
+      if (result.investigation) { const follow = document.createElement('button'); follow.textContent = 'Show observed parity on graph'; follow.addEventListener('click', () => followInvestigation(result.investigation)); target.prepend(follow); }
     } catch (error) {
       target.innerHTML = `<div class="card"><h3>Parity evaluation failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
     }
@@ -585,6 +631,11 @@ async function renderChanges(epoch: number): Promise<void> {
       const headIdentity = data.detail?.head?.identity;
       const identity = baseIdentity && headIdentity ? `<p class="muted">${esc(baseIdentity.selector)} → ${esc(headIdentity.selector)}<br>${esc(baseIdentity.sha)} → ${esc(headIdentity.sha)}</p>` : '';
       target.innerHTML = `<div class="hero-grid"><div class="card"><h3>${data.mode === 'revision-to-revision' ? 'Graph comparison' : 'Semantic change'}</h3><h2>${esc(data.summary ?? 'Default → selected')}</h2>${identity}<p>${data.mode === 'revision-to-revision' ? data.detail?.analyzerChanged ? 'These graphs use different analyzer versions; rebuild the targets to compare with one analyzer.' : 'Both graphs use the same analyzer.' : 'This compares semantic records from the default and selected source states.'}</p>${data.detail?.comparisonNote ? `<p class="muted">${esc(data.detail.comparisonNote)}</p>` : ''}</div><div class="card"><h3>Delta</h3><div class="metric-grid">${metric('added', counts.added ?? 0)}${metric('removed', counts.removed ?? 0)}${metric('changed', counts.changed ?? 0)}</div></div></div><div class="card" style="margin-top:13px"><h3>Change detail</h3>${data.page ? `<p class="muted">Showing up to ${data.page.limit} items per change category, starting at ${data.page.offset + 1}.</p><button id="change-previous" ${offset === 0 ? 'disabled' : ''}>Previous</button> <button id="change-next" ${data.page.nextOffset === null ? 'disabled' : ''}>Next</button>` : ''}${renderChangeBucket(data.detail)}</div>`;
+      if (data.investigations?.length) {
+        const actions = document.createElement('div'); actions.className = 'actions';
+        for (const [index, selection] of data.investigations.entries()) { const button = document.createElement('button'); button.textContent = `Show ${index ? 'head' : 'base'} changes on graph`; button.addEventListener('click', () => followInvestigation(selection)); actions.append(button); }
+        target.prepend(actions);
+      }
       wireNodeButtons(target);
       target.querySelector('#change-previous')?.addEventListener('click', () => { offset = Math.max(0, offset - detailPageSize); void run(); });
       target.querySelector('#change-next')?.addEventListener('click', () => { offset = data.page.nextOffset; void run(); });

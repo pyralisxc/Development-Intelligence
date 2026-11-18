@@ -157,9 +157,9 @@ async function main(): Promise<void> {
     else {
       const result = response.result as Record<string, unknown> | undefined;
       const items = Array.isArray(response.items) ? response.items.map((item: any) => ({ question: item.question, status: item.status,
-        answer: item.answer, error: item.error, intent: item.intent, coverage: item.result?.coverage, page: item.result?.page })) : undefined;
+        answer: item.answer, error: item.error, intent: item.intent, investigation: item.investigation, coverage: item.result?.coverage, page: item.result?.page })) : undefined;
       console.log(JSON.stringify({ project, question, answer: response.answer, intent: response.intent, request: response.request,
-        coverage: result?.coverage, page: result?.page, ...(items ? { items } : {}), details: 'Use --details for the complete evidence response.' }, null, 2));
+        coverage: result?.coverage, page: result?.page, investigation: response.investigation, ...(items ? { items } : {}), details: 'Use --details for the complete evidence response.' }, null, 2));
     }
   } else if (command === 'working-serve' || command === 'working-mcp') {
     const dataDir = arg('--data-dir');

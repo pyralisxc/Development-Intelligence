@@ -1,3 +1,4 @@
+import { investigationSelection, questionSelection } from './investigation.js';
 import { listAuthorizedGithubOwners, loadRegistry } from '../config/registry.js';
 import { projectStatus } from '../projectStatus.js';
 import { listPublicProjects } from '../source/git.js';
@@ -435,6 +436,7 @@ export async function inspectEntity(input: { project: string; node: string; ref?
     ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
     sourceFingerprint: graph.sourceFingerprint,
     ambiguous: false,
+    investigation: investigationSelection(graph, 'inspect-node', { nodeIds: [selected.id], edgeIds: incident.map(edge => edge.id) }),
     entity: selected,
     families,
     familyMembers,
@@ -1670,7 +1672,7 @@ export async function queryWorkbenchRequest(input: {
         const orientation = await scopeOrientation({ project: input.project, graphId: graph.graphId, semanticSummaryOnly: true, orientationReuse: { graph }, rankBy: input.rankBy, semanticDepth: input.semanticDepth, limit: input.limit });
         previousSubject = undefined;
         items.push({ index, question, status: 'ok', intent: 'graph-filter', subject: null,
-          answer: orientation.summary, routing: { tool: 'graph-filter', selection: 'repository' },
+          answer: orientation.summary, investigation: questionSelection(graph, result), routing: { tool: 'graph-filter', selection: 'repository' },
           result: { ...orientation, interpretation: result.interpretation } });
         continue;
       }
@@ -1787,7 +1789,7 @@ export async function queryWorkbenchRequest(input: {
       items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,
         ...(inheritedScope ? { inheritedSubject: inheritedScope } : {}),
         answer: `${answer}${sourceAnalysis ? `\n\nSource analysis: ${sourceAnalysis}.` : ''}` ,
-        routing: { tool: 'graph-filter', selection: result.interpretation.selection }, result });
+        routing: { tool: 'graph-filter', selection: result.interpretation.selection }, investigation: questionSelection(graph, result), result });
     }
     const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
       questionCount: questions.length, originalText: originalText || null,
