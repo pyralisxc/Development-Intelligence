@@ -44,24 +44,33 @@ export function questionSelection(graph: IntelligenceGraph, result: any) {
   const subjects = grouped ? result.connectedGroups.flatMap((group: any) => group.subjects ?? []) : result.subjects ?? [];
   const links = grouped ? result.connectedGroups.flatMap((group: any) => group.links ?? [])
     : (result.navigation?.relationships ?? []).map((item: any) => item.edge);
-  const focus = observedGraphIds(graph, { subjects, links, comparison: result.comparison?.items });
-  const context = observedGraphIds(graph, result.sourceFamilies);
-  const selectedNodes = new Set([...focus.nodeIds, ...context.nodeIds]);
+  const comparison = result.comparison?.items ?? [];
+  const focus = {
+    nodeIds: [...subjects.map((node: any) => node.id), ...comparison.map((item: any) => item.node?.id)].filter((id: unknown): id is string => typeof id === 'string'),
+    edgeIds: [...links.map((edge: any) => edge?.id), ...comparison.flatMap((item: any) => item.relationshipIds ?? [])].filter((id: unknown): id is string => typeof id === 'string'),
+  };
+  const contextNodeIds: string[] = (result.sourceFamilies ?? []).flatMap((family: any) => [family.subjectId,
+    ...(family.facts ?? []).flatMap((fact: any) => [fact.id, ...(fact.requirements ?? []).map((requirement: any) => requirement.conditionNodeId)])])
+    .filter((id: unknown): id is string => typeof id === 'string');
+  const selectedNodes = new Set([...focus.nodeIds, ...contextNodeIds]);
   const factEdges = graph.edges.filter(edge => edge.from && edge.to && selectedNodes.has(edge.from) && selectedNodes.has(edge.to)
     && ['has-condition', 'has-effect', 'has-source-control', 'requires-condition'].includes(edge.kind));
-  return investigationSelection(graph, 'question', { ...focus, contextNodeIds: context.nodeIds,
-    contextEdgeIds: [...context.edgeIds, ...factEdges.map(edge => edge.id)], page: result.page, scope: result.scope });
+  return investigationSelection(graph, 'question', { ...focus, contextNodeIds,
+    contextEdgeIds: factEdges.map(edge => edge.id), page: result.page, scope: result.scope });
 }
 
 /** Select only the records on the requested page and on the appropriate side. */
 export function comparisonSelection(graph: IntelligenceGraph, detail: any, side: 'base' | 'head', page?: unknown) {
   const delta = detail?.semantic ?? detail;
-  const records: unknown[] = [];
-  for (const kind of ['nodes', 'edges']) for (const [change, values] of Object.entries(delta?.[kind] ?? {})) {
+  const nodeIds: string[] = [], edgeIds: string[] = [];
+  for (const kind of ['nodes', 'edges'] as const) for (const [change, values] of Object.entries(delta?.[kind] ?? {})) {
     if (!Array.isArray(values)) continue;
     if (side === 'base' && ['added', 'analysisAdded', 'ambiguousAdded'].includes(change)) continue;
     if (side === 'head' && ['removed', 'analysisRemoved', 'ambiguousRemoved'].includes(change)) continue;
-    for (const value of values) records.push(value?.before && value?.after ? (side === 'base' ? value.before : value.after) : value);
+    for (const value of values) {
+      const record = value?.before && value?.after ? (side === 'base' ? value.before : value.after) : value;
+      if (typeof record?.id === 'string') (kind === 'nodes' ? nodeIds : edgeIds).push(record.id);
+    }
   }
-  return investigationSelection(graph, 'comparison-' + side, { ...observedGraphIds(graph, records), page });
+  return investigationSelection(graph, 'comparison-' + side, { nodeIds, edgeIds, page });
 }

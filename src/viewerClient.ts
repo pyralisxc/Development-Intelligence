@@ -51,6 +51,7 @@ let exploreQuery = '';
 let graphSelected = '';
 let lastExplore: any = null;
 let selectedInspection: any = null;
+let inspectionSequence = 0;
 let inspectorTab = 'summary';
 let renderer: Sigma | null = null;
 let preferredQuerySource = '';
@@ -71,7 +72,7 @@ function followInvestigation(selection: any): void {
   else void activateSection('explore');
 }
 function investigationGraphId(): string | undefined {
-  return investigationVisible ? activeInvestigation?.graph?.graphId : undefined;
+  return section === 'explore' && investigationVisible ? activeInvestigation?.graph?.graphId : undefined;
 }
 let parityContractText = `{
   "version": 1,
@@ -142,9 +143,24 @@ function nodeRow(node: any): string {
   return `<button class="row row-button" data-node="${esc(node.id)}"><span class="badge">${esc(node.kind)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.locator ?? node.layer ?? '')}</small></span><span>→</span></button>`;
 }
 
-function wireNodeButtons(root: ParentNode = content): void {
+function wireNodeButtons(root: ParentNode = content, graphId?: string): void {
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-node]'))) {
-    button.addEventListener('click', () => void openInspector(button.dataset.node!));
+    button.addEventListener('click', () => {
+      const id = button.dataset.node!;
+      const explicitGraph = button.dataset.graphId || graphId;
+      if (section === 'explore' && renderer && (!explicitGraph || explicitGraph === investigationGraphId())) {
+        const graph = renderer.getGraph();
+        if (graph.hasNode(id)) {
+          graphSelected = id; selectedGraphNodes.clear(); selectedGraphNodes.add(id);
+          graph.forEachNode(node => graph.setNodeAttribute(node, 'color', node === id || (investigationVisible && activeInvestigation?.focusNodeIds?.includes(node)) ? '#f6c95f' : graphColor(graph.getNodeAttribute(node, 'node'))));
+          const scope = document.getElementById('graph-scope') as HTMLButtonElement | null;
+          if (scope) scope.disabled = false;
+          const label = document.getElementById('graph-selected-label');
+          if (label) label.textContent = `Selected: ${graph.getNodeAttribute(id, 'label')}`;
+        }
+      }
+      void openInspector(id, explicitGraph);
+    });
   }
 }
 
@@ -154,7 +170,7 @@ function assessmentStatusClass(status: string): string {
   return 'status-warn';
 }
 
-function renderAssessment(data: any, compact = false): string {
+function renderAssessment(data: any, compact = false, context?: any): string {
   if (!data?.claims || !Array.isArray(data.claims)) return '';
   const claims = data.claims as any[];
   const findings = Array.isArray(data.findings) ? data.findings as any[] : [];
@@ -198,7 +214,7 @@ function renderAssessment(data: any, compact = false): string {
   const findingGroupRows = findingGroups.map(item => `<div class="assessment-item"><div><span class="badge status-warn">${esc(item.count)} finding${item.count === 1 ? '' : 's'}</span> <span class="muted">${esc(item.relationshipKind ?? item.ruleId)}</span></div><strong>${esc(item.ruleId)}</strong><small>${esc((item.affectedIds ?? []).length)} distinct affected graph record(s)</small></div>`).join('');
   const findingScope = data.findingSummary?.scope;
   const findingScopeLabel = findingScope ? `Resolved radius ${findingScope.resolvedDepth} from ${findingScope.rootId} · ${findingScope.nodeCount} nodes in scope` : 'Repository-wide or coverage-only scope';
-  return `<div class="assessment"><div class="assessment-head"><div><h3>Evidence-backed assessment</h3><h2 class="${assessmentStatusClass(data.answerStatus)}">${esc(data.answerStatus)}</h2></div><div class="assessment-meta">Revision ${esc(data.revision ?? 'unknown')}<br>${esc(coverageLabel)}</div></div>${facets.length ? `<div class="assessment-section"><h3>Capability realization</h3><div class="assessment-facets">${facetRows}</div></div>` : ''}${reachSection}<div class="assessment-section"><h3>Claims and proof</h3><div class="list">${claimRows}</div></div>${hypotheses.length ? `<div class="assessment-section"><h3>Suggested relationships</h3><p class="muted">Candidates are hypotheses for follow-up inspection, not findings and not proof.</p><div class="list">${hypothesisRows}</div></div>` : ''}${findings.length ? `<div class="assessment-section"><h3>Finding groups</h3><p class="muted">${esc(findingScopeLabel)}</p><div class="list">${findingGroupRows}</div>${compact ? '' : `<details><summary class="muted">${esc(findings.length)} underlying findings</summary><div class="list" style="margin-top:8px">${findingRows}</div></details>`}</div>` : ''}${compact ? '' : `<details><summary class="muted">Raw assessment record</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`}</div>`;
+  return `<div class="assessment"><div class="assessment-head"><div><h3>Evidence-backed assessment</h3><h2 class="${assessmentStatusClass(data.answerStatus)}">${esc(data.answerStatus)}</h2></div><div class="assessment-meta">Revision ${esc(data.revision ?? (context?.sourceState?.headRevision ? `working files · HEAD ${context.sourceState.headRevision}` : context?.revision ?? 'unknown'))}<br>${esc(coverageLabel)}</div></div>${facets.length ? `<div class="assessment-section"><h3>Capability realization</h3><div class="assessment-facets">${facetRows}</div></div>` : ''}${reachSection}<div class="assessment-section"><h3>Claims and proof</h3><div class="list">${claimRows}</div></div>${hypotheses.length ? `<div class="assessment-section"><h3>Suggested relationships</h3><p class="muted">Candidates are hypotheses for follow-up inspection, not findings and not proof.</p><div class="list">${hypothesisRows}</div></div>` : ''}${findings.length ? `<div class="assessment-section"><h3>Finding groups</h3><p class="muted">${esc(findingScopeLabel)}</p><div class="list">${findingGroupRows}</div>${compact ? '' : `<details><summary class="muted">${esc(findings.length)} underlying findings</summary><div class="list" style="margin-top:8px">${findingRows}</div></details>`}</div>` : ''}${compact ? '' : `<details><summary class="muted">Raw assessment record</summary><pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre></details>`}</div>`;
 }
 
 function setInspectorTabs(): void {
@@ -226,20 +242,20 @@ function renderInspector(): void {
   if (inspectorTab === 'summary') {
     const families = (data.families ?? []).filter((family: any) => family.subject && family.id !== entity.id);
     const facts = (data.facts ?? []).map((item: any) => `<button class="row row-button" data-node="${esc(item.fact.id)}"><span class="row-main"><strong>${esc(item.relationship.kind)}</strong><small>${esc(String(item.fact.raw ?? item.fact.name ?? '').split('\n')[0])}${String(item.fact.raw ?? item.fact.name ?? '').includes('\n') ? ' …' : ''}</small></span></button>`).join('');
-    inspectorBody.innerHTML = `<div class="inspector-title">${esc(entity.name ?? entity.id)}</div><div class="inspector-sub">${esc(entity.locator ?? '')}</div><div style="margin:10px 0"><span class="badge">${esc(entity.kind)}</span> <span class="badge">${esc(entity.layer ?? 'structural')}</span></div>${(data.quickNotes ?? []).map((note: string) => `<div class="quick-note">${esc(note)}</div>`).join('')}${facts ? `<h3>Source facts</h3><div class="list">${facts}</div>` : ''}${families.length ? `<h3>Families</h3><div class="list">${families.map((family: any) => `<button class="row row-button" data-node="${esc(family.id)}"><span class="row-main"><strong>${esc(family.subject.name)}</strong><small>${esc(family.roles.join(', '))} · ${esc(family.subject.locator)}</small></span></button>`).join('')}</div>` : ''}${(data.familyMembers ?? []).length ? `<details><summary>Family members (${data.familyMembers.length})</summary><div class="list">${data.familyMembers.map((member: any) => `<button class="row row-button" data-node="${esc(member.id)}"><span class="row-main"><strong>${esc(member.name)}</strong><small>${esc(member.roles.join(', '))} · ${esc(member.locator)}</small></span></button>`).join('')}</div></details>` : ''}${(entity.contributions ?? []).length ? `<h3>Producer contributions</h3>${entity.contributions.map((item: any) => `<div class="quick-note">${esc(item.producer)} ${esc(item.version)} · ${esc(item.locator)}</div>`).join('')}` : ''}${renderAssessment(data.assessment, true)}<details style="margin-top:12px"><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(entity, null, 2))}</pre></details>`;
-    wireNodeButtons(inspectorBody);
+    inspectorBody.innerHTML = `<div class="inspector-title">${esc(entity.name ?? entity.id)}</div><div class="inspector-sub">${esc(entity.locator ?? '')}</div><div style="margin:10px 0"><span class="badge">${esc(entity.kind)}</span> <span class="badge">${esc(entity.layer ?? 'structural')}</span></div>${(data.quickNotes ?? []).map((note: string) => `<div class="quick-note">${esc(note)}</div>`).join('')}${facts ? `<h3>Source facts</h3><div class="list">${facts}</div>` : ''}${families.length ? `<h3>Families</h3><div class="list">${families.map((family: any) => `<button class="row row-button" data-node="${esc(family.id)}"><span class="row-main"><strong>${esc(family.subject.name)}</strong><small>${esc(family.roles.join(', '))} · ${esc(family.subject.locator)}</small></span></button>`).join('')}</div>` : ''}${(data.familyMembers ?? []).length ? `<details><summary>Family members (${data.familyMembers.length})</summary><div class="list">${data.familyMembers.map((member: any) => `<button class="row row-button" data-node="${esc(member.id)}"><span class="row-main"><strong>${esc(member.name)}</strong><small>${esc(member.roles.join(', '))} · ${esc(member.locator)}</small></span></button>`).join('')}</div></details>` : ''}${(entity.contributions ?? []).length ? `<h3>Producer contributions</h3>${entity.contributions.map((item: any) => `<div class="quick-note">${esc(item.producer)} ${esc(item.version)} · ${esc(item.locator)}</div>`).join('')}` : ''}${renderAssessment(data.assessment, true, data)}<details style="margin-top:12px"><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(entity, null, 2))}</pre></details>`;
+    wireNodeButtons(inspectorBody, data.graphId);
     if (data.investigation) { const button = document.createElement('button'); button.textContent = 'Show connections on graph'; button.addEventListener('click', () => followInvestigation(data.investigation)); inspectorBody.prepend(button); }
     return;
   }
   if (inspectorTab === 'connections') {
     inspectorBody.innerHTML = (data.connections ?? []).length ? `<div class="list">${data.connections.map((item: any) => `<div><button class="row row-button" ${item.neighbor ? `data-node="${esc(item.neighbor.id)}"` : 'disabled'}><span class="badge ${item.status === 'resolved' ? 'status-good' : item.status === 'candidate' ? 'status-warn' : 'status-bad'}">${esc(item.status)}</span><span class="row-main"><strong>${esc(item.direction === 'outbound' ? '→' : '←')} ${esc(item.neighbor?.name ?? 'unresolved')}</strong><small>${esc(item.kind)} · ${esc(item.neighbor?.kind ?? '')}</small></span></button><button type="button" data-relationship="${esc(item.edgeId)}">Inspect relationship</button></div>`).join('')}</div>` : empty('No visible connections', 'This entity has no relationships in the selected graph context.');
-    wireNodeButtons(inspectorBody);
+    wireNodeButtons(inspectorBody, data.graphId);
     for (const button of Array.from(inspectorBody.querySelectorAll<HTMLButtonElement>('[data-relationship]'))) button.addEventListener('click', () => {
       const item = data.connections.find((value: any) => value.edgeId === button.dataset.relationship);
       if (!item) return;
       const name = entity.name ?? entity.id, other = item.neighbor?.name ?? 'unresolved';
       void openRelationship({ id: item.edgeId, kind: item.kind, status: item.status, from: null, to: null },
-        item.direction === 'outbound' ? name : other, item.direction === 'outbound' ? other : name);
+        item.direction === 'outbound' ? name : other, item.direction === 'outbound' ? other : name, data.graphId);
     });
     return;
   }
@@ -257,19 +273,26 @@ function renderInspector(): void {
   inspectorBody.innerHTML = change ? `<div class="card"><h3>Default → selected</h3><h2 class="${change.state === 'unchanged' ? 'status-good' : 'status-warn'}">${esc(change.state)}</h2><p>${change.state === 'unchanged' ? 'No semantic topology change is currently recorded for this entity.' : 'This entity participates in the current source comparison.'}</p></div>${change.record ? `<pre class="raw">${esc(JSON.stringify(change.record, null, 2))}</pre>` : ''}` : empty('Change unavailable', 'Change inspection is unavailable for this snapshot context.');
 }
 
-async function openInspector(node: string): Promise<void> {
+async function openInspector(node: string, selectedGraphId?: string): Promise<void> {
+  const sequence = ++inspectionSequence;
   inspectorContext.textContent = 'Loading…';
   inspectorBody.innerHTML = empty('Inspecting', 'Loading quick notes, connections, code, evidence and change context…');
-  selectedInspection = await getJson('/workbench/data', new URLSearchParams({ action: 'inspect', node, ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
+  const graphId = selectedGraphId ?? investigationGraphId();
+  const result = await getJson('/workbench/data', new URLSearchParams({ action: 'inspect', node, ...(graphId ? { graphId } : {}) }));
+  if (sequence !== inspectionSequence) return;
+  selectedInspection = result;
   inspectorTab = 'summary';
   renderInspector();
 }
 
-async function openRelationship(edge: ProjectionEdge, from: string, to: string): Promise<void> {
+async function openRelationship(edge: ProjectionEdge, from: string, to: string, selectedGraphId?: string): Promise<void> {
+  const sequence = ++inspectionSequence;
   inspectorContext.textContent = 'Relationship';
   inspectorTabs.innerHTML = '';
   inspectorBody.innerHTML = empty('Inspecting relationship', 'Loading its source and evidence…');
-  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'relationship', edge: edge.id, ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) })) as any;
+  const graphId = selectedGraphId ?? investigationGraphId();
+  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'relationship', edge: edge.id, ...(graphId ? { graphId } : {}) })) as any;
+  if (sequence !== inspectionSequence) return;
   const record = data.edge ?? edge;
   inspectorBody.innerHTML = `<div class="inspector-title">${esc(from)} → ${esc(to)}</div><div class="inspector-sub">${esc(record.kind)} · ${esc(record.status)}</div>${record.strategy ? `<div class="quick-note">Source: ${esc(record.strategy)}</div>` : ''}<h3>Evidence</h3>${(data.evidence ?? []).map((item: any) => `<div class="evidence-item"><strong>${esc(item.message ?? item.kind ?? 'evidence')}</strong><br><span class="muted">${esc(item.locator ?? item.sourceId ?? '')}</span></div>`).join('')}${(record.evidence ?? []).map((item: string) => `<div class="quick-note">${esc(item)}</div>`).join('') || (!(data.evidence ?? []).length ? '<p>No attached evidence records.</p>' : '')}<details><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(record, null, 2))}</pre></details>`;
 }
@@ -676,8 +699,9 @@ function renderChangeBucket(detail: any): string {
   const nodes = changes.flatMap(change => (semantic.nodes?.[change] ?? []).map((item: any) => ({ ...(item.after ?? item.before ?? item), _change: change, _comparison: item.before && item.after ? item : null })));
   const edges = changes.flatMap(change => (semantic.edges?.[change] ?? []).map((item: any) => ({ ...(item.after ?? item.before ?? item), _change: change, _comparison: item.before && item.after ? item : null })));
   if (!nodes.length && !edges.length) return empty('No changes on this page', 'Use the page controls to inspect other changes.');
-  const beforeAfter = (pair: any) => pair ? `<details><summary>Before and after</summary><pre class="raw">${esc(JSON.stringify(pair, null, 2))}</pre></details>` : '';
-  return `<div class="list">${nodes.map((node: any) => `<div><button class="row row-button" data-node="${esc(node.id)}"><span class="badge ${node._change === 'added' ? 'status-good' : node._change === 'removed' ? 'status-bad' : 'status-warn'}">${esc(node._change)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.kind ?? '')}</small></span></button>${beforeAfter(node._comparison)}</div>`).join('')}${edges.map((edge: any) => `<div><div class="row"><span class="badge">${esc(edge._change)}</span><span class="row-main"><strong>${esc(edge.kind ?? 'relationship')}</strong><small>${esc(edge.from ?? '?')} → ${esc(edge.to ?? '?')}</small></span></div>${beforeAfter(edge._comparison)}</div>`).join('')}</div>`;
+  const baseGraph = detail?.base?.graphId, headGraph = detail?.head?.graphId;
+  const beforeAfter = (pair: any) => pair ? `<details><summary>Before and after</summary>${pair.before?.id && !('from' in pair.before) && baseGraph ? `<button data-node="${esc(pair.before.id)}" data-graph-id="${esc(baseGraph)}">Inspect before</button>` : ''}${pair.after?.id && !('from' in pair.after) && headGraph ? `<button data-node="${esc(pair.after.id)}" data-graph-id="${esc(headGraph)}">Inspect after</button>` : ''}<pre class="raw">${esc(JSON.stringify(pair, null, 2))}</pre></details>` : '';
+  return `<div class="list">${nodes.map((node: any) => `<div><button class="row row-button" data-node="${esc(node.id)}" data-graph-id="${esc(['removed', 'analysisRemoved', 'ambiguousRemoved'].includes(node._change) ? baseGraph : headGraph)}"><span class="badge ${node._change === 'added' ? 'status-good' : node._change === 'removed' ? 'status-bad' : 'status-warn'}">${esc(node._change)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.kind ?? '')}</small></span></button>${beforeAfter(node._comparison)}</div>`).join('')}${edges.map((edge: any) => `<div><div class="row"><span class="badge">${esc(edge._change)}</span><span class="row-main"><strong>${esc(edge.kind ?? 'relationship')}</strong><small>${esc(edge.from ?? '?')} → ${esc(edge.to ?? '?')}</small></span></div>${beforeAfter(edge._comparison)}</div>`).join('')}</div>`;
 }
 
 async function renderLocal(epoch: number): Promise<void> {
