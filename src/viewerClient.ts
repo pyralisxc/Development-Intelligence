@@ -12,7 +12,7 @@ type ExploreMode = 'summary' | 'list' | 'table' | 'graph' | 'raw';
 type GraphLens = 'architecture' | 'parity' | 'code';
 type ProjectionNode = { id: string; kind: string; layer?: string; name?: string; locator?: string; value?: unknown; evidenceIds?: string[] };
 type ProjectionEdge = { id: string; from: string | null; to: string | null; kind: string; status: string; strategy?: string; confidence?: number | null; evidenceIds?: string[] };
-type Projection = { project: string; graphId?: string; revision?: string; selected?: string; ambiguous?: boolean; candidatesTruncated?: boolean; candidates?: Array<{ id: string; kind: string; layer: string; name: string | null; locator: string }>; nodes: ProjectionNode[]; edges: ProjectionEdge[]; evidence?: unknown[]; coverage?: unknown; truncated?: boolean };
+type Projection = { project: string; graphId?: string; revision?: string | null; sourceState?: { headRevision: string }; sourceFingerprint?: string | null; analyzerVersion?: string; selected?: string; ambiguous?: boolean; candidatesTruncated?: boolean; candidates?: Array<{ id: string; kind: string; layer: string; name: string | null; locator: string }>; nodes: ProjectionNode[]; edges: ProjectionEdge[]; evidence?: unknown[]; coverage?: any; truncated?: boolean };
 
 const config = window.__DEVINT_VIEWER__;
 if (!config?.project) throw new Error('Development Intelligence Workbench is missing project context');
@@ -207,12 +207,22 @@ function renderInspector(): void {
   inspectorContext.textContent = entity.kind ?? '';
   setInspectorTabs();
   if (inspectorTab === 'summary') {
-    inspectorBody.innerHTML = `<div class="inspector-title">${esc(entity.name ?? entity.id)}</div><div class="inspector-sub">${esc(entity.id)}<br>${esc(entity.locator ?? '')}</div><div style="margin:10px 0"><span class="badge">${esc(entity.kind)}</span> <span class="badge">${esc(entity.layer ?? 'structural')}</span></div>${(data.quickNotes ?? []).map((note: string) => `<div class="quick-note">${esc(note)}</div>`).join('')}${renderAssessment(data.assessment, true)}<details style="margin-top:12px"><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(entity, null, 2))}</pre></details>`;
+    const families = (data.families ?? []).filter((family: any) => family.subject && family.id !== entity.id);
+    const facts = (data.facts ?? []).map((item: any) => `<button class="row row-button" data-node="${esc(item.fact.id)}"><span class="row-main"><strong>${esc(item.relationship.kind)}</strong><small>${esc(String(item.fact.raw ?? item.fact.name ?? '').split('\n')[0])}${String(item.fact.raw ?? item.fact.name ?? '').includes('\n') ? ' …' : ''}</small></span></button>`).join('');
+    inspectorBody.innerHTML = `<div class="inspector-title">${esc(entity.name ?? entity.id)}</div><div class="inspector-sub">${esc(entity.locator ?? '')}</div><div style="margin:10px 0"><span class="badge">${esc(entity.kind)}</span> <span class="badge">${esc(entity.layer ?? 'structural')}</span></div>${(data.quickNotes ?? []).map((note: string) => `<div class="quick-note">${esc(note)}</div>`).join('')}${facts ? `<h3>Source facts</h3><div class="list">${facts}</div>` : ''}${families.length ? `<h3>Families</h3><div class="list">${families.map((family: any) => `<button class="row row-button" data-node="${esc(family.id)}"><span class="row-main"><strong>${esc(family.subject.name)}</strong><small>${esc(family.roles.join(', '))} · ${esc(family.subject.locator)}</small></span></button>`).join('')}</div>` : ''}${(data.familyMembers ?? []).length ? `<details><summary>Family members (${data.familyMembers.length})</summary><div class="list">${data.familyMembers.map((member: any) => `<button class="row row-button" data-node="${esc(member.id)}"><span class="row-main"><strong>${esc(member.name)}</strong><small>${esc(member.roles.join(', '))} · ${esc(member.locator)}</small></span></button>`).join('')}</div></details>` : ''}${(entity.contributions ?? []).length ? `<h3>Producer contributions</h3>${entity.contributions.map((item: any) => `<div class="quick-note">${esc(item.producer)} ${esc(item.version)} · ${esc(item.locator)}</div>`).join('')}` : ''}${renderAssessment(data.assessment, true)}<details style="margin-top:12px"><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(entity, null, 2))}</pre></details>`;
+    wireNodeButtons(inspectorBody);
     return;
   }
   if (inspectorTab === 'connections') {
-    inspectorBody.innerHTML = (data.connections ?? []).length ? `<div class="list">${data.connections.map((item: any) => `<button class="row row-button" ${item.neighbor ? `data-node="${esc(item.neighbor.id)}"` : 'disabled'}><span class="badge ${item.status === 'resolved' ? 'status-good' : item.status === 'candidate' ? 'status-warn' : 'status-bad'}">${esc(item.status)}</span><span class="row-main"><strong>${esc(item.direction === 'outbound' ? '→' : '←')} ${esc(item.neighbor?.name ?? 'unresolved')}</strong><small>${esc(item.kind)} · ${esc(item.neighbor?.kind ?? '')}</small></span></button>`).join('')}</div>` : empty('No visible connections', 'This entity has no relationships in the selected graph context.');
+    inspectorBody.innerHTML = (data.connections ?? []).length ? `<div class="list">${data.connections.map((item: any) => `<div><button class="row row-button" ${item.neighbor ? `data-node="${esc(item.neighbor.id)}"` : 'disabled'}><span class="badge ${item.status === 'resolved' ? 'status-good' : item.status === 'candidate' ? 'status-warn' : 'status-bad'}">${esc(item.status)}</span><span class="row-main"><strong>${esc(item.direction === 'outbound' ? '→' : '←')} ${esc(item.neighbor?.name ?? 'unresolved')}</strong><small>${esc(item.kind)} · ${esc(item.neighbor?.kind ?? '')}</small></span></button><button type="button" data-relationship="${esc(item.edgeId)}">Inspect relationship</button></div>`).join('')}</div>` : empty('No visible connections', 'This entity has no relationships in the selected graph context.');
     wireNodeButtons(inspectorBody);
+    for (const button of Array.from(inspectorBody.querySelectorAll<HTMLButtonElement>('[data-relationship]'))) button.addEventListener('click', () => {
+      const item = data.connections.find((value: any) => value.edgeId === button.dataset.relationship);
+      if (!item) return;
+      const name = entity.name ?? entity.id, other = item.neighbor?.name ?? 'unresolved';
+      void openRelationship({ id: item.edgeId, kind: item.kind, status: item.status, from: null, to: null },
+        item.direction === 'outbound' ? name : other, item.direction === 'outbound' ? other : name);
+    });
     return;
   }
   if (inspectorTab === 'code') {
@@ -235,6 +245,15 @@ async function openInspector(node: string): Promise<void> {
   selectedInspection = await getJson('/workbench/data', new URLSearchParams({ action: 'inspect', node }));
   inspectorTab = 'summary';
   renderInspector();
+}
+
+async function openRelationship(edge: ProjectionEdge, from: string, to: string): Promise<void> {
+  inspectorContext.textContent = 'Relationship';
+  inspectorTabs.innerHTML = '';
+  inspectorBody.innerHTML = empty('Inspecting relationship', 'Loading its source and evidence…');
+  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'relationship', edge: edge.id })) as any;
+  const record = data.edge ?? edge;
+  inspectorBody.innerHTML = `<div class="inspector-title">${esc(from)} → ${esc(to)}</div><div class="inspector-sub">${esc(record.kind)} · ${esc(record.status)}</div>${record.strategy ? `<div class="quick-note">Source: ${esc(record.strategy)}</div>` : ''}<h3>Evidence</h3>${(data.evidence ?? []).map((item: any) => `<div class="evidence-item"><strong>${esc(item.message ?? item.kind ?? 'evidence')}</strong><br><span class="muted">${esc(item.locator ?? item.sourceId ?? '')}</span></div>`).join('')}${(record.evidence ?? []).map((item: string) => `<div class="quick-note">${esc(item)}</div>`).join('') || (!(data.evidence ?? []).length ? '<p>No attached evidence records.</p>' : '')}<details><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(record, null, 2))}</pre></details>`;
 }
 
 function sectionIsCurrent(epoch: number, expected: Section): boolean {
@@ -309,7 +328,7 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const sequence = ++graphRenderSequence;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button><button id="graph-scope" type="button" disabled>Use selected subject for question</button><span id="graph-selected-label" class="muted"></span><span class="muted">Drag to pan · scroll to zoom · select a node to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button><label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button><button id="graph-scope" type="button" disabled>Use selected subject for question</button><span id="graph-selected-label" class="muted"></span><span class="muted">Drag to pan · scroll to zoom · select a node or relationship to inspect</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
     const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
@@ -332,6 +351,12 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   }
   const container = document.getElementById('graph') as HTMLElement;
   const graphStatus = document.getElementById('graph-status') as HTMLElement;
+  const information = root.querySelector<HTMLElement>('#graph-information');
+  if (information) {
+    const coverage = projection.coverage;
+    const source = projection.revision ?? (projection.sourceState ? `working files · HEAD ${projection.sourceState.headRevision}` : 'unknown');
+    information.innerHTML = `<details><summary>Graph source and coverage</summary><p>Source: ${esc(source)}<br>Analyzer: ${esc(projection.analyzerVersion ?? 'unknown')}<br>Graph: ${esc(projection.graphId ?? 'unknown')}</p>${coverage ? `<p>Files: ${esc(coverage.analyzedFiles)} analyzed of ${esc(coverage.eligibleFiles)} eligible · ${esc(coverage.partialFiles)} partial · ${esc(coverage.failedFiles)} failed · ${esc(coverage.unsupportedFiles)} unsupported</p>${(coverage.producerCoverage ?? []).map((item: any) => `<p>${esc(item.producer)}: ${esc(item.state)}${item.reason ? ` — ${esc(item.reason)}` : ''}</p>`).join('')}` : '<p>Coverage is unavailable.</p>'}</details>`;
+  }
   if (projection.ambiguous) {
     container.innerHTML = empty('Choose a subject', 'Several graph subjects match. Select one below to see its neighborhood.');
     graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates${projection.candidatesTruncated ? ' shown · increase Nodes to see more' : ''}`;
@@ -353,7 +378,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
-  renderer = new Sigma(graph, container, { renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
+  renderer = new Sigma(graph, container, { enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
   renderer.on('clickNode', event => {
     graphSelected = event.node;
     const button = root.querySelector<HTMLButtonElement>('#graph-scope');
@@ -361,6 +386,12 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
     if (label) label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}`;
     void openInspector(event.node);
+  });
+  renderer.on('clickEdge', event => {
+    const edge = graph.getEdgeAttribute(event.edge, 'edge') as ProjectionEdge;
+    const from = graph.getNodeAttribute(graph.source(event.edge), 'label') as string;
+    const to = graph.getNodeAttribute(graph.target(event.edge), 'label') as string;
+    void openRelationship(edge, from, to);
   });
   root.querySelector<HTMLButtonElement>('#graph-scope')?.addEventListener('click', () => {
     const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope');

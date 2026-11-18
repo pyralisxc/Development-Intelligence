@@ -56,6 +56,14 @@ Nodes belong to three layers:
 
 Semantic identity uses explicit stable IDs. Structural identity follows language semantics where DI can prove them: line movement does not create a new symbol, overload declarations coalesce into one symbol, and distinct same-name declarations remain distinct. Source locations remain provenance.
 
+### Consolidated subjects and families
+
+Each node identifies one subject or occurrence. Its name, typed value, source locator, producer contributions, evidence links and family memberships describe that same subject; a source occurrence is not collapsed into its declaration. `raw` is present when it preserves distinct source text and may be absent when it would only repeat the name and value. Consumers use the name/value for that case. SCIP definitions produced on the selected checkout enrich matched declaration nodes with their producer, symbol and exact locator; references and unresolved definitions remain separate graph facts.
+
+A node's `families` is a list of memberships in existing graph subjects, not a separate store. Each membership identifies the family subject, roles and the graph relationship IDs supporting membership. A subject owns its structural components and directly related subjects; direct callers and dependencies participate without transitively absorbing one another's unrelated workflows. Literal callback bodies and their direct dependencies stay available within the lexical owner's family even if invocation is not established. Candidate SQL bindings remain candidates; same-name facts do not turn into deployment bindings. The complete membership list is rebuilt from the selected graph after producer reconciliation and on incremental refresh.
+
+Ordinary question filtering returns families and paged members alongside the underlying graph records. Membership helps select a connected group; its relationships, source facts and conditions establish what the group actually does. The Workbench inspector presents a subject's memberships and members, allows selecting relationship evidence, and exposes graph source/coverage beside the graph. CLI, MCP and Workbench read the same graph contract.
+
 ### Evidence and conflicts
 
 Evidence answers why DI believes an entity or relationship exists. It may carry source identity, locator, reason/kind, safe field/value, and observation context.

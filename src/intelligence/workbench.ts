@@ -372,6 +372,21 @@ export async function inspectEntity(input: { project: string; node: string; ref?
   const selected = candidates.find(node => node.id === input.node) ?? candidates[0]!;
   const incident = graph.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const families = (selected.families ?? []).map(family => ({ ...family,
+    subject: byId.has(family.id) ? { id: family.id, name: displayName(byId.get(family.id)!),
+      kind: byId.get(family.id)!.kind, locator: byId.get(family.id)!.locator } : null }));
+  const facts = incident.filter(edge => edge.from === selected.id && edge.to
+    && ['has-condition', 'has-effect', 'has-source-control'].includes(edge.kind))
+    .flatMap(edge => {
+      const fact = edge.to ? byId.get(edge.to) : undefined;
+      return fact ? [{ relationship: edge, fact }] : [];
+    });
+  const familyMembers = graph.nodes.flatMap(node => {
+    if (node.id === selected.id) return [];
+    const membership = node.families?.find(family => family.id === selected.id);
+    return membership ? [{ id: node.id, name: displayName(node), kind: node.kind,
+      locator: node.locator, roles: membership.roles, via: membership.via }] : [];
+  }).sort((a, b) => a.locator.localeCompare(b.locator) || a.id.localeCompare(b.id));
   const counts = edgeCounts(incident);
   const connections = incident.map(edge => {
     const outgoing = edge.from === selected.id;
@@ -417,8 +432,13 @@ export async function inspectEntity(input: { project: string; node: string; ref?
     project: input.project,
     graphId: graph.graphId,
     revision: graph.repositoryRevision,
+    ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
+    sourceFingerprint: graph.sourceFingerprint,
     ambiguous: false,
     entity: selected,
+    families,
+    familyMembers,
+    facts,
     summary: quickNotes[0],
     quickNotes,
     connectionCounts: counts,
@@ -1674,24 +1694,39 @@ export async function queryWorkbenchRequest(input: {
       const comparisonAnswer = result.comparison?.state === 'evaluated'
           ? `Compared ${result.comparison.total} subjects: ${result.comparison.counts.related} related, ${result.comparison.counts.candidate} candidate, ${result.comparison.counts.notRelated} established not related, and ${result.comparison.counts.unknown} unknown.`
           : result.comparison?.reason ?? '';
+      const describeFamily = (item: any): string => {
+        const family = result.families.find((value: any) => value.id === item.id);
+        const linked = (family?.members ?? []).filter((member: any) =>
+          member.roles.some((role: string) => ['dependency', 'caller', 'callback', 'related'].includes(role)));
+        const connections = linked.map((member: any) => `${member.roles.includes('callback') ? 'callback' : member.name ?? member.kind} (${member.locator})`).join(', ');
+        const familyIds = new Set([item.id, ...linked.filter((member: any) => member.roles.includes('callback')).map((member: any) => member.id)]);
+        const families = result.sourceFamilies.filter((value: any) => familyIds.has(value.subjectId));
+        const available = families.flatMap((value: any) => value.facts ?? [])
+          .filter((fact: any) => typeof fact.expression === 'string');
+        const matching = available.filter((fact: any) => fact.matchedTerms?.length);
+        const facts = matching.length ? matching : available.filter((fact: any) => fact.kind === 'source-effect');
+        const details = facts.map((fact: any) => {
+          const lines = String(fact.expression).split(/\r?\n/u);
+          const expression = lines.length > 1 ? `${lines[0]} … (full source in details)` : lines[0];
+          return `${expression}${fact.requirements?.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`;
+        }).join('; ');
+        const description = typeof item.value?.description === 'string' ? item.value.description : '';
+        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${connections ? `; connected: ${connections}` : ''}${details ? `; source facts: ${details}` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more family members at offset ${family.nextOffset}` : ''}`;
+      };
       // Broad term matches are a ranked source scope, not one bound subject.
       // Compose visible source facts for that scope instead of asserting that
       // every incident relationship answers the question.
       const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
         ? `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): `
-          + result.subjects.map((item: any) => {
-            const family = result.sourceFamilies.find((value: any) => value.subjectId === item.id);
-            const concise = (family?.facts ?? []).filter((fact: any) => typeof fact.expression === 'string');
-            const matched = concise.filter((fact: any) => fact.matchedTerms?.length);
-            const facts = matched.length ? matched : concise.filter((fact: any) => fact.effectKind?.split('-').includes('call'));
-            const detail = facts.map((fact: any) => `${fact.expression}${fact.requirements?.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext?.length ? ` within ${fact.controlContext.map((context: any) => context.kind).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ');
-            return `${item.name ?? item.id} (${item.locator})${detail ? `: ${detail}` : ''}`;
-          }).join(' | ')
-          + '. These are ranked matching source facts; inspect the selected graph subjects and coverage for the rest.'
+          + result.subjects.map(describeFamily).join(' | ')
+          + '. These are grouped graph subjects; inspect their family and source details for the complete records.'
         : '';
+      const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation
+        && result.families.some((family: any) => family.id === subject.id && family.total)
+        ? `${describeFamily(subject)}. Inspect the family and source details for the complete records.` : '';
       const answer = comparisonAnswer || (result.interpretation.negated
         ? 'The graph matches subjects for this question, but the requested negative conclusion is not established. Narrow the subject and relationship or supply a comparison scope.'
-        : '') || relationshipAnswer || scopedAnswer || (focus.length
+        : '') || relationshipAnswer || scopedAnswer || familyAnswer || (focus.length
         ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
         : `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`);
       items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,

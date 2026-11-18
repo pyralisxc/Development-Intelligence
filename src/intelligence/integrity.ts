@@ -21,11 +21,17 @@ export function assertGraphIntegrity(graph: IntelligenceGraph): void {
   if (duplicateEvidence.length) throw new Error(`Graph contains duplicate evidence ids: ${duplicateEvidence.slice(0, 12).join(', ')}`);
 
   const nodeIds = new Set(graph.nodes.map(node => node.id));
+  const edgeIds = new Set(graph.edges.map(edge => edge.id));
   const evidenceIds = new Set(graph.evidence.map(item => item.id));
 
   for (const node of graph.nodes) {
     for (const evidenceId of node.evidenceIds ?? []) {
       if (!evidenceIds.has(evidenceId)) throw new Error(`Graph node ${node.id} references missing evidence ${evidenceId}`);
+    }
+    for (const family of node.families ?? []) {
+      if (!nodeIds.has(family.id)) throw new Error(`Graph node ${node.id} references missing family ${family.id}`);
+      for (const edgeId of family.via) if (!edgeIds.has(edgeId))
+        throw new Error(`Graph node ${node.id} references missing family relationship ${edgeId}`);
     }
   }
 

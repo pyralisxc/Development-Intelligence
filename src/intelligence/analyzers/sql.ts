@@ -41,13 +41,13 @@ function splitStatements(text: string): SqlStatement[] {
     }
     if (ch === "'" || ch === '"') { quote = ch; continue; }
     if (ch === ';') {
-      const statement = text.slice(start, i + 1).trim();
-      if (statement) output.push({ text: statement, start });
+      const statement = text.slice(start, i + 1);
+      if (statement.trim()) output.push({ text: statement, start });
       start = i + 1;
     }
   }
-  const trailing = text.slice(start).trim();
-  if (trailing) output.push({ text: trailing, start });
+  const trailing = text.slice(start);
+  if (trailing.trim()) output.push({ text: trailing, start });
   return output;
 }
 
@@ -60,9 +60,9 @@ function shortSqlName(value: string): string {
   return canonical.split('.').at(-1) ?? canonical;
 }
 
-function firstMatch(statement: string, pattern: RegExp): string | null {
+function firstMatch(statement: string, pattern: RegExp): { name: string; index: number } | null {
   const match = pattern.exec(statement);
-  return match?.[1] ? canonicalSqlName(match[1]) : null;
+  return match?.[1] ? { name: canonicalSqlName(match[1]), index: match.index } : null;
 }
 
 function addReference(input: {
@@ -108,18 +108,17 @@ export function analyzeSql(context: AnalyzeContext): AnalyzeResult {
   const resolutions = [] as ReturnType<typeof resolution>[];
 
   for (const statement of splitStatements(context.text)) {
-    const line = lineAt(context.text, statement.start);
     const table = firstMatch(statement.text, /\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?([\w".]+)/iu);
     if (table) observations.push(observation({
       sourceId: context.source.id,
       kind: 'sql-table',
-      locator: `${context.locatorBase}:${line}:table`,
-      name: table,
+      locator: `${context.locatorBase}:${lineAt(context.text, statement.start + table.index)}:table`,
+      name: table.name,
       field: 'sql',
-      value: { qualifiedName: table, shortName: shortSqlName(table) },
+      value: { qualifiedName: table.name, shortName: shortSqlName(table.name) },
       layer: 'structural',
       checkpoint: false,
-      identity: [context.source.id, 'sql-table', table],
+      identity: [context.source.id, 'sql-table', table.name],
     }));
 
     const routineMatch = /\bcreate\s+(?:or\s+replace\s+)?(function|procedure)\s+([\w".]+)\s*\(([^)]*)\)/iu.exec(statement.text);
@@ -130,7 +129,7 @@ export function analyzeSql(context: AnalyzeContext): AnalyzeResult {
       const owner = observation({
         sourceId: context.source.id,
         kind: 'sql-function',
-        locator: `${context.locatorBase}:${line}:${routine}`,
+        locator: `${context.locatorBase}:${lineAt(context.text, statement.start + routineMatch.index)}:${routine}`,
         name: qualifiedName,
         field: 'sql',
         value: { qualifiedName, shortName: shortSqlName(qualifiedName), routine, signature },
@@ -160,17 +159,17 @@ export function analyzeSql(context: AnalyzeContext): AnalyzeResult {
     }
 
     const trigger = firstMatch(statement.text, /\bcreate\s+(?:or\s+replace\s+)?trigger\s+([\w".]+)/iu);
-    if (trigger) observations.push(observation({ sourceId: context.source.id, kind: 'sql-trigger', locator: `${context.locatorBase}:${line}:trigger`, name: trigger, field: 'sql', value: { name: trigger }, layer: 'structural', checkpoint: false, identity: [context.source.id, 'sql-trigger', trigger] }));
+    if (trigger) observations.push(observation({ sourceId: context.source.id, kind: 'sql-trigger', locator: `${context.locatorBase}:${lineAt(context.text, statement.start + trigger.index)}:trigger`, name: trigger.name, field: 'sql', value: { name: trigger.name }, layer: 'structural', checkpoint: false, identity: [context.source.id, 'sql-trigger', trigger.name] }));
 
     const policyMatch = /\bcreate\s+policy\s+([\w".]+)[\s\S]*?\bon\s+([\w".]+)/iu.exec(statement.text);
     if (policyMatch?.[1]) {
       const policy = canonicalSqlName(policyMatch[1]);
       const target = policyMatch[2] ? canonicalSqlName(policyMatch[2]) : null;
-      observations.push(observation({ sourceId: context.source.id, kind: 'sql-policy', locator: `${context.locatorBase}:${line}:policy`, name: policy, field: 'sql', value: { name: policy, target }, layer: 'structural', checkpoint: false, identity: [context.source.id, 'sql-policy', target, policy] }));
+      observations.push(observation({ sourceId: context.source.id, kind: 'sql-policy', locator: `${context.locatorBase}:${lineAt(context.text, statement.start + policyMatch.index)}:policy`, name: policy, field: 'sql', value: { name: policy, target }, layer: 'structural', checkpoint: false, identity: [context.source.id, 'sql-policy', target, policy] }));
     }
 
     const index = firstMatch(statement.text, /\bcreate\s+(?:unique\s+)?index\s+(?:if\s+not\s+exists\s+)?([\w".]+)/iu);
-    if (index) observations.push(observation({ sourceId: context.source.id, kind: 'sql-index', locator: `${context.locatorBase}:${line}:index`, name: index, field: 'sql', value: { name: index }, layer: 'structural', checkpoint: false, identity: [context.source.id, 'sql-index', index] }));
+    if (index) observations.push(observation({ sourceId: context.source.id, kind: 'sql-index', locator: `${context.locatorBase}:${lineAt(context.text, statement.start + index.index)}:index`, name: index.name, field: 'sql', value: { name: index.name }, layer: 'structural', checkpoint: false, identity: [context.source.id, 'sql-index', index.name] }));
 
     const privilege = /\b(grant|revoke)\b[\s\S]*?\bon\s+(?:table\s+|function\s+|schema\s+)?([\w".]+)/iu.exec(statement.text);
     if (privilege?.[2]) {
@@ -178,7 +177,7 @@ export function analyzeSql(context: AnalyzeContext): AnalyzeResult {
       observations.push(observation({
         sourceId: context.source.id,
         kind: 'sql-privilege',
-        locator: `${context.locatorBase}:${line}:privilege`,
+        locator: `${context.locatorBase}:${lineAt(context.text, statement.start + privilege.index)}:privilege`,
         name: target,
         field: 'sql',
         value: { operation: privilege[1]!.toLowerCase(), target },

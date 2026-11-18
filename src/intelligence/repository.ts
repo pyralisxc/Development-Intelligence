@@ -18,9 +18,10 @@ import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
+import { buildGraphFamilies } from './graphFamilies.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.31.0-compiler-call-bindings';
+export const ANALYZER_VERSION = '2.32.0-consolidated-families';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -1465,7 +1466,7 @@ async function crossFileTypeScriptGraph(
 
   type CallbackBehavior = 'invoked' | 'not-invoked' | 'unresolved';
   const callbackBehaviorCache = new Map<string, CallbackBehavior>();
-  const callbackBehavior = (target: GraphNode, parameterIndex: number, property: string, seen = new Set<string>()): CallbackBehavior => {
+  const callbackBehavior = (target: GraphNode, parameterIndex: number, property: string | null, seen = new Set<string>()): CallbackBehavior => {
     const key = `${target.id}:${parameterIndex}:${property}`;
     const cached = callbackBehaviorCache.get(key);
     if (cached) return cached;
@@ -1474,19 +1475,21 @@ async function crossFileTypeScriptGraph(
     const wrapper = functionLikeFor(target);
     if (!wrapper?.body || !target.sourceId.startsWith('repo:')) return 'unresolved';
     const parameter = wrapper.parameters[parameterIndex];
-    if (!parameter || !ts.isObjectBindingPattern(parameter.name)) return 'unresolved';
-    const computedMayAlias = parameter.name.elements.some(element => element.propertyName && ts.isComputedPropertyName(element.propertyName));
-    if (computedMayAlias) return 'unresolved';
-    const bindings = parameter.name.elements.filter(element => {
-      const external = element.propertyName && (ts.isIdentifier(element.propertyName) || ts.isStringLiteralLike(element.propertyName) || ts.isNumericLiteral(element.propertyName))
-        ? element.propertyName.text
-        : ts.isIdentifier(element.name) ? element.name.text : '';
-      return external === property;
-    });
-    if (bindings.length !== 1) return 'unresolved';
-    const bound = bindings[0]!;
-    if (!ts.isIdentifier(bound.name) || bound.initializer) return 'unresolved';
-    const local = bound.name.text;
+    if (!parameter || parameter.initializer || parameter.dotDotDotToken) return 'unresolved';
+    let boundName: ts.Identifier;
+    if (property === null && ts.isIdentifier(parameter.name)) boundName = parameter.name;
+    else if (property !== null && ts.isObjectBindingPattern(parameter.name)) {
+      if (parameter.name.elements.some(element => element.propertyName && ts.isComputedPropertyName(element.propertyName))) return 'unresolved';
+      const bindings = parameter.name.elements.filter(element => {
+        const external = element.propertyName && (ts.isIdentifier(element.propertyName) || ts.isStringLiteralLike(element.propertyName) || ts.isNumericLiteral(element.propertyName))
+          ? element.propertyName.text : ts.isIdentifier(element.name) ? element.name.text : '';
+        return external === property;
+      });
+      const bound = bindings[0];
+      if (bindings.length !== 1 || !bound || !ts.isIdentifier(bound.name) || bound.initializer) return 'unresolved';
+      boundName = bound.name;
+    } else return 'unresolved';
+    const local = boundName.text;
     const file = target.sourceId.slice('repo:'.length);
     const info = moduleInfos.get(file)!;
     let directlyInvoked = false;
@@ -1557,13 +1560,16 @@ async function crossFileTypeScriptGraph(
         return;
       }
       const isPropertyName = (ts.isPropertyAssignment(node.parent) || ts.isMethodDeclaration(node.parent)) && node.parent.name === node;
-      if (ts.isIdentifier(node) && node.text === local && node !== bound.name && !isPropertyName && !isShadowed(node, local, wrapper)) {
+      if (ts.isIdentifier(node) && node.text === local && node !== boundName && !isPropertyName && !isShadowed(node, local, wrapper)) {
         const directCallee = ts.isCallExpression(node.parent) && node.parent.expression === node;
         const forwardedProperty = ((ts.isPropertyAssignment(node.parent) && node.parent.initializer === node)
           || (ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node))
           && ts.isObjectLiteralExpression(node.parent.parent) && ts.isCallExpression(node.parent.parent.parent)
           && Boolean(importedCallTarget(info, node.parent.parent.parent.expression));
-        if (!directCallee && !forwardedProperty) ambiguous = true;
+        const forwardedArgument = ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)
+          && Boolean(importedCallTarget(info, node.parent.expression)
+            ?? resolvedLocalCallTarget(target, node.parent.expression, file, info.sourceFile.getLineAndCharacterOfPosition(node.parent.getStart(info.sourceFile)).line + 1));
+        if (!directCallee && !forwardedProperty && !forwardedArgument) ambiguous = true;
       }
       if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) && node.left.text === local
         && !isShadowed(node.left, local, wrapper)
@@ -1576,7 +1582,10 @@ async function crossFileTypeScriptGraph(
           ?? resolvedLocalCallTarget(target, node.expression, file, info.sourceFile.getLineAndCharacterOfPosition(node.getStart(info.sourceFile)).line + 1);
         for (const [argumentIndex, argument] of node.arguments.entries()) {
           if (!ts.isObjectLiteralExpression(argument)) {
-            if (ts.isIdentifier(argument) && argument.text === local && !isShadowed(argument, local, wrapper)) ambiguous = true;
+            if (ts.isIdentifier(argument) && argument.text === local && !isShadowed(argument, local, wrapper)) {
+              if (!forwardedTarget) ambiguous = true;
+              else forwarded.push(callbackBehavior(forwardedTarget, argumentIndex, null, new Set(seen)));
+            }
             continue;
           }
           for (const { property: item, name: forwardedProperty, uncertain } of effectiveObjectProperties(argument)) {
@@ -1990,19 +1999,22 @@ async function crossFileTypeScriptGraph(
           }
         }
         if (caller) {
-          for (const argument of node.arguments) {
+          for (const [argumentIndex, argument] of node.arguments.entries()) {
             for (const callbackNode of callbackValuesInArgument(argument)) {
               const callback = callbackOwnerFor(callbackNode);
               if (!callback || classifiedCallbacks.has(callback.id)) continue;
               classifiedCallbacks.add(callback.id);
+              const direct = callbackNode === argument;
+              const behavior = direct && target ? callbackBehavior(target, argumentIndex, null) : 'unresolved';
+              if (behavior === 'not-invoked') continue;
               addedEdges.push(resolution({
                 from: caller.id,
                 to: callback.id,
                 kind: 'invokes',
-                strategy: 'callback-transfer-unresolved',
-                confidence: null,
-                status: 'unresolved',
-                evidence: [`${relative}:${lineOf(node)}`, node.expression.getText(sourceFile)],
+                strategy: behavior === 'invoked' ? 'callback-parameter-invocation' : 'callback-transfer-unresolved',
+                confidence: behavior === 'invoked' ? 1 : null,
+                status: behavior === 'invoked' ? 'resolved' : 'unresolved',
+                evidence: [`${relative}:${lineOf(node)}`, ...(target ? [target.locator] : [node.expression.getText(sourceFile)])],
                 layer: 'structural',
                 checkpoint: false,
               }));
@@ -2572,7 +2584,7 @@ export async function advanceRepositoryGraph(input: {
     unavailableSourceIds: [],
     coverage,
   };
-  return { graph, strategy: 'incremental', changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+  return { graph: buildGraphFamilies(graph), strategy: 'incremental', changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
 }
 
 export async function buildRepositoryGraph(input: {
@@ -2769,5 +2781,5 @@ export async function buildRepositoryGraph(input: {
   };
   const produced = await addLanguageProducerFacts(input.root, graph, languageProducer);
   if (beforeFingerprint && beforeFingerprint !== await sourceFingerprint(input.root, true)) throw new Error('Working files changed during graph construction; rebuild to use one consistent source state');
-  return produced;
+  return buildGraphFamilies(produced);
 }

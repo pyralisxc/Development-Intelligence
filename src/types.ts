@@ -131,6 +131,22 @@ export interface EvidenceRecord {
   value?: unknown;
 }
 
+/** Membership is built from the selected graph. The family id is an existing
+ * graph subject; via identifies the relationships that make the node a member. */
+export interface GraphFamilyMembership {
+  id: string;
+  roles: string[];
+  via: string[];
+}
+
+/** Producer identities enrich the same source subject without replacing it. */
+export interface GraphProducerContribution {
+  producer: string;
+  version: string;
+  symbol: string;
+  locator: string;
+}
+
 export interface GraphNode {
   id: string;
   sourceId: string;
@@ -139,11 +155,14 @@ export interface GraphNode {
   field?: string;
   name?: string;
   value: unknown;
-  raw: string;
+  /** Distinct captured source text; omitted when it only repeats name/value. */
+  raw?: string;
   tags?: string[];
   layer?: GraphNodeLayer;
   checkpoint?: boolean;
   evidenceIds?: string[];
+  families?: GraphFamilyMembership[];
+  contributions?: GraphProducerContribution[];
 }
 
 export type RelationshipStatus = 'resolved' | 'candidate' | 'unresolved';

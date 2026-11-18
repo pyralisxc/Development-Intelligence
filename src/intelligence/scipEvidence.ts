@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
+import type { GraphEdge, GraphNode, GraphProducerContribution, IntelligenceGraph } from '../types.js';
 import { observation, resolution } from './model.js';
 import { stableHash } from '../util/hash.js';
 import { decodeScipIndex, type ScipDocument, type ScipOccurrence } from './scipWire.js';
@@ -261,6 +261,7 @@ export async function projectLocalScipEvidence(input: {
 
   const definitions = new Map<string, ScipDefinition[]>();
   const producerNodes = new Map<string, GraphNode>();
+  const contributions = new Map<string, GraphProducerContribution[]>();
   const producerContainment = new Map<string, GraphEdge>();
   let definitionsMatched = 0;
   let rejectedOccurrences = 0;
@@ -302,6 +303,15 @@ export async function projectLocalScipEvidence(input: {
           strategy: SCIP_EVIDENCE_STRATEGY, confidence: 1, status: 'resolved',
           evidence: [locator], layer: 'structural', checkpoint: false });
         producerContainment.set(contains.id, contains);
+      }
+      if (input.producerRanOnCheckout) {
+        const column = utf16Start(file, occurrence);
+        if (column !== null) {
+          const items = contributions.get(target.id) ?? [];
+          items.push({ producer: parsed.producer.name, version: parsed.producer.version,
+            symbol: occurrence.symbol, locator: `${file.file}:${line}:${column + 1}` });
+          contributions.set(target.id, items);
+        }
       }
       const item = { target, file: file.file, line };
       const group = definitions.get(occurrence.symbol) ?? [];
@@ -454,7 +464,13 @@ export async function projectLocalScipEvidence(input: {
       graphId: 'scip-overlay-' + createHash('sha256')
         .update(JSON.stringify([input.graph.graphId, sha, indexHash, prefix, legacy, SCIP_EVIDENCE_STRATEGY]))
         .digest('hex').slice(0, 24),
-      nodes: [...input.graph.nodes, ...producerNodes.values()],
+      nodes: [...input.graph.nodes, ...producerNodes.values()].map(node => {
+        const additions = contributions.get(node.id);
+        if (!additions?.length) return node;
+        const unique = new Map([...(node.contributions ?? []), ...additions]
+          .map(item => [JSON.stringify(item), item]));
+        return { ...node, contributions: [...unique.values()] };
+      }),
       edges: [...input.graph.edges, ...producerContainment.values(), ...added],
     },
     index: { sha256: indexHash, contentSha256: contentHash, producer: parsed.producer, documents: parsed.documents.length,
