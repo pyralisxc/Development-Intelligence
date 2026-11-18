@@ -224,6 +224,11 @@ This syntax-derived structure remains structural, not semantic. C#, Java, and Py
 
 ## Parity intelligence
 
+Interaction parity compares two selected graph states without requiring a question or expectation contract. Concrete interaction subjects (including source-backed UI elements, event registrations, routes and tool registrations) retain their own identities and an `interaction-point` classification. The comparison follows captured directed execution, binding, condition, effect and state relationships for each paged interaction, returns revision-bound graph selections and distinguishes changed, added, removed, ambiguous, incomplete and matching captured paths. It does not equate a matching captured path with complete behavior or establish retirement intent. Candidate component-prop handoffs remain visible as unresolved possibilities until their instance context is established. The Workbench, `compare_interactions` MCP operation and `di-local parity` use the same graph comparison; existing expectation contracts remain an optional separate overlay.
+
+The TypeScript analyzer captures JSX event attributes and DOM event registrations as source occurrences, preserving their event and callback bindings; the compiler contributes candidate cross-component callback handoffs and source-bound reads of statically initialized values. The repository audit can also find callables with no resolved path from captured interaction roots. This is an investigation over the current graph, not proof that code is dead: uncaptured entry points, dynamic dispatch and incomplete source or relationship coverage remain relevant.
+
+
 Parity describes observed representations around semantic entities, for example:
 
 ```text

@@ -108,7 +108,7 @@ function containsName(question: string, name: string): boolean {
   return false;
 }
 
-const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference']);
+const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'ui-element', 'dom-interaction', 'interaction-handler', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference']);
 
 /** Language proposes terms and exact names; selection and navigation operate
  * exclusively on the graph's existing nodes and relationships. */
@@ -123,6 +123,21 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const statuses = new Set(input.statuses ?? []);
   let direction = input.direction ?? 'both';
   let eligible = graph.nodes.filter(node => kinds.size ? kinds.has(node.kind) : SUBJECT_KINDS.has(node.kind));
+  // Classifications are graph vocabulary, not question-specific dispatch.
+  // If a graph classification appears in the question, treat it as a
+  // constraint on subjects while retaining the remaining ordinary terms.
+  const lexicalVerbs = language.tokens.filter(token => token.partOfSpeech === 'VERB'
+    && !['be', 'have', 'do', 'show', 'list', 'find', 'give', 'tell'].includes(token.lemma));
+  if (!kinds.size && !lexicalVerbs.length) {
+    const questionWords = words(input.text);
+    const tags = new Set(eligible.flatMap(node => node.tags ?? []));
+    const matchedTags = [...tags].filter(tag => {
+      const parts = words(tag).split(/\s+/u).filter(part => part.length > 1);
+      return parts.length > 0 && parts.every(part => includesTerm(questionWords, part))
+        && (parts.length > 1 || language.terms.includes(parts[0]!));
+    });
+    if (matchedTags.length) eligible = eligible.filter(node => matchedTags.every(tag => node.tags?.includes(tag)));
+  }
   let subjects: GraphNode[] = [];
   let selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' = 'none';
   // Repository is an ordinary graph scope, not a collection of question
@@ -177,6 +192,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         factTerms.set(value.functionId, group);
       }
       const scored: Array<{ node: GraphNode; score: number; groups: number; described: boolean }> = [];
+      const questionNameWords = words(input.text).match(/[\p{L}\p{N}_]+/gu) ?? [];
       for (const node of eligible) {
         // Source occurrences are good exact subjects, but letting every call
         // site compete with its owner swamps broad feature searches.
@@ -184,6 +200,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         const name = words(node.name ?? '');
         const locator = words(node.locator);
         const raw = words(node.raw ?? '');
+        const classification = words([node.kind, ...(node.tags ?? [])].join(' '));
         const descriptionValue = node.value && typeof node.value === 'object'
           ? (node.value as { description?: unknown }).description : undefined;
         const description = typeof descriptionValue === 'string' ? words(descriptionValue) : '';
@@ -191,14 +208,25 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         let groups = 0;
         for (const group of language.termGroups) {
           if (group.some(term => includesTerm(name, words(term)) || includesTerm(locator, words(term))
-            || includesTerm(raw, words(term)) || factTerms.get(node.id)?.has(words(term)))) groups += 1;
+            || includesTerm(raw, words(term)) || includesTerm(classification, words(term)) || factTerms.get(node.id)?.has(words(term)))) groups += 1;
         }
         for (const term of terms) {
           if (includesTerm(name, term)) score += 4;
           if (includesTerm(locator, term)) score += 2;
           if (includesTerm(raw, term)) score += 1;
+          if (includesTerm(classification, term)) score += 3;
           if (factTerms.get(node.id)?.has(term)) score += 3;
         }
+        // A consecutive sequence of a subject's actual name is a stronger
+        // binding than the same words scattered through a source expression.
+        const nameWords = name.match(/[\p{L}\p{N}_]+/gu) ?? [];
+        let longestRun = 0;
+        for (let n = 0; n < nameWords.length; n++) for (let q = 0; q < questionNameWords.length; q++) {
+          let run = 0;
+          while (nameWords[n + run] && nameWords[n + run] === questionNameWords[q + run]) run++;
+          longestRun = Math.max(longestRun, run);
+        }
+        if (longestRun > 1) score += longestRun * 8;
         // In a noun phrase the final meaningful noun generally names the
         // subject; earlier words refine it. Prefer that name over incidental
         // matches inside a large source expression.
@@ -290,6 +318,32 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         && isWrittenTestSource(byId.get(edge.from)?.sourceId ?? '') === isWrittenTestSource(byId.get(edge.to)?.sourceId ?? '')
         && ['calls', 'invokes', 'handled_by', 'implemented-by', 'exposes', 'composes'].includes(edge.kind))
         addLink(edge.from, edge.to, [edge]);
+    }
+    // Follow source-backed handoffs through occurrence and binding nodes.
+    // Candidate component-instance links remain visibly candidate; they do
+    // not become calls or proven runtime paths. Stop at each matched subject
+    // so shared dependencies cannot absorb unrelated callers.
+    const handoffKinds = new Set(['has-interaction', 'handled_by', 'binds_to', 'calls-site', 'resolves_to', 'potentially-provided-by', 'calls', 'invokes']);
+    const handoffs = new Map<string, typeof graph.edges>();
+    for (const edge of graph.edges) {
+      if (!edge.from || !edge.to || !handoffKinds.has(edge.kind) || edge.status === 'unresolved'
+          || (edge.status === 'candidate' && edge.kind !== 'potentially-provided-by')) continue;
+      const list = handoffs.get(edge.from) ?? []; list.push(edge); handoffs.set(edge.from, list);
+    }
+    for (const start of subjects) {
+      const queue: Array<{ id: string; path: typeof graph.edges }> = [{ id: start.id, path: [] }];
+      const seen = new Set([start.id]);
+      for (let i = 0; i < queue.length; i++) for (const edge of handoffs.get(queue[i]!.id) ?? []) {
+        const next = edge.to!;
+        if (seen.has(next)) continue;
+        seen.add(next);
+        const path = [...queue[i]!.path, edge];
+        const target = byId.get(next);
+        if (!target || isWrittenTestSource(target.sourceId) !== isWrittenTestSource(start.sourceId)) continue;
+        if (parents.has(next)) { addLink(start.id, next, path); continue; }
+        if (['call-reference', 'component-prop-binding', 'interaction-handler'].includes(target.kind)
+            || (target.kind === 'function' && target.name === 'callback')) queue.push({ id: next, path });
+      }
     }
     // An inline handler/callback is a lexical component of its owner. A
     // resolved call from that component can connect two matched subjects;

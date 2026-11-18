@@ -48,6 +48,7 @@ let graphLimit = savedPositiveSetting('graphNodes', 700);
 let graphDepth = savedPositiveSetting('graphDepth', 2);
 let queryPageSize = savedPositiveSetting('queryPageSize', 20);
 let exploreQuery = '';
+let auditOffset = 0;
 let graphSelected = '';
 let lastExplore: any = null;
 let selectedInspection: any = null;
@@ -92,7 +93,7 @@ const sectionCopy: Record<Section, { title: string; description: string }> = {
   overview: { title: 'Overview', description: 'Readable project intelligence: current state, quick notes, important concepts, coverage and meaningful change.' },
   explore: { title: 'Explore', description: 'Navigate connected source knowledge. Search for a subject, select a node, and inspect its evidence.' },
   semantics: { title: 'Semantics', description: 'Explore evidence-derived understanding from the selected graph.' },
-  parity: { title: 'Parity Contracts', description: 'Compare caller-owned expected entities and relationships with observed project reality. Expectations remain ephemeral and never become accepted truth.' },
+  parity: { title: 'Parity', description: 'Compare interaction paths across revisions and inspect their supporting graph evidence. Optional expectations can be evaluated separately.' },
   query: { title: 'Query', description: 'Ask Development Intelligence about the project or run a bounded read-only query against a configured technical source.' },
   sources: { title: 'Sources', description: 'See what DI can actually inspect: Git, runtime origins, databases/log adapters, freshness, coverage and query capabilities.' },
   changes: { title: 'Changes', description: 'Compare source states, including current files and selected revisions.' },
@@ -323,14 +324,19 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div class="investigation-layout"><button type="button" id="explore-audit">Investigate repository audit</button><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
   form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
-  document.getElementById('explore-audit')?.addEventListener('click', async () => {
+  const showAudit = async () => {
     try {
-      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'audit', ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
+      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'audit', offset: String(auditOffset), ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
       const panel = document.getElementById('query-result');
-      if (panel) panel.innerHTML = `<div class="card"><h3>Repository audit</h3><p>${esc(result.findingSummary?.total ?? 0)} findings · ${(result.investigationTargets ?? []).length} investigation targets shown</p>${(result.investigationTargets ?? []).map((item: any) => `<p>${esc(item.summary ?? item.title ?? item.kind ?? '')}</p>`).join('')}</div>`;
+      if (panel) {
+        panel.innerHTML = `<div class="card"><h3>Repository audit</h3><p>${esc(result.findingSummary?.total ?? 0)} findings · ${(result.investigationTargets ?? []).length} investigation targets shown</p><div class="list">${(result.investigationTargets ?? []).map((item: any, index: number) => `<div class="row"><span class="row-main">${esc(item.summary ?? item.title ?? item.kind ?? '')}</span>${item.investigation?.nodes?.length ? `<button type="button" data-audit-target="${index}">Show on graph</button>` : ''}</div>`).join('')}</div>${result.interactionReachability?.page?.nextOffset != null ? '<button type="button" id="audit-next">More unconnected callables</button>' : ''}</div>`;
+        panel.querySelectorAll<HTMLButtonElement>('[data-audit-target]').forEach(button => button.addEventListener('click', () => followInvestigation(result.investigationTargets[Number(button.dataset.auditTarget)].investigation)));
+        panel.querySelector<HTMLButtonElement>('#audit-next')?.addEventListener('click', () => { auditOffset = result.interactionReachability.page.nextOffset; void showAudit(); });
+      }
       if (result.investigation) followInvestigation(result.investigation);
     } catch (error) { const panel = document.getElementById('query-result'); if (panel) panel.textContent = String(error); }
-  });
+  };
+  document.getElementById('explore-audit')?.addEventListener('click', () => { auditOffset = 0; void showAudit(); });
   const queryHost = document.getElementById('investigation-query') as HTMLElement;
   await Promise.all([fetchExplore(epoch), renderQuery(epoch, '', queryHost)]);
 }
@@ -582,7 +588,24 @@ function renderParityEvaluation(data: any): string {
 
 async function renderParity(epoch: number): Promise<void> {
   setHead();
-  content.innerHTML = `<div class="card"><h3>Expectation overlay E</h3><h2>Define what must be true</h2><p>Use stable graph IDs to describe required or forbidden entities and relationships. Development Intelligence evaluates this contract against the selected working graph without storing it or promoting it into A.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) auto;margin-top:13px"><textarea id="parity-contract" aria-label="Parity contract JSON" style="min-height:260px">${esc(parityContractText)}</textarea><button class="primary" id="evaluate-parity" type="button" style="align-self:start">Evaluate</button></div><p class="muted">Supported requirements: required and forbidden. Missing negative evidence becomes unproven when graph coverage is incomplete.</p></div><div id="parity-result" class="query-result"></div>`;
+  content.innerHTML = `<div class="card"><h3>Interaction parity</h3><h2>Compare connected behavior</h2><p>Compare interaction points and their captured graph paths across two revisions.</p><div class="query-box"><label>Base revision <input id="parity-base" value="${viewerConfig.local ? 'preview' : 'main'}"></label><label>Compare revision <input id="parity-head" value="${viewerConfig.local ? 'working-tree' : 'preview'}"></label><button id="compare-interactions" type="button">Compare</button></div><div id="interaction-parity-result" class="query-result"></div></div><details style="margin-top:13px"><summary>Optional expectation overlay</summary><div class="card"><h3>Expectation overlay E</h3><h2>Define what must be true</h2><p>Use stable graph IDs to describe required or forbidden entities and relationships. Development Intelligence evaluates this contract against the selected working graph without storing it or promoting it into A.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) auto;margin-top:13px"><textarea id="parity-contract" aria-label="Parity contract JSON" style="min-height:260px">${esc(parityContractText)}</textarea><button class="primary" id="evaluate-parity" type="button" style="align-self:start">Evaluate</button></div><p class="muted">Supported requirements: required and forbidden. Missing negative evidence becomes unproven when graph coverage is incomplete.</p></div><div id="parity-result" class="query-result"></div></details>`;
+  let parityOffset = 0;
+  const compare = async () => {
+    const target = document.getElementById('interaction-parity-result') as HTMLElement;
+    target.innerHTML = empty('Comparing interactions', 'Following captured paths in both selected graphs…');
+    try {
+      const baseRef = (document.getElementById('parity-base') as HTMLInputElement).value;
+      const headRef = (document.getElementById('parity-head') as HTMLInputElement).value;
+      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'interaction-parity', baseRef, headRef, offset: String(parityOffset), limit: '10' }));
+      if (!sectionIsCurrent(epoch, 'parity')) return;
+      target.innerHTML = `<p>${esc(result.note)}</p><p class="muted">${esc(result.potentiallyAffected)} with potentially affected paths · ${esc(result.page.total)} interaction identities · showing ${esc(result.page.offset + 1)}–${esc(Math.min(result.page.offset + result.page.limit, result.page.total))}</p><div class="list">${result.items.map((item: any, index: number) => `<div class="row"><span class="badge">${esc(item.status)}</span><span class="row-main"><strong>${esc(item.after?.name ?? item.before?.name ?? item.after?.[0]?.name ?? item.before?.[0]?.name ?? 'Ambiguous interaction')}</strong><small>${esc(item.after?.locator ?? item.before?.locator ?? item.after?.[0]?.locator ?? item.before?.[0]?.locator ?? item.reason ?? '')}${item.path ? ` · ${esc(item.path.addedFacts)} added and ${esc(item.path.removedFacts)} removed path facts · ${esc(item.path.afterUnresolved)} unresolved` : ''}</small></span>${item.investigations?.[0] ? `<button type="button" data-parity-item="${index}" data-parity-side="0">Base graph</button>` : ''}${item.investigations?.[1] ? `<button type="button" data-parity-item="${index}" data-parity-side="1">Compared graph</button>` : ''}</div>`).join('')}</div><div><button type="button" id="parity-previous" ${result.page.offset === 0 ? 'disabled' : ''}>Previous</button><button type="button" id="parity-next" ${result.page.nextOffset == null ? 'disabled' : ''}>Next</button></div>`;
+      target.querySelectorAll<HTMLButtonElement>('[data-parity-item]').forEach(button => button.addEventListener('click', () => followInvestigation(result.items[Number(button.dataset.parityItem)].investigations[Number(button.dataset.paritySide)])));
+      target.querySelector<HTMLButtonElement>('#parity-previous')?.addEventListener('click', () => { parityOffset = Math.max(0, parityOffset - 10); void compare(); });
+      target.querySelector<HTMLButtonElement>('#parity-next')?.addEventListener('click', () => { parityOffset = result.page.nextOffset; void compare(); });
+    } catch (error) { target.innerHTML = `<p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p>`; }
+  };
+  (document.getElementById('compare-interactions') as HTMLButtonElement).addEventListener('click', () => { parityOffset = 0; void compare(); });
+  void compare();
   const run = async () => {
     const textarea = document.getElementById('parity-contract') as HTMLTextAreaElement;
     const target = document.getElementById('parity-result') as HTMLElement;

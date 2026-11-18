@@ -58,9 +58,12 @@ Graph/code primitives:
 - `diff_graph`
 - `analyze_impact`
 - `query_parity`
+- `compare_interactions`
 
 `investigate`, ordinary `query_intelligence` questions, and the Workbench use the same non-generative language-to-graph filter. Results include source conditions, effects, their requirements, related relationships, coverage, and pagination. Supply a scope or graph filters to refine the same selection. `query_intelligence` with explicit `requiredFacets` evaluates a caller-owned realization expectation.
 - `evaluate_parity`
+
+`compare_interactions` compares interaction points and their connected source paths across two selected revisions without a question or contract. The Parity Workbench opens that comparison and `di-local parity --base preview --target working` exposes it locally. An incomplete or matching captured path describes graph evidence; it is not proof that every interaction works or that unconnected code is dead.
 
 There is no separate Parity database, public cache-management API, provider-specific graph query language, or development-methodology API.
 

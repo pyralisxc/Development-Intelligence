@@ -1169,13 +1169,13 @@ export async function scopeOrientation(input: {
 }
 
 
-const INTERFACE_SURFACE_KINDS = new Set(['surface', 'route', 'ui-element']);
+const INTERFACE_SURFACE_KINDS = new Set(['surface', 'route', 'ui-element', 'dom-interaction']);
 const INTERFACE_STATE_KINDS = new Set(['state-binding', 'state-write']);
-const INTERFACE_INTERACTION_KINDS = new Set(['ui-element', 'component-prop-handler', 'component-prop-binding']);
+const INTERFACE_INTERACTION_KINDS = new Set(['ui-element', 'dom-interaction', 'interaction-handler', 'component-prop-handler', 'component-prop-binding']);
 const INTERFACE_TRANSITION_KINDS = new Set(['navigation-call', 'route-reference', 'route']);
 const INTERFACE_EFFECT_KINDS = new Set(['http-call', 'rpc-call', 'sql-reference', 'mcp-tool']);
 const INTERFACE_REPRESENTATION_KINDS = new Set(['css-class-reference', 'css-selector', 'css-at-rule', 'css-custom-property']);
-const INTERACTION_MECHANISM_NODE_KINDS = new Set(['component-prop-binding', 'component-prop-handler']);
+const INTERACTION_MECHANISM_NODE_KINDS = new Set(['component-prop-binding', 'component-prop-handler', 'interaction-handler', 'dom-interaction']);
 const DIRECT_CONSEQUENCE_KINDS = new Set(['state-write', 'navigation-call', 'http-call', 'rpc-call']);
 const INTERACTION_FAMILY_ORDER = ['pointer', 'drop', 'drag', 'scroll', 'click', 'focus', 'keyboard', 'input', 'submit', 'context-menu', 'touch', 'mouse'] as const;
 type InteractionFamily = typeof INTERACTION_FAMILY_ORDER[number];
@@ -1184,12 +1184,12 @@ function interactionFamily(prop: string): InteractionFamily | null {
   if (/^on(?:Stage)?Pointer[A-Z]/u.test(prop)) return 'pointer';
   if (prop === 'onDrop') return 'drop';
   if (/^onDrag[A-Z]?/u.test(prop)) return 'drag';
-  if (/^onScroll[A-Z]?/u.test(prop)) return 'scroll';
-  if (/^on(?:Double)?Click$/u.test(prop)) return 'click';
+  if (/^on(?:Scroll|Wheel)/u.test(prop)) return 'scroll';
+  if (/^on(?:Double)?Click(?:Capture)?$/u.test(prop)) return 'click';
   if (prop === 'onFocus' || prop === 'onBlur') return 'focus';
   if (/^onKey[A-Z]/u.test(prop)) return 'keyboard';
   if (['onChange', 'onInput', 'onBeforeInput'].includes(prop) || /^on[A-Za-z0-9]*Change$/u.test(prop)) return 'input';
-  if (prop === 'onSubmit') return 'submit';
+  if (prop === 'onSubmit' || prop === 'onSubmitCapture') return 'submit';
   if (prop === 'onContextMenu') return 'context-menu';
   if (/^onTouch[A-Z]/u.test(prop)) return 'touch';
   if (/^onMouse[A-Z]/u.test(prop)) return 'mouse';
@@ -1537,6 +1537,7 @@ export async function interfaceProjection(input: {
     transitions,
     effects,
     representation,
+    investigation: investigationSelection(graph, 'interface', { nodeIds: combined.map(item => item.id), edgeIds: combined.flatMap(item => item.links.map(link => link.edgeId)), scope: { kind: selected.kind, value: selected.value }, page: { limit } }),
     runtimeObservationContract: interfaceRuntimeObservationContract(),
     runtimeObservations: {
       available: runtimeSources.length > 0,
@@ -1768,11 +1769,11 @@ export async function queryWorkbenchRequest(input: {
               };
               walk();
               for (const item of members) if (!visitedNodes.has(item.id)) { queue.push(item.id); walk(); }
-              const links = ordered.map((edge: any) => `${names.get(edge.from) ?? edge.from} ${edge.kind} ${names.get(edge.to) ?? edge.to}`).join('; ');
+              const links = ordered.map((edge: any) => `${names.get(edge.from) ?? edge.from} ${edge.kind}${edge.status === 'candidate' ? ' (candidate)' : ''} ${names.get(edge.to) ?? edge.to}`).join('; ');
               return `${group.sourceCategory === 'test-source' ? 'Test source' : 'Source'}${links ? ` — relationships: ${links}` : ''}\n${group.subjects.map((item: any) => `• ${describeFamily(item, groupIds)}`).join('\n')}`;
             }).join('\n\n')
           : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map(describeFamily).join(' | ')}`)
-          + '. Groups follow resolved relationships; inspect source and family details for full records.'
+          + '. Groups follow source relationships; candidate links identify possible handoffs. Inspect source and family details for full records.'
         : '';
       const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation
         && result.families.some((family: any) => family.id === subject.id && family.total)

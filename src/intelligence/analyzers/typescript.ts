@@ -109,6 +109,7 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
   const symbolsByIdentity = new Map<string, { observation: Observation; declaration: ts.Node }>();
   const identityCollisions = new Map<string, number>();
   const pendingHandlers: Array<{ ui: Observation; handler: string; line: number; ownerId: string | null }> = [];
+  const pendingInlineEvents: Array<{ point: Observation; offset: number; line: number }> = [];
   const pendingReferences: Array<{ from: Observation; targetName: string; kind: string; line: number }> = [];
   // An inline function expression occurs in source even when its recipient
   // never invokes it. Do not infer receiver behavior from the argument site.
@@ -625,6 +626,16 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
 
     if (ts.isVariableDeclaration(node) && node.initializer) {
       const initializer = unwrap(node.initializer) ?? node.initializer;
+      const initialValue = scalar(initializer);
+      if (ts.isIdentifier(node.name) && initialValue !== undefined) {
+        const binding = observation({ sourceId: context.source.id, kind: 'state-binding',
+          locator: locator(node, ':initializer'), name: node.name.text, field: 'initial-value',
+          raw: initializer.getText(sourceFile), value: { state: node.name.text, initialValue, initializer: initializer.getText(sourceFile) },
+          layer: 'structural', checkpoint: false });
+        observations.push(binding);
+        const owner = functionOwner();
+        if (owner) resolutions.push(resolution({ from: owner.id, to: binding.id, kind: 'declares-state', strategy: 'typescript-initializer-syntax', confidence: 1, status: 'resolved', evidence: [locator(node)], layer: 'structural', checkpoint: false }));
+      }
       if (ts.isArrayBindingPattern(node.name) && ts.isCallExpression(initializer) && callLeafName(initializer.expression) === 'useState') {
         const stateElement = node.name.elements[0];
         const setterElement = node.name.elements[1];
@@ -685,10 +696,11 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
           checkpoint: false,
         }));
       }
-      if (UI_TAGS.has(tagName.toLowerCase())) {
+      const eventAttrs = attrs.filter(attr => /^on(?:Click|DoubleClick|Submit|Select|Change|Input|BeforeInput|Pointer(?:Down|Move|Up|Cancel|Enter|Leave)|Drag(?:Start|End|Enter|Leave|Over)?|Drop|Key(?:Down|Up|Press)|Focus|Blur|Touch(?:Start|Move|End|Cancel)|Mouse(?:Down|Move|Up|Enter|Leave|Over|Out)|Scroll|Wheel|ContextMenu)(?:Capture)?$/u.test(attr.name.getText(sourceFile)));
+      if (UI_TAGS.has(tagName.toLowerCase()) || (/^[a-z]/u.test(tagName) && eventAttrs.length > 0)) {
         const aria = attrs.find(attr => attr.name.getText(sourceFile) === 'aria-label');
         const href = attrs.find(attr => attr.name.getText(sourceFile) === 'href');
-        const onClick = attrs.find(attr => ['onClick', 'onSubmit', 'onSelect', 'onChange'].includes(attr.name.getText(sourceFile)));
+
         let label: string | undefined;
         if (aria?.initializer && ts.isStringLiteralLike(aria.initializer)) label = aria.initializer.text;
         if (!label && ts.isJsxElement(node)) {
@@ -696,17 +708,28 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
           if (text) label = text;
         }
         const hrefValue = href?.initializer && ts.isStringLiteralLike(href.initializer) ? href.initializer.text : undefined;
-        const ui = observation({ sourceId: context.source.id, kind: 'ui-element', locator: locator(opening, `:${tagName}`), name: label ?? tagName, field: 'element', value: { tag: tagName, label: label ?? null, href: hrefValue ?? null }, layer: 'representation', checkpoint: false });
+        const ui = observation({ sourceId: context.source.id, kind: 'ui-element', locator: locator(opening, `:${tagName}`), name: label ?? tagName, field: 'element', value: { tag: tagName, label: label ?? null, href: hrefValue ?? null, owner: [...functionStack].reverse().find(item => item.name && item.name !== 'callback')?.id ?? null, events: eventAttrs.map(attr => attr.name.getText(sourceFile)) }, tags: ['interaction-point', 'human'], layer: 'representation', checkpoint: false });
         observations.push(ui);
         if (hrefValue) {
           const route = observation({ sourceId: context.source.id, kind: 'route-reference', locator: locator(opening, ':href'), name: hrefValue, field: 'href', value: hrefValue, layer: 'representation', checkpoint: false });
           observations.push(route);
           resolutions.push(resolution({ from: ui.id, to: route.id, kind: 'links_to', strategy: 'syntax', confidence: 1, status: 'resolved', evidence: [`${context.locatorBase}:${lineOf(opening)}`], layer: 'representation', checkpoint: false }));
         }
-        if (onClick?.initializer && ts.isJsxExpression(onClick.initializer) && onClick.initializer.expression) {
-          const expression = onClick.initializer.expression;
+        for (const attr of eventAttrs) {
+          if (!attr.initializer || !ts.isJsxExpression(attr.initializer) || !attr.initializer.expression) continue;
+          const expression = attr.initializer.expression;
+          const prop = attr.name.getText(sourceFile);
           const handler = callbackIdentifier(expression);
-          if (handler) pendingHandlers.push({ ui, handler, line: lineOf(onClick), ownerId: functionOwner()?.id ?? null });
+          const binding = observation({ sourceId: context.source.id, kind: 'interaction-handler', locator: locator(attr, `:${tagName}.${prop}`), name: `${tagName}.${prop}`, field: 'event', value: { component: tagName, prop, handler: handler ?? null, expression: expression.getText(sourceFile) }, tags: ['interaction-mechanism'], layer: 'representation', checkpoint: false });
+          observations.push(binding);
+          resolutions.push(resolution({ from: ui.id, to: binding.id, kind: 'has-interaction', strategy: 'jsx-event-syntax', confidence: 1, status: 'resolved', evidence: [locator(attr)], layer: 'representation', checkpoint: false }));
+          const eventExpression = unwrap(expression) ?? expression;
+          if (handler && ts.isIdentifier(eventExpression)) {
+            pendingReferences.push({ from: binding, targetName: handler, kind: 'binds_to', line: lineOf(attr) });
+            pendingHandlers.push({ ui, handler, line: lineOf(attr), ownerId: functionOwner()?.id ?? null });
+          } else if (ts.isArrowFunction(eventExpression) || ts.isFunctionExpression(eventExpression)) {
+            pendingInlineEvents.push({ point: binding, offset: eventExpression.getStart(sourceFile), line: lineOf(eventExpression) });
+          }
         }
       }
       if (!UI_TAGS.has(tagName.toLowerCase()) && /^[A-Z]/u.test(tagName)) {
@@ -718,6 +741,29 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
           const binding = observation({ sourceId: context.source.id, kind: 'component-prop-binding', locator: locator(attr, `:${tagName}.${prop}`), name: `${tagName}.${prop}`, field: 'component-prop', value: { component: tagName, prop, handler }, layer: 'representation', checkpoint: false });
           observations.push(binding);
           pendingReferences.push({ from: binding, targetName: handler, kind: 'binds_to', line: lineOf(attr) });
+        }
+      }
+    }
+
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.name.text === 'addEventListener' && node.arguments.length >= 2) {
+      const event = staticString(node.arguments[0]);
+      if (event) {
+        const receiver = node.expression.expression.getText(sourceFile);
+        const callback = node.arguments[1]!;
+        const unwrapped = unwrap(callback) ?? callback;
+        const handler = ts.isIdentifier(unwrapped) ? unwrapped.text : null;
+        const point = observation({ sourceId: context.source.id, kind: 'dom-interaction',
+          locator: locator(node, `:event-${event}`), name: `${receiver} ${event}`, field: 'event',
+          value: { receiver, event, owner: [...functionStack].reverse().find(item => item.name && item.name !== 'callback')?.id ?? null, prop: `on${event.replace(/^(pointer|mouse|touch|key|drag)(down|move|up|cancel|enter|leave|start|end|over|press)$/u, (_, family: string, action: string) => family + action.charAt(0).toUpperCase() + action.slice(1)).replace(/^./u, character => character.toUpperCase())}`, handler, expression: callback.getText(sourceFile) },
+          tags: ['interaction-point'], layer: 'representation', checkpoint: false });
+        observations.push(point);
+        const owner = functionOwner();
+        if (owner) resolutions.push(resolution({ from: owner.id, to: point.id, kind: 'registers-interaction', strategy: 'dom-event-syntax', confidence: 1, status: 'resolved', evidence: [locator(node)], layer: 'representation', checkpoint: false }));
+        if (handler) pendingReferences.push({ from: point, targetName: handler, kind: 'binds_to', line: lineOf(node) });
+        else if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+          const offset = unwrapped.getStart(sourceFile);
+          pendingInlineEvents.push({ point, offset, line: lineOf(unwrapped) });
         }
       }
     }
@@ -929,6 +975,13 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       evidence: [where, `${context.locatorBase}:${argument.callbackLine}:callback-offset-${argument.callbackStart}`],
       evidenceIds: [proof.id], layer: 'structural', checkpoint: false,
     }));
+  }
+
+  for (const pending of pendingInlineEvents) {
+    const prefix = `symbol:${context.locatorBase}#function:`;
+    const callback = [prefix + 'callback-' + pending.offset, prefix + 'isolated-callback-' + pending.offset]
+      .map(id => observationsById.get(id)).find(Boolean);
+    if (callback) resolutions.push(resolution({ from: pending.point.id, to: callback.id, kind: 'binds_to', strategy: 'dom-event-callback-syntax', confidence: 1, status: 'resolved', evidence: [pending.point.locator, `${context.locatorBase}:${pending.line}`], layer: 'representation', checkpoint: false }));
   }
 
   for (const pending of pendingHandlers) {

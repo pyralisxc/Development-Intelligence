@@ -916,7 +916,7 @@ export async function graphContext(project: string, options: { ref?: string; gra
       }
       const sha = graph.sourceState?.headRevision ?? graph.repositoryRevision;
       if (!sha) throw new Error('Local graph is missing its source identity');
-      return { graph, revision: { project, repository: config.repository, ref: graph.sourceState ? 'working-tree' : options.ref ?? graph.repositoryRevision!, selectorKind: graph.sourceState ? 'working-tree' : 'commit', resolvedRef: graph.sourceState ? 'working-tree' : graph.repositoryRevision!, sha } };
+      return { graph, revision: { project, repository: config.repository, ref: graph.sourceState ? 'working-tree' : options.ref ?? `commit:${graph.repositoryRevision!}`, selectorKind: graph.sourceState ? 'working-tree' : 'commit', resolvedRef: graph.sourceState ? 'working-tree' : graph.repositoryRevision!, sha } };
     }
     if (!options.ref && !options.graphId || options.ref === 'working-tree' || options.ref === 'main' || options.ref === 'preview' || options.graphId?.startsWith('worktree-')) throw new Error(`No retained local graph for ${project}${options.ref ? ` target ${options.ref}` : ''}; build it first`);
   }

@@ -25,14 +25,14 @@ export function investigationSelection(graph: IntelligenceGraph, operation: stri
 }
 
 /** Collect actual graph identities from an operation's observed records, never its requested expectations. */
-export function observedGraphIds(graph: IntelligenceGraph, value: unknown): { nodeIds: string[]; edgeIds: string[] } {
-  const nodeIndex = new Set(graph.nodes.map(node => node.id)), edgeIndex = new Set(graph.edges.map(edge => edge.id));
+export function observedGraphIds(graph: IntelligenceGraph, value: unknown, indexes?: { nodeIds: ReadonlySet<string>; edgeIds: ReadonlySet<string> }): { nodeIds: string[]; edgeIds: string[] } {
+  const nodeIndex = indexes?.nodeIds ?? new Set(graph.nodes.map(node => node.id)), edgeIndex = indexes?.edgeIds ?? new Set(graph.edges.map(edge => edge.id));
   const nodes = new Set<string>(), edges = new Set<string>();
   function visit(item: unknown): void {
     if (typeof item === 'string') { if (nodeIndex.has(item)) nodes.add(item); if (edgeIndex.has(item)) edges.add(item); }
     else if (Array.isArray(item)) item.forEach(visit);
     else if (item && typeof item === 'object') for (const [key, child] of Object.entries(item)) {
-      if (key !== 'expectation' && key !== 'contract') visit(child);
+      if (key !== 'expectation' && key !== 'contract' && key !== 'families' && key !== 'contributions') visit(child);
     }
   }
   visit(value);

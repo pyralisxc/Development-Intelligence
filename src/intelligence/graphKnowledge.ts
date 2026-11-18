@@ -51,7 +51,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'source-effect': ['source-site', 'effect', 'source-control'],
   'state-write': ['source-site', 'effect'], 'state-binding': ['resource'],
   'sql-table': ['resource'], 'sql-reference': ['resource'],
-  'ui-element': ['source-site', 'boundary'], 'mcp-tool': ['boundary'],
+  'ui-element': ['source-site', 'boundary'], 'dom-interaction': ['source-site', 'boundary'], 'interaction-handler': ['source-site'], 'mcp-tool': ['boundary'],
   feature: ['technical-concept'], capability: ['technical-concept'],
   domain: ['technical-concept'], surface: ['technical-concept', 'boundary'],
   action: ['technical-concept'], workflow: ['technical-concept'],
@@ -59,7 +59,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   mcp: ['boundary'], tool: ['boundary'],
 };
 const FACET_KINDS: Record<RealizationFacet, readonly string[]> = {
-  human: ['surface', 'ui-element', 'component-prop-handler', 'component-prop-binding'],
+  human: ['surface', 'ui-element', 'dom-interaction', 'component-prop-handler', 'component-prop-binding'],
   agent: ['mcp', 'tool', 'mcp-tool'],
   transport: ['api', 'route', 'http-call', 'rpc-call', 'navigation-call'],
   implementation: ['feature', 'function', 'method', 'class', 'sql-function'],
@@ -103,9 +103,9 @@ define(['has-component', 'attached-to', 'child-of'],
 // realization before this registry; preserve their factual reach.
 define(['references-symbol', 'depends-on', 'links_to'],
   'reference', 'dependency', true, 'bound-source');
-define(['candidate-sql-definition'], 'reference', 'dependency', false, 'syntax');
+define(['candidate-sql-definition', 'potentially-provided-by'], 'reference', 'dependency', false, 'syntax');
 define(['same-routine-name'], 'reference', 'dependency', false, 'syntax');
-define(['binds_to', 'bound_by'], 'surface', 'surface', true, 'bound-source');
+define(['binds_to', 'bound_by', 'has-interaction', 'registers-interaction'], 'surface', 'surface', true, 'bound-source');
 define(['uses_classes'], 'surface', 'surface', true, 'syntax', ['callable'], ['source-site']);
 define(['styled_by'], 'surface', 'surface', true, 'bound-source', ['source-site'], ['resource']);
 define(['composes', 'uses-feature'], 'reference', 'dependency', true, 'bound-source', ['boundary'], ['technical-concept']);
