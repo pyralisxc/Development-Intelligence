@@ -128,7 +128,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   // constraint on subjects while retaining the remaining ordinary terms.
   const lexicalVerbs = language.tokens.filter(token => token.partOfSpeech === 'VERB'
     && !['be', 'have', 'do', 'show', 'list', 'find', 'give', 'tell'].includes(token.lemma));
-  if (!kinds.size && !lexicalVerbs.length) {
+  if (!kinds.size) {
     const questionWords = words(input.text);
     const tags = new Set(eligible.flatMap(node => node.tags ?? []));
     const matchedTags = [...tags].filter(tag => {
@@ -136,7 +136,13 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       return parts.length > 0 && parts.every(part => includesTerm(questionWords, part))
         && (parts.length > 1 || language.terms.includes(parts[0]!));
     });
-    if (matchedTags.length) eligible = eligible.filter(node => matchedTags.every(tag => node.tags?.includes(tag)));
+    const subjectTags = matchedTags.filter(tag => {
+      const parts = words(tag).split(/\s+/u).filter(part => part.length > 1);
+      const firstVerb = lexicalVerbs[0]?.start ?? Number.POSITIVE_INFINITY;
+      return parts.every(part => language.tokens.some(token => token.start < firstVerb
+        && includesTerm(words(token.text), part)));
+    });
+    if (subjectTags.length) eligible = eligible.filter(node => subjectTags.every(tag => node.tags?.includes(tag)));
   }
   let subjects: GraphNode[] = [];
   let selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' = 'none';
