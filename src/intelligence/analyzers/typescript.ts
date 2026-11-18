@@ -611,8 +611,8 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
       const isolated = observation({
         id: `symbol:${context.locatorBase}#function:isolated-callback-${node.getStart(sourceFile)}`,
         sourceId: context.source.id, kind: 'function', locator: locator(node),
-        name: 'unresolved callback', field: 'identifier',
-        value: { invoked: false }, layer: 'structural', checkpoint: false,
+        name: 'callback', field: 'identifier',
+        value: {}, layer: 'structural', checkpoint: false,
       });
       observations.push(isolated);
       functionStack.push(isolated);
