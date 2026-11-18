@@ -51,7 +51,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'css-class-reference': ['source-site'], 'css-selector': ['resource'],
   'unity-object': ['container', 'resource'], 'unity-asset-guid': ['resource'],
   'component-prop-handler': ['source-site', 'boundary'],
-  'component-prop-binding': ['source-site'],
+  'component-prop-binding': ['source-site'], 'jsx-prop-spread': ['source-site'],
   'constructor-reference': ['source-site'], 'http-call': ['source-site', 'boundary'],
   'rpc-call': ['source-site', 'boundary'], 'navigation-call': ['source-site'],
   'source-try-return': ['source-site', 'effect', 'source-control'],
@@ -113,9 +113,9 @@ define(['has-component', 'attached-to', 'child-of'],
 // realization before this registry; preserve their factual reach.
 define(['references-symbol', 'depends-on', 'links_to'],
   'reference', 'dependency', true, 'bound-source');
-define(['candidate-sql-definition', 'potentially-provided-by'], 'reference', 'dependency', false, 'syntax');
+define(['candidate-sql-definition', 'potentially-provided-by', 'potential-value-from'], 'reference', 'dependency', false, 'syntax');
 define(['same-routine-name'], 'reference', 'dependency', false, 'syntax');
-define(['binds_to', 'bound_by', 'has-interaction', 'registers-interaction'], 'surface', 'surface', true, 'bound-source');
+define(['binds_to', 'bound_by', 'has-interaction', 'registers-interaction', 'spreads-properties'], 'surface', 'surface', true, 'bound-source');
 define(['uses_classes'], 'surface', 'surface', true, 'syntax', ['callable'], ['source-site']);
 define(['styled_by'], 'surface', 'surface', true, 'bound-source', ['source-site'], ['resource']);
 define(['composes', 'uses-feature'], 'reference', 'dependency', true, 'bound-source', ['boundary'], ['technical-concept']);

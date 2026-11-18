@@ -710,6 +710,16 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
         const hrefValue = href?.initializer && ts.isStringLiteralLike(href.initializer) ? href.initializer.text : undefined;
         const ui = observation({ sourceId: context.source.id, kind: 'ui-element', locator: locator(opening, `:${tagName}`), name: label ?? tagName, field: 'element', value: { tag: tagName, label: label ?? null, href: hrefValue ?? null, owner: [...functionStack].reverse().find(item => item.name && item.name !== 'callback')?.id ?? null, events: eventAttrs.map(attr => attr.name.getText(sourceFile)) }, tags: ['interaction-point', 'human'], layer: 'representation', checkpoint: false });
         observations.push(ui);
+        for (const spread of opening.attributes.properties.filter(ts.isJsxSpreadAttribute)) {
+          const expression = spread.expression.getText(sourceFile);
+          const sourceOffset = spread.getStart(sourceFile);
+          const binding = observation({ sourceId: context.source.id, kind: 'jsx-prop-spread',
+            locator: locator(spread, `:spread-offset-${sourceOffset}`), name: expression, field: 'spread',
+            value: { expression, sourceOffset }, layer: 'representation', checkpoint: false });
+          observations.push(binding);
+          resolutions.push(resolution({ from: ui.id, to: binding.id, kind: 'spreads-properties', strategy: 'jsx-spread-syntax', confidence: 1,
+            status: 'resolved', evidence: [locator(spread)], layer: 'representation', checkpoint: false }));
+        }
         if (hrefValue) {
           const route = observation({ sourceId: context.source.id, kind: 'route-reference', locator: locator(opening, ':href'), name: hrefValue, field: 'href', value: hrefValue, layer: 'representation', checkpoint: false });
           observations.push(route);

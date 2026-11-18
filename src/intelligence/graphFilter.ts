@@ -329,11 +329,11 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     // Candidate component-instance links remain visibly candidate; they do
     // not become calls or proven runtime paths. Stop at each matched subject
     // so shared dependencies cannot absorb unrelated callers.
-    const handoffKinds = new Set(['has-interaction', 'handled_by', 'binds_to', 'calls-site', 'resolves_to', 'potentially-provided-by', 'calls', 'invokes']);
+    const handoffKinds = new Set(['has-interaction', 'spreads-properties', 'potential-value-from', 'handled_by', 'binds_to', 'calls-site', 'resolves_to', 'potentially-provided-by', 'calls', 'invokes']);
     const handoffs = new Map<string, typeof graph.edges>();
     for (const edge of graph.edges) {
       if (!edge.from || !edge.to || !handoffKinds.has(edge.kind) || edge.status === 'unresolved'
-          || (edge.status === 'candidate' && edge.kind !== 'potentially-provided-by')) continue;
+          || (edge.status === 'candidate' && !['potentially-provided-by', 'potential-value-from'].includes(edge.kind))) continue;
       const list = handoffs.get(edge.from) ?? []; list.push(edge); handoffs.set(edge.from, list);
     }
     for (const start of subjects) {
@@ -347,7 +347,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         const target = byId.get(next);
         if (!target || isWrittenTestSource(target.sourceId) !== isWrittenTestSource(start.sourceId)) continue;
         if (parents.has(next)) { addLink(start.id, next, path); continue; }
-        if (['call-reference', 'component-prop-binding', 'interaction-handler'].includes(target.kind)
+        if (['call-reference', 'component-prop-binding', 'interaction-handler', 'jsx-prop-spread'].includes(target.kind)
             || (target.kind === 'function' && target.name === 'callback')) queue.push({ id: next, path });
       }
     }

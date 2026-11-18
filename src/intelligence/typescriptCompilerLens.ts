@@ -129,7 +129,12 @@ export function compilerTypeScriptReferences(input: {
   const callSites = new Map<string, GraphNode>();
   const propBindings = new Map<string, GraphNode>();
   const initialBindings = new Map<string, GraphNode>();
+  const jsxSpreads = new Map<string, GraphNode>();
   for (const node of input.nodes) {
+    if (node.kind === 'jsx-prop-spread' && node.sourceId.startsWith('repo:') && node.value && typeof node.value === 'object') {
+      const offset = (node.value as { sourceOffset?: unknown }).sourceOffset;
+      if (typeof offset === 'number') jsxSpreads.set([node.sourceId.slice(5), offset].join('\0'), node);
+    }
     if (node.kind === 'state-binding' && node.field === 'initial-value' && node.name && node.sourceId.startsWith('repo:')) {
       const file = node.sourceId.slice(5), line = graphNodeLine(node, file);
       if (line !== null) initialBindings.set([file, line, node.name].join('\0'), node);
@@ -328,6 +333,24 @@ export function compilerTypeScriptReferences(input: {
               if (owners.length === 1 && !assignment) resultEdges.push(resolution({ from: owners[0]!.id, to: state.id,
                 kind: 'reads', strategy: TYPESCRIPT_COMPILER_LENS, confidence: 1, status: 'resolved',
                 evidence: [`${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`, state.locator], layer: 'structural', checkpoint: false }));
+            }
+          }
+        }
+        if (ts.isJsxSpreadAttribute(node)) {
+          const spread = jsxSpreads.get([file, node.getStart(source)].join('\0'));
+          let expression: ts.Expression = node.expression;
+          while (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) || ts.isNonNullExpression(expression)
+              || ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) expression = expression.expression;
+          if (spread && ts.isIdentifier(expression)) {
+            const symbol = checker.getSymbolAtLocation(expression), declaration = symbol?.valueDeclaration;
+            if (declaration && ts.isVariableDeclaration(declaration) && ts.isVariableDeclarationList(declaration.parent)
+                && (declaration.parent.flags & ts.NodeFlags.Const) !== 0 && declaration.initializer && ts.isCallExpression(declaration.initializer)
+                && declaration.getSourceFile() === source) {
+              const site = callSites.get([file, declaration.initializer.getStart(source)].join('\0'));
+              if (site) resultEdges.push(resolution({ from: spread.id, to: site.id, kind: 'potential-value-from',
+                strategy: 'typescript-jsx-spread-binding', confidence: null, status: 'candidate',
+                evidence: [spread.locator, site.locator, 'TypeScript binds the spread receiver to this const call result; the property value and rendering context may change.'],
+                layer: 'representation', checkpoint: false }));
             }
           }
         }
