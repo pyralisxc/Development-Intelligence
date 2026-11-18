@@ -95,7 +95,10 @@ export async function searchCode(input: {
       if (pathMatcher && !pathMatcher.test(relative)) continue;
       const absolute = path.join(checkout.root, relative);
       let stat;
-      try { stat = await fs.lstat(absolute); } catch { unreadable += 1; continue; }
+      try { stat = await fs.lstat(absolute); } catch (error) {
+        if (!working || (error as NodeJS.ErrnoException).code !== 'ENOENT') unreadable += 1;
+        continue;
+      }
       if (!stat.isFile() || stat.isSymbolicLink()) { nonRegular += 1; continue; }
       if (stat.size > MAX_FILE_BYTES) { oversized += 1; continue; }
       let text: string;
