@@ -8,11 +8,11 @@ Development Intelligence owns **one intrinsic evidence graph**. Source inspectio
 
 Development Intelligence provides technical evidence. It does not decide product intent or development workflow and must not depend on custom agent methodologies.
 
-The [DI Confluence blueprint](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/720897) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable DI product identity, intended direction, public milestones and enduring product boundaries. Read them before material product or architecture decisions. `docs/product-direction.md` is the revision-bound technical/product-interface context at this source commit, not a second vision owner. Immutable Git, CI and actual provider/runtime evidence establish what is implemented and observed.
+The [DI Product Vision and Principles](https://docs.google.com/document/d/1BmHkf7Hz2CatjbvMUtui-0BS1V9zVliEgYVNAzYGKAk/edit) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable DI product identity, intended direction, public milestones and enduring product boundaries. Read them before material product or architecture decisions. `docs/product-direction.md` is the revision-bound technical/product-interface context at this source commit, not a second vision owner. Immutable Git, CI and actual provider/runtime evidence establish what is implemented and observed.
 
 ## Development expectations
 
-Build the complete, well-developed outcome the owner requests. Read the Confluence product blueprint and roadmap and the relevant source before making material product or architecture decisions. Change all connected source, interfaces, and integrations needed for a coherent usable result; do not optimize for the smallest patch or preserve an obsolete implementation merely to reduce the diff. Make routine engineering decisions and continue authorized work without unnecessary permission requests.
+Build the complete, well-developed outcome the owner requests. Read the Google Docs product vision and the roadmap and the relevant source before making material product or architecture decisions. Change all connected source, interfaces, and integrations needed for a coherent usable result; do not optimize for the smallest patch or preserve an obsolete implementation merely to reduce the diff. Make routine engineering decisions and continue authorized work without unnecessary permission requests.
 
 Use mature tools for their intended capabilities and integrate their useful outputs directly when they fit. Do not recreate their internals or add redundant wrappers and proof machinery by default. DI should establish source-derived conditions, effects, and execution facts as facts when the code and supported analysis establish them; a separate runtime witness is not a prerequisite for source-derived facts.
 
@@ -23,7 +23,7 @@ Do not add tests by default. The owner prefers real use and examination of real 
 ## Documentation ownership
 
 - `README.md` — concise entry point and usage orientation.
-- **Confluence DI blueprint and roadmap** — cross-version product intent and milestone acceptance; `docs/product-direction.md` — revision-bound product-interface description, current implementation constraints and technical decision context.
+- **Google Docs product vision and the DI roadmap** — cross-version product intent and milestone acceptance; `docs/product-direction.md` — revision-bound product-interface description, current implementation constraints and technical decision context.
 - `docs/architecture.md` — system design, graph semantics, lifecycle, and technical boundaries.
 - `ORCHESTRATION.md` — project-local branch, seal, preview, provider, evidence, and human-gate execution policy; it points to the operational owners rather than duplicating them.
 - `docs/operations.md` — deployment, configuration, authentication, recovery, and production operation.

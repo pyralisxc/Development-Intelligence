@@ -4,7 +4,7 @@ This file owns only **project-local execution policy** for Development Intellige
 
 Use the existing owners for those concerns:
 
-- [DI Confluence blueprint](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/720897) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) — durable product vision, intended boundaries and milestone acceptance.
+- [DI Product Vision and Principles](https://docs.google.com/document/d/1BmHkf7Hz2CatjbvMUtui-0BS1V9zVliEgYVNAzYGKAk/edit) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) — durable product vision, intended boundaries and milestone acceptance.
 - `docs/product-direction.md` — revision-bound product-interface and implementation context, not product roadmap authority.
 - `docs/architecture.md` — graph/system semantics and technical boundaries.
 - `docs/testing.md` — real-use acceptance and test-intelligence capabilities.
@@ -66,7 +66,7 @@ For a material change:
 
 1. Read `AGENTS.md` and the owning product/architecture/operations docs for the change.
 2. Start from the exact current `preview` revision (or `main` only when Preview has no accumulated delta) and create a bounded `work/*` branch.
-3. Build the complete, well-developed requested outcome across the affected source, interfaces, and integrations. Read the owning Confluence blueprint and relevant source first; do not optimize for a minimal patch, retain obsolete architecture merely to shrink the diff, or embed project-management state or provider secrets in source.
+3. Build the complete, well-developed requested outcome across the affected source, interfaces, and integrations. Read the Google Docs product vision and relevant source first; do not optimize for a minimal patch, retain obsolete architecture merely to shrink the diff, or embed project-management state or provider secrets in source.
 4. Build the affected product and verify the outcome through actual use appropriate to the change. Do not add tests by default. For documentation-only changes, review the changed wording and links.
 5. Open a coherent PR against `preview` and report the actual build and relevant real-use results.
 6. When checkpoint compatibility is relevant, use the existing graph CLI against the exact candidate as needed.
