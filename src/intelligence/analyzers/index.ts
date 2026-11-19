@@ -49,7 +49,7 @@ export const SOURCE_ANALYSIS_SUPPORT = [
   {
     technology: 'PowerShell and shell',
     extensions: ['.ps1', '.psm1', '.psd1', '.sh', '.bash'],
-    precision: 'tree-sitter function declarations, lexical containment and source-located written command occurrences; dynamic targets remain unidentified, and invocation binding, arguments, conditions and execution are not established',
+    precision: 'tree-sitter function declarations, lexical containment and source-located written command and variable occurrences; variable values and bindings, dynamic command targets, invocation binding, arguments, conditions and execution are not established',
   },
   {
     technology: 'structured text',

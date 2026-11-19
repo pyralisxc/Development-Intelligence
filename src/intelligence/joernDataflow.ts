@@ -52,6 +52,7 @@ export interface JoernEvidenceProjection {
     candidateFlowEdges: number;
     unlocatedFlowEdges: number;
     assertionSpanAnchors: number;
+    sourceExpressionAnchors: number;
   };
   candidates: Array<{
     from: string;
@@ -250,6 +251,20 @@ export async function projectJoernDataflowBytes(input: {
   const version = boundedText(input.producerVersion, 'Joern producer version', 100);
   if (!version.trim()) throw new Error('Joern producer version is required; caller version is not attestation');
   if (input.testCatalog && (working || input.testCatalog.revision !== head || input.testCatalog.analyzerVersion !== input.graph.analyzerVersion)) throw new Error('Joern test assertion catalog must match the exact committed source revision and analyzer');
+  // The existing TypeScript source facts carry compiler-derived UTF-16 spans.
+  // Index them once so a verified Joern source occurrence can be navigated
+  // from its containing expression without treating the reported flow as fact.
+  const sourceFacts = new Map<string, Array<{ node: GraphNode; start: number; end: number }>>();
+  for (const node of input.graph.nodes) {
+    if (node.kind !== 'source-effect' && node.kind !== 'source-condition') continue;
+    const value = node.value as { expressionStructure?: { start?: unknown; end?: unknown }; predicateStructure?: { start?: unknown; end?: unknown } } | null;
+    const span = node.kind === 'source-effect' ? value?.expressionStructure : value?.predicateStructure;
+    if (!span || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)
+      || (span.start as number) < 0 || (span.end as number) <= (span.start as number)) continue;
+    const items = sourceFacts.get(node.sourceId) ?? [];
+    items.push({ node, start: span.start as number, end: span.end as number });
+    sourceFacts.set(node.sourceId, items);
+  }
   const bytes = input.bytes;
   if (!bytes.length || bytes.length > MAX_SLICE_BYTES) throw new Error('Joern slice must be bounded and nonempty');
   const digest = createHash('sha256').update(bytes).digest('hex');
@@ -278,6 +293,7 @@ export async function projectJoernDataflowBytes(input: {
     catalogAssertions.set(assertion.sourceId, existing);
   }
   let missing = 0;
+  let sourceExpressionAnchors = 0;
   for (const item of sliceNodes) {
     const relative = normalizePath(root, item.parentFile, prefix);
     if (!relative) { missing++; continue; }
@@ -307,6 +323,18 @@ export async function projectJoernDataflowBytes(input: {
       layer: 'structural', checkpoint: false,
     });
     addedEdges.set(contains.id, contains);
+    if (exact.match === 'exact') {
+      const matches = (sourceFacts.get('repo:' + relative) ?? []).filter(fact =>
+        fact.start <= exact.offset && exact.offset + item.code.trim().length <= fact.end);
+      const minimum = matches.reduce((size, fact) => Math.min(size, fact.end - fact.start), Infinity);
+      for (const fact of matches.filter(candidate => candidate.end - candidate.start === minimum)) {
+        const link = resolution({ from: fact.node.id, to: id, kind: 'contains-source-span',
+          strategy: 'verified-source-expression-span.v1', confidence: 1, status: 'resolved',
+          evidence: [fact.node.locator, exact.locator, 'Lexical source-span containment only; producer-reported flow remains a candidate'],
+          layer: 'structural', checkpoint: false });
+        if (!addedEdges.has(link.id)) { addedEdges.set(link.id, link); sourceExpressionAnchors++; }
+      }
+    }
     for (const assertion of catalogAssertions.get(relative) ?? []) {
       if (exact.offset < assertion.start || exact.offset >= assertion.end) continue;
       const assertionNode = observation({
@@ -377,6 +405,7 @@ export async function projectJoernDataflowBytes(input: {
       candidateFlowEdges: imported,
       unlocatedFlowEdges: lost,
       assertionSpanAnchors: assertionPairs.size,
+      sourceExpressionAnchors,
     },
     candidates,
     policy: {

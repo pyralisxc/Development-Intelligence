@@ -55,6 +55,8 @@ async function main() {
   const joern = flag('--joern-executable');
   const requestedVersion = flag('--joern-version');
   const requestedLanguage = flag('--joern-language');
+  const sliceOutput = flag('--joern-slice-output');
+  if (sliceOutput && !joern) throw new Error('--joern-slice-output requires --joern-executable');
   if (requestedLanguage && !/^[A-Z_]{2,30}$/u.test(requestedLanguage)) {
     throw new Error('Joern language must be a bounded frontend identity');
   }
@@ -148,6 +150,19 @@ async function main() {
         producerVersion: requestedVersion, testCatalog: catalog,
       });
       joernProjection = projected;
+      let savedSlice = null;
+      if (sliceOutput) {
+        const destination = path.resolve(limit(sliceOutput, 'Joern slice output', 2048));
+        const parent = await fs.realpath(path.dirname(destination));
+        const actualDestination = path.join(parent, path.basename(destination));
+        if (inside(root, actualDestination) || actualDestination === root) {
+          throw new Error('Joern slice output must be outside the inspected checkout');
+        }
+        // Preserve only on explicit request, without replacing existing data.
+        // Projection above has already validated the bounded JSON and source.
+        await fs.writeFile(actualDestination, await fs.readFile(path.join(scratch, names[0])), { flag: 'wx', mode: 0o600 });
+        savedSlice = actualDestination;
+      }
       joernResult = {
         producer: projected.producer,
         overlayGraphId: projected.graph.graphId,
@@ -157,7 +172,7 @@ async function main() {
         executedPinnedBinaryLocally: true,
         parsedSourceToEphemeralCpg: true,
         parsedSourceWithLanguage: requestedLanguage ?? 'auto-detected',
-        fileFilter, sinkFilter, depth,
+        fileFilter, sinkFilter, depth, savedSlice,
       };
     }
     if (requestedTestFiles.length) {

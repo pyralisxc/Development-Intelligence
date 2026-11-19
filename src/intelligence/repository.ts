@@ -21,7 +21,7 @@ import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnow
 import { prepareGraphSubjects } from './graphFamilies.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.36.0-source-producers';
+export const ANALYZER_VERSION = '2.37.0-provider-navigation';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -2788,7 +2788,7 @@ export async function buildRepositoryGraph(input: {
     const producerCoverage: NonNullable<IntelligenceGraph['producerCoverage']>[number] = {
       producer: projection.producer.name, version: projection.producer.version,
       indexSha256: projection.producer.sliceSha256, state: 'partial',
-      reason: `Bounded Joern candidate slice: ${counts.candidateFlowEdges} matched, ${counts.unlocatedFlowEdges} unlocated edges; ${counts.sourceLocatedNodes} matched, ${counts.sourceUnlocatedNodes} unlocated source nodes. Missing flows do not prove absence; caller-supplied slice is not producer attestation or runtime proof.`,
+      reason: `Bounded Joern candidate slice: ${counts.candidateFlowEdges} matched, ${counts.unlocatedFlowEdges} unlocated edges; ${counts.sourceLocatedNodes} matched, ${counts.sourceUnlocatedNodes} unlocated source nodes; ${counts.sourceExpressionAnchors} source-expression links. Missing flows do not prove absence; caller-supplied slice is not producer attestation or runtime proof.`,
     };
     const sourceIdentity = produced.sourceState?.headRevision ?? produced.repositoryRevision!;
     const graphSuffix = stableHash([produced.graphId, projection.producer.version, projection.producer.sliceSha256]).slice(0, 10);

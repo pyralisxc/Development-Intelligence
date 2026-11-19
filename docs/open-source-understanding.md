@@ -159,7 +159,11 @@ Python, C#, and other test runners remain outside this Node-specific evidence.
 
 The worker accepts one `--joern-file-filter` and one optional sink filter per
 run, and removes its scratch CPG and slice after producing its receipt. To
-supply a slice to `working-build` or `revision-build`, produce and retain the
-JSON separately with Joern. Each build currently consumes one bounded slice;
+reuse a validated slice in a graph build, explicitly supply an unused output
+path outside the inspected checkout with `--joern-slice-output PATH`, then
+pass that file as `--joern-slice-json PATH` to `working-build` or
+`revision-build`. The output is created without overwriting an existing file
+and can contain source code, so its destination and deletion are the
+operator's responsibility. Each build currently consumes one bounded slice;
 shard union, automatic Joern execution during normal builds, and exhaustive
 negative-flow conclusions are not supported.

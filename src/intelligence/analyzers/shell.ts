@@ -68,6 +68,29 @@ export function analyzeShell(context: AnalyzeContext, language: 'powershell' | '
         confidence: 1, status: 'resolved', evidence: [locator, 'Written command occurrence; target binding and execution are not established'],
         layer: 'structural', checkpoint: false }));
     }
+    // Record variable names as written occurrences, never values or bindings.
+    // This keeps parameters and data references navigable without pretending
+    // that dynamic shell scoping or a particular runtime value was resolved.
+    if ((language === 'powershell' && node.type === 'variable')
+      || (language === 'bash' && node.type === 'variable_name')) {
+      const written = node.text.trim();
+      const match = language === 'powershell' ? /^\$([A-Za-z_][A-Za-z0-9_]*)$/u.exec(written)
+        : /^([A-Za-z_][A-Za-z0-9_]*)$/u.exec(written);
+      if (match) {
+        const name = match[1]!;
+        const locator = `${context.locatorBase}:${node.startPosition.row + 1}:${node.startPosition.column + 1}`;
+        const occurrence = observation({ id: `shell-variable:${context.locatorBase}:${node.startIndex}`,
+          sourceId: context.source.id, kind: 'variable-reference', locator, name, field: 'variable',
+          value: { language, name, binding: 'unresolved' }, tags: [language, 'tree-sitter', 'written-variable'],
+          layer: 'structural', checkpoint: false,
+          contributions: [{ producer: `tree-sitter-${language}`, version: versions[language]!, symbol: name, locator }] });
+        observations.push(occurrence);
+        resolutions.push(resolution({ from: owner, to: occurrence.id, kind: 'has-source-occurrence',
+          strategy: 'tree-sitter-variable-syntax', confidence: 1, status: 'resolved',
+          evidence: [locator, 'Written variable occurrence; binding, value and execution are not established'],
+          layer: 'structural', checkpoint: false }));
+      }
+    }
     for (let i = node.namedChildren.length - 1; i >= 0; i--) work.push({ node: node.namedChildren[i]!, owner: childOwner });
   }
   return { observations, resolutions, coverage: errors || tree.rootNode.hasError
