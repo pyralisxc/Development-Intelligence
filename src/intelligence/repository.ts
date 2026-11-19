@@ -18,10 +18,10 @@ import { resolveEvidenceSpine } from './spine.js';
 import { resolveFrameworkSpine } from './frameworkSpine.js';
 import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
-import { buildGraphFamilies } from './graphFamilies.js';
+import { prepareGraphSubjects } from './graphFamilies.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.34.0-interaction-spread';
+export const ANALYZER_VERSION = '2.35.0-derived-graph-context';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -2584,7 +2584,7 @@ export async function advanceRepositoryGraph(input: {
     unavailableSourceIds: [],
     coverage,
   };
-  return { graph: buildGraphFamilies(graph), strategy: 'incremental', changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
+  return { graph: prepareGraphSubjects(graph), strategy: 'incremental', changedFiles: sourceChanges.length, affectedFiles: frontier.paths.size };
 }
 
 export async function buildRepositoryGraph(input: {
@@ -2781,5 +2781,5 @@ export async function buildRepositoryGraph(input: {
   };
   const produced = await addLanguageProducerFacts(input.root, graph, languageProducer);
   if (beforeFingerprint && beforeFingerprint !== await sourceFingerprint(input.root, true)) throw new Error('Working files changed during graph construction; rebuild to use one consistent source state');
-  return buildGraphFamilies(produced);
+  return prepareGraphSubjects(produced);
 }

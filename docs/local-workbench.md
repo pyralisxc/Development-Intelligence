@@ -37,7 +37,7 @@ The Workbench Semantics view derives its understanding from the selected graph. 
 
 Explore opens the graph first. Search for a subject, choose among matching identities, and select a node to inspect its source and evidence. Pan, zoom and reset the view; the status reports when the displayed neighborhood is bounded. List, table, summary and raw records remain available for the same investigation. `query --text` offers a readable terminal answer; the default JSON remains suitable for scripts and `--details` returns the full evidence response.
 
-Select a relationship line for its source and evidence, or use the inspector's Connections tab to inspect it from the keyboard. Node summaries show their graph-built families, family members and producer contributions; Graph source and coverage shows the selected source state and analysis coverage. A family can include a shared helper without merging that helper's other workflows into it.
+Select a relationship line for its source and evidence, or use the inspector's Connections tab to inspect it from the keyboard. Node summaries show related subjects, connected context and source-analysis contributions derived from the selected graph; Graph source and coverage shows the selected source state and analysis coverage. A family can include a shared helper without merging that helper's other workflows into it.
 
 Source search against a selected working graph uses that graph’s local working files, including untracked files. It verifies the working source fingerprint before and after searching; if the files no longer match, rebuild the working graph before searching that graph. A selected committed graph continues to search its Git revision.
 

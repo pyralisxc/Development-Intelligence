@@ -17,10 +17,14 @@ const DIRECT = new Set(['calls', 'invokes', 'handled_by', 'registered-as', 'impl
 
 type Builder = { roles: Set<string>; via: Set<string> };
 
-export function buildGraphFamilies(graph: IntelligenceGraph): IntelligenceGraph {
+const familyCache = new WeakMap<IntelligenceGraph, Map<string, GraphFamilyMembership[]>>();
+
+/** Derive navigation memberships from the graph; never persist a second copy of graph knowledge. */
+export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, GraphFamilyMembership[]> {
+  const cached = familyCache.get(graph);
+  if (cached) return cached;
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
   const memberships = new Map<string, Map<string, Builder>>();
-  const compilerSubjects = new Set<string>();
   const outgoing = new Map<string, GraphEdge[]>();
   const add = (nodeId: string, familyId: string, role: string, edgeId?: string): boolean => {
     if (!nodes.has(nodeId) || !nodes.has(familyId)) return false;
@@ -35,8 +39,6 @@ export function buildGraphFamilies(graph: IntelligenceGraph): IntelligenceGraph 
   };
   for (const node of graph.nodes) if (SUBJECTS.has(node.kind)) add(node.id, node.id, 'subject');
   for (const edge of graph.edges) {
-    if (edge.status === 'resolved' && edge.kind === 'resolves_to' && edge.strategy === TYPESCRIPT_COMPILER_LENS
-      && edge.from && edge.to && nodes.get(edge.from)?.kind === 'call-reference') compilerSubjects.add(edge.to);
     if ((edge.status !== 'resolved' && !(edge.status === 'candidate' && edge.kind === 'candidate-sql-definition')) || !edge.from || !edge.to) continue;
     // A subject's family also exposes direct callers, without walking from
     // those callers into their other workflows.
@@ -75,25 +77,32 @@ export function buildGraphFamilies(graph: IntelligenceGraph): IntelligenceGraph 
       if (OWNED.has(edge.kind)) queueComponent(edge.to, current.family, edge.kind === 'callback-argument');
     }
   }
+  const result = new Map<string, GraphFamilyMembership[]>();
+  for (const [nodeId, families] of memberships) {
+    result.set(nodeId, [...families].map(([id, item]) => ({ id,
+      roles: [...item.roles].sort(), via: [...item.via].sort() })).sort((a, b) => a.id.localeCompare(b.id)));
+  }
+  familyCache.set(graph, result);
+  return result;
+}
+
+/** Attach source-derived tags and compiler contributions to graph subjects. */
+export function prepareGraphSubjects(graph: IntelligenceGraph): IntelligenceGraph {
+  const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+  const compilerSubjects = new Set<string>();
+  for (const edge of graph.edges) {
+    if (edge.status === 'resolved' && edge.kind === 'resolves_to' && edge.strategy === TYPESCRIPT_COMPILER_LENS
+      && edge.from && edge.to && nodes.get(edge.from)?.kind === 'call-reference') compilerSubjects.add(edge.to);
+  }
   const result: GraphNode[] = graph.nodes.map(original => {
+    const { families: _old, contributions: _oldContributions, ...base } = original as GraphNode & { families?: unknown };
     const tags = new Set(original.tags ?? []);
     if (isInteractionPoint(original)) tags.add('interaction-point');
     if (isEndpoint(original)) tags.add('endpoint');
-    const node = tags.size !== (original.tags?.length ?? 0) ? { ...original, tags: [...tags] } : original;
-    const families = memberships.get(node.id);
-    const contribution = compilerSubjects.has(node.id) ? { producer: 'typescript-checker', version: ts.version,
-      symbol: node.name ?? node.id, locator: node.locator } : null;
-    const contributions = (node.contributions ?? []).filter(item => item.producer !== 'typescript-checker');
-    if (contribution) contributions.push(contribution);
-    if (!families) {
-      if (!node.families && !contribution && !node.contributions?.some(item => item.producer === 'typescript-checker')) return node;
-      const { families: _old, contributions: _oldContributions, ...current } = node;
-      return { ...current, ...(contributions?.length ? { contributions } : {}) };
-    }
-    const values: GraphFamilyMembership[] = [...families].map(([id, item]) => ({ id,
-      roles: [...item.roles].sort(), via: [...item.via].sort() })).sort((a, b) => a.id.localeCompare(b.id));
-    const { contributions: _oldContributions, ...current } = node;
-    return { ...current, families: values, ...(contributions.length ? { contributions } : {}) };
+    const contributions = (original.contributions ?? []).filter(item => item.producer !== 'typescript-checker');
+    if (compilerSubjects.has(original.id)) contributions.push({ producer: 'typescript-checker', version: ts.version,
+      symbol: original.name ?? original.id, locator: original.locator });
+    return { ...base, ...(tags.size ? { tags: [...tags] } : {}), ...(contributions.length ? { contributions } : {}) };
   });
   return { ...graph, nodes: result };
 }

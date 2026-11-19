@@ -28,11 +28,6 @@ export function assertGraphIntegrity(graph: IntelligenceGraph): void {
     for (const evidenceId of node.evidenceIds ?? []) {
       if (!evidenceIds.has(evidenceId)) throw new Error(`Graph node ${node.id} references missing evidence ${evidenceId}`);
     }
-    for (const family of node.families ?? []) {
-      if (!nodeIds.has(family.id)) throw new Error(`Graph node ${node.id} references missing family ${family.id}`);
-      for (const edgeId of family.via) if (!edgeIds.has(edgeId))
-        throw new Error(`Graph node ${node.id} references missing family relationship ${edgeId}`);
-    }
   }
 
   for (const edge of graph.edges) {
