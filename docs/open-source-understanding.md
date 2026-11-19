@@ -167,3 +167,11 @@ and can contain source code, so its destination and deletion are the
 operator's responsibility. Each build currently consumes one bounded slice;
 shard union, automatic Joern execution during normal builds, and exhaustive
 negative-flow conclusions are not supported.
+
+The installed local launcher exposes this worker as `di-local oss-evidence`;
+it uses the configured checkout and project unless those options are supplied
+explicitly. Joern must be separately installed and its executable and version
+specified. A later `di-local build --joern-slice-json PATH --joern-version VERSION`
+incorporates the retained slice into the working graph. The worker's native
+subprocess launcher requires directly executable producer programs; Windows
+batch wrappers are not supported by this path.

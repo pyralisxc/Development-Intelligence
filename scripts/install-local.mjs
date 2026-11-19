@@ -38,6 +38,10 @@ await fs.cp(path.join(source, 'dist'), path.join(installDir, 'dist'), { recursiv
 await fs.cp(path.join(source, 'node_modules'), path.join(installDir, 'node_modules'), { recursive: true });
 await fs.copyFile(path.join(source, 'package.json'), path.join(installDir, 'package.json'));
 await fs.copyFile(path.join(source, 'scripts', 'local-launcher.mjs'), path.join(installDir, 'local-launcher.mjs'));
+await fs.mkdir(path.join(installDir, 'scripts'), { recursive: true });
+for (const script of ['run-oss-understanding.mjs', 'node-test-events-reporter.mjs']) {
+  await fs.copyFile(path.join(source, 'scripts', script), path.join(installDir, 'scripts', script));
+}
 await fs.mkdir(path.join(installDir, 'runtime'), { recursive: true });
 const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
 await fs.copyFile(process.execPath, path.join(installDir, 'runtime', nodeName));
