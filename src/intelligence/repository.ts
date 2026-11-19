@@ -21,7 +21,7 @@ import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnow
 import { prepareGraphSubjects } from './graphFamilies.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.35.0-derived-graph-context';
+export const ANALYZER_VERSION = '2.36.0-source-producers';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -2594,6 +2594,7 @@ export async function buildRepositoryGraph(input: {
   root: string;
   role?: 'A' | 'W' | 'B';
   workingTree?: boolean;
+  joern?: { bytes: Uint8Array; version: string };
 }): Promise<IntelligenceGraph> {
   const createdAt = new Date().toISOString();
   const tracked = input.workingTree ? await workingFiles(input.root) : await trackedFiles(input.root);
@@ -2779,7 +2780,21 @@ export async function buildRepositoryGraph(input: {
     unavailableSourceIds: [],
     coverage,
   };
-  const produced = await addLanguageProducerFacts(input.root, graph, languageProducer);
+  let produced = await addLanguageProducerFacts(input.root, graph, languageProducer);
+  if (input.joern) {
+    const { projectJoernDataflowBytes } = await import('./joernDataflow.js');
+    const projection = await projectJoernDataflowBytes({ root: input.root, graph: produced, bytes: input.joern.bytes, producerVersion: input.joern.version });
+    const counts = projection.counts;
+    const producerCoverage: NonNullable<IntelligenceGraph['producerCoverage']>[number] = {
+      producer: projection.producer.name, version: projection.producer.version,
+      indexSha256: projection.producer.sliceSha256, state: 'partial',
+      reason: `Bounded Joern candidate slice: ${counts.candidateFlowEdges} matched, ${counts.unlocatedFlowEdges} unlocated edges; ${counts.sourceLocatedNodes} matched, ${counts.sourceUnlocatedNodes} unlocated source nodes. Missing flows do not prove absence; caller-supplied slice is not producer attestation or runtime proof.`,
+    };
+    const sourceIdentity = produced.sourceState?.headRevision ?? produced.repositoryRevision!;
+    const graphSuffix = stableHash([produced.graphId, projection.producer.version, projection.producer.sliceSha256]).slice(0, 10);
+    const graphId = produced.sourceState ? `worktree-${produced.sourceFingerprint}-${graphSuffix}` : `repo-${sourceIdentity}-${graphSuffix}`;
+    produced = { ...projection.graph, graphId, producerCoverage: [...(produced.producerCoverage ?? []), producerCoverage] };
+  }
   if (beforeFingerprint && beforeFingerprint !== await sourceFingerprint(input.root, true)) throw new Error('Working files changed during graph construction; rebuild to use one consistent source state');
   return prepareGraphSubjects(produced);
 }

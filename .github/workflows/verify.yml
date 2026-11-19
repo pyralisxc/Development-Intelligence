@@ -25,6 +25,15 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run build
+      - name: Load native shell grammars
+        run: |
+          node --input-type=module <<'NODE'
+          import { analyzeShell } from './dist/src/intelligence/analyzers/shell.js';
+          for (const [language, text] of [['powershell', 'Get-Item value'], ['bash', 'echo value']]) {
+            const result = analyzeShell({ text, locatorBase: 'sample', source: { id: 'sample' } }, language);
+            if (!result.observations.some(item => item.kind === 'call-reference')) throw new Error(`${language} parser did not report a command`);
+          }
+          NODE
       - name: Upload verified exact-revision build
         if: (github.event_name == 'pull_request' && github.event.action != 'labeled' && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.base.ref != 'main')) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@v4
