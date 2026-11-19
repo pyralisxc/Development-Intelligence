@@ -145,38 +145,21 @@ resolved positive source facts but does not prove exhaustive negatives.
 
 The historical capacity benchmark and CI replay remain available through Git history. Current investigation can measure compiler capacity against an actual inspected repository.
 
-### Native Node test evidence across multiple bounded runs
+### Native Node test evidence across bounded batches
 
-The historical 40-test-file worker cap now governs each subprocess batch,
-not the total corpus. Supply repeated `--node-test-file` selectors, optional
-`--node-batch-size` (1–40), `--node-max-files` resource budget and a fresh
-untracked `--node-evidence-dir observations/native-run` for recoverable
-restricted-permission JSONL artifacts. Only explicitly named exact-Git
-source files are run; arbitrary repository code is never executed by a
-discovery flag alone. Batch results retain source and run identities across the selected test files.
+The worker executes only explicitly selected tracked, exact-source test files,
+using repeated `--node-test-file` arguments. `--node-test-batch-size` sets the
+number per subprocess (default 40, maximum 200). It combines the emitted
+native events before correlating them with source assertions; it does not
+silently discover or execute other tests. The `node-test-evidence` command
+accepts one JSONL report per invocation and supports paging that report.
+Python, C#, and other test runners remain outside this Node-specific evidence.
 
-The local `node-test-evidence` CLI accepts *repeated*
-`--node-test-events-jsonl` paths. A later `--node-events-offset` page needs
-the aggregate first-page `--node-events-expected-sha256`. Recovery retains
-complete evidence and unknown unrun assertions, rejecting duplicates or
-foreign source revisions; compact presentation is not a truth ceiling.
+### Joern slice scope
 
-Discovery defaults to `tests/`, `scripts/`, and `packaging/` paths. It
-does not imply test absence elsewhere. Use `--native-test-scope
-all-supported` or repeated `--native-test-prefix` and
-`--native-test-suffix` flags to select tracked supported names.
-The report discloses selected and omitted filename candidates.
-Python/C#/other runners are not executed by the Node TestStream producer;
-their potential obligations remain outside this native coverage.
-
-### Joern source-shard union, full positive flow recovery
-
-An operator can generate several source-filtered `joern-slice` outputs
-from a single disposable CPG using repeated `--joern-file-filter` flags,
-bounded by a validated per-segment budget and explicit timeout/depth.
-Choose `--joern-evidence-dir` to retain bounded slice JSON locally.
-The `joern-evidence` CLI accepts repeated `--joern-slice-json` paths.
-Recover all candidate edges with `--joern-edge-offset`,
-`--joern-edge-page-size` and `--joern-edge-expected-sha256`.
-Duplicate, conflicting or unrelated revision/producers fail closed.
-Historical fixture and Joern CI receipts remain available in Git history. Unsupported Joern CPGs, resource ceilings and unmapped assertions remain identified in the resulting evidence.
+The worker accepts one `--joern-file-filter` and one optional sink filter per
+run, and removes its scratch CPG and slice after producing its receipt. To
+supply a slice to `working-build` or `revision-build`, produce and retain the
+JSON separately with Joern. Each build currently consumes one bounded slice;
+shard union, automatic Joern execution during normal builds, and exhaustive
+negative-flow conclusions are not supported.
