@@ -1776,7 +1776,7 @@ export async function queryWorkbenchRequest(input: {
               const links = ordered.map((edge: any) => `${names.get(edge.from) ?? edge.from} ${edge.kind}${edge.status === 'candidate' ? ' (candidate)' : ''} ${names.get(edge.to) ?? edge.to}`).join('; ');
               return `${group.sourceCategory === 'test-source' ? 'Test source' : 'Source'}${links ? ` — relationships: ${links}` : ''}\n${group.subjects.map((item: any) => `• ${describeFamily(item, groupIds)}`).join('\n')}`;
             }).join('\n\n')
-          : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map(describeFamily).join(' | ')}`)
+          : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map((item: any) => describeFamily(item)).join(' | ')}`)
           + '. Groups follow source relationships; candidate links identify possible handoffs. Inspect source and connection details for full records.'
         : '';
       const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation

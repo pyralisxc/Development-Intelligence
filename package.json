@@ -31,6 +31,9 @@
     "@upstash/redis": "1.38.4",
     "graphology": "0.26.0",
     "sigma": "3.0.3",
+    "tree-sitter": "0.25.1",
+    "tree-sitter-bash": "0.25.1",
+    "tree-sitter-powershell": "0.26.6",
     "typescript": "5.8.3",
     "wink-eng-lite-web-model": "1.8.1",
     "wink-nlp": "2.4.0"

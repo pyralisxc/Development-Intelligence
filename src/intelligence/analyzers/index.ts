@@ -9,6 +9,7 @@ import { analyzeUnityMeta, analyzeUnitySerialized } from './unity.js';
 import { analyzeCss } from './css.js';
 import { analyzeSql } from './sql.js';
 import { analyzeGo } from './go.js';
+import { analyzeShell } from './shell.js';
 import { analyzeRust } from './rust.js';
 import { analyzeOperationalConfig, isOperationalConfigPath } from './operationalConfig.js';
 
@@ -44,6 +45,11 @@ export const SOURCE_ANALYSIS_SUPPORT = [
     technology: 'Python',
     extensions: ['.py'],
     precision: 'tree-sitter class/function/method identities, lexical containment, modules, and import bindings',
+  },
+  {
+    technology: 'PowerShell and shell',
+    extensions: ['.ps1', '.psm1', '.psd1', '.sh', '.bash'],
+    precision: 'tree-sitter function declarations, lexical containment and source-located written command occurrences; dynamic targets remain unidentified, and invocation binding, arguments, conditions and execution are not established',
   },
   {
     technology: 'structured text',
@@ -96,6 +102,8 @@ export function analyzeByTechnology(context: AnalyzeContext): AnalyzeResult {
     if (['.html', '.htm'].includes(ext)) return analyzeHtml(context);
     if (ext === '.css') return analyzeCss(context);
     if (ext === '.sql') return analyzeSql(context);
+    if (['.ps1', '.psm1', '.psd1'].includes(ext)) return analyzeShell(context, 'powershell');
+    if (['.sh', '.bash'].includes(ext)) return analyzeShell(context, 'bash');
     if (ext === '.go') return analyzeGo(context);
     if (ext === '.rs') return analyzeRust(context);
     if (['.cs', '.java', '.py'].includes(ext)) return analyzePolyglot(context, ext);

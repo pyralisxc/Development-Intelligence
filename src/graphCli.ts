@@ -49,7 +49,8 @@ async function main(): Promise<void> {
   if (testClaimCatalogFlag && command !== 'analyze') throw new Error('--test-claim-catalog is supported only for analyze');
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
-  if ((joernSlicePath || joernProducerVersion || joernProjectPrefix) && command !== 'joern-evidence') throw new Error('Joern evidence flags require joern-evidence command');
+  if ((joernSlicePath || joernProducerVersion) && !['joern-evidence', 'working-build', 'revision-build'].includes(command ?? '')) throw new Error('Joern slice flags require joern-evidence or a graph build');
+  if (joernProjectPrefix && command !== 'joern-evidence') throw new Error('Joern project prefix requires joern-evidence');
   if ((nodeEventsPath || nodeProducerVersion || nodeRunId || nodeEventOffset
     || nodeEventPageSize || nodeExpectedDigest) && command !== 'node-test-evidence') {
     throw new Error('Node test evidence flags require node-test-evidence command');
@@ -57,8 +58,16 @@ async function main(): Promise<void> {
   if (scipProjectPrefix && command !== 'scip-evidence') throw new Error('--scip-project-prefix is supported only for scip-evidence');
   if (process.argv.includes('--scip-legacy-position-encoding') && !scipLegacyEncoding) throw new Error('--scip-legacy-position-encoding requires utf8, utf16 or utf32');
   if (scipLegacyEncoding && command !== 'scip-evidence') throw new Error('--scip-legacy-position-encoding is supported only for scip-evidence');
+  let joern: { bytes: Uint8Array; version: string } | undefined;
+  if (['working-build', 'revision-build'].includes(command ?? '') && (joernSlicePath || joernProducerVersion)) {
+    if (!joernSlicePath || !joernProducerVersion) throw new Error('Graph build requires both --joern-slice-json and --joern-version');
+    const slice = path.resolve(root, joernSlicePath);
+    const stat = await fs.lstat(slice);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > 16 * 1024 * 1024) throw new Error('Joern slice must be a bounded, ordinary file');
+    joern = { bytes: await fs.readFile(slice), version: joernProducerVersion };
+  }
   if (command === 'working-build') {
-    const graph = await buildLocalWorkingGraph(root, project);
+    const graph = await buildLocalWorkingGraph(root, project, joern);
     const dataDir = arg('--data-dir');
     const retained = dataDir ? await saveLocalSourceGraph(dataDir, graph, Number(arg('--retain') ?? '3')) : undefined;
     const { files: _files, ...coverage } = graph.coverage ?? {};
@@ -69,7 +78,7 @@ async function main(): Promise<void> {
     const target = arg('--target') ?? ref;
     if (!ref || !target || !dataDir) throw new Error('revision-build requires --ref and --data-dir');
     if (target === 'working') throw new Error('The working target is reserved for current local files');
-    const graph = await buildLocalRevisionGraph(root, ref, project);
+    const graph = await buildLocalRevisionGraph(root, ref, project, joern);
     const retained = await saveLocalSourceGraph(dataDir, graph, Number(arg('--retain') ?? '3'), target);
     console.log(JSON.stringify({ project: graph.project, target, revision: graph.repositoryRevision, graphId: graph.graphId, nodes: graph.nodes.length, edges: graph.edges.length, retained, producerCoverage: graph.producerCoverage }, null, 2));
   } else if (command === 'working-backup' || command === 'working-restore') {

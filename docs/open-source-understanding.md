@@ -35,6 +35,20 @@ read it without invoking Joern again:
 
     node dist/src/graphCli.js joern-evidence --repo-path . --project Development-Intelligence --joern-slice-json joern-local-evidence/dataflow-slice.json --joern-version 4.0.666
 
+To include an existing bounded slice in the graph before ordinary local
+questions, pass it at build time instead:
+
+    node dist/src/graphCli.js working-build --repo-path . --project Development-Intelligence --data-dir /path/to/di-data --joern-slice-json /path/to/dataflow-slice.json --joern-version 4.0.666
+
+`revision-build` accepts the same two flags. A working build checks the
+working-tree fingerprint before and after reconciliation; a revision build
+checks the selected Git revision. Matching source locations do not attest
+that the caller-supplied slice was produced from the whole source state.
+Joern coverage is partial because a slice is bounded and missing flows do not
+prove absence. The build fails before activation if the supplied slice is
+invalid or the source changes. This option consumes an existing slice; it
+does not automatically install or run Joern during ordinary builds.
+
 That exact-source operation reconstructs canonical W, generates the existing
 native assertion inventory and produces an ephemeral graph overlay. A Joern
 node is admitted when its tracked, analyzed file is a regular file inside the

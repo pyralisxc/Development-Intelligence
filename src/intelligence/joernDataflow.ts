@@ -42,7 +42,7 @@ interface LocalSource {
 export interface JoernEvidenceProjection {
   graph: IntelligenceGraph;
   producer: { name: 'joern-slice'; version: string; sliceSha256: string; independentlyAttested: false };
-  source: { revision: string; graphId: string; projectPrefix: string };
+  source: { revision: string | null; headRevision?: string; graphId: string; projectPrefix: string };
   counts: {
     sliceNodes: number;
     sliceEdges: number;
@@ -60,7 +60,8 @@ export interface JoernEvidenceProjection {
     edgeId: string;
   }>;
   policy: {
-    sourceSpansAreExactGitVerified: true;
+    sourceSpansAreExactGitVerified: boolean;
+    sourceSpansMatchWorkingFingerprint: boolean;
     flowIsPotentialNotRuntime: true;
     candidateFlowIsNotIndependentlyCorroborated: true;
     generatedBySourceOnly: true;
@@ -157,14 +158,16 @@ async function sourceFile(root: string, relative: string, graph: IntelligenceGra
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_SOURCE_FILE_BYTES) return null;
     const real = await fs.realpath(location);
     if (!inside(root, real)) return null;
-    // A consumer-supplied Joern slice must not become a source fact after the
-    // checkout has diverged from its selected immutable Git revision.
-    const [headBlob, localBlob] = await Promise.all([
-      runChecked('git', ['-C', root, 'rev-parse', 'HEAD:' + relative]),
-      runChecked('git', ['-C', root, 'hash-object', '--', relative]),
-    ]);
-    if (headBlob.stdout.trim() !== localBlob.stdout.trim()) return null;
     const text = await fs.readFile(real, 'utf8');
+    const expected = graph.coverage?.files.find(file => file.path === relative)?.contentSha256;
+    if (!expected || createHash('sha256').update(text).digest('hex') !== expected) return null;
+    if (!graph.sourceState) {
+      const [headBlob, localBlob] = await Promise.all([
+        runChecked('git', ['-C', root, 'rev-parse', 'HEAD:' + relative]),
+        runChecked('git', ['-C', root, 'hash-object', '--', relative]),
+      ]);
+      if (headBlob.stdout.trim() !== localBlob.stdout.trim()) return null;
+    }
     if (text.includes('\0')) return null;
     const { lines, starts } = lineStarts(text);
     return { path: relative, lines, starts };
@@ -214,38 +217,41 @@ function exactLocation(file: LocalSource, item: SliceNode): { locator: string; o
   return { locator: file.path + ':' + item.lineNumber + ':' + (location + 1), offset: sourceStart + location, match: 'normalized-syntax' };
 }
 
-/** Call with the same exact source checkout used to build graph, not a guessed ref. */
+/** Resolve an operator-selected slice inside the checkout for the existing evidence CLI. */
 export async function projectLocalJoernDataflow(input: {
-  root: string;
-  graph: IntelligenceGraph;
-  slicePath: string;
-  producerVersion: string;
-  projectPrefix?: string;
-  testCatalog?: TestClaimCatalog;
+  root: string; graph: IntelligenceGraph; slicePath: string; producerVersion: string;
+  projectPrefix?: string; testCatalog?: TestClaimCatalog;
+}): Promise<JoernEvidenceProjection> {
+  const root = await fs.realpath(path.resolve(input.root));
+  const location = path.resolve(root, input.slicePath);
+  if (!inside(root, location)) throw new Error('Joern slice path must be confined to the inspected checkout');
+  const stat = await fs.lstat(location);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > MAX_SLICE_BYTES) throw new Error('Joern slice must be a bounded, ordinary file');
+  const real = await fs.realpath(location);
+  if (!inside(root, real)) throw new Error('Joern slice physical path escapes the checkout');
+  return projectJoernDataflowBytes({ ...input, root, bytes: await fs.readFile(real) });
+}
+
+/** Reconcile explicit producer output against the graph's exact committed or working source. */
+export async function projectJoernDataflowBytes(input: {
+  root: string; graph: IntelligenceGraph; bytes: Uint8Array; producerVersion: string;
+  projectPrefix?: string; testCatalog?: TestClaimCatalog;
 }): Promise<JoernEvidenceProjection> {
   const root = await fs.realpath(path.resolve(input.root));
   const head = (await runChecked('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
-  if (head !== input.graph.repositoryRevision) {
-    throw new Error('Joern evidence requires the selected exact Git HEAD and graph revision to agree');
+  const working = Boolean(input.graph.sourceState);
+  if (head !== (input.graph.sourceState?.headRevision ?? input.graph.repositoryRevision)) throw new Error('Joern evidence requires the selected source HEAD and graph to agree');
+  if (working) {
+    const { sourceFingerprint } = await import('./repository.js');
+    if (!input.graph.sourceFingerprint || await sourceFingerprint(root, true) !== input.graph.sourceFingerprint) throw new Error('Working source differs from the selected graph');
   }
   const prefix = input.projectPrefix ?? '';
   if (prefix && !canonicalRelative(prefix)) throw new Error('Joern project prefix must be canonical and repository-relative');
   const version = boundedText(input.producerVersion, 'Joern producer version', 100);
   if (!version.trim()) throw new Error('Joern producer version is required; caller version is not attestation');
-  if (input.testCatalog && (input.testCatalog.revision !== head
-    || input.testCatalog.analyzerVersion !== input.graph.analyzerVersion)) {
-    throw new Error('Joern test assertion catalog must match the exact source revision and analyzer');
-  }
-
-  const location = path.resolve(root, input.slicePath);
-  if (!inside(root, location)) throw new Error('Joern slice path must be confined to the inspected checkout');
-  const stat = await fs.lstat(location);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > MAX_SLICE_BYTES) {
-    throw new Error('Joern slice must be a bounded, ordinary file');
-  }
-  const real = await fs.realpath(location);
-  if (!inside(root, real)) throw new Error('Joern slice physical path escapes the checkout');
-  const bytes = await fs.readFile(real);
+  if (input.testCatalog && (working || input.testCatalog.revision !== head || input.testCatalog.analyzerVersion !== input.graph.analyzerVersion)) throw new Error('Joern test assertion catalog must match the exact committed source revision and analyzer');
+  const bytes = input.bytes;
+  if (!bytes.length || bytes.length > MAX_SLICE_BYTES) throw new Error('Joern slice must be bounded and nonempty');
   const digest = createHash('sha256').update(bytes).digest('hex');
   const parsed = record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)), 'Joern DataFlowSlice');
   if (!Array.isArray(parsed.nodes) || parsed.nodes.length > MAX_SLICE_NODES
@@ -282,7 +288,7 @@ export async function projectLocalJoernDataflow(input: {
     const file = await fileCache.get(relative)!;
     const exact = file ? exactLocation(file, item) : null;
     if (!exact) { missing++; continue; }
-    const id = 'joern-span:' + stableHash([head, relative, exact.locator, item.label, item.code.trim()]);
+    const id = 'joern-span:' + stableHash([working ? input.graph.sourceFingerprint : head, relative, exact.locator, item.label, item.code.trim()]);
     const node = observation({
       id, sourceId: 'repo:' + relative, kind: 'source-located-dataflow-node',
       locator: exact.locator, name: item.label, field: 'joern.slice-node',
@@ -294,8 +300,8 @@ export async function projectLocalJoernDataflow(input: {
     addedNodes.set(id, node);
     const contains = resolution({
       from: 'file:' + relative, to: id, kind: 'contains',
-      strategy: exact.match === 'exact' ? 'exact-git-source-span.v1' : 'normalized-git-source-syntax.v1', confidence: 1, status: 'resolved',
-      evidence: [exact.locator, exact.match === 'exact'
+      strategy: working ? 'working-source-span.v1' : exact.match === 'exact' ? 'exact-git-source-span.v1' : 'normalized-git-source-syntax.v1', confidence: 1, status: 'resolved',
+      evidence: [exact.locator, working ? 'Source content matches the selected working graph; does not corroborate Joern flow' : exact.match === 'exact'
         ? 'Source text and Git blob independently matched; does not corroborate Joern flow'
         : 'Source tokens and literal values match the Git blob after syntax normalization; does not corroborate Joern flow'],
       layer: 'structural', checkpoint: false,
@@ -331,7 +337,7 @@ export async function projectLocalJoernDataflow(input: {
     const edge = resolution({
       from: from.node.id, to: to.node.id,
       kind: 'dataflow-reported', strategy: JOERN_DATAFLOW_STRATEGY,
-      identity: [head, from.node.id, to.node.id, item.label.toUpperCase(), JOERN_DATAFLOW_STRATEGY],
+      identity: [working ? input.graph.sourceFingerprint : head, from.node.id, to.node.id, item.label.toUpperCase(), JOERN_DATAFLOW_STRATEGY],
       confidence: null, status: 'candidate',
       evidence: [
         from.locator, to.locator, 'Joern ' + version + ' slice ' + digest + ' reports possible ' + item.label,
@@ -347,6 +353,10 @@ export async function projectLocalJoernDataflow(input: {
       });
     }
   }
+  if (working) {
+    const { sourceFingerprint } = await import('./repository.js');
+    if (await sourceFingerprint(root, true) !== input.graph.sourceFingerprint) throw new Error('Working source changed during Joern reconciliation');
+  }
   const nodes = [...addedNodes.values()].sort((a,b) => a.id.localeCompare(b.id));
   const edges = [...addedEdges.values()].sort((a,b) => a.id.localeCompare(b.id));
   return {
@@ -357,7 +367,7 @@ export async function projectLocalJoernDataflow(input: {
       edges: [...input.graph.edges, ...edges],
     },
     producer: { name: 'joern-slice', version, sliceSha256: digest, independentlyAttested: false },
-    source: { revision: head, graphId: input.graph.graphId, projectPrefix: prefix },
+    source: { revision: input.graph.repositoryRevision, ...(working ? { headRevision: head } : {}), graphId: input.graph.graphId, projectPrefix: prefix },
     counts: {
       sliceNodes: sliceNodes.length,
       sliceEdges: sliceEdges.length,
@@ -370,7 +380,8 @@ export async function projectLocalJoernDataflow(input: {
     },
     candidates,
     policy: {
-      sourceSpansAreExactGitVerified: true,
+      sourceSpansAreExactGitVerified: !working,
+      sourceSpansMatchWorkingFingerprint: working,
       flowIsPotentialNotRuntime: true,
       candidateFlowIsNotIndependentlyCorroborated: true,
       generatedBySourceOnly: true,
