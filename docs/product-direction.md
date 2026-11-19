@@ -1,6 +1,6 @@
 # Product direction — revision-bound implementation context
 
-**Documentation authority:** [DI Confluence blueprint](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/720897) and its [public product-version roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable product vision, intended outcomes, future milestone scope, and acceptance meaning. This Git document records the currently described product interfaces, implementation boundaries and technical improvement context for the source revision that contains it; it is **not a competing product roadmap**. The [documentation and evidence guide](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4030466) defines how immutable source, CI and provider observations establish implemented truth.
+**Documentation authority:** [DI Product Vision and Principles](https://docs.google.com/document/d/1BmHkf7Hz2CatjbvMUtui-0BS1V9zVliEgYVNAzYGKAk/edit) and its [public product-version roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable product vision, intended outcomes, future milestone scope, and acceptance meaning. This Git document records the currently described product interfaces, implementation boundaries and technical improvement context for the source revision that contains it; it is **not a competing product roadmap**. The [documentation and evidence guide](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4030466) defines how immutable source, CI and provider observations establish implemented truth.
 
 ## Identity
 
@@ -113,7 +113,7 @@ For mechanically current details, prefer the deployed `GET /health`, MCP tool sc
 
 ## Implementation-facing improvement areas
 
-The durable cross-version vision and priority of future milestones live in Confluence. The following source-authored engineering themes explain the focus of this revision; they are neither an accepted product-version release plan nor proof of implementation. Improve **fidelity, reach, and efficiency of trustworthy project understanding**, rather than accumulate unrelated agent powers.
+The durable cross-version product vision lives in Google Docs; milestone direction is described by the product roadmap. The following source-authored engineering themes explain the focus of this revision; they are neither an accepted product-version release plan nor proof of implementation. Improve **fidelity, reach, and efficiency of trustworthy project understanding**, rather than accumulate unrelated agent powers.
 
 Relevant technical improvement areas are:
 
@@ -147,7 +147,7 @@ It should be rejected, integrated externally, or kept project-owned when its pri
 
 ## Documentation authority
 
-Confluence owns DI's durable product identity, cross-version vision, release milestones, and intended non-goals. This file is an exact-Git-revision technical context for current described interfaces, implementation design decisions, and constraints. The source and live provider/runtime evidence decide what truly runs at that revision; this document does not grant additional capabilities or override the adopted Confluence direction.
+The Google Docs Product Vision and Principles owns DI's durable product identity, cross-version vision and intended non-goals; the product roadmap describes milestone direction. This file is an exact-Git-revision technical context for current described interfaces, implementation design decisions, and constraints. The source and live provider/runtime evidence decide what truly runs at that revision; this document does not grant additional capabilities or override the adopted product vision.
 
 - `README.md` is the concise entry point and usage orientation.
 - `docs/architecture.md` owns system design, graph semantics, lifecycle, and technical boundaries.
@@ -158,4 +158,4 @@ Confluence owns DI's durable product identity, cross-version vision, release mil
 - `AGENTS.md` owns contributor/agent invariants.
 - Source, provider state, generated MCP schemas, deployed health, and Git history establish current implementation and operational fact when prose drifts.
 
-Update the Confluence blueprint when product identity, intended direction, milestone acceptance, or enduring product boundaries change. Update this revision-bound document when the implementation's interfaces, verified capabilities, limitations or technical decisions change. Preserve immutable Git/release/provider evidence; do not use either document as a changelog, issue tracker, or substitute for measured runtime truth.
+Update the Google Docs product vision when product identity, intended direction or enduring product boundaries change; update the roadmap when milestone acceptance changes. Update this revision-bound document when the implementation's interfaces, verified capabilities, limitations or technical decisions change. Preserve immutable Git/release/provider evidence; do not use either document as a changelog, issue tracker, or substitute for measured runtime truth.
