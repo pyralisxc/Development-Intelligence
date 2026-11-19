@@ -7,6 +7,13 @@ import { localSourceGraphHistory } from './localGraphStore.js';
 type Settings = { installDir: string; dataDir: string; scratchDir: string; repoPath: string; project: string; retain: number; cacheSize?: number; port: number; backupDir?: string };
 type Job = { action: string; state: 'running' | 'complete' | 'failed'; output: string; startedAt: string; finishedAt?: string };
 let job: Job | null = null;
+// Reserve the handoff before reading settings: both requests and settings reads
+// are asynchronous, so checking only the running child permits overlap.
+let transitionPending = false;
+function reserveTransition(): void {
+  if (transitionPending || job?.state === 'running') throw new Error('Wait for the current local operation or settings change to finish');
+  transitionPending = true;
+}
 const settingsPath = () => {
   const value = process.env.DEVINT_LOCAL_SETTINGS;
   if (!value) throw new Error('Local setup is available from an installed DI launcher');
@@ -20,7 +27,8 @@ export async function localLifecycleStatus(): Promise<Record<string, unknown>> {
   return { settings, history: await localSourceGraphHistory(settings.dataDir, settings.project), job };
 }
 export async function updateLocalSettings(input: Record<string, unknown>): Promise<Settings> {
-  if (job?.state === 'running') throw new Error('Wait for the current local operation to finish');
+  reserveTransition();
+  try {
   const previous = await localSettings();
   const str = (name: string, fallback: string): string => {
     const value = input[name] ?? fallback;
@@ -45,9 +53,13 @@ export async function updateLocalSettings(input: Record<string, unknown>): Promi
   const { clearGraphCache } = await import('./service.js');
   clearGraphCache(settings.project);
   return settings;
+  } finally {
+    transitionPending = false;
+  }
 }
 export async function startLocalOperation(input: Record<string, unknown>): Promise<Job> {
-  if (job?.state === 'running') throw new Error('A local operation is already running');
+  reserveTransition();
+  try {
   const settings = await localSettings();
   const action = input.action;
   if (typeof action !== 'string' || !['build', 'build-revision', 'backup', 'restore', 'unpin'].includes(action)) throw new Error('Unsupported local operation');
@@ -73,6 +85,9 @@ export async function startLocalOperation(input: Record<string, unknown>): Promi
   const append = (chunk: unknown) => { current.output = (current.output + String(chunk)).slice(-24000); };
   child.stdout.on('data', append); child.stderr.on('data', append);
   child.on('error', (error: Error) => { append(error.message); current.state = 'failed'; current.finishedAt = new Date().toISOString(); });
-  child.on('close', (code: number | null) => { current.state = code === 0 ? 'complete' : 'failed'; current.finishedAt = new Date().toISOString(); });
+  child.on('close', (code: number | null) => { if (current.state === 'running') current.state = code === 0 ? 'complete' : 'failed'; current.finishedAt = new Date().toISOString(); });
   return current;
+  } finally {
+    transitionPending = false;
+  }
 }
