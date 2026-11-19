@@ -1,3 +1,4 @@
+import { graphFamilyMemberships } from './graphFamilies.js';
 import { investigationSelection, questionSelection } from './investigation.js';
 import { listAuthorizedGithubOwners, loadRegistry } from '../config/registry.js';
 import { projectStatus } from '../projectStatus.js';
@@ -373,7 +374,8 @@ export async function inspectEntity(input: { project: string; node: string; ref?
   const selected = candidates.find(node => node.id === input.node) ?? candidates[0]!;
   const incident = graph.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
-  const families = (selected.families ?? []).map(family => ({ ...family,
+  const memberships = graphFamilyMemberships(graph);
+  const families = (memberships.get(selected.id) ?? []).map(family => ({ ...family,
     subject: byId.has(family.id) ? { id: family.id, name: displayName(byId.get(family.id)!),
       kind: byId.get(family.id)!.kind, locator: byId.get(family.id)!.locator } : null }));
   const facts = incident.filter(edge => edge.from === selected.id && edge.to
@@ -384,7 +386,7 @@ export async function inspectEntity(input: { project: string; node: string; ref?
     });
   const familyMembers = graph.nodes.flatMap(node => {
     if (node.id === selected.id) return [];
-    const membership = node.families?.find(family => family.id === selected.id);
+    const membership = memberships.get(node.id)?.find(family => family.id === selected.id);
     return membership ? [{ id: node.id, name: displayName(node), kind: node.kind,
       locator: node.locator, roles: membership.roles, via: membership.via }] : [];
   }).sort((a, b) => a.locator.localeCompare(b.locator) || a.id.localeCompare(b.id));
@@ -399,6 +401,7 @@ export async function inspectEntity(input: { project: string; node: string; ref?
       direction: outgoing ? 'outbound' : 'inbound',
       status: edge.status,
       confidence: edge.confidence,
+      strategy: edge.strategy ?? null,
       neighbor: neighborId ? { id: neighborId, name: displayName(neighbor, neighborId), kind: neighbor?.kind ?? 'unknown', layer: neighbor?.layer ?? 'structural', locator: neighbor?.locator ?? null } : null,
       evidenceIds: edge.evidenceIds ?? [],
     };
@@ -1708,8 +1711,9 @@ export async function queryWorkbenchRequest(input: {
           const label = `${roles} ${member.name ?? member.kind}`;
           groupedConnections.set(label, (groupedConnections.get(label) ?? 0) + 1);
         }
+        const connectionLabels = [...groupedConnections].map(([label, count]) => `${label}${count > 1 ? ` (${count} locations)` : ''}`);
         const connections = groupIds
-          ? [...groupedConnections].map(([label, count]) => `${label}${count > 1 ? ` (${count} locations)` : ''}`).join(', ')
+          ? connectionLabels.slice(0, 4).join(', ') + (connectionLabels.length > 4 ? `, ${connectionLabels.length - 4} more in details` : '')
           : linked.map((member: any) => `${member.roles.filter((role: string) => ['dependency', 'caller', 'callback', 'related'].includes(role)).join('/')} ${member.name ?? member.kind} (${member.locator})`).join(', ');
         const familyIds = new Set([item.id, ...linked.filter((member: any) => member.roles.includes('callback')).map((member: any) => member.id)]);
         const families = result.sourceFamilies.filter((value: any) => familyIds.has(value.subjectId));
@@ -1733,7 +1737,7 @@ export async function queryWorkbenchRequest(input: {
         }).join('; ');
         const conditionDetails = [...conditions].map(([condition, number]) => `C${number}: ${condition}`).join('; ');
         const description = typeof item.value?.description === 'string' ? item.value.description : '';
-        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in family details)' : ''}` : ''}${details ? `; matching source facts: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more family members at offset ${family.nextOffset}` : ''}`;
+        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${details ? `; matching source facts: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
       };
       // Broad term matches are a ranked source scope, not one bound subject.
       // Compose visible source facts for that scope instead of asserting that
@@ -1773,11 +1777,11 @@ export async function queryWorkbenchRequest(input: {
               return `${group.sourceCategory === 'test-source' ? 'Test source' : 'Source'}${links ? ` — relationships: ${links}` : ''}\n${group.subjects.map((item: any) => `• ${describeFamily(item, groupIds)}`).join('\n')}`;
             }).join('\n\n')
           : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map(describeFamily).join(' | ')}`)
-          + '. Groups follow source relationships; candidate links identify possible handoffs. Inspect source and family details for full records.'
+          + '. Groups follow source relationships; candidate links identify possible handoffs. Inspect source and connection details for full records.'
         : '';
       const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation
         && result.families.some((family: any) => family.id === subject.id && family.total)
-        ? `${describeFamily(subject)}. Inspect the family and source details for the complete records.` : '';
+        ? `${describeFamily(subject)}. Inspect the related subjects and source details for the complete records.` : '';
       const ambiguousAnswer = result.interpretation.selection === 'exact-name' && result.subjectTotal > 1 && !related.length
         ? `The name matches ${result.subjectTotal} source subjects: ${result.subjects.map((item: any) => `${item.name ?? item.id} (${item.locator})`).join('; ')}. Select a subject or scope to investigate it${result.page.nextOffset !== null ? `; more subjects at offset ${result.page.nextOffset}` : ''}.`
         : '';

@@ -1,3 +1,4 @@
+import { graphFamilyMemberships } from './graphFamilies.js';
 import winkNLP from 'wink-nlp';
 import model from 'wink-eng-lite-web-model';
 import type { GraphNode, IntelligenceGraph } from '../types.js';
@@ -113,6 +114,8 @@ const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'in
 /** Language proposes terms and exact names; selection and navigation operate
  * exclusively on the graph's existing nodes and relationships. */
 export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): Record<string, unknown> {
+  const memberships = graphFamilyMemberships(graph);
+  const familyOf = (node: GraphNode) => memberships.get(node.id ?? '') ?? [];
   const includesTerm = termMatcher();
   const language = interpret(input.text);
   const preferTestSources = language.tokens.some(token => ['test', 'tests', 'spec', 'specs'].includes(token.lemma))
@@ -242,7 +245,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         if (score) scored.push({ node, groups, described, score: score
           + (['function', 'method', 'constructor'].includes(node.kind) ? 4 : 0)
           + (sourceFamilies.has(node.id) ? 10 : 0)
-          + ((node.families ?? []).some(family => family.id === node.id) ? 4 : 0) });
+          + (familyOf(node).some(family => family.id === node.id) ? 4 : 0) });
       }
       scored.sort((a, b) => {
         const sourceOrder = Number(isWrittenTestSource(a.node.sourceId)) - Number(isWrittenTestSource(b.node.sourceId));
@@ -305,7 +308,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     return current;
   };
   if (groupedSelection) {
-    const wantedEdges = new Set(subjects.flatMap(node => (node.families ?? [])
+    const wantedEdges = new Set(subjects.flatMap(node => familyOf(node)
       .filter(family => parents.has(family.id) && family.roles.includes('dependency')).flatMap(family => family.via)));
     const byEdgeId = new Map(graph.edges.filter(edge => wantedEdges.has(edge.id)).map(edge => [edge.id, edge]));
     const lexical = new Map<string, typeof graph.edges>();
@@ -354,7 +357,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     // An inline handler/callback is a lexical component of its owner. A
     // resolved call from that component can connect two matched subjects;
     // preserve the complete path rather than creating a synthetic call.
-    for (const node of subjects) for (const membership of node.families ?? []) {
+    for (const node of subjects) for (const membership of familyOf(node)) {
       if (!parents.has(membership.id) || membership.id === node.id || !membership.roles.includes('dependency')
         || isWrittenTestSource(byId.get(membership.id)?.sourceId ?? '') !== isWrittenTestSource(node.sourceId)) continue;
       for (const id of membership.via) {
@@ -461,7 +464,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   };
   const familyOwners = [...subjects, ...graph.nodes.filter(node => adjacentIds.has(node.id)
     && !subjectIds.has(node.id) && factsBySubject.has(node.id)
-    && (depth > 1 || (node.families ?? []).some(family => subjectIds.has(family.id) && family.roles.includes('callback'))))];
+    && (depth > 1 || familyOf(node).some(family => subjectIds.has(family.id) && family.roles.includes('callback'))))];
   for (const subject of familyOwners) {
     include(subject);
     for (const id of factsBySubject.get(subject.id) ?? []) include(byId.get(id));
@@ -472,7 +475,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const familySubjects = selection === 'exact-name' || selection === 'scope' ? subjects : subjectPage;
   const requestedFamilies = new Set(familySubjects.map(item => item.id));
   const familyMembers = new Map<string, Array<{ id: string; kind: string; name: string | null; locator: string; roles: string[]; via: string[] }>>();
-  if (requestedFamilies.size) for (const node of graph.nodes) for (const membership of node.families ?? []) {
+  if (requestedFamilies.size) for (const node of graph.nodes) for (const membership of familyOf(node)) {
     if (!requestedFamilies.has(membership.id) || membership.id === node.id) continue;
     const items = familyMembers.get(membership.id) ?? [];
     items.push({ id: node.id, kind: node.kind, name: node.name ?? null, locator: node.locator,
@@ -493,7 +496,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const requestedEffects = [...new Set(language.tokens.map(token => token.lemma).filter(term => effectVocabulary.has(term)))];
   const displayedIds = new Set(subjectPage.map(node => node.id));
   const sourceOwners = groupedSelection ? familyOwners.filter(node => displayedIds.has(node.id)
-    || (node.families ?? []).some(family => displayedIds.has(family.id) && family.roles.includes('callback')))
+    || familyOf(node).some(family => displayedIds.has(family.id) && family.roles.includes('callback')))
     : familyOwners.slice(offset, offset + limit);
   const sourceFamilies = sourceOwners.flatMap(subject => {
     const facts = (factsBySubject.get(subject.id) ?? []).map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));

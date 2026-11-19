@@ -131,8 +131,7 @@ export interface EvidenceRecord {
   value?: unknown;
 }
 
-/** Membership is built from the selected graph. The family id is an existing
- * graph subject; via identifies the relationships that make the node a member. */
+/** A derived context membership. The subject and supporting relationships already exist in the graph. */
 export interface GraphFamilyMembership {
   id: string;
   roles: string[];
@@ -161,7 +160,6 @@ export interface GraphNode {
   layer?: GraphNodeLayer;
   checkpoint?: boolean;
   evidenceIds?: string[];
-  families?: GraphFamilyMembership[];
   contributions?: GraphProducerContribution[];
 }
 
