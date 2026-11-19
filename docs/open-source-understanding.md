@@ -159,7 +159,19 @@ Python, C#, and other test runners remain outside this Node-specific evidence.
 
 The worker accepts one `--joern-file-filter` and one optional sink filter per
 run, and removes its scratch CPG and slice after producing its receipt. To
-supply a slice to `working-build` or `revision-build`, produce and retain the
-JSON separately with Joern. Each build currently consumes one bounded slice;
+reuse a validated slice in a graph build, explicitly supply an unused output
+path outside the inspected checkout with `--joern-slice-output PATH`, then
+pass that file as `--joern-slice-json PATH` to `working-build` or
+`revision-build`. The output is created without overwriting an existing file
+and can contain source code, so its destination and deletion are the
+operator's responsibility. Each build currently consumes one bounded slice;
 shard union, automatic Joern execution during normal builds, and exhaustive
 negative-flow conclusions are not supported.
+
+The installed local launcher exposes this worker as `di-local oss-evidence`;
+it uses the configured checkout and project unless those options are supplied
+explicitly. Joern must be separately installed and its executable and version
+specified. A later `di-local build --joern-slice-json PATH --joern-version VERSION`
+incorporates the retained slice into the working graph. The worker's native
+subprocess launcher requires directly executable producer programs; Windows
+batch wrappers are not supported by this path.

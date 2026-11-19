@@ -12,7 +12,7 @@ try {
   Copy-Item -Recurse (Join-Path $root 'dist') $bundle
   Copy-Item -Recurse (Join-Path $root 'node_modules') $bundle
   Copy-Item (Join-Path $root 'package.json') $bundle
-  Copy-Item (Join-Path $root 'scripts\install-local.mjs'), (Join-Path $root 'scripts\local-launcher.mjs') (Join-Path $bundle 'scripts')
+  Copy-Item (Join-Path $root 'scripts\install-local.mjs'), (Join-Path $root 'scripts\local-launcher.mjs'), (Join-Path $root 'scripts\run-oss-understanding.mjs'), (Join-Path $root 'scripts\node-test-events-reporter.mjs') (Join-Path $bundle 'scripts')
   Copy-Item (Get-Command node).Source (Join-Path $bundle 'runtime\node.exe')
   Copy-Item (Join-Path $PSScriptRoot 'Install-Local.ps1'), (Join-Path $PSScriptRoot 'Install-Local.cmd') $bundle
   $zip = Join-Path $out 'Development-Intelligence-Local-win-x64.zip'

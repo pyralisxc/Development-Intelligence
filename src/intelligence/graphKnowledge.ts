@@ -47,6 +47,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'constructor': ['callable', 'symbol'] as NodeTrait[],
   'sql-function': ['callable', 'resource'], 'sql-procedure': ['callable', 'resource'],
   'import-binding': ['symbol'], 'call-reference': ['source-site'],
+  'variable-reference': ['symbol', 'source-site'],
   parameter: ['symbol', 'source-site'], argument: ['source-site'],
   'css-class-reference': ['source-site'], 'css-selector': ['resource'],
   'unity-object': ['container', 'resource'], 'unity-asset-guid': ['resource'],
@@ -59,6 +60,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'source-control-summary': ['source-site', 'source-control'],
   'source-condition': ['source-site', 'predicate', 'source-control'],
   'source-effect': ['source-site', 'effect', 'source-control'],
+  'source-located-dataflow-node': ['source-site'],
   'state-write': ['source-site', 'effect'], 'state-binding': ['resource'],
   'sql-table': ['resource'], 'sql-reference': ['resource'],
   'ui-element': ['source-site', 'boundary'], 'dom-interaction': ['source-site', 'boundary'], 'interaction-handler': ['source-site'], 'mcp-tool': ['boundary'],
@@ -97,6 +99,9 @@ function define(kinds: readonly string[], family: KnowledgeFamily,
 }
 define(['contains', 'declares',
   'reexports', 'member-of', 'part-of'], 'composition', 'composition-context', false, 'syntax');
+define(['contains-source-span'], 'composition', 'composition-context', false, 'syntax', ['source-site'], ['source-site']);
+define(['has-source-occurrence'], 'reference', 'dependency', false, 'syntax', [], ['source-site']);
+define(['dataflow-reported'], 'reference', 'dependency', false, 'not-established', ['source-site'], ['source-site']);
 // An established state declaration is a positive technical realization fact,
 // even though it is not evidence that state was changed in a runtime session.
 define(['declares-state'], 'state', 'persistence', true, 'syntax');

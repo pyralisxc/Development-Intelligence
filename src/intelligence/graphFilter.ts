@@ -109,7 +109,7 @@ function containsName(question: string, name: string): boolean {
   return false;
 }
 
-const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'ui-element', 'dom-interaction', 'interaction-handler', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference']);
+const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'ui-element', 'dom-interaction', 'interaction-handler', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference', 'variable-reference']);
 
 /** Language proposes terms and exact names; selection and navigation operate
  * exclusively on the graph's existing nodes and relationships. */
@@ -204,12 +204,26 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         for (const term of matching) group.add(term);
         factTerms.set(value.functionId, group);
       }
+      // Written occurrences contribute vocabulary to their lexical owner.
+      // Their presence is source syntax, not proof of a binding or execution.
+      for (const edge of graph.edges) {
+        if (edge.status !== 'resolved' || !edge.from || !edge.to
+          || (edge.kind !== 'has-source-occurrence' && edge.kind !== 'calls-site')) continue;
+        const site = byId.get(edge.to);
+        if (!site?.name || (site.kind !== 'variable-reference' && site.kind !== 'call-reference')) continue;
+        const siteText = words(site.name);
+        const matching = terms.filter(term => includesTerm(siteText, term));
+        if (!matching.length) continue;
+        const group = factTerms.get(edge.from) ?? new Set<string>();
+        for (const term of matching) group.add(term);
+        factTerms.set(edge.from, group);
+      }
       const scored: Array<{ node: GraphNode; score: number; groups: number; described: boolean }> = [];
       const questionNameWords = words(input.text).match(/[\p{L}\p{N}_]+/gu) ?? [];
       for (const node of eligible) {
         // Source occurrences are good exact subjects, but letting every call
         // site compete with its owner swamps broad feature searches.
-        if (node.kind === 'call-reference' && !kinds.size) continue;
+        if ((node.kind === 'call-reference' || node.kind === 'variable-reference') && !kinds.size) continue;
         const name = words(node.name ?? '');
         const locator = words(node.locator);
         const raw = words(node.raw ?? '');
