@@ -173,12 +173,16 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     }
     // A qualified identifier or distinctive source name can identify a subject.
     // Ordinary words such as "trash" and "router" describe a broader area.
-    const named = eligible.filter(node => node.name
-      && (/[.:#_]/u.test(node.name) || /[a-z][A-Z]/u.test(node.name))
-      && containsName(input.text, node.name));
+    const named = eligible.flatMap(node => {
+      if (!node.name) return [];
+      const names = node.kind === 'file' ? [node.name, node.name.split(/[\\/]/u).at(-1) ?? ''] : [node.name];
+      const matched = names.filter(name => (/[.:#_]/u.test(name) || /[a-z][A-Z]/u.test(name))
+        && containsName(input.text, name)).sort((a, b) => b.length - a.length)[0];
+      return matched ? [{ node, matched }] : [];
+    });
     if (named.length) {
-      const longest = named.reduce((length, node) => Math.max(length, node.name!.length), 0);
-      const exact = named.filter(node => node.name!.length === longest);
+      const longest = named.reduce((length, item) => Math.max(length, item.matched.length), 0);
+      const exact = named.filter(item => item.matched.length === longest).map(item => item.node);
       // A declaration and its call occurrences are distinct subjects. Prefer
       // the declaration when present; otherwise navigate every matching site.
       const declarations = exact.filter(node => node.kind !== 'call-reference');
