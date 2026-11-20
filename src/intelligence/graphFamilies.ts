@@ -15,7 +15,7 @@ const OWNED = new Set(['has-parameter', 'has-condition', 'has-effect', 'has-sour
 const DIRECT = new Set(['calls', 'invokes', 'handled_by', 'registered-as', 'implemented-by',
   'exposes', 'binds_to', 'composes', 'uses-feature', 'automated-by', 'same-routine-name', 'candidate-sql-definition']);
 
-type Builder = { roles: Set<string>; via: Set<string> };
+type Builder = GraphFamilyMembership & { queued?: number };
 
 const familyCache = new WeakMap<IntelligenceGraph, Map<string, GraphFamilyMembership[]>>();
 
@@ -33,16 +33,17 @@ export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, Gr
   const callBinding = (edge: GraphEdge) => edge.kind === 'resolves_to' && Boolean(edge.from && edge.to
     && nodes.get(edge.from)?.kind === 'call-reference' && ['function', 'method', 'constructor'].includes(nodes.get(edge.to)?.kind ?? ''));
   const owned = (edge: GraphEdge) => OWNED.has(edge.kind) || lexicalUi(edge) || callbackBinding(edge);
-  const add = (nodeId: string, familyId: string, role: string, edgeId?: string): boolean => {
-    if (!nodes.has(nodeId) || !nodes.has(familyId)) return false;
+  const add = (nodeId: string, familyId: string, role: string, edgeId?: string): void => {
+    if (!nodes.has(nodeId) || !nodes.has(familyId)) return;
     let families = memberships.get(nodeId);
     if (!families) { families = new Map(); memberships.set(nodeId, families); }
-    let item = families.get(familyId);
-    const created = !item;
-    if (!item) { item = { roles: new Set(), via: new Set() }; families.set(familyId, item); }
-    item.roles.add(role);
-    if (edgeId) item.via.add(edgeId);
-    return created;
+    const item = families.get(familyId);
+    if (!item) {
+      families.set(familyId, { id: familyId, roles: [role], via: edgeId ? [edgeId] : [] });
+      return;
+    }
+    if (!item.roles.includes(role)) item.roles.push(role);
+    if (edgeId && !item.via.includes(edgeId)) item.via.push(edgeId);
   };
   for (const node of graph.nodes) if (SUBJECTS.has(node.kind)) add(node.id, node.id, 'subject');
   for (const edge of graph.edges) {
@@ -58,10 +59,12 @@ export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, Gr
     items.push(edge); outgoing.set(edge.from, items);
   }
   const components: Array<{ node: string; family: string; callback: boolean }> = [];
-  const queued = new Set<string>();
   const queueComponent = (node: string, family: string, callback: boolean): void => {
-    const key = `${node}\0${family}\0${callback}`;
-    if (!queued.has(key)) { queued.add(key); components.push({ node, family, callback }); }
+    const item = memberships.get(node)?.get(family);
+    const state = callback ? 2 : 1;
+    if (!item || ((item.queued ?? 0) & state)) return;
+    item.queued = (item.queued ?? 0) | state;
+    components.push({ node, family, callback });
   };
   const roleOf = (edge: GraphEdge): string => edge.status === 'candidate' ? 'candidate'
     : edge.kind === 'same-routine-name' ? 'same-name'
@@ -92,8 +95,11 @@ export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, Gr
   }
   const result = new Map<string, GraphFamilyMembership[]>();
   for (const [nodeId, families] of memberships) {
-    result.set(nodeId, [...families].map(([id, item]) => ({ id,
-      roles: [...item.roles].sort(), via: [...item.via].sort() })).sort((a, b) => a.id.localeCompare(b.id)));
+    const records = [...families.values()].map(({ id, roles, via }) => ({
+      id, roles: roles.sort(), via: via.sort(),
+    }));
+    result.set(nodeId, records.sort((a, b) => a.id.localeCompare(b.id)));
+    memberships.delete(nodeId);
   }
   familyCache.set(graph, result);
   return result;
