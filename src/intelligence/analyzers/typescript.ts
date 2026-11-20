@@ -708,8 +708,11 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
           if (text) label = text;
         }
         const hrefValue = href?.initializer && ts.isStringLiteralLike(href.initializer) ? href.initializer.text : undefined;
-        const ui = observation({ sourceId: context.source.id, kind: 'ui-element', locator: locator(opening, `:${tagName}`), name: label ?? tagName, field: 'element', value: { tag: tagName, label: label ?? null, href: hrefValue ?? null, owner: [...functionStack].reverse().find(item => item.name && item.name !== 'callback')?.id ?? null, events: eventAttrs.map(attr => attr.name.getText(sourceFile)) }, tags: ['interaction-point', 'human'], layer: 'representation', checkpoint: false });
+        const uiOwner = [...functionStack].reverse().find(item => item.name && item.name !== 'callback');
+        const ui = observation({ sourceId: context.source.id, kind: 'ui-element', locator: locator(opening, `:${tagName}`), name: label ?? tagName, field: 'element', value: { tag: tagName, label: label ?? null, href: hrefValue ?? null, owner: uiOwner?.id ?? null, events: eventAttrs.map(attr => attr.name.getText(sourceFile)) }, tags: ['interaction-point', 'human'], layer: 'representation', checkpoint: false });
         observations.push(ui);
+        if (uiOwner) resolutions.push(resolution({ from: uiOwner.id, to: ui.id, kind: 'contains', strategy: 'jsx-lexical-owner',
+          confidence: 1, status: 'resolved', evidence: [locator(opening)], layer: 'representation', checkpoint: false }));
         for (const spread of opening.attributes.properties.filter(ts.isJsxSpreadAttribute)) {
           const expression = spread.expression.getText(sourceFile);
           const sourceOffset = spread.getStart(sourceFile);

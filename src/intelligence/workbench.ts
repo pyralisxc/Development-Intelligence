@@ -1700,51 +1700,82 @@ export async function queryWorkbenchRequest(input: {
       const comparisonAnswer = result.comparison?.state === 'evaluated'
           ? `Compared ${result.comparison.total} subjects: ${result.comparison.counts.related} related, ${result.comparison.counts.candidate} candidate, ${result.comparison.counts.notRelated} established not related, and ${result.comparison.counts.unknown} unknown.`
           : result.comparison?.reason ?? '';
-      const describeFamily = (item: any, groupIds?: Set<string>): string => {
+      const describeFamily = (item: any, groupIds?: Set<string>, includeSource = true): string => {
         const family = result.families.find((value: any) => value.id === item.id);
         const linked = (family?.members ?? []).filter((member: any) =>
-          member.roles.some((role: string) => ['dependency', 'caller', 'callback', 'related'].includes(role)));
-        const additional = groupIds ? linked.filter((member: any) => !groupIds.has(member.id)) : [];
+          member.roles.some((role: string) => ['dependency', 'caller', 'callback', 'related', 'candidate'].includes(role)));
+        const additional = groupIds ? linked.filter((member: any) => !groupIds.has(member.id)
+          && !member.roles.includes('caller')) : [];
         const groupedConnections = new Map<string, number>();
-        for (const member of additional) {
-          const roles = member.roles.filter((role: string) => ['dependency', 'caller', 'callback', 'related'].includes(role)).join('/');
+        for (const member of additional.filter((value: any) => value.matchedGroups > 0)) {
+          const roles = member.roles.filter((role: string) => ['dependency', 'caller', 'callback', 'related', 'candidate'].includes(role)).join('/');
           const label = `${roles} ${member.name ?? member.kind}`;
           groupedConnections.set(label, (groupedConnections.get(label) ?? 0) + 1);
         }
         const connectionLabels = [...groupedConnections].map(([label, count]) => `${label}${count > 1 ? ` (${count} locations)` : ''}`);
+        const matchedAdditional = additional.filter((member: any) => member.matchedGroups > 0).length;
         const connections = groupIds
-          ? connectionLabels.slice(0, 4).join(', ') + (connectionLabels.length > 4 ? `, ${connectionLabels.length - 4} more in details` : '')
-          : linked.map((member: any) => `${member.roles.filter((role: string) => ['dependency', 'caller', 'callback', 'related'].includes(role)).join('/')} ${member.name ?? member.kind} (${member.locator})`).join(', ');
+          ? [connectionLabels.join(', '), additional.length > matchedAdditional ? `${additional.length - matchedAdditional} other connected subjects in details` : ''].filter(Boolean).join(', ')
+          : linked.map((member: any) => `${member.roles.filter((role: string) => ['dependency', 'caller', 'callback', 'related', 'candidate'].includes(role)).join('/')} ${member.name ?? member.kind} (${member.locator})`).join(', ');
         const familyIds = new Set([item.id, ...linked.filter((member: any) => member.roles.includes('callback')).map((member: any) => member.id)]);
         const families = result.sourceFamilies.filter((value: any) => familyIds.has(value.subjectId));
         const available = families.flatMap((value: any) => value.facts ?? [])
           .filter((fact: any) => typeof fact.expression === 'string');
-        const facts = available.filter((fact: any) => fact.kind === 'source-effect'
-          && result.interpretation.termGroups.every((group: string[]) => group.some(term => fact.matchedTerms?.includes(term))));
-        const remainingFacts = available.length - facts.length;
+        const subjectGroups = new Set<number>(result.sourceFamilies.find((value: any) => value.subjectId === item.id)?.subjectMatchedGroups ?? []);
+        const minimumGroups = Math.min(2, result.interpretation.termGroups.length);
+        const facts = (includeSource ? available : []).flatMap((fact: any) => {
+          // Calls, conditions and direct effects have distinct graph identities.
+          // Do not summarize nested callable bodies as effects of their creator.
+          if (fact.nestedCallable || !(fact.kind === 'call-reference' || fact.kind === 'source-condition'
+            || (fact.kind === 'source-effect' && ['write', 'return', 'throw'].includes(fact.effectKind)))) return [];
+          const matches = (fact.matchedLines ?? []).filter((line: any) => {
+            const groups: number[] = line.groupIndexes ?? [];
+            const combined = new Set([...subjectGroups, ...groups]);
+            return combined.size >= minimumGroups
+              && (groups.some(group => !subjectGroups.has(group)) || subjectGroups.size >= result.interpretation.termGroups.length);
+          });
+          return matches.length ? [{ ...fact, matchedLines: matches }] : [];
+        });
         // Name each distinct condition once so a sequence of guarded effects
         // remains readable without discarding which condition governs which fact.
         const conditions = new Map<string, number>();
-        const details = facts.map((fact: any) => {
-          const lines = String(fact.expression).split(/\r?\n/u);
-          const expression = lines.length > 1 ? `${lines[0]} … (full source in details)` : lines[0];
+        const shownLines = new Set<string>();
+        let shownFacts = 0;
+        const details = facts.flatMap((fact: any) => {
+          const matches = Array.isArray(fact.matchedLines) ? fact.matchedLines : [];
+          const qualification = JSON.stringify([(fact.requirements ?? []).map((requirement: any) => [requirement.predicate ?? requirement.conditionId, requirement.expectedTruth]),
+            fact.requirementsComplete, fact.kind === 'call-reference' && fact.relationship?.status === 'candidate']);
+          const unique = matches.filter((line: any) => {
+            const key = JSON.stringify([fact.sourceId, line.line, line.text, qualification]);
+            if (shownLines.has(key)) return false;
+            shownLines.add(key); return true;
+          });
+          if (matches.length && !unique.length) return [];
+          const expression = matches.length ? unique.map((line: any) => `${line.text}${line.line ? ` (line ${line.line})` : ''}`).join(' / ') : fact.expression;
           const requires = (fact.requirements ?? []).map((requirement: any) => {
             const text = String(requirement.predicate ?? requirement.conditionId);
             if (!conditions.has(text)) conditions.set(text, conditions.size + 1);
             return `${requirement.expectedTruth ? '' : 'not '}C${conditions.get(text)}`;
           });
-          return `${expression}${requires.length ? ` when ${requires.join(' and ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`;
+          const prefix = fact.kind === 'call-reference' && fact.relationship?.status === 'candidate'
+            ? fact.interpretation === 'call-or-conversion' ? 'possible invocation or conversion: ' : 'possible source call: '
+            : '';
+          shownFacts += 1;
+          return [`${prefix}expression at ${fact.locator}${requires.length ? ` when ${requires.join(' and ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}: ${expression}`];
         }).join('; ');
+        const remainingFacts = available.length - shownFacts;
         const conditionDetails = [...conditions].map(([condition, number]) => `C${number}: ${condition}`).join('; ');
         const description = typeof item.value?.description === 'string' ? item.value.description : '';
-        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${details ? `; matching source facts: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
+        const interaction = item.kind === 'interaction-handler' && typeof item.value?.expression === 'string' ? item.value.expression : '';
+        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${interaction ? `; handler expression: ${interaction}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${details ? `; matching lines from source expressions: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
       };
       // Broad term matches are a ranked source scope, not one bound subject.
       // Compose visible source facts for that scope instead of asserting that
       // every incident relationship answers the question.
+      const describedSubjects = new Map<string, boolean>();
       const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
         ? (Array.isArray(result.connectedGroups)
-          ? `Connected source groups (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
+          ? `Connected source paths (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
             + result.connectedGroups.map((group: any) => {
               const members: any[] = [...group.subjects, ...(group.linkNodes ?? [])];
               const names = new Map(members.map((item: any) => [item.id, item.name ?? item.id]));
@@ -1774,10 +1805,16 @@ export async function queryWorkbenchRequest(input: {
               walk();
               for (const item of members) if (!visitedNodes.has(item.id)) { queue.push(item.id); walk(); }
               const links = ordered.map((edge: any) => `${names.get(edge.from) ?? edge.from} ${edge.kind}${edge.status === 'candidate' ? ' (candidate)' : ''} ${names.get(edge.to) ?? edge.to}`).join('; ');
-              return `${group.sourceCategory === 'test-source' ? 'Test source' : 'Source'}${links ? ` — relationships: ${links}` : ''}\n${group.subjects.map((item: any) => `• ${describeFamily(item, groupIds)}`).join('\n')}`;
+              return `${group.sourceCategory === 'test-source' ? 'Test source' : 'Source'}${links ? ` — relationships: ${links}` : ''}\n${group.subjects.map((item: any) => {
+                const includeSource = true;
+                const previous = describedSubjects.get(item.id);
+                if (previous === true || (previous === false && !includeSource)) return `• ${item.name ?? item.id} (${item.locator}; described above)`;
+                describedSubjects.set(item.id, includeSource);
+                return `• ${describeFamily(item, groupIds, includeSource)}`;
+              }).join('\n')}`;
             }).join('\n\n')
           : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map((item: any) => describeFamily(item)).join(' | ')}`)
-          + '. Groups follow source relationships; candidate links identify possible handoffs. Inspect source and connection details for full records.'
+          + '. Paths follow source relationships; a subject can appear in multiple paths, and candidate links identify possible handoffs. Inspect source and connection details for full records.'
         : '';
       const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation
         && result.families.some((family: any) => family.id === subject.id && family.total)

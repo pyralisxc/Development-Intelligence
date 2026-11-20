@@ -9,7 +9,7 @@ import { TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
  * target's other callers or dependencies. Nested callback bodies are lexical
  * members of their owner, independent of whether invocation was established. */
 const SUBJECTS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type',
-  'feature', 'capability', 'ui-element', 'dom-interaction', 'route', 'api', 'mcp', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function']);
+  'feature', 'capability', 'ui-element', 'dom-interaction', 'interaction-handler', 'route', 'api', 'mcp', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function']);
 const OWNED = new Set(['has-parameter', 'has-condition', 'has-effect', 'has-source-control', 'contains-source-span', 'has-source-occurrence',
   'has-argument', 'argument-for', 'spreads-properties', 'has-interaction', 'registers-interaction', 'calls-site', 'callback-argument', 'declares']);
 const DIRECT = new Set(['calls', 'invokes', 'handled_by', 'registered-as', 'implemented-by',
@@ -26,6 +26,13 @@ export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, Gr
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
   const memberships = new Map<string, Map<string, Builder>>();
   const outgoing = new Map<string, GraphEdge[]>();
+  const lexicalUi = (edge: GraphEdge) => edge.kind === 'contains' && Boolean(edge.from && edge.to
+    && ['function', 'method', 'constructor'].includes(nodes.get(edge.from)?.kind ?? '') && nodes.get(edge.to)?.kind === 'ui-element');
+  const callbackBinding = (edge: GraphEdge) => edge.kind === 'binds_to' && Boolean(edge.from && edge.to
+    && nodes.get(edge.from)?.kind === 'interaction-handler' && ['function', 'method'].includes(nodes.get(edge.to)?.kind ?? ''));
+  const callBinding = (edge: GraphEdge) => edge.kind === 'resolves_to' && Boolean(edge.from && edge.to
+    && nodes.get(edge.from)?.kind === 'call-reference' && ['function', 'method', 'constructor'].includes(nodes.get(edge.to)?.kind ?? ''));
+  const owned = (edge: GraphEdge) => OWNED.has(edge.kind) || lexicalUi(edge) || callbackBinding(edge);
   const add = (nodeId: string, familyId: string, role: string, edgeId?: string): boolean => {
     if (!nodes.has(nodeId) || !nodes.has(familyId)) return false;
     let families = memberships.get(nodeId);
@@ -39,12 +46,14 @@ export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, Gr
   };
   for (const node of graph.nodes) if (SUBJECTS.has(node.kind)) add(node.id, node.id, 'subject');
   for (const edge of graph.edges) {
-    if ((edge.status !== 'resolved' && !(edge.status === 'candidate' && edge.kind === 'candidate-sql-definition')) || !edge.from || !edge.to) continue;
+    if (edge.status === 'unresolved' || !edge.from || !edge.to) continue;
     // A subject's family also exposes direct callers, without walking from
     // those callers into their other workflows.
-    if (edge.kind === 'calls' && SUBJECTS.has(nodes.get(edge.to)?.kind ?? ''))
+    if (edge.kind === 'calls' && SUBJECTS.has(nodes.get(edge.to)?.kind ?? '')) {
       add(edge.from, edge.to, 'caller', edge.id);
-    if (!OWNED.has(edge.kind) && !DIRECT.has(edge.kind)) continue;
+      if (edge.status === 'candidate') add(edge.from, edge.to, 'candidate', edge.id);
+    }
+    if (!owned(edge) && !DIRECT.has(edge.kind) && !callBinding(edge)) continue;
     const items = outgoing.get(edge.from) ?? [];
     items.push(edge); outgoing.set(edge.from, items);
   }
@@ -56,14 +65,16 @@ export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, Gr
   };
   const roleOf = (edge: GraphEdge): string => edge.status === 'candidate' ? 'candidate'
     : edge.kind === 'same-routine-name' ? 'same-name'
-      : edge.kind === 'calls' || edge.kind === 'invokes' ? 'dependency'
-        : edge.kind === 'callback-argument' ? 'callback' : OWNED.has(edge.kind) ? 'component' : 'related';
+      : edge.kind === 'calls' || edge.kind === 'invokes' || callBinding(edge) ? 'dependency'
+        : edge.kind === 'callback-argument' || callbackBinding(edge) ? 'callback' : owned(edge) ? 'component' : 'related';
   for (const anchor of graph.nodes) {
     if (!SUBJECTS.has(anchor.kind)) continue;
     for (const edge of outgoing.get(anchor.id) ?? []) {
       if (!edge.to) continue;
       add(edge.to, anchor.id, roleOf(edge), edge.id);
-      if (OWNED.has(edge.kind) || edge.kind === 'handled_by') queueComponent(edge.to, anchor.id, edge.kind === 'callback-argument' || edge.kind === 'handled_by');
+      if (edge.status === 'candidate' && (edge.kind === 'calls' || edge.kind === 'invokes' || callBinding(edge))) add(edge.to, anchor.id, 'dependency', edge.id);
+      if (edge.status === 'candidate' && callbackBinding(edge)) add(edge.to, anchor.id, 'callback', edge.id);
+      if (owned(edge) || edge.kind === 'handled_by') queueComponent(edge.to, anchor.id, edge.kind === 'callback-argument' || edge.kind === 'handled_by' || callbackBinding(edge));
     }
   }
   // Literal callbacks are lexically part of their caller. Follow their own
@@ -72,9 +83,11 @@ export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, Gr
   for (let index = 0; index < components.length; index += 1) {
     const current = components[index]!;
     for (const edge of outgoing.get(current.node) ?? []) {
-      if (!edge.to || (!current.callback && !OWNED.has(edge.kind))) continue;
+      if (!edge.to || (!current.callback && !owned(edge) && !callBinding(edge))) continue;
       add(edge.to, current.family, roleOf(edge), edge.id);
-      if (OWNED.has(edge.kind)) queueComponent(edge.to, current.family, edge.kind === 'callback-argument');
+      if (edge.status === 'candidate' && (edge.kind === 'calls' || edge.kind === 'invokes' || callBinding(edge))) add(edge.to, current.family, 'dependency', edge.id);
+      if (edge.status === 'candidate' && callbackBinding(edge)) add(edge.to, current.family, 'callback', edge.id);
+      if (owned(edge)) queueComponent(edge.to, current.family, edge.kind === 'callback-argument' || callbackBinding(edge));
     }
   }
   const result = new Map<string, GraphFamilyMembership[]>();
