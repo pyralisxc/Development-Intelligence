@@ -1,234 +1,119 @@
+import { parse, type SgNode } from '@ast-grep/napi';
+import './treeSitterLanguages.js';
 import type { AnalyzeContext, AnalyzeResult } from '../model.js';
 import { observation, resolution } from '../model.js';
-import { stableHash } from '../../util/hash.js';
 import type { Observation, Resolution } from '../../types.js';
 
-interface ImportBinding {
-  module: string;
-  local: string;
-  alias: string | null;
-}
-
-function maskNonCode(text: string): string {
-  let out = '';
-  let state: 'code' | 'line-comment' | 'block-comment' | 'double' | 'single' | 'raw' = 'code';
-  let escaped = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const ch = text[index]!;
-    const next = text[index + 1] ?? '';
-    if (state === 'line-comment') {
-      if (ch === '\n') { state = 'code'; out += '\n'; } else out += ' ';
-      continue;
-    }
-    if (state === 'block-comment') {
-      if (ch === '*' && next === '/') { out += '  '; index += 1; state = 'code'; }
-      else out += ch === '\n' ? '\n' : ' ';
-      continue;
-    }
-    if (state === 'double' || state === 'single') {
-      if (ch === '\n') { out += '\n'; escaped = false; continue; }
-      out += ' ';
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
-      if ((state === 'double' && ch === '"') || (state === 'single' && ch === "'")) state = 'code';
-      continue;
-    }
-    if (state === 'raw') {
-      out += ch === '\n' ? '\n' : ' ';
-      if (ch === '`') state = 'code';
-      continue;
-    }
-    if (ch === '/' && next === '/') { out += '  '; index += 1; state = 'line-comment'; continue; }
-    if (ch === '/' && next === '*') { out += '  '; index += 1; state = 'block-comment'; continue; }
-    if (ch === '"') { out += ' '; state = 'double'; continue; }
-    if (ch === "'") { out += ' '; state = 'single'; continue; }
-    if (ch === '`') { out += ' '; state = 'raw'; continue; }
-    out += ch;
-  }
-  return out;
-}
-
-function lineStarts(text: string): number[] {
-  const starts = [0];
-  for (let index = 0; index < text.length; index += 1) if (text[index] === '\n') starts.push(index + 1);
-  return starts;
-}
-
-function lineAt(starts: number[], offset: number): number {
-  let low = 0;
-  let high = starts.length - 1;
-  while (low <= high) {
-    const mid = (low + high) >> 1;
-    if (starts[mid]! <= offset) low = mid + 1;
-    else high = mid - 1;
-  }
-  return high + 1;
-}
-
-function receiverType(value: string | undefined): string | null {
-  if (!value) return null;
-  const tokens = value.trim().split(/\s+/u).filter(Boolean);
-  const raw = tokens.at(-1) ?? '';
-  const cleaned = raw
-    .replace(/^\*+/u, '')
-    .replace(/\[[^\]]*\]$/u, '')
-    .split('.')
-    .at(-1)
-    ?.trim() ?? '';
-  return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(cleaned) ? cleaned : null;
-}
-
-function importBindings(text: string): Array<ImportBinding & { offset: number }> {
-  const output: Array<ImportBinding & { offset: number }> = [];
-  const add = (alias: string | undefined, module: string, offset: number) => {
-    const leaf = module.split('/').filter(Boolean).at(-1) ?? module;
-    output.push({ module, alias: alias ?? null, local: alias ?? leaf, offset });
-  };
-
-  const block = /^\s*import\s*\(([\s\S]*?)^\s*\)/gmu;
-  for (const match of text.matchAll(block)) {
-    const body = match[1] ?? '';
-    const base = (match.index ?? 0) + match[0]!.indexOf(body);
-    const line = /^\s*(?:(\.|_|[A-Za-z_][A-Za-z0-9_]*)\s+)?["`]([^"`]+)["`]\s*(?:\/\/.*)?$/gmu;
-    for (const item of body.matchAll(line)) add(item[1], item[2]!, base + (item.index ?? 0));
-  }
-
-  const single = /^\s*import\s+(?:(\.|_|[A-Za-z_][A-Za-z0-9_]*)\s+)?["`]([^"`]+)["`]\s*(?:\/\/.*)?$/gmu;
-  for (const match of text.matchAll(single)) add(match[1], match[2]!, match.index ?? 0);
-  return output;
-}
-
-function bracesBalanced(code: string): boolean {
-  let depth = 0;
-  for (const ch of code) {
-    if (ch === '{') depth += 1;
-    else if (ch === '}') {
-      depth -= 1;
-      if (depth < 0) return false;
-    }
-  }
-  return depth === 0;
-}
-
+/** Use the Go grammar for written structure. A Go call expression may also
+ * be a conversion, and a selector may have a dynamic receiver: neither syntax
+ * alone nor a matching name establishes a target binding. */
 export function analyzeGo(context: AnalyzeContext): AnalyzeResult {
-  const code = maskNonCode(context.text);
-  const starts = lineStarts(context.text);
+  const root = parse('go', context.text).root();
   const observations: Observation[] = [];
   const resolutions: Resolution[] = [];
-  const packageMatch = /^\s*package\s+([A-Za-z_][A-Za-z0-9_]*)\b/mu.exec(code);
-  if (!packageMatch) {
-    return { observations, resolutions, coverage: { status: 'partial', reason: 'Go source has no observable package declaration' } };
-  }
+  const packageNode = root.namedChildren().find(node => node.kind() === 'package_clause');
+  const packageName = packageNode?.namedChildren().find(node => node.kind() === 'package_identifier')?.text().trim();
+  if (!packageNode || !packageName) return { observations, resolutions, coverage: { status: 'partial', reason: 'Go parser did not find a package declaration' } };
 
-  const packageName = packageMatch[1]!;
-  const packageLine = lineAt(starts, packageMatch.index);
-  const packageNode = observation({
-    id: `symbol:${context.locatorBase}#package:${packageName}`,
-    sourceId: context.source.id,
-    kind: 'package',
-    locator: `${context.locatorBase}:${packageLine}`,
-    name: packageName,
-    field: 'identifier',
-    value: { language: 'go', qualifiedName: packageName },
-    tags: ['go', 'structural-parser'],
-    layer: 'structural',
-    checkpoint: false,
-  });
-  observations.push(packageNode);
-
+  const lineOf = (node: SgNode) => node.range().start.line + 1;
+  const locatorOf = (node: SgNode) => `${context.locatorBase}:${lineOf(node)}:${node.range().start.column + 1}`;
+  const pkg = observation({ id: `symbol:${context.locatorBase}#package:${packageName}`, sourceId: context.source.id,
+    kind: 'package', locator: `${context.locatorBase}:${lineOf(packageNode)}`, name: packageName,
+    field: 'identifier', value: { language: 'go', qualifiedName: packageName }, tags: ['go', 'tree-sitter'], layer: 'structural', checkpoint: false });
+  observations.push(pkg);
   const identities = new Map<string, number>();
-  const addDeclaration = (kind: string, name: string, offset: number, qualifiedName: string, extra: Record<string, unknown> = {}) => {
+  const addDeclaration = (node: SgNode, kind: string, name: string, qualifiedName: string, owner: Observation,
+    extra: Record<string, unknown> = {}): Observation => {
     const base = `symbol:${context.locatorBase}#${kind}:${qualifiedName}`;
-    const ordinal = (identities.get(base) ?? 0) + 1;
-    identities.set(base, ordinal);
-    const node = observation({
-      id: ordinal === 1 ? base : `${base}~${ordinal}`,
-      sourceId: context.source.id,
-      kind,
-      locator: `${context.locatorBase}:${lineAt(starts, offset)}`,
-      name,
-      field: 'identifier',
-      value: { language: 'go', qualifiedName, ...extra },
-      tags: ['go', 'structural-parser'],
-      layer: 'structural',
-      checkpoint: false,
-    });
-    observations.push(node);
-    resolutions.push(resolution({
-      from: packageNode.id,
-      to: node.id,
-      kind: 'contains',
-      strategy: 'syntax',
-      confidence: 1,
-      status: 'resolved',
-      evidence: [node.locator],
-      layer: 'structural',
-      checkpoint: false,
-    }));
-    return node;
+    const ordinal = (identities.get(base) ?? 0) + 1; identities.set(base, ordinal);
+    const locator = `${context.locatorBase}:${lineOf(node)}`;
+    const result = observation({ id: ordinal === 1 ? base : `${base}~${ordinal}`, sourceId: context.source.id,
+      kind, locator, name, field: 'identifier', value: { language: 'go', qualifiedName, ...extra },
+      tags: ['go', 'tree-sitter'], layer: 'structural', checkpoint: false,
+      contributions: [{ producer: 'ast-grep/tree-sitter-go', version: '0.0.6', symbol: qualifiedName, locator }] });
+    observations.push(result);
+    resolutions.push(resolution({ from: owner.id, to: result.id, kind: 'contains', strategy: 'tree-sitter-syntax',
+      confidence: 1, status: 'resolved', evidence: [locator], layer: 'structural', checkpoint: false }));
+    return result;
   };
-
-  const typePattern = /^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:\[[^\]\n]+\]\s*)?(struct|interface)?\b/gmu;
-  const seenTypes = new Set<string>();
-  for (const match of code.matchAll(typePattern)) {
-    const name = match[1]!;
-    if (seenTypes.has(name)) continue;
-    seenTypes.add(name);
-    const syntax = match[2] ?? 'type';
-    addDeclaration(syntax === 'struct' ? 'struct' : syntax === 'interface' ? 'interface' : 'type', name, match.index ?? 0, `${packageName}.${name}`);
-  }
-  const namedTypePattern = /^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?!\()[^\n]+$/gmu;
-  for (const match of code.matchAll(namedTypePattern)) {
-    const name = match[1]!;
-    if (seenTypes.has(name)) continue;
-    seenTypes.add(name);
-    addDeclaration('type', name, match.index ?? 0, `${packageName}.${name}`);
-  }
-
-  const funcPattern = /^\s*func\s+(?:\(([^)\n]+)\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]\n]+\]\s*)?\(([^)\n]*)\)/gmu;
-  for (const match of code.matchAll(funcPattern)) {
-    const recv = receiverType(match[1]);
-    const name = match[2]!;
-    const params = (match[3] ?? '').trim();
-    const kind = recv ? 'method' : 'function';
-    const qualifiedName = recv ? `${packageName}.${recv}.${name}` : `${packageName}.${name}`;
-    addDeclaration(kind, name, match.index ?? 0, qualifiedName, {
-      ...(recv ? { receiverType: recv } : {}),
-      parameterText: params,
-    });
-  }
-
-  const importIds = new Map<string, number>();
-  for (const binding of importBindings(context.text)) {
-    const base = `import:${context.locatorBase}#go:${binding.module}:${binding.local}`;
-    const ordinal = (importIds.get(base) ?? 0) + 1;
-    importIds.set(base, ordinal);
-    observations.push(observation({
-      id: ordinal === 1 ? base : `${base}~${ordinal}`,
-      sourceId: context.source.id,
-      kind: 'import-binding',
-      locator: `${context.locatorBase}:${lineAt(starts, binding.offset)}`,
-      name: binding.local,
-      field: 'import',
-      value: {
-        language: 'go',
-        module: binding.module,
-        imported: '*',
-        local: binding.local,
-        mode: 'module',
-        ...(binding.alias ? { alias: binding.alias } : {}),
-      },
-      tags: ['go', 'structural-parser', 'import'],
-      layer: 'structural',
-      checkpoint: false,
-    }));
-  }
-
-  return {
-    observations,
-    resolutions,
-    coverage: bracesBalanced(code)
-      ? { status: 'complete' }
-      : { status: 'partial', reason: 'Go structural parser observed unbalanced braces after masking comments and literals' },
+  let errors = 0;
+  let unreadableImports = 0;
+  const visit = (node: SgNode, owner: Observation): void => {
+    const syntax = String(node.kind());
+    if (syntax === 'ERROR') errors++;
+    let nextOwner = owner;
+    if (syntax === 'type_spec' || syntax === 'type_alias') {
+      const name = node.field('name')?.text().trim();
+      const type = node.field('type');
+      if (name) {
+        const kind = type?.kind() === 'struct_type' ? 'struct' : type?.kind() === 'interface_type' ? 'interface' : 'type';
+        addDeclaration(node, kind, name, `${packageName}.${name}`, pkg);
+      }
+    } else if (syntax === 'function_declaration' || syntax === 'method_declaration') {
+      const name = node.field('name')?.text().trim();
+      const receiver = node.field('receiver')?.namedChildren().find(child => child.kind() === 'parameter_declaration');
+      const receiverSyntax = receiver?.field('type')?.text().trim();
+      const receiverType = receiverSyntax?.replace(/^\*+/u, '').replace(/\[[^\]]*\]$/u, '').split('.').at(-1) ?? null;
+      if (name) {
+        const kind = syntax === 'method_declaration' ? 'method' : 'function';
+        const qualified = receiverType ? `${packageName}.${receiverType}.${name}` : `${packageName}.${name}`;
+        nextOwner = addDeclaration(node, kind, name, qualified, pkg, {
+          ...(receiverType ? { receiverType } : {}), ...(receiver?.field('name') ? { receiverName: receiver.field('name')!.text() } : {}),
+          parameterText: node.field('parameters')?.text() ?? '',
+        });
+      }
+    } else if (syntax === 'func_literal') {
+      const offset = node.range().start.index;
+      nextOwner = addDeclaration(node, 'function', 'callback', `${packageName}.callback-${offset}`, owner, { sourceOffset: offset });
+    } else if (syntax === 'import_spec') {
+      const written = node.field('path')?.text() ?? '';
+      let module = '';
+      try { module = written.startsWith('`') ? written.slice(1, -1) : JSON.parse(written); } catch { unreadableImports++; }
+      if (typeof module === 'string' && module) {
+        const alias = node.field('name')?.text().trim() ?? null;
+        const local = alias ?? module.split('/').filter(Boolean).at(-1) ?? module;
+        const locator = locatorOf(node);
+        observations.push(observation({ id: `import:${context.locatorBase}#go:${module}:${local}:${node.range().start.index}`,
+          sourceId: context.source.id, kind: 'import-binding', locator, name: local, field: 'import',
+          value: { language: 'go', module, imported: '*', local, mode: 'module', ...(alias ? { alias } : {}) },
+          tags: ['go', 'tree-sitter', 'import'], layer: 'structural', checkpoint: false }));
+      }
+    }
+    if (syntax === 'call_expression') {
+      const expression = node.field('function');
+      const name = expression?.kind() === 'selector_expression' ? expression.field('field')?.text() : expression?.text();
+      if (expression && name) {
+        const locator = locatorOf(node), offset = node.range().start.index;
+        // Nested expressions such as f().Method() can share a start offset.
+        const reference = observation({ id: `go-call:${context.locatorBase}:${offset}:${node.range().end.index}`, sourceId: context.source.id,
+          kind: 'call-reference', locator, name, field: 'call', raw: node.text(),
+          value: { language: 'go', functionId: owner.id, sourceOffset: offset, expression: node.text(),
+            targetExpression: expression.text(), expressionKind: expression.kind(), qualifier: expression.kind() === 'selector_expression' ? expression.field('operand')?.text() ?? null : null,
+            binding: 'unresolved', interpretation: 'call-or-conversion' },
+          tags: ['go', 'tree-sitter', 'invocation-or-conversion'], layer: 'structural', checkpoint: false,
+          contributions: [{ producer: 'ast-grep/tree-sitter-go', version: '0.0.6', symbol: expression.text(), locator }] });
+        observations.push(reference);
+        resolutions.push(resolution({ from: owner.id, to: reference.id, kind: 'calls-site', strategy: 'tree-sitter-call-expression',
+          confidence: null, status: 'candidate', evidence: [locator, 'Go call expression may be an invocation or type conversion; target binding is unresolved'],
+          layer: 'structural', checkpoint: false }));
+      }
+    }
+    if (syntax === 'if_statement' || syntax === 'for_statement' || syntax === 'expression_switch_statement') {
+      const condition = node.field('condition') ?? (syntax === 'expression_switch_statement' ? node.field('value') : null);
+      if (condition && owner.id !== pkg.id) {
+        const offset = condition.range().start.index, locator = locatorOf(condition), raw = condition.text();
+        const fact = observation({ id: `go-condition:${context.locatorBase}:${offset}`, sourceId: context.source.id,
+          kind: 'source-condition', locator, name: `Condition in ${owner.name ?? 'callable'}`, field: 'condition', raw,
+          value: { language: 'go', functionId: owner.id, predicate: raw, sourceOffset: offset, syntaxKind: syntax, requirementsComplete: false },
+          tags: ['go', 'tree-sitter', 'source-condition'], layer: 'structural', checkpoint: false });
+        observations.push(fact);
+        resolutions.push(resolution({ from: owner.id, to: fact.id, kind: 'has-condition', strategy: 'tree-sitter-syntax',
+          confidence: 1, status: 'resolved', evidence: [locator], layer: 'structural', checkpoint: false }));
+      }
+    }
+    for (const child of node.namedChildren()) visit(child, nextOwner);
   };
+  for (const node of root.namedChildren()) if (node !== packageNode) visit(node, pkg);
+  const reasons = [errors ? `${errors} Go syntax error node(s)` : '', unreadableImports ? `${unreadableImports} import path(s) could not be decoded` : ''].filter(Boolean);
+  return { observations, resolutions, coverage: reasons.length ? { status: 'partial', reason: reasons.join('; ') } : { status: 'complete' } };
 }

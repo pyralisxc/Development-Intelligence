@@ -160,7 +160,8 @@ async function main(): Promise<void> {
     const offset = Number(arg('--offset') ?? '0'), limit = Number(arg('--limit') ?? '20');
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1) throw new Error('Query offset must be non-negative and limit must be positive');
     const { queryWorkbenchRequest } = await import('./intelligence/workbench.js');
-    const response = await queryWorkbenchRequest({ project, text: question, ...(graphId ? { graphId } : {}), offset, limit });
+    const scope = arg('--scope');
+    const response = await queryWorkbenchRequest({ project, text: question, ...(graphId ? { graphId } : {}), ...(scope ? { scope } : {}), offset, limit });
     if (process.argv.includes('--details')) console.log(JSON.stringify(response, null, 2));
     else if (process.argv.includes('--text')) {
       const request = response.request as any;

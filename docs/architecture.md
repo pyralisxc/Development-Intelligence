@@ -220,6 +220,8 @@ TypeScript/JavaScript analysis currently provides:
 
 Textual symbol queries never silently choose between multiple substantive identities. Ambiguous queries return candidates so callers can retry with an exact node ID.
 
+Go source uses the pinned ast-grep/tree-sitter Go grammar in the same shared parser registry. DI records package, type, callable and import identities, lexical containment, written conditions, and individually located invocation-shaped expressions. A Go call expression can also be a type conversion, so its call-site relationship is a candidate. Same-package names and a method's lexical receiver can connect those occurrences to candidate declarations; shadowing, build constraints, conversion and dispatch remain unbound until a qualified producer establishes them. Parser completeness is source coverage, not complete call or control-flow coverage. Qualified names and explicit source scope bind subjects through the same filter in the Workbench, MCP and local CLI.
+
 C#, Java, and Python use pinned ast-grep/tree-sitter parser packages behind one declarative analyzer boundary. They currently provide:
 
 - stable file-relative declaration identities that do not depend on line number;

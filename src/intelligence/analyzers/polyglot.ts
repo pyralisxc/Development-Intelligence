@@ -1,7 +1,5 @@
-import csharpRegistration from '@ast-grep/lang-csharp';
-import javaRegistration from '@ast-grep/lang-java';
-import pythonRegistration from '@ast-grep/lang-python';
-import { parse, registerDynamicLanguage, type SgNode } from '@ast-grep/napi';
+import { parse, type SgNode } from '@ast-grep/napi';
+import './treeSitterLanguages.js';
 import type { AnalyzeContext, AnalyzeResult } from '../model.js';
 import { observation, resolution } from '../model.js';
 import { stableHash } from '../../util/hash.js';
@@ -29,12 +27,6 @@ const LANGUAGE_BY_EXTENSION: Record<string, Language> = {
   '.java': 'java',
   '.py': 'python',
 };
-
-registerDynamicLanguage({
-  csharp: csharpRegistration,
-  java: javaRegistration,
-  python: pythonRegistration,
-});
 
 function safeIdentityPart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.@/\-[\]]+/gu, '_');

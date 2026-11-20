@@ -27,7 +27,7 @@ di-local open
 di-local mcp
 ```
 
-Terminal questions use the same question route as the Workbench and MCP. The default output summarizes the answer, graph identity, coverage and pagination. Add `--details` for the complete evidence and graph-filter response; `--offset` and `--limit` select its page.
+Terminal questions use the same question route as the Workbench and MCP. The default output summarizes the answer, graph identity, coverage and pagination. Add `--scope PATH_OR_SUBJECT` to focus the investigation, or `--details` for the complete evidence and graph-filter response; `--offset` and `--limit` select its page.
 
 Committed references resolve using the local Git repository. `main` or `preview` selects the local branch when it exists; after fetching, use `--ref origin/preview --target preview` or `--ref origin/main --target main` to select the updated remote-tracking branch explicitly. Revision builds use a disposable checkout and do not change your files. `compare` without `--base` compares main, preview and working pairwise. Use `--offset` and `--limit` to page each category. The shared comparison reports source changes, moved occurrences, unmatched producer output, analysis differences for unchanged source, and provenance separately. An ambiguous occurrence retains its source identity; graph changes do not by themselves imply a runtime behavioral change. Parity contracts also support evaluating one selected graph against supplied expectations.
 

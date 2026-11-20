@@ -1683,16 +1683,16 @@ export async function queryWorkbenchRequest(input: {
       const subject = ['exact-name', 'scope'].includes(result.interpretation.selection) && result.subjectTotal === 1
         ? result.subjects[0] : null;
       previousSubject = subject?.id;
-      const focus = subject && !result.interpretation.negated && result.interpretation.requestedEffects.length
+      const focus = subject && !result.interpretation.negated && (result.interpretation.requestedEffects.length || result.interpretation.requestedFactKinds.length)
         && (!result.navigation.relationshipKinds.length || result.navigation.direction === 'outbound')
         ? (result.sourceFamilies.find((family: any) => family.subjectId === subject.id)?.focusedFacts ?? [])
-          .filter((fact: any) => fact.effectKind && result.interpretation.requestedEffects.some((effect: string) => fact.effectKind.split('-').includes(effect)))
+          .filter((fact: any) => fact.matchedKind || (fact.effectKind && result.interpretation.requestedEffects.some((effect: string) => fact.effectKind.split('-').includes(effect))))
         : [];
-      const related = result.navigation.relationships.filter((item: any) => item.edge.status === 'resolved');
+      const related = result.navigation.relationships.filter((item: any) => item.edge.status === 'resolved' || item.edge.status === 'candidate');
       const relationshipAnswer = !result.interpretation.negated && result.interpretation.selection !== 'terms' && result.navigation.relationshipKinds.length && related.length
         ? related.map((item: any) => item.edge.kind === 'calls-site'
-          ? `${item.from?.name ?? item.edge.from} has source call ${item.to?.name ?? item.edge.to} at ${item.to?.locator ?? item.edge.evidence?.[0] ?? 'source'}`
-          : `${item.from?.name ?? item.edge.from}${item.from?.locator ? ` (${item.from.locator})` : ''} ${item.edge.kind} ${item.to?.name ?? item.edge.to}${item.to?.locator ? ` (${item.to.locator})` : ''}`).join('; ')
+          ? `${item.from?.name ?? item.edge.from} has ${item.edge.status === 'candidate' ? 'possible source call' : 'source call'} ${item.to?.name ?? item.edge.to} at ${item.to?.locator ?? item.edge.evidence?.[0] ?? 'source'}${item.to?.value?.interpretation === 'call-or-conversion' ? ' (may be a type conversion)' : ''}`
+          : `${item.from?.name ?? item.edge.from}${item.from?.locator ? ` (${item.from.locator})` : ''} ${item.edge.kind}${item.edge.status === 'candidate' ? ' (candidate)' : ''} ${item.to?.name ?? item.edge.to}${item.to?.locator ? ` (${item.to.locator})` : ''}`).join('; ')
           + (related.some((item: any) => item.edge.kind === 'calls-site') ? '. Source call occurrences do not by themselves bind target declarations.' : '')
           + ((result.page.offset + result.navigation.relationships.length < result.navigation.total)
             ? `; showing ${result.page.offset + 1}–${result.page.offset + result.navigation.relationships.length} of ${result.navigation.total} matching relationships (continue at offset ${result.page.offset + result.page.limit})` : '')
@@ -1787,9 +1787,9 @@ export async function queryWorkbenchRequest(input: {
         : '';
       const answer = comparisonAnswer || (result.interpretation.negated
         ? 'The graph matches subjects for this question, but the requested negative conclusion is not established. Narrow the subject and relationship or supply a comparison scope.'
-        : '') || relationshipAnswer || scopedAnswer || familyAnswer || ambiguousAnswer || (focus.length
-        ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
-        : `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`);
+        : '') || relationshipAnswer || scopedAnswer || (focus.length
+        ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.locator ? ` at ${fact.locator}` : ''}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
+        : '') || familyAnswer || ambiguousAnswer || `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`;
       const sourceAnalysis = (result.sourceAnalysis ?? []).map((item: any) => `${item.technology}: ${item.precision}`).join('; ');
       const lexicalCoverage = result.interpretation.lexicalCoverage;
       const selectionNote = lexicalCoverage && lexicalCoverage.bestDisplayedSubject < lexicalCoverage.termGroups
