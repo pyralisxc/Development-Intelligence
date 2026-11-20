@@ -83,12 +83,25 @@ export function analyzeGo(context: AnalyzeContext): AnalyzeResult {
       const expression = node.field('function');
       const name = expression?.kind() === 'selector_expression' ? expression.field('field')?.text() : expression?.text();
       if (expression && name) {
+        const argumentIdentifiers = new Set<string>();
+        let nestedCallable = false;
+        const collectIdentifiers = (child: SgNode): void => {
+          const kind = String(child.kind());
+          // A callback has its own lexical owner and its identifiers must not
+          // become the outer call's argument vocabulary.
+          if (kind === 'func_literal') { nestedCallable = true; return; }
+          if (kind === 'identifier' || kind === 'field_identifier') argumentIdentifiers.add(child.text());
+          for (const nested of child.namedChildren()) collectIdentifiers(nested);
+        };
+        const argumentsNode = node.field('arguments');
+        if (argumentsNode) collectIdentifiers(argumentsNode);
         const locator = locatorOf(node), offset = node.range().start.index;
         // Nested expressions such as f().Method() can share a start offset.
         const reference = observation({ id: `go-call:${context.locatorBase}:${offset}:${node.range().end.index}`, sourceId: context.source.id,
           kind: 'call-reference', locator, name, field: 'call', raw: node.text(),
           value: { language: 'go', functionId: owner.id, sourceOffset: offset, expression: node.text(),
             targetExpression: expression.text(), expressionKind: expression.kind(), qualifier: expression.kind() === 'selector_expression' ? expression.field('operand')?.text() ?? null : null,
+            argumentIdentifiers: [...argumentIdentifiers], nestedCallable,
             binding: 'unresolved', interpretation: 'call-or-conversion' },
           tags: ['go', 'tree-sitter', 'invocation-or-conversion'], layer: 'structural', checkpoint: false,
           contributions: [{ producer: 'ast-grep/tree-sitter-go', version: '0.0.6', symbol: expression.text(), locator }] });

@@ -54,7 +54,7 @@ export function questionSelection(graph: IntelligenceGraph, result: any) {
     .filter((id: unknown): id is string => typeof id === 'string');
   const selectedNodes = new Set([...focus.nodeIds, ...contextNodeIds]);
   const factEdges = graph.edges.filter(edge => edge.from && edge.to && selectedNodes.has(edge.from) && selectedNodes.has(edge.to)
-    && ['has-condition', 'has-effect', 'has-source-control', 'requires-condition'].includes(edge.kind));
+    && ['has-condition', 'has-effect', 'has-source-control', 'requires-condition', 'calls-site'].includes(edge.kind));
   return investigationSelection(graph, 'question', { ...focus, contextNodeIds,
     contextEdgeIds: factEdges.map(edge => edge.id), page: result.page, scope: result.scope });
 }
