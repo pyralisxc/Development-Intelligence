@@ -46,13 +46,25 @@ function fact(node: GraphNode): string {
   // offsets and producer metadata do not describe a behavior by themselves.
   return JSON.stringify([identity(node), v.expression ?? v.predicate ?? null, node.kind === 'source-effect' || node.kind === 'source-condition' ? node.raw ?? null : null, v.events ?? null, v.initialValue ?? null]);
 }
+// A changed effect retains its connection to the same guard. Conditions use
+// their source expression to distinguish different guards owned by
+// one function without treating a changed effect as a removed relationship.
+function connectionIdentity(node: GraphNode): string {
+  return JSON.stringify([identity(node), node.kind === 'source-condition' ? node.raw ?? null : null]);
+}
 function pathOf(indexed: Indexed, root: GraphNode) {
-  const visited = new Set<string>([root.id]), edgeIds = new Set<string>(), unresolved = new Set<string>(), facts = new Map<string, number>([[fact(root), 1]]);
+  const visited = new Set<string>([root.id]), edgeIds = new Set<string>(), unresolved = new Set<string>(), facts = new Map<string, number>();
   const describeNode = (node: GraphNode) => ({ id: node.id, name: node.name ?? node.id, kind: node.kind, locator: node.locator,
-    ...(['source-condition', 'source-effect', 'state-binding'].includes(node.kind) ? { raw: node.raw ?? null } : {}),
+    ...(['source-condition', 'source-effect', 'state-binding', 'interaction-handler', 'dom-interaction', 'jsx-prop-spread'].includes(node.kind) ? { raw: value(node).expression ?? node.raw ?? null } : {}),
     ...(node.kind === 'state-binding' ? { initialValue: value(node).initialValue ?? null } : {}),
     ...(node.kind === 'source-effect' ? { requiredConditions: value(node).requiredConditions ?? [] } : {}) });
-  const descriptions = new Map<string, unknown>([[fact(root), { node: describeNode(root) }]]);
+  const descriptions = new Map<string, unknown>();
+  const recordNode = (node: GraphNode): void => {
+    const key = JSON.stringify(['node', fact(node)]);
+    facts.set(key, (facts.get(key) ?? 0) + 1);
+    if (!descriptions.has(key)) descriptions.set(key, { node: describeNode(node) });
+  };
+  recordNode(root);
   const queue = [root.id];
   for (let at = 0; at < queue.length; at++) {
     const from = queue[at]!;
@@ -62,10 +74,10 @@ function pathOf(indexed: Indexed, root: GraphNode) {
       if (edge.status === 'unresolved' || !edge.to) continue;
       const target = indexed.nodes.get(edge.to);
       if (!target) { unresolved.add(edge.id); continue; }
-      const item = JSON.stringify([edge.kind, edge.status, fact(indexed.nodes.get(from)!), fact(target)]);
+      const item = JSON.stringify(['relationship', edge.kind, edge.status, connectionIdentity(indexed.nodes.get(from)!), connectionIdentity(target)]);
       facts.set(item, (facts.get(item) ?? 0) + 1);
       if (!descriptions.has(item)) descriptions.set(item, { edgeId: edge.id, kind: edge.kind, status: edge.status, from: describeNode(indexed.nodes.get(from)!), to: describeNode(target), evidence: edge.evidence, evidenceIds: edge.evidenceIds ?? [] });
-      if (!visited.has(target.id)) { visited.add(target.id); queue.push(target.id); }
+      if (!visited.has(target.id)) { visited.add(target.id); recordNode(target); queue.push(target.id); }
     }
   }
   return { nodeIds: [...visited], edgeIds: [...edgeIds], unresolved: [...unresolved], facts, descriptions };

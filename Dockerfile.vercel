@@ -4,6 +4,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 FROM base AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json tsconfig.runtime.json ./
 RUN npm ci --no-audit --no-fund
