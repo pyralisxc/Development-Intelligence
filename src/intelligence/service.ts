@@ -193,6 +193,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
       const gateStarted = Date.now();
       const queueWaitMs = Math.max(0, gateStarted - queuedAt);
 
+      // A completed read may keep its oversized graph warm for reuse. Apply
+      // the existing budget before allocating another graph on Preview.
+      if (previewRuntime()) pruneGraphCaches();
+
       if (canonicalEligible) {
         const loaded = await loadCanonicalGraph({ project, repository: revision.repository, revision: revision.sha });
         if (loaded.record) {
@@ -950,6 +954,13 @@ export async function graphContext(project: string, options: { ref?: string; gra
       }
 
       let repository: CachedRepositoryGraph;
+      if (previewRuntime()) {
+        // Preview only has process-local replays. A cold exact-ID read
+        // should never build the configured default revision first.
+        repository = await buildCachedRepositoryGraph(project, `commit:${sha}`);
+        if (repository.graph.graphId !== options.graphId) throw new Error(`Graph identifier does not match the Preview replay: ${options.graphId}`);
+        return { graph: repository.graph, revision: repository.revision };
+      }
       if (hasProjectAccess()) {
         // Reconstruct against the adopted authority before considering source
         // replay. Never use another binding's snapshot or ambient operator W.
