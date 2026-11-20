@@ -313,6 +313,7 @@ async function main() {
       await fs.rm(scratch, { recursive: true, force: true });
       if (await sourceFingerprint(root, true) !== initialFingerprint) throw new Error('Working source changed during Joern analysis; the previous graph remains active');
       const working = await buildLocalWorkingGraph(root, project, { bytes: joernBytes, version: requestedVersion, ...(joernPrefix ? { projectPrefix: joernPrefix } : {}) });
+      if (working.sourceFingerprint !== initialFingerprint || await sourceFingerprint(root, true) !== initialFingerprint) throw new Error('Working source changed before graph activation; the previous graph remains active');
       const retained = await saveLocalSourceGraph(path.resolve(workingData), working, retain);
       activatedWorking = { graphId: working.graphId, sourceFingerprint: working.sourceFingerprint, retained, producerCoverage: working.producerCoverage };
     }
