@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -35,7 +36,26 @@ await fs.mkdir(installDir, { recursive: true });
 await fs.mkdir(dataDir, { recursive: true });
 await fs.mkdir(scratchDir, { recursive: true });
 await fs.cp(path.join(source, 'dist'), path.join(installDir, 'dist'), { recursive: true });
-await fs.cp(path.join(source, 'node_modules'), path.join(installDir, 'node_modules'), { recursive: true });
+// Stage dependencies separately: copying over an existing installation can
+// follow old absolute links back into the source checkout, and can leave stale
+// packages behind. Keep relative package links relative to the installation.
+const dependencies = path.join(installDir, 'node_modules');
+const dependencyStage = path.join(installDir, `.node-modules-${randomUUID()}`);
+const dependencyBackup = path.join(installDir, `.node-modules-${randomUUID()}`);
+let backedUpDependencies = false;
+try {
+  await fs.cp(path.join(source, 'node_modules'), dependencyStage, { recursive: true, verbatimSymlinks: true });
+  try { await fs.rename(dependencies, dependencyBackup); backedUpDependencies = true; }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try { await fs.rename(dependencyStage, dependencies); }
+  catch (error) {
+    if (backedUpDependencies) await fs.rename(dependencyBackup, dependencies);
+    throw error;
+  }
+  if (backedUpDependencies) await fs.rm(dependencyBackup, { recursive: true, force: true });
+} finally {
+  await fs.rm(dependencyStage, { recursive: true, force: true });
+}
 await fs.copyFile(path.join(source, 'package.json'), path.join(installDir, 'package.json'));
 await fs.copyFile(path.join(source, 'scripts', 'local-launcher.mjs'), path.join(installDir, 'local-launcher.mjs'));
 await fs.mkdir(path.join(installDir, 'scripts'), { recursive: true });
