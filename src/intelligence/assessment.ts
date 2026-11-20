@@ -312,7 +312,11 @@ function answerStatus(claims: readonly IntelligenceClaim[]): AssessmentStatus {
 }
 
 function summarizeFindings(graph: IntelligenceGraph, findings: readonly AuditFinding[], scope: { rootId: string; resolvedDepth: number; nodeCount: number } | null): Record<string, unknown> {
-  const edges = graphQueryContext(graph).edgesById;
+  const indexedEdges = existingGraphQueryContext(graph)?.edgesById;
+  const referencedEdgeIds = indexedEdges ? null : new Set(findings.flatMap(item => item.proof.edgeIds));
+  const edges = indexedEdges ?? new Map((referencedEdgeIds?.size
+    ? graph.edges.filter(edge => referencedEdgeIds.has(edge.id))
+    : []).map(edge => [edge.id, edge]));
   const grouped = new Map<string, { category: AuditFinding['category']; ruleId: string; relationshipKind: string | null; count: number; affectedIds: Set<string>; sampleFindingIds: string[] }>();
   for (const item of findings) {
     const relationshipKind = item.proof.edgeIds.map(id => edges.get(id)?.kind).find(Boolean) ?? null;
