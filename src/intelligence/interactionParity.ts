@@ -164,14 +164,43 @@ function difference(left: Map<string, number>, right: Map<string, number>): Arra
   return [...left].flatMap(([fact, count]) => { const occurrences = count - (right.get(fact) ?? 0); return occurrences > 0 ? [{ fact, occurrences }] : []; });
 }
 
+// A source or subject may occur anywhere along an interaction path, including
+// another file. Walk the same captured relationships backwards to find the
+// interaction roots that can reach it; do not create a second kind of path.
+function interactionKeysInScope(indexed: Indexed, needle: string): Set<string> {
+  const roots = new Map<string, string>();
+  for (const [key, nodes] of indexed.interactions) for (const node of nodes) roots.set(node.id, key);
+  const queue: string[] = [];
+  const visited = new Set<string>();
+  for (const node of indexed.nodes.values()) {
+    const sourceFact = node.kind === 'source-effect' || node.kind === 'source-condition' ? node.raw : null;
+    if ([node.name, node.sourceId, node.locator, node.kind, sourceFact].some(value => value?.toLowerCase().includes(needle))) {
+      visited.add(node.id); queue.push(node.id);
+    }
+  }
+  const incoming = new Map<string, string[]>();
+  for (const edges of indexed.outgoing.values()) for (const edge of edges) {
+    if (!edge.from || !edge.to || edge.status === 'unresolved' || !indexed.nodes.has(edge.to)) continue;
+    const parents = incoming.get(edge.to) ?? [];
+    parents.push(edge.from); incoming.set(edge.to, parents);
+  }
+  const matched = new Set<string>();
+  for (let at = 0; at < queue.length; at++) {
+    const id = queue[at]!, key = roots.get(id);
+    if (key) matched.add(key);
+    for (const parent of incoming.get(id) ?? []) if (!visited.has(parent)) { visited.add(parent); queue.push(parent); }
+  }
+  return matched;
+}
+
 export function compareInteractionGraphs(base: IntelligenceGraph, head: IntelligenceGraph, offset = 0, limit = 20, scope?: string) {
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1) throw new Error('Parity offset and limit must be non-negative and positive integers');
   const left = index(base), right = index(head);
   const affected = affectedInteractionKeys(left, right);
   const needle = scope?.trim().toLowerCase() ?? '';
+  const scoped = needle ? new Set([...interactionKeysInScope(left, needle), ...interactionKeysInScope(right, needle)]) : null;
   const keys = [...new Set([...left.interactions.keys(), ...right.interactions.keys()])]
-    .filter(key => !needle || [...(left.interactions.get(key) ?? []), ...(right.interactions.get(key) ?? [])]
-      .some(node => [node.name, node.sourceId, node.locator, node.kind].some(value => value?.toLowerCase().includes(needle))))
+    .filter(key => !scoped || scoped.has(key))
     .sort((a, b) => Number(affected.has(b)) - Number(affected.has(a)) || a.localeCompare(b));
   const items = keys.slice(offset, offset + limit).map(key => {
     const before = left.interactions.get(key) ?? [], after = right.interactions.get(key) ?? [];
