@@ -120,7 +120,7 @@ function normalizePath(root: string, parentFile: string, prefix: string): string
   if (path.isAbsolute(parentFile)) {
     value = path.relative(root, parentFile).split(path.sep).join('/');
   } else {
-    value = prefix ? prefix + '/' + parentFile : parentFile;
+    value = prefix && parentFile !== prefix && !parentFile.startsWith(prefix + '/') ? prefix + '/' + parentFile : parentFile;
   }
   return canonicalRelative(value) ? value : null;
 }

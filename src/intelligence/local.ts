@@ -28,7 +28,7 @@ export async function buildLocalGraph(rootInput: string, project?: string, role:
 }
 
 /** Build the current files, including non-ignored new files, without equating them to HEAD. */
-export async function buildLocalWorkingGraph(rootInput: string, project?: string, joern?: { bytes: Uint8Array; version: string }): Promise<IntelligenceGraph> {
+export async function buildLocalWorkingGraph(rootInput: string, project?: string, joern?: { bytes: Uint8Array; version: string; projectPrefix?: string }): Promise<IntelligenceGraph> {
   const root = path.resolve(rootInput);
   const revision = await gitValue(root, ['rev-parse', 'HEAD']);
   let repository = '';
@@ -39,7 +39,7 @@ export async function buildLocalWorkingGraph(rootInput: string, project?: string
 }
 
 /** Analyze a committed revision in a disposable clone without touching the user's checkout. */
-export async function buildLocalRevisionGraph(rootInput: string, ref: string, project?: string, joern?: { bytes: Uint8Array; version: string }): Promise<IntelligenceGraph> {
+export async function buildLocalRevisionGraph(rootInput: string, ref: string, project?: string, joern?: { bytes: Uint8Array; version: string; projectPrefix?: string }): Promise<IntelligenceGraph> {
   const root = path.resolve(rootInput);
   let revision: string;
   try { revision = await gitValue(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]); }

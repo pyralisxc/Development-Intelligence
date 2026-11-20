@@ -3,9 +3,11 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { buildLocalGraph } from '../dist/src/intelligence/local.js';
+import { buildLocalGraph, buildLocalWorkingGraph } from '../dist/src/intelligence/local.js';
+import { sourceFingerprint } from '../dist/src/intelligence/repository.js';
+import { saveLocalSourceGraph } from '../dist/src/intelligence/localGraphStore.js';
 import { generateTestClaimCatalog } from '../dist/src/intelligence/testClaimInventory.js';
-import { projectLocalJoernDataflow } from '../dist/src/intelligence/joernDataflow.js';
+import { projectLocalJoernDataflow, projectJoernDataflowBytes } from '../dist/src/intelligence/joernDataflow.js';
 import { projectNodeTestEvents } from '../dist/src/intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from '../dist/src/intelligence/assertionEvidenceRouting.js';
 import { deriveSourceExecutionFacts, correlateSourceExecutionFacts } from '../dist/src/intelligence/sourceExecutionFacts.js';
@@ -49,6 +51,21 @@ async function trustedTarget(root, name) {
   }
   return { full, relative };
 }
+async function runJoern(executable, args, options) {
+  if (process.platform === 'win32' && /\.(?:cmd|bat)$/iu.test(executable)) {
+    // Joern's batch files expand arguments through cmd. Reject metacharacters
+    // before invoking the fixed PowerShell script; no source text is code.
+    if ([executable, ...args].some(value => /[&|<>^%!"()\r\n]/u.test(value))) {
+      throw new Error('Joern Windows batch arguments cannot contain shell metacharacters');
+    }
+    const script = '$x=ConvertFrom-Json $env:DI_JOERN_COMMAND; & $x.exe @($x.args); exit $LASTEXITCODE';
+    return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      ...options, killTree: true,
+      env: { ...options.env, DI_JOERN_COMMAND: JSON.stringify({ exe: executable, args }) },
+    });
+  }
+  return run(executable, args, { ...options, killTree: true });
+}
 async function main() {
   const root = await fs.realpath(path.resolve(flag('--repo-path') || '.'));
   const project = flag('--project') || path.basename(root);
@@ -56,7 +73,17 @@ async function main() {
   const requestedVersion = flag('--joern-version');
   const requestedLanguage = flag('--joern-language');
   const sliceOutput = flag('--joern-slice-output');
+  const workingData = flag('--activate-working-data-dir');
+  const javaHome = flag('--joern-java-home');
+  const sourceSelection = flag('--joern-source');
+  const memoryMb = Number(flag('--joern-memory-mb') || '1024');
+  const timeoutSeconds = Number(flag('--joern-timeout-seconds') || '300');
+  if (!Number.isSafeInteger(memoryMb) || memoryMb < 512 || memoryMb > 8192) throw new Error('Joern memory must be 512–8192 MiB');
+  if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 10 || timeoutSeconds > 3600) throw new Error('Joern timeout must be 10–3600 seconds per process');
   if (sliceOutput && !joern) throw new Error('--joern-slice-output requires --joern-executable');
+  if ((workingData || javaHome || sourceSelection) && !joern) throw new Error('Joern build options require --joern-executable');
+  const retain = Number(flag('--retain') || '3');
+  if (!Number.isSafeInteger(retain) || retain < 1) throw new Error('--retain must be a positive integer');
   if (requestedLanguage && !/^[A-Z_]{2,30}$/u.test(requestedLanguage)) {
     throw new Error('Joern language must be a bounded frontend identity');
   }
@@ -68,16 +95,25 @@ async function main() {
     throw new Error('Joern binary requires a pinned --joern-version');
   }
   const status = await runChecked('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no']);
-  if (status.stdout.trim()) throw new Error('Exact-source evidence worker requires a clean tracked checkout');
-  const graph = await buildLocalGraph(root, project);
-  const catalog = await generateTestClaimCatalog(root, graph, {
+  if (!workingData && status.stdout.trim()) throw new Error('Exact-source evidence worker requires a clean tracked checkout');
+  if (workingData && requestedTestFiles.length) throw new Error('Working Joern graph builds cannot run exact-revision native tests in the same operation');
+  const initialFingerprint = workingData ? await sourceFingerprint(root, true) : null;
+  if (workingData && (path.resolve(workingData) === root || inside(root, path.resolve(workingData)))) throw new Error('Working graph data directory must be outside the inspected checkout');
+  const graph = workingData ? await buildLocalWorkingGraph(root, project) : await buildLocalGraph(root, project);
+  const catalog = workingData ? null : await generateTestClaimCatalog(root, graph, {
     sourcePrefixes: ['tests/', 'scripts/', 'packaging/'],
     sourceSuffixes: ['.test.ts', '.test.mjs', '.test.js', '.test.tsx', '.spec.ts', '.spec.tsx', '.spec.js'],
   });
-  const sourceExecutionFacts = await deriveSourceExecutionFacts(root, catalog, graph.graphId);
-  const scratch = await fs.mkdtemp(path.join(root, '.di-oss-evidence-'));
+  const sourceExecutionFacts = catalog ? await deriveSourceExecutionFacts(root, catalog, graph.graphId) : null;
+  const scratchParent = workingData ? path.resolve(process.env.DEVINT_SCRATCH_DIR || os.tmpdir()) : root;
+  await fs.mkdir(scratchParent, { recursive: true });
+  const physicalScratch = await fs.realpath(scratchParent);
+  if (workingData && (physicalScratch === root || inside(root, physicalScratch))) throw new Error('Joern scratch directory must be outside the inspected checkout');
+  const scratch = await fs.mkdtemp(path.join(physicalScratch, '.di-oss-evidence-'));
   let joernResult = null, testResult = null, runExit = null;
   let joernProjection = null, nodeProjection = null;
+  let joernBytes = null;
+  let joernPrefix;
   const measures = {};
   try {
     if (joern) {
@@ -97,16 +133,27 @@ async function main() {
       // Pinned Joern v4 slicer accepts a CPG binary, not raw Git directories.
       // Build the temporary CPG with the matching open-source frontend first.
       const parserInput = flag('--joern-parse-executable')
-        || path.join(path.dirname(executable), 'joern-parse');
+        || path.join(path.dirname(executable), process.platform === 'win32' && /\.bat$/iu.test(executable) ? 'joern-parse.bat' : 'joern-parse');
       const parser = await fs.realpath(path.resolve(parserInput));
+      let parseSource = root;
+      if (sourceSelection) {
+        parseSource = await fs.realpath(path.resolve(root, sourceSelection));
+        if (!inside(root, parseSource) || !(await fs.stat(parseSource)).isFile()) throw new Error('Joern source must be a regular file within the checkout');
+        const relative = path.relative(root, parseSource).split(path.sep).join('/');
+        if (!workingData) await runChecked('git', ['-C', root, 'ls-files', '--error-unmatch', '--', relative]);
+        const parent = path.posix.dirname(relative);
+        if (parent !== '.') joernPrefix = parent;
+      }
+      const joernEnv = { JAVA_OPTS: `-Xmx${memoryMb}m`, ...(javaHome ? { JAVA_HOME: await fs.realpath(path.resolve(javaHome)) } : {}) };
       const cpg = path.join(scratch, 'joern-cpg.bin');
       const parseStarted = Date.now();
-      const parsed = await run(parser, [
-        root, '--output', cpg,
+      const parsed = await runJoern(parser, [
+        parseSource, '--output', cpg,
         ...(requestedLanguage ? ['--language', requestedLanguage] : []),
-      ], { cwd: root, timeoutMs: 600000 });
+      ], { cwd: root, timeoutMs: timeoutSeconds * 1000, env: joernEnv });
       measures.joernParseMs = Date.now() - parseStarted;
       if (parsed.code !== 0) {
+        if (parsed.timedOut) throw new Error(`Joern source frontend exceeded ${timeoutSeconds} seconds; the previous graph remains active`);
         const diagnostic = (parsed.stderr || parsed.stdout).trim();
         throw new Error('Pinned Joern source frontend failed: ' + diagnostic.slice(0, 700));
       }
@@ -116,14 +163,15 @@ async function main() {
       }
       const output = path.join(scratch, 'joern-dataflow.json');
       const start = Date.now();
-      const processResult = await run(executable, ['data-flow',
+      const processResult = await runJoern(executable, ['data-flow',
         '-o', output,
         ...(fileFilter ? ['--file-filter', fileFilter] : []),
         ...(sinkFilter ? ['--sink-filter', sinkFilter] : []),
         '--slice-depth', String(depth), cpg],
-      { cwd: scratch, timeoutMs: 600000 });
+      { cwd: scratch, timeoutMs: timeoutSeconds * 1000, env: joernEnv });
       measures.joernSliceMs = Date.now() - start;
       if (processResult.code !== 0) {
+        if (processResult.timedOut) throw new Error(`Joern slicer exceeded ${timeoutSeconds} seconds; the previous graph remains active`);
         const diagnostic = (processResult.stderr || processResult.stdout).trim();
         throw new Error('Pinned Joern slicer failed (no graph evidence admitted): '
           + diagnostic.slice(0, 900));
@@ -145,10 +193,15 @@ async function main() {
           + cpgFile.size + '; files='
           + produced.sort().slice(0, 12).join(',').slice(0, 350) + debug);
       }
-      const projected = await projectLocalJoernDataflow({
-        root, graph, slicePath: path.relative(root, path.join(scratch, names[0])),
-        producerVersion: requestedVersion, testCatalog: catalog,
-      });
+      const slicePath = path.join(scratch, names[0]);
+      const sliceStat = await fs.lstat(slicePath);
+      if (!sliceStat.isFile() || sliceStat.isSymbolicLink() || sliceStat.size < 1 || sliceStat.size > 16 * 1024 * 1024) throw new Error('Joern slice must be a bounded ordinary JSON file');
+      joernBytes = await fs.readFile(slicePath);
+      const projected = workingData
+        ? await projectJoernDataflowBytes({ root, graph, bytes: joernBytes, producerVersion: requestedVersion,
+          ...(joernPrefix ? { projectPrefix: joernPrefix } : {}) })
+        : await projectLocalJoernDataflow({ root, graph, slicePath: path.relative(root, path.join(scratch, names[0])),
+          producerVersion: requestedVersion, testCatalog: catalog, ...(joernPrefix ? { projectPrefix: joernPrefix } : {}) });
       joernProjection = projected;
       let savedSlice = null;
       if (sliceOutput) {
@@ -160,7 +213,7 @@ async function main() {
         }
         // Preserve only on explicit request, without replacing existing data.
         // Projection above has already validated the bounded JSON and source.
-        await fs.writeFile(actualDestination, await fs.readFile(path.join(scratch, names[0])), { flag: 'wx', mode: 0o600 });
+        await fs.writeFile(actualDestination, joernBytes, { flag: 'wx', mode: 0o600 });
         savedSlice = actualDestination;
       }
       joernResult = {
@@ -172,7 +225,7 @@ async function main() {
         executedPinnedBinaryLocally: true,
         parsedSourceToEphemeralCpg: true,
         parsedSourceWithLanguage: requestedLanguage ?? 'auto-detected',
-        fileFilter, sinkFilter, depth, savedSlice,
+        fileFilter, sinkFilter, depth, savedSlice, sourceSelection: sourceSelection ?? null, memoryMb, timeoutSeconds,
       };
     }
     if (requestedTestFiles.length) {
@@ -247,28 +300,39 @@ async function main() {
       };
     }
     const after = await runChecked('git', ['-C', root, 'rev-parse', 'HEAD']);
-    if (after.stdout.trim() !== graph.repositoryRevision) {
+    if (after.stdout.trim() !== (graph.sourceState?.headRevision ?? graph.repositoryRevision)) {
       throw new Error('Source revision changed during OSS evidence run');
     }
-    const factsForThisRun = nodeProjection
+    const factsForThisRun = nodeProjection && sourceExecutionFacts
       ? correlateSourceExecutionFacts(sourceExecutionFacts, nodeProjection, 'direct-local-run')
       : sourceExecutionFacts;
+    let activatedWorking = null;
+    if (workingData && joernBytes) {
+      if (runExit !== null && runExit !== 0) throw new Error('A failed native test run cannot activate a graph');
+      if (joernProjection.counts.sliceNodes && !joernProjection.counts.sourceLocatedNodes) throw new Error('Joern output could not be located in the selected source; the previous graph remains active');
+      await fs.rm(scratch, { recursive: true, force: true });
+      if (await sourceFingerprint(root, true) !== initialFingerprint) throw new Error('Working source changed during Joern analysis; the previous graph remains active');
+      const working = await buildLocalWorkingGraph(root, project, { bytes: joernBytes, version: requestedVersion, ...(joernPrefix ? { projectPrefix: joernPrefix } : {}) });
+      const retained = await saveLocalSourceGraph(path.resolve(workingData), working, retain);
+      activatedWorking = { graphId: working.graphId, sourceFingerprint: working.sourceFingerprint, retained, producerCoverage: working.producerCoverage };
+    }
     const result = {
       mode: 'operator-owned-open-source-understanding',
       project: graph.project, exactRevision: graph.repositoryRevision,
+      ...(graph.sourceState ? { sourceState: graph.sourceState, sourceFingerprint: graph.sourceFingerprint } : {}),
       canonicalGraphId: graph.graphId, analyzerVersion: graph.analyzerVersion,
       joern: joernResult, nodeTests: testResult, measures,
-      assertionEvidence: joinAssertionEvidence({ graph, catalog,
-        joern: joernProjection, testEvents: nodeProjection }),
-      sourceExecutionFacts: {
+      assertionEvidence: catalog ? joinAssertionEvidence({ graph, catalog,
+        joern: joernProjection, testEvents: nodeProjection }) : null,
+      sourceExecutionFacts: factsForThisRun ? {
         strategy: factsForThisRun.strategy, revision: factsForThisRun.revision,
         graphId: factsForThisRun.graphId, factsSha256: factsForThisRun.factsSha256,
         sourceFactsSha256: factsForThisRun.sourceFactsSha256,
         counts: factsForThisRun.counts, samples: factsForThisRun.facts.slice(0, 20),
         returned: Math.min(20, factsForThisRun.facts.length), total: factsForThisRun.facts.length,
         truncated: factsForThisRun.facts.length > 20, policy: factsForThisRun.policy,
-      },
-      oneCanonicalGraph: true, changedCanonicalAuthority: false,
+      } : null,
+      oneCanonicalGraph: true, changedCanonicalAuthority: Boolean(activatedWorking), activatedWorking,
       noAutomaticTestDeletion: true,
     };
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');

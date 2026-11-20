@@ -1791,9 +1791,12 @@ export async function queryWorkbenchRequest(input: {
         ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
         : `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`);
       const sourceAnalysis = (result.sourceAnalysis ?? []).map((item: any) => `${item.technology}: ${item.precision}`).join('; ');
+      const lexicalCoverage = result.interpretation.lexicalCoverage;
+      const selectionNote = lexicalCoverage && lexicalCoverage.bestDisplayedSubject < lexicalCoverage.termGroups
+        ? `\n\nSelection is incomplete: the strongest displayed subject matches ${lexicalCoverage.bestDisplayedSubject} of ${lexicalCoverage.termGroups} question-term groups. These sources may not answer the full question; refine the subject or inspect more results.` : '';
       items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,
         ...(inheritedScope ? { inheritedSubject: inheritedScope } : {}),
-        answer: `${answer}${sourceAnalysis ? `\n\nSource analysis: ${sourceAnalysis}.` : ''}` ,
+        answer: `${answer}${selectionNote}${sourceAnalysis ? `\n\nSource analysis: ${sourceAnalysis}.` : ''}` ,
         routing: { tool: 'graph-filter', selection: result.interpretation.selection }, investigation: questionSelection(graph, result), result });
     }
     const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),

@@ -6,16 +6,17 @@ import { spawn } from 'node:child_process';
 const home = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(await fs.readFile(path.join(home, 'local-settings.json'), 'utf8'));
 const [command = 'help', ...args] = process.argv.slice(2);
-const commands = { build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', parity: 'working-parity', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve', 'oss-evidence': 'oss-evidence' };
+const commands = { build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', parity: 'working-parity', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve', 'oss-evidence': 'oss-evidence', 'joern-build': 'joern-build' };
 if (!commands[command]) {
-  console.log('DI local: build | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--text | --details] | oss-evidence [producer options] | serve | open | mcp');
+  console.log('DI local: build | joern-build [producer options] | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--text | --details] | oss-evidence [producer options] | serve | open | mcp');
   console.log('Options: --repo-path PATH --project NAME --data-dir PATH --retain COUNT --port PORT');
   process.exit(command === 'help' ? 0 : 2);
 }
 const executable = process.execPath;
 const defaults = ['--repo-path', config.repoPath, '--project', config.project, '--data-dir', config.dataDir, '--retain', String(config.retain), '--port', String(config.port)];
-const argv = command === 'oss-evidence'
-  ? [path.join(home, 'scripts', 'run-oss-understanding.mjs'), ...args, '--repo-path', config.repoPath, '--project', config.project]
+const argv = command === 'oss-evidence' || command === 'joern-build'
+  ? [path.join(home, 'scripts', 'run-oss-understanding.mjs'), ...args, '--repo-path', config.repoPath, '--project', config.project,
+    ...(command === 'joern-build' ? ['--activate-working-data-dir', config.dataDir, '--retain', String(config.retain)] : [])]
   : [path.join(home, 'dist', 'src', 'graphCli.js'), commands[command], ...args, ...defaults];
 const env = { ...process.env, DEVINT_SCRATCH_DIR: config.scratchDir, DEVINT_LOCAL_GRAPH_CACHE_SIZE: String(config.cacheSize ?? 3), DEVINT_LOCAL_SETTINGS: path.join(home, 'local-settings.json') };
 if (command === 'open') {
