@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   if (testClaimReportPath && command !== 'analyze' && command !== 'test-claims') throw new Error('--test-claim-report-path is supported only for analyze or test-claims');
   if (scipIndexPath && command !== 'scip-evidence') throw new Error('--scip-index is supported only for scip-evidence');
   if ((joernSlicePath || joernProducerVersion) && !['joern-evidence', 'working-build', 'revision-build'].includes(command ?? '')) throw new Error('Joern slice flags require joern-evidence or a graph build');
-  if (joernProjectPrefix && command !== 'joern-evidence') throw new Error('Joern project prefix requires joern-evidence');
+  if (joernProjectPrefix && !['joern-evidence', 'working-build', 'revision-build'].includes(command ?? '')) throw new Error('Joern project prefix requires joern-evidence or a graph build');
   if ((nodeEventsPath || nodeProducerVersion || nodeRunId || nodeEventOffset
     || nodeEventPageSize || nodeExpectedDigest) && command !== 'node-test-evidence') {
     throw new Error('Node test evidence flags require node-test-evidence command');
@@ -58,13 +58,13 @@ async function main(): Promise<void> {
   if (scipProjectPrefix && command !== 'scip-evidence') throw new Error('--scip-project-prefix is supported only for scip-evidence');
   if (process.argv.includes('--scip-legacy-position-encoding') && !scipLegacyEncoding) throw new Error('--scip-legacy-position-encoding requires utf8, utf16 or utf32');
   if (scipLegacyEncoding && command !== 'scip-evidence') throw new Error('--scip-legacy-position-encoding is supported only for scip-evidence');
-  let joern: { bytes: Uint8Array; version: string } | undefined;
-  if (['working-build', 'revision-build'].includes(command ?? '') && (joernSlicePath || joernProducerVersion)) {
+  let joern: { bytes: Uint8Array; version: string; projectPrefix?: string } | undefined;
+  if (['working-build', 'revision-build'].includes(command ?? '') && (joernSlicePath || joernProducerVersion || joernProjectPrefix)) {
     if (!joernSlicePath || !joernProducerVersion) throw new Error('Graph build requires both --joern-slice-json and --joern-version');
     const slice = path.resolve(root, joernSlicePath);
     const stat = await fs.lstat(slice);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > 16 * 1024 * 1024) throw new Error('Joern slice must be a bounded, ordinary file');
-    joern = { bytes: await fs.readFile(slice), version: joernProducerVersion };
+    joern = { bytes: await fs.readFile(slice), version: joernProducerVersion, ...(joernProjectPrefix ? { projectPrefix: joernProjectPrefix } : {}) };
   }
   if (command === 'working-build') {
     const graph = await buildLocalWorkingGraph(root, project, joern);

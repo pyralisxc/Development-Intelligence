@@ -21,7 +21,7 @@ import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnow
 import { prepareGraphSubjects } from './graphFamilies.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.37.0-provider-navigation';
+export const ANALYZER_VERSION = '2.38.0-local-provider';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -2594,7 +2594,7 @@ export async function buildRepositoryGraph(input: {
   root: string;
   role?: 'A' | 'W' | 'B';
   workingTree?: boolean;
-  joern?: { bytes: Uint8Array; version: string };
+  joern?: { bytes: Uint8Array; version: string; projectPrefix?: string };
 }): Promise<IntelligenceGraph> {
   const createdAt = new Date().toISOString();
   const tracked = input.workingTree ? await workingFiles(input.root) : await trackedFiles(input.root);
@@ -2783,7 +2783,7 @@ export async function buildRepositoryGraph(input: {
   let produced = await addLanguageProducerFacts(input.root, graph, languageProducer);
   if (input.joern) {
     const { projectJoernDataflowBytes } = await import('./joernDataflow.js');
-    const projection = await projectJoernDataflowBytes({ root: input.root, graph: produced, bytes: input.joern.bytes, producerVersion: input.joern.version });
+    const projection = await projectJoernDataflowBytes({ root: input.root, graph: produced, bytes: input.joern.bytes, producerVersion: input.joern.version, ...(input.joern.projectPrefix ? { projectPrefix: input.joern.projectPrefix } : {}) });
     const counts = projection.counts;
     const producerCoverage: NonNullable<IntelligenceGraph['producerCoverage']>[number] = {
       producer: projection.producer.name, version: projection.producer.version,
@@ -2791,7 +2791,7 @@ export async function buildRepositoryGraph(input: {
       reason: `Bounded Joern candidate slice: ${counts.candidateFlowEdges} matched, ${counts.unlocatedFlowEdges} unlocated edges; ${counts.sourceLocatedNodes} matched, ${counts.sourceUnlocatedNodes} unlocated source nodes; ${counts.sourceExpressionAnchors} source-expression links. Missing flows do not prove absence; caller-supplied slice is not producer attestation or runtime proof.`,
     };
     const sourceIdentity = produced.sourceState?.headRevision ?? produced.repositoryRevision!;
-    const graphSuffix = stableHash([produced.graphId, projection.producer.version, projection.producer.sliceSha256]).slice(0, 10);
+    const graphSuffix = stableHash([produced.graphId, projection.producer.version, projection.producer.sliceSha256, input.joern.projectPrefix ?? '']).slice(0, 10);
     const graphId = produced.sourceState ? `worktree-${produced.sourceFingerprint}-${graphSuffix}` : `repo-${sourceIdentity}-${graphSuffix}`;
     produced = { ...projection.graph, graphId, producerCoverage: [...(produced.producerCoverage ?? []), producerCoverage] };
   }

@@ -172,6 +172,26 @@ The installed local launcher exposes this worker as `di-local oss-evidence`;
 it uses the configured checkout and project unless those options are supplied
 explicitly. Joern must be separately installed and its executable and version
 specified. A later `di-local build --joern-slice-json PATH --joern-version VERSION`
-incorporates the retained slice into the working graph. The worker's native
-subprocess launcher requires directly executable producer programs; Windows
-batch wrappers are not supported by this path.
+incorporates the retained slice into the working graph.
+
+`di-local joern-build` instead runs the worker and, after successful source
+reconciliation, builds and activates the working graph with that slice in one
+operation. It retains the old graph if the producer fails or the source changes.
+Working builds include current non-ignored files and use a source fingerprint;
+the separate exact-revision evidence and native-test worker requires a clean
+tracked checkout. `--joern-source` can limit parsing to one source file;
+`--joern-java-home` selects a Java installation.
+`--joern-memory-mb` (default 1024) and `--joern-timeout-seconds` (default 300
+per producer process) bound resources. Windows `.bat` launchers are supported
+through a fixed interpreter; arguments containing shell metacharacters are
+rejected. A file-scoped slice is partial coverage, not an exhaustive analysis.
+Joern can report file-scoped output using a basename; the worker derives the
+selected file's repository directory as the source prefix. For a separately
+retained slice, use `--joern-project-prefix` on the graph build when needed.
+
+For example, with Joern and Java already installed on Windows:
+
+    di-local.cmd joern-build --joern-executable "P:\tools\joern\joern-cli\joern-slice.bat" --joern-java-home "P:\tools\java\jdk" --joern-version 4.0.681 --joern-language JAVASCRIPT --joern-source src/intelligence/localOperations.ts --joern-depth 3 --joern-sink-filter ".*settings.*"
+
+The source path, language, and optional sink filter are selected by the operator;
+they describe the scope of that analysis and are not defaults for other projects.

@@ -148,6 +148,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     if (subjectTags.length) eligible = eligible.filter(node => subjectTags.every(tag => node.tags?.includes(tag)));
   }
   let subjects: GraphNode[] = [];
+  const matchedTermGroups = new Map<string, number>();
   let selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' = 'none';
   // Repository is an ordinary graph scope, not a collection of question
   // templates. More specific nouns, negation and explicit filters continue
@@ -260,10 +261,10 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         const head = language.termGroups.at(-1) ?? [];
         if (head.some(term => includesTerm(name, words(term)))) score += 6;
         const described = Boolean(description && language.termGroups.every(group => group.some(term => includesTerm(description, words(term)))));
-        if (score) scored.push({ node, groups, described, score: score
+        if (score) { matchedTermGroups.set(node.id, groups); scored.push({ node, groups, described, score: score
           + (['function', 'method', 'constructor'].includes(node.kind) ? 4 : 0)
           + (sourceFamilies.has(node.id) ? 10 : 0)
-          + (familyOf(node).some(family => family.id === node.id) ? 4 : 0) });
+          + (familyOf(node).some(family => family.id === node.id) ? 4 : 0) }); }
       }
       scored.sort((a, b) => {
         const sourceOrder = Number(isWrittenTestSource(a.node.sourceId)) - Number(isWrittenTestSource(b.node.sourceId));
@@ -663,7 +664,11 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     question: input.text,
     sourceAnalysis,
     interpretation: { engine: 'wink-nlp', tokens: language.tokens, terms: language.terms, termGroups: language.termGroups,
-      negated: language.negated, negativeTerms, requestedEffects, selection },
+      negated: language.negated, negativeTerms, requestedEffects, selection,
+      ...(selection === 'terms' && subjectPage.length ? { lexicalCoverage: {
+        termGroups: language.termGroups.length,
+        bestDisplayedSubject: subjectPage.reduce((best, node) => Math.max(best, matchedTermGroups.get(node.id) ?? 0), 0),
+      } } : {}) },
     navigation, comparison,
     subjectTotal: subjects.length,
     subjects: subjectPage,
