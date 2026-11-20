@@ -39,7 +39,7 @@ export const SOURCE_ANALYSIS_SUPPORT = [
   {
     technology: 'Go',
     extensions: ['.go'],
-    precision: 'package, type/struct/interface, function/method identities, lexical source containment, imports and conservative module relationships; call relationships and control-flow effects are not captured',
+    precision: 'tree-sitter package, type/struct/interface and callable identities, lexical containment, imports, written conditions, candidate call expressions and same-package lexical target candidates; calls may be conversions and target binding and control-flow effects are not established',
   },
   {
     technology: 'Python',

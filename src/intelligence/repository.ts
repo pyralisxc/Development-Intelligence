@@ -21,7 +21,7 @@ import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnow
 import { prepareGraphSubjects } from './graphFamilies.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.38.0-local-provider';
+export const ANALYZER_VERSION = '2.39.0-go-source-graph';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -872,6 +872,60 @@ function resolvePolyglotModules(input: {
       layer: 'structural',
       checkpoint: false,
     }));
+  }
+}
+
+/** Connect Go source expressions to same-package declarations as candidates.
+ * Go's syntax alone does not rule out shadowing, conversions, build tags or
+ * dynamic receiver behavior; the compiler can strengthen these edges later. */
+function resolveGoCallCandidates(input: { nodes: GraphNode[]; edges: GraphEdge[] }): void {
+  const byId = new Map(input.nodes.map(node => [node.id, node]));
+  const parent = new Map<string, string>();
+  for (const edge of input.edges) if (edge.kind === 'contains' && edge.from && edge.to && edge.status === 'resolved') parent.set(edge.to, edge.from);
+  const symbolIndex = new Map<string, GraphNode[]>();
+  const key = (node: GraphNode, packageName: string, kind: string, name: string, receiver = '') =>
+    [path.posix.dirname(node.sourceId.slice('repo:'.length)), packageName, kind, receiver, name].join('\0');
+  for (const node of input.nodes) {
+    if (!node.sourceId.startsWith('repo:') || !node.name || !['function', 'method'].includes(node.kind)
+      || !node.value || typeof node.value !== 'object') continue;
+    const value = node.value as { language?: string; qualifiedName?: string; receiverType?: string };
+    if (value.language !== 'go' || !value.qualifiedName) continue;
+    const packageName = value.qualifiedName.split('.')[0]!;
+    const indexKey = key(node, packageName, node.kind, node.name, value.receiverType ?? '');
+    const group = symbolIndex.get(indexKey) ?? []; group.push(node); symbolIndex.set(indexKey, group);
+  }
+  for (const reference of input.nodes) {
+    if (reference.kind !== 'call-reference' || !reference.sourceId.startsWith('repo:') || !reference.name
+      || !reference.value || typeof reference.value !== 'object') continue;
+    const value = reference.value as { language?: string; functionId?: string; expressionKind?: string; qualifier?: string | null };
+    if (value.language !== 'go' || !value.functionId) continue;
+    const owner = byId.get(value.functionId);
+    if (!owner?.value || typeof owner.value !== 'object') continue;
+    const ownerValue = owner.value as { qualifiedName?: string };
+    const packageName = ownerValue.qualifiedName?.split('.')[0];
+    if (!packageName) continue;
+    let candidates: GraphNode[] = [];
+    if (value.expressionKind === 'identifier') candidates = symbolIndex.get(key(reference, packageName, 'function', reference.name)) ?? [];
+    else if (value.expressionKind === 'selector_expression' && value.qualifier) {
+      let lexical: GraphNode | undefined = owner;
+      const visited = new Set<string>();
+      while (lexical && !visited.has(lexical.id)) {
+        visited.add(lexical.id);
+        const receiver = lexical.value as { receiverName?: string; receiverType?: string } | null;
+        if (receiver?.receiverName === value.qualifier && receiver.receiverType) {
+          candidates = symbolIndex.get(key(reference, packageName, 'method', reference.name, receiver.receiverType)) ?? [];
+          break;
+        }
+        lexical = byId.get(parent.get(lexical.id) ?? '');
+      }
+    }
+    for (const target of candidates) {
+      const evidence = [reference.locator, target.locator, 'Same-package lexical match; Go target binding, shadowing and build constraints remain unresolved'];
+      input.edges.push(resolution({ from: reference.id, to: target.id, kind: 'resolves_to', strategy: 'go-lexical-candidate',
+        confidence: null, status: 'candidate', evidence, layer: 'structural', checkpoint: false }));
+      input.edges.push(resolution({ from: owner.id, to: target.id, kind: 'calls', strategy: 'go-lexical-candidate',
+        confidence: null, status: 'candidate', evidence, layer: 'structural', checkpoint: false }));
+    }
   }
 }
 
@@ -2715,6 +2769,7 @@ export async function buildRepositoryGraph(input: {
     fileNodes,
   });
   resolvePolyglotModules({ nodes, edges, fileNodes });
+  resolveGoCallCandidates({ nodes, edges });
   resolveCSharpReferences({ nodes, edges });
   resolveUnityReverseUsage({ nodes, edges, fileNodes });
 

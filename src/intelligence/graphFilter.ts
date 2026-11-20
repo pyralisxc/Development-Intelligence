@@ -95,9 +95,9 @@ function termMatcher(): (value: string, term: string) => boolean {
   };
 }
 
-function containsName(question: string, name: string): boolean {
-  const haystack = question.toLowerCase();
-  const needle = name.toLowerCase();
+function containsName(question: string, name: string, caseSensitive = false): boolean {
+  const haystack = caseSensitive ? question : question.toLowerCase();
+  const needle = caseSensitive ? name : name.toLowerCase();
   if (needle.length < 2) return false;
   let index = haystack.indexOf(needle);
   while (index >= 0) {
@@ -176,14 +176,21 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     // Ordinary words such as "trash" and "router" describe a broader area.
     const named = eligible.flatMap(node => {
       if (!node.name) return [];
-      const names = node.kind === 'file' ? [node.name, node.name.split(/[\\/]/u).at(-1) ?? ''] : [node.name];
-      const matched = names.filter(name => (/[.:#_]/u.test(name) || /[a-z][A-Z]/u.test(name))
+      const qualified = node.value && typeof node.value === 'object' && !Array.isArray(node.value)
+        ? (node.value as { qualifiedName?: unknown }).qualifiedName : null;
+      const parts = typeof qualified === 'string' ? qualified.split('.') : [];
+      const qualifiedNames = parts.length > 1 ? parts.slice(0, -1).map((_, index) => parts.slice(index).join('.')) : [];
+      const names = node.kind === 'file' ? [node.name, node.name.split(/[\\/]/u).at(-1) ?? ''] : [node.name, ...qualifiedNames];
+      const matched = names.filter(name => (/[.:#_]/u.test(name) || /[a-z][A-Z]/u.test(name)
+        || (/^[A-Z][\p{L}\p{N}_]*$/u.test(name) && containsName(input.text, name, true)))
         && containsName(input.text, name)).sort((a, b) => b.length - a.length)[0];
       return matched ? [{ node, matched }] : [];
     });
     if (named.length) {
       const longest = named.reduce((length, item) => Math.max(length, item.matched.length), 0);
-      const exact = named.filter(item => item.matched.length === longest).map(item => item.node);
+      const strongest = named.filter(item => item.matched.length === longest);
+      const caseMatched = strongest.filter(item => containsName(input.text, item.matched, true));
+      const exact = (caseMatched.length ? caseMatched : strongest).map(item => item.node);
       // A declaration and its call occurrences are distinct subjects. Prefer
       // the declaration when present; otherwise navigate every matching site.
       const declarations = exact.filter(node => node.kind !== 'call-reference');
@@ -513,6 +520,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     .flatMap(token => [token.text.toLowerCase(), token.lemma]).filter(term => term.length > 1))];
   const effectVocabulary = new Set(['call', 'return', 'write', 'throw']);
   const requestedEffects = [...new Set(language.tokens.map(token => token.lemma).filter(term => effectVocabulary.has(term)))];
+  const requestedFactKinds = ['source-condition', 'source-effect'].filter(kind => language.terms.some(term =>
+    includesTerm(words(kind).replace(/^source\s+/u, ''), words(term))));
   const displayedIds = new Set(subjectPage.map(node => node.id));
   const sourceOwners = groupedSelection ? familyOwners.filter(node => displayedIds.has(node.id)
     || familyOf(node).some(family => displayedIds.has(family.id) && family.roles.includes('callback')))
@@ -529,6 +538,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       return { id: node.id, kind: node.kind, effectKind,
         locator: node.locator, sourceId: node.sourceId, evidenceIds: node.evidenceIds ?? [], expression: node.raw,
         controlContext: value?.controlContext ?? [], requirementsComplete: value?.requirementsComplete ?? true,
+        matchedKind: requestedFactKinds.includes(node.kind),
         matchedTerms: language.terms.filter(term => includesTerm(words(node.raw ?? ''), words(term))),
         matchedNegativeTerms: negativeTerms.filter(term => includesTerm(words(node.raw ?? ''), words(term))),
         requirements: (value?.requiredConditions ?? []).map(requirement => ({
@@ -546,7 +556,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       return fact.requirements.some(requirement => (!conditionText || words(requirement.predicate ?? '').includes(conditionText))
         && (input.conditionTruth === undefined || requirement.expectedTruth === input.conditionTruth));
     });
-    const focusedFacts = selectedFacts.filter(fact => fact.matchedNegativeTerms.length
+    const focusedFacts = selectedFacts.filter(fact => fact.matchedKind || fact.matchedNegativeTerms.length
       || (fact.effectKind && requestedEffects.some(effect => fact.effectKind!.split('-').includes(effect))));
     return [{ subjectId: subject.id, subjectName: subject.name ?? subject.id,
       coverage: summaryBySubject.has(subject.id) ? byId.get(summaryBySubject.get(subject.id)!)?.value ?? null : null,
@@ -664,7 +674,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     question: input.text,
     sourceAnalysis,
     interpretation: { engine: 'wink-nlp', tokens: language.tokens, terms: language.terms, termGroups: language.termGroups,
-      negated: language.negated, negativeTerms, requestedEffects, selection,
+      negated: language.negated, negativeTerms, requestedEffects, requestedFactKinds, selection,
       ...(selection === 'terms' && subjectPage.length ? { lexicalCoverage: {
         termGroups: language.termGroups.length,
         bestDisplayedSubject: subjectPage.reduce((best, node) => Math.max(best, matchedTermGroups.get(node.id) ?? 0), 0),
