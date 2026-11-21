@@ -21,7 +21,7 @@ import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnow
 import { prepareGraphSubjects } from './graphFamilies.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.40.0-source-arguments';
+export const ANALYZER_VERSION = '2.41.0-call-occurrences';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -1471,9 +1471,9 @@ async function crossFileTypeScriptGraph(
   const callSites = new Map<string, GraphNode>();
   for (const node of graphNodeById.values()) {
     if (node.kind !== 'call-reference' || !node.sourceId.startsWith('repo:') || !node.value || typeof node.value !== 'object') continue;
-    const value = node.value as { language?: string; sourceOffset?: number; functionId?: string };
-    if (value.language === 'typescript' && typeof value.sourceOffset === 'number' && value.functionId)
-      callSites.set(`${node.sourceId}\0${value.functionId}\0${value.sourceOffset}`, node);
+    const value = node.value as { language?: string; sourceOffset?: number; sourceEnd?: number; functionId?: string };
+    if (value.language === 'typescript' && typeof value.sourceOffset === 'number' && typeof value.sourceEnd === 'number' && value.functionId)
+      callSites.set(`${node.sourceId}\0${value.functionId}\0${value.sourceOffset}\0${value.sourceEnd}`, node);
   }
   for (const edge of graphEdges) {
     if (edge.kind !== 'calls' || edge.status !== 'resolved' || !edge.from || !edge.to) continue;
@@ -1965,7 +1965,7 @@ async function crossFileTypeScriptGraph(
           }
         }
         if (target) {
-          const site = caller ? callSites.get(`repo:${relative}\0${caller.id}\0${node.getStart(sourceFile)}`) : undefined;
+          const site = caller ? callSites.get(`repo:${relative}\0${caller.id}\0${node.getStart(sourceFile)}\0${node.getEnd()}`) : undefined;
           const compilerBound = Boolean(site && compilerBoundSites.has(`${site.id}\0${target.id}`));
           if (site && importedTarget && !compilerBound) addedEdges.push(resolution({
             from: site.id, to: target.id, kind: 'resolves_to', strategy: 'call-target-binding',
