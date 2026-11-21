@@ -45,9 +45,12 @@ export function questionSelection(graph: IntelligenceGraph, result: any) {
   const links = grouped ? result.connectedGroups.flatMap((group: any) => group.links ?? [])
     : (result.navigation?.relationships ?? []).map((item: any) => item.edge);
   const comparison = result.comparison?.items ?? [];
+  const callEdgeIds = (result.sourceFamilies ?? []).flatMap((family: any) => (family.sourceCalls ?? [])
+    .flatMap((call: any) => [call.occurrenceEdgeId, call.bindingEdgeId]))
+    .filter((id: unknown): id is string => typeof id === 'string');
   const focus = {
     nodeIds: [...subjects.map((node: any) => node.id), ...comparison.map((item: any) => item.node?.id)].filter((id: unknown): id is string => typeof id === 'string'),
-    edgeIds: [...links.map((edge: any) => edge?.id), ...comparison.flatMap((item: any) => item.relationshipIds ?? [])].filter((id: unknown): id is string => typeof id === 'string'),
+    edgeIds: [...links.map((edge: any) => edge?.id), ...comparison.flatMap((item: any) => item.relationshipIds ?? []), ...callEdgeIds].filter((id: unknown): id is string => typeof id === 'string'),
   };
   const contextNodeIds: string[] = (result.sourceFamilies ?? []).flatMap((family: any) => [family.subjectId,
     ...(family.facts ?? []).flatMap((fact: any) => [fact.id, ...(fact.requirements ?? []).map((requirement: any) => requirement.conditionNodeId)])])

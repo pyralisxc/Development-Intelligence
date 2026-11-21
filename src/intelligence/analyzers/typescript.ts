@@ -784,19 +784,19 @@ export function analyzeTypeScript(context: AnalyzeContext): AnalyzeResult {
     if (ts.isCallExpression(node)) {
       const owner = functionOwner();
       if (owner) {
-        const offset = node.getStart(sourceFile);
+        const offset = node.getStart(sourceFile), end = node.getEnd();
         const callee = node.expression.getText(sourceFile);
-        const at = locator(node, `:call-offset-${offset}`);
+        const at = locator(node, `:call-offset-${offset}-${end}`);
         const proof = evidenceRecord({
           sourceId: context.source.id, kind: 'source-call-syntax', locator: at,
-          field: `offset:${offset}`, value: { functionId: owner.id, callee, sourceSha256, sourceOnly: true },
+          field: `offset:${offset}:${end}`, value: { functionId: owner.id, callee, sourceSha256, sourceOnly: true },
           message: 'A call expression occurs in this callable; the target declaration is a separate binding question.',
         });
         const site = observation({
-          identity: [context.source.id, owner.id, 'call-reference', offset],
+          identity: [context.source.id, owner.id, 'call-reference', offset, end],
           sourceId: context.source.id, kind: 'call-reference', locator: at,
           name: callee, field: 'call', raw: node.getText(sourceFile),
-          value: { language: 'typescript', referenceKind: 'call', callee, sourceOffset: offset,
+          value: { language: 'typescript', referenceKind: 'call', callee, sourceOffset: offset, sourceEnd: end,
             functionId: owner.id, sourceSha256, sourceOnly: true },
           evidenceIds: [proof.id], layer: 'structural', checkpoint: false,
         });

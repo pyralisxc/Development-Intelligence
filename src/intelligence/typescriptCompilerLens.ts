@@ -144,9 +144,9 @@ export function compilerTypeScriptReferences(input: {
       if (line !== null) propBindings.set([file, line, node.name].join('\0'), node);
     }
     if (node.kind === 'call-reference' && node.sourceId.startsWith('repo:') && node.value && typeof node.value === 'object') {
-      const value = node.value as { language?: string; sourceOffset?: number; functionId?: string };
-      if (value.language === 'typescript' && typeof value.sourceOffset === 'number' && value.functionId)
-        callSites.set([node.sourceId.slice(5), value.sourceOffset].join('\0'), node);
+      const value = node.value as { language?: string; sourceOffset?: number; sourceEnd?: number; functionId?: string };
+      if (value.language === 'typescript' && typeof value.sourceOffset === 'number' && typeof value.sourceEnd === 'number' && value.functionId)
+        callSites.set([node.sourceId.slice(5), value.sourceOffset, value.sourceEnd].join('\0'), node);
     }
     if (!DECLARATION_KINDS.has(node.kind) || !node.name || !node.sourceId.startsWith('repo:')) continue;
     const file = node.sourceId.slice(5);
@@ -210,7 +210,7 @@ export function compilerTypeScriptReferences(input: {
         if (resolvedBindings >= budget.maxBindings) return;
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           if (ts.isIdentifier(node.expression) || ts.isPropertyAccessExpression(node.expression)) {
-            const site = ts.isCallExpression(node) ? callSites.get([file, node.getStart(source)].join('\0')) : undefined;
+            const site = ts.isCallExpression(node) ? callSites.get([file, node.getStart(source), node.getEnd()].join('\0')) : undefined;
             const referenced = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node.expression)
               ? node.expression.name : node.expression);
             const calleeSymbol = referenced && (referenced.flags & ts.SymbolFlags.Alias)
@@ -346,7 +346,7 @@ export function compilerTypeScriptReferences(input: {
             if (declaration && ts.isVariableDeclaration(declaration) && ts.isVariableDeclarationList(declaration.parent)
                 && (declaration.parent.flags & ts.NodeFlags.Const) !== 0 && declaration.initializer && ts.isCallExpression(declaration.initializer)
                 && declaration.getSourceFile() === source) {
-              const site = callSites.get([file, declaration.initializer.getStart(source)].join('\0'));
+              const site = callSites.get([file, declaration.initializer.getStart(source), declaration.initializer.getEnd()].join('\0'));
               if (site) resultEdges.push(resolution({ from: spread.id, to: site.id, kind: 'potential-value-from',
                 strategy: 'typescript-jsx-spread-binding', confidence: null, status: 'candidate',
                 evidence: [spread.locator, site.locator, 'TypeScript binds the spread receiver to this const call result; the property value and rendering context may change.'],

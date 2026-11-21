@@ -618,10 +618,23 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const sourceOwners = groupedSelection ? familyOwners.filter(node => displayedIds.has(node.id)
     || familyOf(node).some(family => displayedIds.has(family.id) && family.roles.includes('callback')))
     : familyOwners.slice(offset, offset + limit);
+  // Preserve call occurrences and their declaration bindings as one shared
+  // projection. A source position orders written occurrences, not execution;
+  // branches and loops still retain their separate source-control facts.
+  const sourceCallIds = new Set(sourceOwners.flatMap(owner => factsBySubject.get(owner.id) ?? []));
+  const callBindings = new Map<string, typeof graph.edges>();
+  for (const edge of graph.edges) {
+    if (edge.kind !== 'resolves_to' || edge.status === 'unresolved' || !edge.from || !edge.to || !sourceCallIds.has(edge.from)) continue;
+    const target = byId.get(edge.to);
+    if (!target || !['function', 'method', 'constructor'].includes(target.kind)) continue;
+    const list = callBindings.get(edge.from) ?? [];
+    list.push(edge); callBindings.set(edge.from, list);
+  }
   const sourceFamilies = sourceOwners.flatMap(subject => {
     const facts = (factsBySubject.get(subject.id) ?? []).map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
     if (!facts.length) return [];
-    facts.sort((a, b) => Number((a.value as any)?.sourceOffset ?? 0) - Number((b.value as any)?.sourceOffset ?? 0) || a.id.localeCompare(b.id));
+    facts.sort((a, b) => Number((a.value as any)?.sourceOffset ?? 0) - Number((b.value as any)?.sourceOffset ?? 0)
+      || Number((a.value as any)?.sourceEnd ?? 0) - Number((b.value as any)?.sourceEnd ?? 0) || a.id.localeCompare(b.id));
     const conditions = new Map(facts.filter(node => node.kind === 'source-condition')
       .map(node => [String((node.value as any)?.id ?? ''), node]));
     const projected = facts.map(node => {
@@ -694,8 +707,23 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     });
     const focusedFacts = selectedFacts.filter(fact => fact.matchedKind || fact.matchedNegativeTerms.length
       || (fact.effectKind && requestedEffects.some(effect => fact.effectKind!.split('-').includes(effect))));
+    const subjectMatchedGroups = language.termGroups.flatMap((group, index) => group.some(term => includesTerm(words(subject.name ?? ''), words(term))) ? [index] : []);
+    const showCalls = !language.negated && !operationToken && (selection === 'exact-name' || selection === 'scope'
+      || (selection === 'terms' && subjectMatchedGroups.length >= Math.min(2, language.termGroups.length)));
+    const sourceCalls = showCalls ? facts.flatMap(node => {
+      if (node.kind !== 'call-reference') return [];
+      const occurrence = factRelations.get(node.id);
+      if (!occurrence || occurrence.status === 'unresolved') return [];
+      return (callBindings.get(node.id) ?? []).map(edge => {
+        const target = byId.get(edge.to!)!;
+        return { occurrenceId: node.id, name: node.name ?? node.id, locator: node.locator,
+          occurrenceEdgeId: occurrence.id, occurrenceStatus: occurrence.status,
+          targetId: target.id, targetName: target.name ?? target.id, targetLocator: target.locator,
+          bindingEdgeId: edge.id, bindingStatus: edge.status };
+      });
+    }) : [];
     return [{ subjectId: subject.id, subjectName: subject.name ?? subject.id,
-      subjectMatchedGroups: language.termGroups.flatMap((group, index) => group.some(term => includesTerm(words(subject.name ?? ''), words(term))) ? [index] : []),
+      subjectMatchedGroups, sourceCalls,
       coverage: summaryBySubject.has(subject.id) ? byId.get(summaryBySubject.get(subject.id)!)?.value ?? null : null,
       focusedFacts, facts: selectedFacts }];
   });

@@ -1767,7 +1767,14 @@ export async function queryWorkbenchRequest(input: {
         const conditionDetails = [...conditions].map(([condition, number]) => `C${number}: ${condition}`).join('; ');
         const description = typeof item.value?.description === 'string' ? item.value.description : '';
         const interaction = item.kind === 'interaction-handler' && typeof item.value?.expression === 'string' ? item.value.expression : '';
-        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${interaction ? `; handler expression: ${interaction}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${details ? `; matching lines from source expressions: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
+        const sourceCalls = result.sourceFamilies.find((value: any) => value.subjectId === item.id)?.sourceCalls ?? [];
+        const callSequence = sourceCalls.map((call: any) => {
+          const line = /:(\d+)(?::|$)/u.exec(call.locator)?.[1];
+          const target = call.name === call.targetName ? '' : ` → ${call.targetName}`;
+          const status = call.occurrenceStatus === 'candidate' || call.bindingStatus === 'candidate' ? ' [candidate]' : '';
+          return `${call.name}${line ? ` (line ${line})` : ''}${target}${status}`;
+        }).join('; ');
+        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${interaction ? `; handler expression: ${interaction}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${callSequence ? `; bound call sites in source order (branches and loops may apply): ${callSequence}` : ''}${details ? `; matching lines from source expressions: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
       };
       // Broad term matches are a ranked source scope, not one bound subject.
       // Compose visible source facts for that scope instead of asserting that
