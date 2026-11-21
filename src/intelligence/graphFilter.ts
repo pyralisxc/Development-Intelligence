@@ -494,6 +494,45 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const limit = input.limit ?? 20;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Graph page size must be a positive integer');
   const groupPage = groupedSelection ? connectedGroups.slice(offset, offset + limit) : [];
+  // An interaction point is itself a meaningful selected subject. Continue
+  // through its captured binding and inline callback occurrences even when
+  // those nodes do not happen to match the question's words. Stop at named
+  // callable targets: their other workflows are not part of this handoff.
+  const interactionEdges = new Map<string, typeof graph.edges>();
+  let interactionFrontier = new Set(groupPage.flatMap(group => group.subjects.filter(node => node.kind === 'ui-element').map(node => node.id)));
+  for (const kind of ['has-interaction', 'binds_to', 'calls-site', 'resolves_to']) {
+    if (!interactionFrontier.size) break;
+    const next = new Set<string>();
+    for (const edge of graph.edges) {
+      if (edge.kind !== kind || !edge.from || !edge.to || edge.status === 'unresolved' || !interactionFrontier.has(edge.from)) continue;
+      const list = interactionEdges.get(edge.from) ?? [];
+      list.push(edge); interactionEdges.set(edge.from, list); next.add(edge.to);
+    }
+    interactionFrontier = next;
+  }
+  for (const group of groupPage) {
+    const existing = new Set(group.links.map(edge => edge.id));
+    const members = new Set(group.subjects.map(node => node.id));
+    const linkNodes = new Map(group.linkNodes.map(node => [node.id, node]));
+    const queue = group.subjects.filter(node => node.kind === 'ui-element').map(node => node.id);
+    const seen = new Set(queue);
+    for (let i = 0; i < queue.length; i++) {
+      const from = byId.get(queue[i]!);
+      for (const edge of interactionEdges.get(queue[i]!) ?? []) {
+        const to = byId.get(edge.to!);
+        if (!from || !to || isWrittenTestSource(to.sourceId) !== isWrittenTestSource(from.sourceId)) continue;
+        const valid = (from.kind === 'ui-element' && edge.kind === 'has-interaction' && to.kind === 'interaction-handler')
+          || (from.kind === 'interaction-handler' && edge.kind === 'binds_to' && ['function', 'method'].includes(to.kind))
+          || (from.kind === 'function' && from.name === 'callback' && edge.kind === 'calls-site' && to.kind === 'call-reference')
+          || (from.kind === 'call-reference' && edge.kind === 'resolves_to' && ['function', 'method', 'constructor'].includes(to.kind));
+        if (!valid) continue;
+        if (!existing.has(edge.id)) { existing.add(edge.id); group.links.push(edge); }
+        if (!members.has(to.id)) linkNodes.set(to.id, to);
+        if (!seen.has(to.id)) { seen.add(to.id); queue.push(to.id); }
+      }
+    }
+    group.linkNodes = [...linkNodes.values()];
+  }
   const subjectPage = groupedSelection ? [...new Map(groupPage.flatMap(group => group.subjects).map(node => [node.id, node])).values()] : subjects.slice(offset, offset + limit);
   const subjectIds = new Set(subjects.map(node => node.id));
   const adjacentIds = new Set(subjectIds);
