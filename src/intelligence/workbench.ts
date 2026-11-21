@@ -1723,7 +1723,7 @@ export async function queryWorkbenchRequest(input: {
           .filter((fact: any) => typeof fact.expression === 'string');
         const subjectGroups = new Set<number>(result.sourceFamilies.find((value: any) => value.subjectId === item.id)?.subjectMatchedGroups ?? []);
         const minimumGroups = Math.min(2, result.interpretation.termGroups.length);
-        const facts = (includeSource ? available : []).flatMap((fact: any) => {
+        const matchingFacts = (includeSource ? available : []).flatMap((fact: any) => {
           // Calls, conditions and direct effects have distinct graph identities.
           // Do not summarize nested callable bodies as effects of their creator.
           if (fact.nestedCallable || !(fact.kind === 'call-reference' || fact.kind === 'source-condition'
@@ -1736,6 +1736,13 @@ export async function queryWorkbenchRequest(input: {
           });
           return matches.length ? [{ ...fact, matchedLines: matches }] : [];
         });
+        // Prefer expressions that directly mention more distinct concepts in
+        // the question. Keep every tied fact and all graph records in details;
+        // the owner's name alone must not promote every incidental expression.
+        const directGroups = (fact: any): number => fact.matchedLines.reduce((best: number, line: any) => Math.max(best, (line.groupIndexes ?? []).length), 0);
+        const strongestDirectMatch = matchingFacts.reduce((best: number, fact: any) => Math.max(best, directGroups(fact)), 0);
+        const facts = groupIds ? matchingFacts.filter((fact: any) => fact.kind !== 'call-reference'
+          || directGroups(fact) === strongestDirectMatch) : matchingFacts;
         // Name each distinct condition once so a sequence of guarded effects
         // remains readable without discarding which condition governs which fact.
         const conditions = new Map<string, number>();
@@ -1764,6 +1771,7 @@ export async function queryWorkbenchRequest(input: {
           return [`${prefix}expression at ${fact.locator}${requires.length ? ` when ${requires.join(' and ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}: ${expression}`];
         }).join('; ');
         const remainingFacts = available.length - shownFacts;
+        const otherMatchingFacts = matchingFacts.length - facts.length;
         const conditionDetails = [...conditions].map(([condition, number]) => `C${number}: ${condition}`).join('; ');
         const description = typeof item.value?.description === 'string' ? item.value.description : '';
         const interaction = item.kind === 'interaction-handler' && typeof item.value?.expression === 'string' ? item.value.expression : '';
@@ -1774,16 +1782,38 @@ export async function queryWorkbenchRequest(input: {
           const status = call.occurrenceStatus === 'candidate' || call.bindingStatus === 'candidate' ? ' [candidate]' : '';
           return `${call.name}${line ? ` (line ${line})` : ''}${target}${status}`;
         }).join('; ');
-        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${interaction ? `; handler expression: ${interaction}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${callSequence ? `; bound call sites in source order (branches and loops may apply): ${callSequence}` : ''}${details ? `; matching lines from source expressions: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
+        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${interaction ? `; handler expression: ${interaction}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${callSequence ? `; bound call sites in source order (branches and loops may apply): ${callSequence}` : ''}${details ? `; matching lines from source expressions: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details${otherMatchingFacts ? ` (${otherMatchingFacts} additional matching expressions)` : ''}` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
       };
       // Broad term matches are a ranked source scope, not one bound subject.
       // Compose visible source facts for that scope instead of asserting that
       // every incident relationship answers the question.
       const describedSubjects = new Map<string, boolean>();
+      // Sibling paths with the same actual target, relationship and status
+      // can share one presentation. Keep every original node and edge; this
+      // neither merges entities nor treats candidate edges as resolved.
+      const displayGroups: any[] = [];
+      const siblingGroups = new Map<string, any>();
+      for (const group of result.connectedGroups ?? []) {
+        const edge = group.links?.length === 1 ? group.links[0] : null;
+        const ids = new Set((group.subjects ?? []).map((node: any) => node.id));
+        const sibling = edge && edge.from !== edge.to && ids.size === 2 && ids.has(edge.from) && ids.has(edge.to)
+          && !(group.linkNodes?.length) ? JSON.stringify([group.sourceCategory, edge.kind, edge.status, edge.to]) : null;
+        const existing = sibling ? siblingGroups.get(sibling) : null;
+        if (!existing) {
+          const copy = { ...group, subjects: [...group.subjects], links: [...group.links], linkNodes: [...(group.linkNodes ?? [])] };
+          displayGroups.push(copy);
+          if (sibling) siblingGroups.set(sibling, copy);
+        } else {
+          const members = new Set(existing.subjects.map((node: any) => node.id));
+          for (const node of group.subjects) if (!members.has(node.id)) { members.add(node.id); existing.subjects.push(node); }
+          const links = new Set(existing.links.map((item: any) => item.id));
+          for (const item of group.links) if (!links.has(item.id)) { links.add(item.id); existing.links.push(item); }
+        }
+      }
       const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
         ? (Array.isArray(result.connectedGroups)
           ? `Connected source paths (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
-            + result.connectedGroups.map((group: any) => {
+            + displayGroups.map((group: any) => {
               const members: any[] = [...group.subjects, ...(group.linkNodes ?? [])];
               const names = new Map(members.map((item: any) => [item.id, item.name ?? item.id]));
               const groupIds = new Set<string>(members.map((item: any) => item.id));
@@ -1838,9 +1868,11 @@ export async function queryWorkbenchRequest(input: {
       const lexicalCoverage = result.interpretation.lexicalCoverage;
       const selectionNote = lexicalCoverage && lexicalCoverage.bestDisplayedSubject < lexicalCoverage.termGroups
         ? `\n\nSelection is incomplete: the strongest displayed subject matches ${lexicalCoverage.bestDisplayedSubject} of ${lexicalCoverage.termGroups} question-term groups. These sources may not answer the full question; refine the subject or inspect more results.` : '';
+      const excludedNote = lexicalCoverage?.excludedWeakerMatches
+        ? `\n\n${lexicalCoverage.excludedWeakerMatches} subjects matched fewer question concepts and were excluded from this selection; refine the question or scope to inspect them.` : '';
       items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,
         ...(inheritedScope ? { inheritedSubject: inheritedScope } : {}),
-        answer: `${answer}${selectionNote}${sourceAnalysis ? `\n\nSource analysis: ${sourceAnalysis}.` : ''}` ,
+        answer: `${answer}${selectionNote}${excludedNote}${sourceAnalysis ? `\n\nSource analysis: ${sourceAnalysis}.` : ''}` ,
         routing: { tool: 'graph-filter', selection: result.interpretation.selection }, investigation: questionSelection(graph, result), result });
     }
     const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),

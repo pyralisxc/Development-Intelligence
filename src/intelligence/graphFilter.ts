@@ -148,7 +148,10 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     if (subjectTags.length) eligible = eligible.filter(node => subjectTags.every(tag => node.tags?.includes(tag)));
   }
   let subjects: GraphNode[] = [];
+  let excludedWeakerMatches = 0;
   const matchedTermGroups = new Map<string, number>();
+  const matchedNameGroups = new Map<string, number>();
+  const fullyDescribedSubjects = new Set<string>();
   let selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' = 'none';
   // Repository is an ordinary graph scope, not a collection of question
   // templates. More specific nouns, negation and explicit filters continue
@@ -229,13 +232,14 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         for (const term of matching) group.add(term);
         factTerms.set(edge.from, group);
       }
-      const scored: Array<{ node: GraphNode; score: number; groups: number; described: boolean }> = [];
+      const scored: Array<{ node: GraphNode; score: number; groups: number; nameGroups: number; described: boolean }> = [];
       const questionNameWords = words(input.text).match(/[\p{L}\p{N}_]+/gu) ?? [];
       for (const node of eligible) {
         // Source occurrences are good exact subjects, but letting every call
         // site compete with its owner swamps broad feature searches.
         if ((node.kind === 'call-reference' || node.kind === 'variable-reference') && !kinds.size) continue;
         const name = words(node.name ?? '');
+        const nameGroups = language.termGroups.filter(group => group.some(term => includesTerm(name, words(term)))).length;
         const locator = words(node.locator);
         const raw = words(node.raw ?? '');
         const classification = words([node.kind, ...(node.tags ?? [])].join(' '));
@@ -248,12 +252,16 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
           if (group.some(term => includesTerm(name, words(term)) || includesTerm(locator, words(term))
             || includesTerm(raw, words(term)) || includesTerm(classification, words(term)) || factTerms.get(node.id)?.has(words(term)))) groups += 1;
         }
-        for (const term of terms) {
-          if (includesTerm(name, term)) score += 4;
-          if (includesTerm(locator, term)) score += 2;
-          if (includesTerm(raw, term)) score += 1;
-          if (includesTerm(classification, term)) score += 3;
-          if (factTerms.get(node.id)?.has(term)) score += 3;
+        // Inflected forms of one question word are alternatives, not
+        // independent evidence. Score each group once per graph field so a
+        // lemma plus its written form cannot outrank a different concept.
+        for (const group of language.termGroups) {
+          const matches = (value: string) => group.some(term => includesTerm(value, words(term)));
+          if (matches(name)) score += 4;
+          if (matches(locator)) score += 2;
+          if (matches(raw)) score += 1;
+          if (matches(classification)) score += 3;
+          if (group.some(term => factTerms.get(node.id)?.has(words(term)))) score += 3;
         }
         // A consecutive sequence of a subject's actual name is a stronger
         // binding than the same words scattered through a source expression.
@@ -271,7 +279,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         const head = language.termGroups.at(-1) ?? [];
         if (head.some(term => includesTerm(name, words(term)))) score += 6;
         const described = Boolean(description && language.termGroups.every(group => group.some(term => includesTerm(description, words(term)))));
-        if (score) { matchedTermGroups.set(node.id, groups); scored.push({ node, groups, described, score: score
+        if (described) fullyDescribedSubjects.add(node.id);
+        if (score) { matchedTermGroups.set(node.id, groups); matchedNameGroups.set(node.id, nameGroups); scored.push({ node, groups, nameGroups, described, score: score
           + (['function', 'method', 'constructor'].includes(node.kind) ? 4 : 0)
           + (sourceFamilies.has(node.id) ? 10 : 0)
           + (familyOf(node).some(family => family.id === node.id) ? 4 : 0) }); }
@@ -279,10 +288,11 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       scored.sort((a, b) => {
         const sourceOrder = Number(isWrittenTestSource(a.node.sourceId)) - Number(isWrittenTestSource(b.node.sourceId));
         return (preferTestSources ? -sourceOrder : sourceOrder) || Number(b.described) - Number(a.described)
-          || b.score - a.score || a.node.id.localeCompare(b.node.id);
+          || b.nameGroups - a.nameGroups || b.groups - a.groups || b.score - a.score || a.node.id.localeCompare(b.node.id);
       });
       const minimum = Math.min(2, language.termGroups.length);
       const intersected = scored.filter(item => item.groups >= minimum);
+      excludedWeakerMatches = intersected.length ? scored.length - intersected.length : 0;
       subjects = (intersected.length ? intersected : scored).map(item => item.node);
       selection = 'terms';
     } else if (input.scope) {
@@ -489,11 +499,23 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     for (const node of component.subjects) if (!represented.has(node.id)) paths.push({ subjects: [node], links: [], linkNodes: [],
       sourceCategory: component.sourceCategory, rank: ranked.get(node.id)!, anchorId: node.id });
     return paths;
-  }).sort((a, b) => a.rank - b.rank || ranked.get(a.anchorId)! - ranked.get(b.anchorId)!);
+  }).sort((a, b) => {
+    const sourceOrder = Number(a.sourceCategory === 'test-source') - Number(b.sourceCategory === 'test-source');
+    // For subjects with equally strong name matches, a captured path provides more
+    // connected context than an isolated match. Keep all paths pageable and
+    // retain candidate status; connectivity is not proof of relevance.
+    return (preferTestSources ? -sourceOrder : sourceOrder)
+      || Number(fullyDescribedSubjects.has(b.anchorId)) - Number(fullyDescribedSubjects.has(a.anchorId))
+      || (matchedNameGroups.get(b.anchorId) ?? 0) - (matchedNameGroups.get(a.anchorId) ?? 0)
+      || Number(b.links.length > 0) - Number(a.links.length > 0)
+      || (matchedTermGroups.get(b.anchorId) ?? 0) - (matchedTermGroups.get(a.anchorId) ?? 0)
+      || a.rank - b.rank;
+  });
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
   const limit = input.limit ?? 20;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Graph page size must be a positive integer');
   const groupPage = groupedSelection ? connectedGroups.slice(offset, offset + limit) : [];
+  const connectedAtRanking = new Map(groupPage.map(group => [group, group.links.length > 0]));
   // An interaction point is itself a meaningful selected subject. Continue
   // through its captured binding and inline callback occurrences even when
   // those nodes do not happen to match the question's words. Stop at named
@@ -843,12 +865,15 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       ...(selection === 'terms' && subjectPage.length ? { lexicalCoverage: {
         termGroups: language.termGroups.length,
         bestDisplayedSubject: subjectPage.reduce((best, node) => Math.max(best, matchedTermGroups.get(node.id) ?? 0), 0),
+        excludedWeakerMatches,
       } } : {}) },
     navigation, comparison,
     subjectTotal: subjects.length,
     subjects: subjectPage,
     ...(groupedSelection ? { connectedGroupTotal: connectedGroups.length, connectedGroups: groupPage.map(group => ({
       anchorId: group.anchorId, subjects: group.subjects, links: group.links, linkNodes: group.linkNodes, sourceCategory: group.sourceCategory,
+      ranking: { descriptionMatchesAllTerms: fullyDescribedSubjects.has(group.anchorId), matchedNameGroups: matchedNameGroups.get(group.anchorId) ?? 0,
+        matchedTermGroups: matchedTermGroups.get(group.anchorId) ?? 0, connected: connectedAtRanking.get(group) ?? false },
     })) } : {}),
     families,
     sourceFamilies,
