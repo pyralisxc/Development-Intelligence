@@ -74,6 +74,7 @@ export interface CanonicalQueryArtifactLoadResult {
   state: 'not-configured' | 'miss' | 'hit' | 'invalid' | 'error';
   loadMs: number;
   index?: CanonicalQueryIndexArtifact;
+  bucketIds?: string[];
   shards?: Record<string, CanonicalQueryDetailShard>;
   error?: string;
 }
@@ -492,12 +493,14 @@ async function readDescriptor(project: string, item: CanonicalQueryArtifactDescr
 export async function loadCanonicalQueryArtifacts(
   graph: CanonicalQueryArtifactIdentity,
   ref: CanonicalQueryArtifactGenerationRef | null | undefined,
-  bucketIds: string[] = [],
+  buckets: string[] | ((index: CanonicalQueryIndexArtifact) => string[]) = [],
 ): Promise<CanonicalQueryArtifactLoadResult> {
   const startedAt = Date.now();
   const storage = canonicalDerivedStorageInfo();
   if (!storage.durable) return { state: 'not-configured', loadMs: 0 };
   if (!ref) return { state: 'miss', loadMs: 0 };
+  let establishedIndex: CanonicalQueryIndexArtifact | undefined;
+  let bucketIds: string[] = [];
   try {
     const manifestPath = `${slotPrefix(ref.slot)}/manifest.json`;
     const manifestBody = await readCanonicalDerivedObject(graph.project, manifestPath, 4 * 1024 * 1024);
@@ -517,8 +520,10 @@ export async function loadCanonicalQueryArtifacts(
     if (populated.join(',') !== manifest.bucketIds.join(',')) {
       throw new Error('Canonical query artifact manifest does not match the index bucket inventory');
     }
+    establishedIndex = index;
+    bucketIds = [...new Set(typeof buckets === 'function' ? buckets(index) : buckets)].sort();
     const shards: Record<string, CanonicalQueryDetailShard> = {};
-    for (const bucket of [...new Set(bucketIds)].sort()) {
+    for (const bucket of bucketIds) {
       const item = manifest.shards[bucket];
       if (!item) {
         const summary = index.buckets[bucket];
@@ -535,11 +540,12 @@ export async function loadCanonicalQueryArtifacts(
       ) throw new Error(`Canonical query artifact shard identity is invalid: ${bucket}`);
       shards[bucket] = shard;
     }
-    return { state: 'hit', loadMs: Math.max(0, Date.now() - startedAt), index, shards };
+    return { state: 'hit', loadMs: Math.max(0, Date.now() - startedAt), index, bucketIds, shards };
   } catch (error) {
     return {
       state: 'invalid',
       loadMs: Math.max(0, Date.now() - startedAt),
+      ...(establishedIndex ? { index: establishedIndex, bucketIds } : {}),
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -714,7 +720,7 @@ export async function loadCanonicalQueryArtifactPointer(expected: {
 
 export async function loadCanonicalQueryArtifactsFromPointer(
   pointer: CanonicalQueryArtifactPointer,
-  bucketIds: string[] = [],
+  buckets: string[] | ((index: CanonicalQueryIndexArtifact) => string[]) = [],
 ): Promise<CanonicalQueryArtifactLoadResult> {
   return await loadCanonicalQueryArtifacts({
     project: pointer.project,
@@ -725,5 +731,5 @@ export async function loadCanonicalQueryArtifactsFromPointer(
     sourceFingerprint: pointer.sourceFingerprint,
     topologyFingerprint: pointer.topologyFingerprint,
     evidenceFingerprint: pointer.evidenceFingerprint,
-  }, pointer.ref, bucketIds);
+  }, pointer.ref, buckets);
 }
