@@ -120,7 +120,7 @@ Coverage is part of the truth model. Eligible sources are described as:
 - `skipped`;
 - `failed`.
 
-Negative/exhaustive answers must not collapse “nothing found” with “DI could not fully inspect this scope.” Coverage is evaluated at the claim scope. Positive proof can cite the exact covered source paths that support it; a repository-wide absence claim requires exhaustive tracked-source coverage. `unsupported`, `partial`, `skipped`, `failed`, or unavailable sources therefore block a definitive negative when they could contain contrary evidence. `check_graph_coverage` exposes detailed file-level status and reasons; higher-level lenses carry compact coverage context.
+Negative/exhaustive answers must not collapse “nothing found” with “DI could not fully inspect this scope.” Coverage is evaluated at the claim scope. Positive proof can cite the exact covered source paths that support it; a repository-wide absence claim requires exhaustive tracked-source coverage. `unsupported`, `partial`, `skipped`, `failed`, or unavailable sources therefore block a definitive negative when they could contain contrary evidence. `check_graph_coverage` exposes detailed file-level status and reasons; its path-scope counts are computed before the optional status filter, while repository totals and proof summary are labeled separately. A scope with no matching files is distinct from a matching scope whose status filter returns no files. These descriptive counts do not change claim proof. Higher-level lenses carry compact coverage context.
 
 ## Generic semantic declarations
 
