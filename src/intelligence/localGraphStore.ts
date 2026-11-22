@@ -2,6 +2,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { IntelligenceGraph } from '../types.js';
+import { bindLocalGraphIndex, buildLocalGraphIndex, readIndexedQuestionEnvelope } from './localGraphIndex.js';
+import { graphFamilyMemberships } from './graphFamilies.js';
 
 type Field = 'nodes' | 'edges' | 'evidence';
 type Entry = { generation: string; graphId: string; createdAt: string; sourceFingerprint: string | null };
@@ -90,6 +92,7 @@ export async function saveLocalSourceGraph(root: string, graph: IntelligenceGrap
       }
       await flush();
     }
+    buildLocalGraphIndex(target, generation, graph, graphFamilyMemberships(graph));
     const manifest: Manifest = { version: 1, graph: { ...graph, nodes: [], edges: [], evidence: [] }, parts };
     await fs.writeFile(path.join(target, 'manifest.json'), JSON.stringify(manifest));
     return await withCatalogLock(directory, async () => {
@@ -196,6 +199,38 @@ export async function readLocalSourceGraph(root: string, project: string, graphI
     if (!Array.isArray(items)) throw new Error('Invalid local graph part contents');
     for (const item of items) (manifest.graph[part.field] as unknown[]).push(item);
   }
+    try {
+      await fs.access(path.join(target, 'retrieval-index.sqlite'));
+      bindLocalGraphIndex(manifest.graph, entry.generation, target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
     return manifest.graph;
+  });
+}
+
+/** Open the identity and coverage envelope for generation-bound record access.
+ * The arrays are intentionally empty: callers must use the index to select
+ * records and must not treat the envelope as a materialized complete graph. */
+export async function withLocalSourceGraphEnvelope<T>(root: string, project: string, use: (graph: IntelligenceGraph) => Promise<T> | T, graphId?: string, generation?: string, compactQuestion = false): Promise<T> {
+  const directory = projectDirectory(root, project);
+  return await withCatalogLock(directory, async () => {
+    const catalog = await catalogAt(directory);
+    if (!catalog || catalog.project !== project) throw new Error(`No local graph for ${project}; build it first`);
+    const entry = generation ? catalog.entries.find(item => item.generation === generation && (!graphId || item.graphId === graphId)) : graphId ? catalog.entries.find(item => item.graphId === graphId) : catalog.entries.find(item => item.generation === catalog.active);
+    if (!entry || !/^[a-f0-9]{32}$/u.test(entry.generation)) throw new Error(`Local graph is not retained: ${graphId ?? 'active'}`);
+    const target = path.join(directory, entry.generation);
+    try { await fs.access(path.join(target, 'retrieval-index.sqlite')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('This retained graph needs a current retrieval index'); throw error; }
+    if (compactQuestion) {
+      const graph = readIndexedQuestionEnvelope(target, project, entry.generation, entry.graphId, entry.sourceFingerprint);
+      if (!graph || !bindLocalGraphIndex(graph, entry.generation, target)) throw new Error('This retained graph needs a current retrieval index');
+      return await use(graph);
+    }
+    const manifest = JSON.parse(await fs.readFile(path.join(target, 'manifest.json'), 'utf8')) as Manifest;
+    if (manifest.version !== 1 || manifest.graph.project !== project || manifest.graph.graphId !== entry.graphId || !Array.isArray(manifest.parts)) throw new Error('Invalid local graph manifest');
+    if (manifest.graph.nodes.length || manifest.graph.edges.length || manifest.graph.evidence.length) throw new Error('Invalid local graph envelope');
+    if (!bindLocalGraphIndex(manifest.graph, entry.generation, target)) throw new Error('This retained graph needs a current retrieval index');
+    return await use(manifest.graph);
   });
 }

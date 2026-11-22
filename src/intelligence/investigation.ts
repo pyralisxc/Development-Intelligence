@@ -1,4 +1,5 @@
 import type { IntelligenceGraph } from '../types.js';
+import { indexedIncidentEdges, indexedRecords } from './localGraphIndex.js';
 
 /** A revision-bound view of graph records selected by an operation. It owns no facts. */
 export function investigationSelection(graph: IntelligenceGraph, operation: string, input: {
@@ -7,18 +8,19 @@ export function investigationSelection(graph: IntelligenceGraph, operation: stri
   const focusNodes = new Set(input.nodeIds ?? []);
   const focusEdges = new Set(input.edgeIds ?? []);
   const allEdges = new Set([...focusEdges, ...(input.contextEdgeIds ?? [])]);
-  const edges = graph.edges.filter(edge => allEdges.has(edge.id));
+  const edges = indexedRecords(graph, 'edges', allEdges) ?? graph.edges.filter(edge => allEdges.has(edge.id));
   const nodes = new Set([...focusNodes, ...(input.contextNodeIds ?? [])]);
   for (const edge of edges) { if (edge.from) nodes.add(edge.from); if (edge.to) nodes.add(edge.to); }
-  const records = graph.nodes.filter(node => nodes.has(node.id));
+  const records = indexedRecords(graph, 'nodes', nodes) ?? graph.nodes.filter(node => nodes.has(node.id));
   const evidenceIds = new Set([...records.flatMap(node => node.evidenceIds ?? []), ...edges.flatMap(edge => edge.evidenceIds ?? [])]);
+  const evidence = indexedRecords(graph, 'evidence', evidenceIds) ?? graph.evidence.filter(item => evidenceIds.has(item.id));
   return {
     operation,
     graph: { project: graph.project, graphId: graph.graphId, revision: graph.repositoryRevision,
       sourceState: graph.sourceState ?? null, sourceFingerprint: graph.sourceFingerprint, analyzerVersion: graph.analyzerVersion },
     focusNodeIds: records.filter(node => focusNodes.has(node.id)).map(node => node.id),
     focusEdgeIds: edges.filter(edge => focusEdges.has(edge.id)).map(edge => edge.id),
-    nodes: records, edges, evidence: graph.evidence.filter(item => evidenceIds.has(item.id)),
+    nodes: records, edges, evidence,
     coverage: graph.coverage ?? null, relationshipCoverage: graph.relationshipCoverage ?? [],
     ...(input.page ? { page: input.page } : {}), ...(input.scope ? { scope: input.scope } : {}),
   };
@@ -56,7 +58,7 @@ export function questionSelection(graph: IntelligenceGraph, result: any) {
     ...(family.facts ?? []).flatMap((fact: any) => [fact.id, ...(fact.requirements ?? []).map((requirement: any) => requirement.conditionNodeId)])])
     .filter((id: unknown): id is string => typeof id === 'string');
   const selectedNodes = new Set([...focus.nodeIds, ...contextNodeIds]);
-  const factEdges = graph.edges.filter(edge => edge.from && edge.to && selectedNodes.has(edge.from) && selectedNodes.has(edge.to)
+  const factEdges = (indexedIncidentEdges(graph, selectedNodes, 'outbound') ?? graph.edges).filter(edge => edge.from && edge.to && selectedNodes.has(edge.from) && selectedNodes.has(edge.to)
     && ['has-condition', 'has-effect', 'has-source-control', 'requires-condition', 'calls-site'].includes(edge.kind));
   return investigationSelection(graph, 'question', { ...focus, contextNodeIds,
     contextEdgeIds: factEdges.map(edge => edge.id), page: result.page, scope: result.scope });

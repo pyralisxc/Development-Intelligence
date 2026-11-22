@@ -4,6 +4,7 @@ import type { GraphEdge, GraphNode, GraphCoverageStatus, IntelligenceGraph } fro
 import { auditGraph, type AuditFinding } from './assessment.js';
 import { currentGraph } from './service.js';
 import { locatorFileAndLine, nodeArea } from './query.js';
+import { localIndexAudit } from './localGraphIndex.js';
 
 type AuditRelationshipStatus = 'candidate' | 'unresolved';
 
@@ -427,6 +428,7 @@ export function synthesizeRepositoryAudit(graph: IntelligenceGraph, options: Rep
     revision: graph.repositoryRevision,
     role: graph.role,
     analyzerVersion: graph.analyzerVersion,
+    retrievalIndex: localIndexAudit(graph),
     coverage: compactCoverage(graph),
     findingSummary: { total: findings.total, groups: findings.groups },
     findings: findings.samples,

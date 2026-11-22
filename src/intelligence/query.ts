@@ -11,6 +11,7 @@ import { normalizeName } from './model.js';
 import { deriveQueryCorrelations } from './resolver.js';
 import { exactEvidenceQueryBuckets } from './queryArtifacts.js';
 import { availableRelationshipContracts, observedRelationshipContracts, sourceCapabilityCoverage } from './graphKnowledge.js';
+import { indexedNameMatches, indexedOrdinals } from './localGraphIndex.js';
 
 function requestedCount(value: number | undefined, fallback: number, minimum: number, name: string): number {
   const count = value ?? fallback;
@@ -58,13 +59,14 @@ function coverageSummary(graph: IntelligenceGraph): Record<string, unknown> | nu
 export function findGraphNodeCandidates(graph: IntelligenceGraph, query: string, limit = 20): GraphNode[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
-  const exactId = graph.nodes.find(node => node.id === query);
+  const exactOrdinals = indexedOrdinals(graph, 'nodes', [query]);
+  const exactId = exactOrdinals ? (exactOrdinals.length ? graph.nodes[exactOrdinals[0]!] : undefined) : graph.nodes.find(node => node.id === query);
   if (exactId) return [exactId];
-  const exactName = graph.nodes.filter(node => node.name?.toLowerCase() === needle);
+  const exactName = indexedNameMatches(graph, query, false, limit) ?? graph.nodes.filter(node => node.name?.toLowerCase() === needle);
   if (exactName.length) return exactName.slice(0, limit);
   const normalizedNeedle = normalizeName(query);
   if (normalizedNeedle) {
-    const normalizedName = graph.nodes.filter(node => node.name && normalizeName(node.name) === normalizedNeedle);
+    const normalizedName = indexedNameMatches(graph, query, true, limit) ?? graph.nodes.filter(node => node.name && normalizeName(node.name) === normalizedNeedle);
     if (normalizedName.length) return normalizedName.slice(0, limit);
   }
   return graph.nodes.filter(node => queryTextMatches(nodeText(node), query)).slice(0, limit);
