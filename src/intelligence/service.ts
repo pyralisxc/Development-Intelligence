@@ -578,6 +578,11 @@ async function publishCurrentQueryArtifactPointer(
   return result;
 }
 
+function selectQueryArtifactBuckets(index: Parameters<typeof candidateQueryBuckets>[0], queries: string[]): string[] {
+  return [...new Set(queries.map(value => value.trim()).filter(Boolean)
+    .flatMap(value => candidateQueryBuckets(index, value)))].sort();
+}
+
 export async function loadCurrentQueryArtifacts(
   project: string,
   queries: string[],
@@ -614,32 +619,25 @@ export async function loadCurrentQueryArtifacts(
     };
   }
 
-  const indexLoad = await loadCanonicalQueryArtifactsFromPointer(pointer);
-  if (indexLoad.state !== 'hit' || !indexLoad.index) {
+  const loaded = await loadCanonicalQueryArtifactsFromPointer(pointer, index => selectQueryArtifactBuckets(index, queries));
+  if (!loaded.index) {
     return {
-      state: indexLoad.state,
-      loadMs: pointerLoad.loadMs + indexLoad.loadMs,
+      state: loaded.state,
+      loadMs: pointerLoad.loadMs + loaded.loadMs,
       bucketIds: [],
-      index: indexLoad.index ?? null,
-      shards: indexLoad.shards ?? {},
-      ...(indexLoad.error ? { reason: indexLoad.error } : {}),
+      index: null,
+      shards: loaded.shards ?? {},
+      ...(loaded.error ? { reason: loaded.error } : {}),
     };
   }
-  const bucketIds = [...new Set(
-    queries
-      .map(value => value.trim())
-      .filter(Boolean)
-      .flatMap(value => candidateQueryBuckets(indexLoad.index!, value)),
-  )].sort();
-  const detailLoad = await loadCanonicalQueryArtifactsFromPointer(pointer, bucketIds);
   return {
-    state: detailLoad.state,
-    loadMs: pointerLoad.loadMs + indexLoad.loadMs + detailLoad.loadMs,
-    bucketIds,
-    index: detailLoad.index ?? indexLoad.index,
-    shards: detailLoad.shards ?? {},
+    state: loaded.state,
+    loadMs: pointerLoad.loadMs + loaded.loadMs,
+    bucketIds: loaded.bucketIds ?? [],
+    index: loaded.index,
+    shards: loaded.shards ?? {},
     pointer,
-    ...(detailLoad.error ? { reason: detailLoad.error } : {}),
+    ...(loaded.error ? { reason: loaded.error } : {}),
   };
 }
 
@@ -695,33 +693,24 @@ export async function loadQueryArtifactShadow(
     };
   }
 
-  const indexLoad = await loadCanonicalQueryArtifacts(graph, ref);
-  if (indexLoad.state !== 'hit' || !indexLoad.index) {
+  const loaded = await loadCanonicalQueryArtifacts(graph, ref, index => selectQueryArtifactBuckets(index, queries));
+  if (!loaded.index) {
     return {
-      state: indexLoad.state,
-      loadMs: indexLoad.loadMs,
+      state: loaded.state,
+      loadMs: loaded.loadMs,
       bucketIds: [],
-      index: indexLoad.index ?? null,
-      shards: indexLoad.shards ?? {},
-      ...(indexLoad.error ? { reason: indexLoad.error } : {}),
+      index: null,
+      shards: loaded.shards ?? {},
+      ...(loaded.error ? { reason: loaded.error } : {}),
     };
   }
-
-  const bucketIds = [...new Set(
-    queries
-      .map(value => value.trim())
-      .filter(Boolean)
-      .flatMap(value => candidateQueryBuckets(indexLoad.index!, value)),
-  )].sort();
-
-  const detailLoad = await loadCanonicalQueryArtifacts(graph, ref, bucketIds);
   return {
-    state: detailLoad.state,
-    loadMs: indexLoad.loadMs + detailLoad.loadMs,
-    bucketIds,
-    index: detailLoad.index ?? indexLoad.index,
-    shards: detailLoad.shards ?? {},
-    ...(detailLoad.error ? { reason: detailLoad.error } : {}),
+    state: loaded.state,
+    loadMs: loaded.loadMs,
+    bucketIds: loaded.bucketIds ?? [],
+    index: loaded.index,
+    shards: loaded.shards ?? {},
+    ...(loaded.error ? { reason: loaded.error } : {}),
   };
 }
 
