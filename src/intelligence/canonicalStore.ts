@@ -6,8 +6,8 @@ import { stableHash } from '../util/hash.js';
 import { assertGraphIntegrity } from './integrity.js';
 import { ANALYZER_VERSION } from './repository.js';
 import { currentVercelOidcToken } from '../vercelRequestContext.js';
-import { assertAuthorityWritesAllowed } from '../config/runtimeRole.js';
-import { assertProjectAccessCurrent, projectAccessCanonical, projectAccessConfig } from '../config/projectAccess.js';
+import { assertAuthorityWritesAllowed, previewRuntime } from '../config/runtimeRole.js';
+import { assertProjectAccessCurrent, projectAccessCanonical, projectAccessConfig, projectAccessScopeKey } from '../config/projectAccess.js';
 
 export interface CanonicalGraphCurrentness {
   acceptedSemanticCurrent: boolean;
@@ -53,6 +53,7 @@ export type CanonicalSaveState = 'not-configured' | 'stored' | 'error' | 'skippe
 
 export interface CanonicalPersistenceDiagnostics {
   mode: 'process-only' | 'canonical-file' | 'vercel-private-blob';
+  scope?: 'canonical' | 'preview-replay';
   durable: boolean;
   loadState: CanonicalLoadState;
   saveState: CanonicalSaveState;
@@ -93,7 +94,7 @@ interface ShardedCanonicalRecord {
 
 /** Store large populations in independent objects, then publish the small
  * manifest last. No graph-wide JSON string or total-size ceiling is needed. */
-async function shardCanonicalRecord(record: CanonicalGraphRecord): Promise<string> {
+async function shardCanonicalRecord(record: CanonicalGraphRecord, write = writeCanonicalDerivedObject): Promise<string> {
   const generation = stableHash([record.revision, record.working.graphId, record.storedAt, Math.random()]);
   const parts: CanonicalGraphPart[] = [...(record.legacyAcceptedParts ?? [])];
   const skeleton = { ...record,
@@ -113,7 +114,7 @@ async function shardCanonicalRecord(record: CanonicalGraphRecord): Promise<strin
         if (!batch.length) return;
         const body = '[' + batch.join(',') + ']';
         const partPath = `graph-shards/${generation}/${graphName}-${field}-${index++}.json`;
-        if (!await writeCanonicalDerivedObject(record.project, partPath, body, 'application/json')) {
+        if (!await write(record.project, partPath, body, 'application/json')) {
           throw new Error('Canonical graph shard could not be stored');
         }
         parts.push({ graph: graphName, field, path: partPath,
@@ -134,7 +135,7 @@ async function shardCanonicalRecord(record: CanonicalGraphRecord): Promise<strin
   return JSON.stringify({ format: 'canonical-graph-shards-v1', record: skeleton, parts } satisfies ShardedCanonicalRecord);
 }
 
-async function unshardCanonicalRecord(value: unknown, project: string): Promise<unknown> {
+async function unshardCanonicalRecord(value: unknown, project: string, read = readCanonicalDerivedObject): Promise<unknown> {
   if (!value || typeof value !== 'object' || (value as { format?: unknown }).format !== 'canonical-graph-shards-v1') return value;
   const manifest = value as ShardedCanonicalRecord;
   if (!manifest.record || manifest.record.project !== project || !Array.isArray(manifest.parts)) {
@@ -151,7 +152,7 @@ async function unshardCanonicalRecord(value: unknown, project: string): Promise<
       || !/^[0-9a-f]{64}$/u.test(part.sha256)) throw new Error('Canonical graph shard reference is malformed');
     const graph = manifest.record[part.graph];
     if (!graph || !Array.isArray(graph[part.field])) throw new Error('Canonical graph shard target is malformed');
-    const body = await readCanonicalDerivedObject(project, part.path);
+    const body = await read(project, part.path);
     if (!body || createHash('sha256').update(body).digest('hex') !== part.sha256) throw new Error('Canonical graph shard is missing or mismatched');
     const items: unknown = JSON.parse(new TextDecoder().decode(body));
     if (!Array.isArray(items)) throw new Error('Canonical graph shard is not a list');
@@ -547,6 +548,16 @@ export async function writeCanonicalDerivedObject(
   contentType = 'application/octet-stream',
 ): Promise<boolean> {
   assertAuthorityWritesAllowed();
+  return await writeDerivedObject(project, relativePath, body, contentType);
+}
+
+async function writeDerivedObject(
+  project: string,
+  relativePath: string,
+  body: string | Uint8Array,
+  contentType = 'application/octet-stream',
+): Promise<boolean> {
+  await assertProjectAccessCurrent(project);
   assertDerivedRelativePath(relativePath);
   const selected = backend();
   if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) return false;
@@ -586,6 +597,68 @@ export async function writeCanonicalDerivedObject(
     throw new Error(`Vercel canonical derived object write failed with HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
   }
   return true;
+}
+
+/** A disposable Preview cache, never a canonical graph or current pointer.
+ * The namespace binds every object to its grant, repository, exact revision,
+ * analyzer and deployed engine. A deployment cannot consume another engine's
+ * output merely because the source revision happens to match. */
+function previewReplayPrefix(expected: { project: string; repository: string; revision: string }): string {
+  if (!previewRuntime()) throw new Error('Preview replay storage is only available in Preview');
+  assertExactRevision(expected.revision);
+  const engine = process.env.VERCEL_GIT_COMMIT_SHA || process.env.DEVINT_PREVIEW_ENGINE_REVISION
+    || process.env.VERCEL_DEPLOYMENT_ID || process.env.VERCEL_URL || ANALYZER_VERSION;
+  const limits = [process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES,
+    process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES];
+  const scope = stableHash([projectAccessScopeKey(), expected.project, expected.repository, expected.revision, ANALYZER_VERSION, engine,
+    ...(limits.some(value => value !== undefined) ? limits : [])]);
+  return `preview-replay/${scope}`;
+}
+
+export async function loadPreviewReplayGraph(expected: { project: string; repository: string; revision: string }): Promise<CanonicalLoadResult> {
+  await assertProjectAccessCurrent(expected.project);
+  const prefix = previewReplayPrefix(expected);
+  const diagnostics = { ...baseDiagnostics(), scope: 'preview-replay' as const };
+  if (!diagnostics.durable) return { diagnostics };
+  const started = Date.now();
+  try {
+    const read = (project: string, relativePath: string, maxBytes?: number) =>
+      readCanonicalDerivedObject(project, `${prefix}/${relativePath}`, maxBytes);
+    const body = await read(expected.project, 'manifest.json');
+    if (!body) return { diagnostics: { ...diagnostics, loadMs: Date.now() - started } };
+    const parsed = await unshardCanonicalRecord(JSON.parse(new TextDecoder().decode(body)), expected.project, read);
+    const record = validateRecord(parsed, expected);
+    await assertProjectAccessCurrent(expected.project);
+    return { record, diagnostics: { ...diagnostics, loadState: 'hit', loadMs: Date.now() - started } };
+  } catch (error) {
+    await assertProjectAccessCurrent(expected.project);
+    return { diagnostics: { ...diagnostics, loadState: 'error', loadMs: Date.now() - started,
+      error: error instanceof Error ? error.message : String(error) } };
+  }
+}
+
+export async function savePreviewReplayGraph(record: CanonicalGraphRecord): Promise<CanonicalPersistenceDiagnostics> {
+  await assertProjectAccessCurrent(record.project);
+  const prefix = previewReplayPrefix(record);
+  const diagnostics = { ...baseDiagnostics(), scope: 'preview-replay' as const };
+  if (!diagnostics.durable) return diagnostics;
+  const failed = record.working.producerCoverage?.find(item => item.state === 'failed');
+  if (failed) return { ...diagnostics, saveState: 'skipped', error: `${failed.producer} did not finish: ${failed.reason ?? 'unknown failure'}` };
+  const started = Date.now();
+  try {
+    const validated = validateRecord(record, record);
+    const write = (project: string, relativePath: string, body: string | Uint8Array, contentType?: string) =>
+      writeDerivedObject(project, `${prefix}/${relativePath}`, body, contentType);
+    const payload = await shardCanonicalRecord(validated, write);
+    await assertProjectAccessCurrent(record.project);
+    if (!await write(record.project, 'manifest.json', payload, 'application/json')) throw new Error('Preview replay manifest could not be stored');
+    await assertProjectAccessCurrent(record.project);
+    return { ...diagnostics, saveState: 'stored', saveMs: Date.now() - started };
+  } catch (error) {
+    await assertProjectAccessCurrent(record.project);
+    return { ...diagnostics, saveState: 'error', saveMs: Date.now() - started,
+      error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function loadFromFile(

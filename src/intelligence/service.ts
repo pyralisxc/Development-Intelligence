@@ -13,7 +13,7 @@ import { assertGraphIntegrity } from './integrity.js';
 import { advanceRepositoryGraph, ANALYZER_VERSION, buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { toolExecutionDiagnostics } from '../observability.js';
-import { loadCanonicalGraph, makeCanonicalGraphRecord, saveCanonicalGraph, type CanonicalPersistenceDiagnostics, type CanonicalQueryArtifactGenerationRef } from './canonicalStore.js';
+import { loadCanonicalGraph, loadPreviewReplayGraph, makeCanonicalGraphRecord, saveCanonicalGraph, savePreviewReplayGraph, type CanonicalPersistenceDiagnostics, type CanonicalQueryArtifactGenerationRef } from './canonicalStore.js';
 import {
   loadCanonicalQueryArtifactPointer,
   loadCanonicalQueryArtifacts,
@@ -176,10 +176,10 @@ function elapsedMs(startedAt: number): number {
   return Math.max(0, Date.now() - startedAt);
 }
 
-async function buildCachedRepositoryGraph(project: string, ref?: string): Promise<RepositoryGraphAccess> {
+async function buildCachedRepositoryGraph(project: string, ref?: string, resolvedRevision?: ProjectRevision): Promise<RepositoryGraphAccess> {
   const accessStarted = Date.now();
   const resolutionStarted = Date.now();
-  const revision = await resolveProjectRevision(project, ref);
+  const revision = resolvedRevision ?? await resolveProjectRevision(project, ref);
   const revisionResolutionMs = elapsedMs(resolutionStarted);
   const config = await getProjectConfig(project);
   const canonicalEligible = !computeOnly() && !previewRuntime() && (ref === undefined || ref === config.defaultRef);
@@ -392,6 +392,27 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         } satisfies CachedRepositoryGraph;
       }
 
+      const replay = previewRuntime()
+        ? await loadPreviewReplayGraph({ project, repository: revision.repository, revision: revision.sha })
+        : null;
+      if (replay?.record) {
+        return {
+          graph: replay.record.working,
+          accepted: null,
+          currentness: replay.record.currentness,
+          revision,
+          touchedAt: Date.now(),
+          buildTiming: null,
+          persistence: replay.diagnostics,
+          queryArtifacts: { state: 'not-configured', saveMs: 0, ref: null },
+        } satisfies CachedRepositoryGraph;
+      }
+      // A failed storage read is not a cache miss. Rebuilding here could
+      // repeatedly perform the most expensive operation during an outage and
+      // conceal the reason the existing generation could not be loaded.
+      if (replay?.diagnostics.loadState === 'error') {
+        throw new Error(`Preview replay graph could not be read: ${replay.diagnostics.error ?? 'storage unavailable'}`);
+      }
       let graphBuildMs = 0;
       const observed = await withResolvedProjectCheckoutObserved(revision, async checkout => {
         const graphBuildStarted = Date.now();
@@ -409,6 +430,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
         const currentness = emptyCurrentness();
         return { graph, accepted, currentness };
       });
+      const saved = replay ? await savePreviewReplayGraph(makeCanonicalGraphRecord({
+        project, repository: revision.repository, revision: revision.sha,
+        working: observed.value.graph, accepted: null, currentness: observed.value.currentness,
+      })) : null;
       return {
         ...observed.value,
         revision,
@@ -419,7 +444,12 @@ async function buildCachedRepositoryGraph(project: string, ref?: string): Promis
           checkout: observed.timing,
           totalMs: elapsedMs(queuedAt),
         },
-        persistence: {
+        persistence: replay && saved ? {
+          ...replay.diagnostics,
+          saveState: saved.saveState,
+          saveMs: saved.saveMs,
+          ...(saved.error ? { error: saved.error } : {}),
+        } : {
           mode: 'process-only',
           durable: false,
           loadState: 'not-configured',
@@ -466,7 +496,7 @@ async function loadCachedRepositoryGraphForRead(project: string, ref?: string): 
 
   // Explicit historical/alternate selectors are allowed to use the replay/build
   // path. The no-surprise read/update separation applies to current canonical W.
-  if (!canonicalEligible) return await buildCachedRepositoryGraph(project, ref);
+  if (!canonicalEligible) return await buildCachedRepositoryGraph(project, ref, revision);
 
   const key = cacheKey(project, revision.sha, 'canonical');
   let entry = repositoryCache.get(key);
@@ -588,6 +618,9 @@ export async function loadCurrentQueryArtifacts(
   queries: string[],
   expectedGraphId?: string,
 ): Promise<QueryArtifactShadowLoad> {
+  // Preview's disposable replay graph is a different generation from Main's
+  // canonical pointer, even when both happen to reference the same commit.
+  if (previewRuntime()) return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'preview-replay-uses-revision-bound-graph' };
   const revision = await resolveProjectRevision(project);
   const pointerLoad = await loadCanonicalQueryArtifactPointer({
     project,
@@ -836,14 +869,14 @@ async function scanRuntimeUrl(project: string, urlText: string, repositoryRevisi
 export async function scanGraph(project: string, options: { ref?: string | undefined; urls?: string[] } = {}): Promise<IntelligenceGraph> {
   const revision = await resolveProjectRevision(project, options.ref);
   const config = await getProjectConfig(project);
-  const canonicalEligible = !previewRuntime() && (options.ref === undefined || options.ref === config.defaultRef);
+  const canonicalEligible = !computeOnly() && !previewRuntime() && (options.ref === undefined || options.ref === config.defaultRef);
   const key = cacheKey(project, revision.sha, canonicalEligible ? 'canonical' : 'replay');
   const cached = repositoryCache.get(key);
-  if (cached?.value && (!cached.value.queryArtifacts.ref
+  if (canonicalEligible && cached?.value && (!cached.value.queryArtifacts.ref
     || cached.value.queryArtifacts.ref.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION)) {
     repositoryCache.delete(key);
   }
-  const repository = await buildCachedRepositoryGraph(project, options.ref);
+  const repository = await buildCachedRepositoryGraph(project, options.ref, revision);
   const urls = options.urls ?? [];
   // Current semantic understanding is a pure reconstruction of repository.graph.
   // Canonical scans cannot write a second derived semantic history or promote
