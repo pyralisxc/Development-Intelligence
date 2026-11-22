@@ -1,4 +1,5 @@
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
+import { indexedRelationshipKinds } from './localGraphIndex.js';
 
 /**
  * The canonical graph owns facts. This vocabulary makes the meaning of its
@@ -260,7 +261,7 @@ export function observedRelationshipContracts(graph: IntelligenceGraph): Relatio
 /** Available operations include registered kinds even when this graph has no
  * edge of that kind; an empty relationship population is still queryable. */
 export function availableRelationshipContracts(graph: IntelligenceGraph): RelationshipKindContract[] {
-  return [...new Set([...RELATIONS.keys(), ...graph.edges.map(edge => edge.kind)])].sort()
+  return [...new Set([...RELATIONS.keys(), ...(indexedRelationshipKinds(graph) ?? graph.edges.map(edge => edge.kind))])].sort()
     .map(relationshipKindContract);
 }
 export function inspectRelationshipShape(edge: GraphEdge,

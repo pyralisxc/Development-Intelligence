@@ -1,10 +1,11 @@
 import { graphFamilyMemberships } from './graphFamilies.js';
 import winkNLP from 'wink-nlp';
 import model from 'wink-eng-lite-web-model';
-import type { GraphNode, IntelligenceGraph } from '../types.js';
+import type { GraphFamilyMembership, GraphNode, IntelligenceGraph } from '../types.js';
 import { availableRelationshipContracts } from './graphKnowledge.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
+import { indexedIncidentEdges, indexedNodeTags, indexedTextCandidates, isIndexedSelectedView, openIndexedFamilyAccess } from './localGraphIndex.js';
 
 const nlp = winkNLP(model);
 const its = nlp.its;
@@ -37,7 +38,7 @@ interface LanguageToken {
   end: number;
 }
 
-function interpret(text: string): { tokens: LanguageToken[]; terms: string[]; termGroups: string[][]; negated: boolean } {
+export function interpretGraphLanguage(text: string): { tokens: LanguageToken[]; terms: string[]; termGroups: string[][]; negated: boolean } {
   const tokens: LanguageToken[] = [];
   let position = 0;
   nlp.readDoc(text).tokens().each((token: any) => {
@@ -109,23 +110,13 @@ function containsName(question: string, name: string, caseSensitive = false): bo
   return false;
 }
 
-const SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'ui-element', 'dom-interaction', 'interaction-handler', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference', 'variable-reference']);
+export const GRAPH_SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'ui-element', 'dom-interaction', 'interaction-handler', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference', 'variable-reference']);
 
-/** Language proposes terms and exact names; selection and navigation operate
- * exclusively on the graph's existing nodes and relationships. */
-export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): Record<string, unknown> {
-  const memberships = graphFamilyMemberships(graph);
-  const familyOf = (node: GraphNode) => memberships.get(node.id ?? '') ?? [];
-  const includesTerm = termMatcher();
-  const language = interpret(input.text);
-  const preferTestSources = language.tokens.some(token => ['test', 'tests', 'spec', 'specs'].includes(token.lemma))
-    || Boolean(input.scope && isWrittenTestSource(input.scope));
-  const byId = new Map(graph.nodes.map(node => [node.id, node]));
-  const kinds = new Set(input.nodeKinds ?? []);
-  let relationshipKinds = new Set(input.relationshipKinds ?? []);
-  const statuses = new Set(input.statuses ?? []);
-  let direction = input.direction ?? 'both';
-  let eligible = graph.nodes.filter(node => kinds.size ? kinds.has(node.kind) : SUBJECT_KINDS.has(node.kind));
+type SubjectSelection = { subjects: GraphNode[]; excludedWeakerMatches: number; matchedTermGroups: Map<string, number>; matchedNameGroups: Map<string, number>; fullyDescribedSubjects: Set<string>; selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' };
+const plannedSelections = new WeakMap<IntelligenceGraph, Map<string, SubjectSelection>>();
+
+function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, language: ReturnType<typeof interpretGraphLanguage>, byId: Map<string, GraphNode>, familyOf: (node: GraphNode) => GraphFamilyMembership[], includesTerm: (value: string, term: string) => boolean, preferTestSources: boolean, kinds: Set<string>): SubjectSelection {
+  let eligible = graph.nodes.filter(node => kinds.size ? kinds.has(node.kind) : GRAPH_SUBJECT_KINDS.has(node.kind));
   // Classifications are graph vocabulary, not question-specific dispatch.
   // If a graph classification appears in the question, treat it as a
   // constraint on subjects while retaining the remaining ordinary terms.
@@ -133,7 +124,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     && !['be', 'have', 'do', 'show', 'list', 'find', 'give', 'tell'].includes(token.lemma));
   if (!kinds.size) {
     const questionWords = words(input.text);
-    const tags = new Set(eligible.flatMap(node => node.tags ?? []));
+    const tags = new Set(indexedNodeTags(graph, GRAPH_SUBJECT_KINDS) ?? eligible.flatMap(node => node.tags ?? []));
     const matchedTags = [...tags].filter(tag => {
       const parts = words(tag).split(/\s+/u).filter(part => part.length > 1);
       return parts.length > 0 && parts.every(part => includesTerm(questionWords, part))
@@ -234,7 +225,12 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       }
       const scored: Array<{ node: GraphNode; score: number; groups: number; nameGroups: number; described: boolean }> = [];
       const questionNameWords = words(input.text).match(/[\p{L}\p{N}_]+/gu) ?? [];
+      // The full graph is already in memory in this plan; rescanning the text
+      // index would add a second lookup over the same subjects. A selected view
+      // may use the candidates already found by its planner.
+      const lexicalCandidates = isIndexedSelectedView(graph) ? indexedTextCandidates(graph, input.text, language.terms) : null;
       for (const node of eligible) {
+        if (lexicalCandidates && !lexicalCandidates.has(node.id)) continue;
         // Source occurrences are good exact subjects, but letting every call
         // site compete with its owner swamps broad feature searches.
         if ((node.kind === 'call-reference' || node.kind === 'variable-reference') && !kinds.size) continue;
@@ -300,6 +296,47 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       selection = 'scope';
     }
   }
+  return { subjects, excludedWeakerMatches, matchedTermGroups, matchedNameGroups, fullyDescribedSubjects, selection };
+}
+
+/** Use the same subject selection for planning and graph filtering. */
+export function planGraphSubjects(graph: IntelligenceGraph, input: GraphFilterInput): SubjectSelection {
+  const familyIndex = openIndexedFamilyAccess(graph);
+  try {
+    const memberships = familyIndex ? null : graphFamilyMemberships(graph);
+    const familyOf = (node: GraphNode) => familyIndex?.get(node.id) ?? memberships?.get(node.id) ?? [];
+    const language = interpretGraphLanguage(input.text);
+    const preferTestSources = language.tokens.some(token => ['test', 'tests', 'spec', 'specs'].includes(token.lemma))
+      || Boolean(input.scope && isWrittenTestSource(input.scope));
+    return selectSubjects(graph, input, language, new Map(graph.nodes.map(node => [node.id, node])), familyOf, termMatcher(), preferTestSources, new Set(input.nodeKinds ?? []));
+  } finally { familyIndex?.close(); }
+}
+
+export function rememberGraphSubjects(graph: IntelligenceGraph, input: GraphFilterInput, selection: SubjectSelection): void {
+  let cache = plannedSelections.get(graph);
+  if (!cache) { cache = new Map(); plannedSelections.set(graph, cache); }
+  cache.set(JSON.stringify(input), selection);
+}
+
+/** Language proposes terms and exact names; selection and navigation operate
+ * exclusively on the graph's existing nodes and relationships. */
+export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): Record<string, unknown> {
+  const familyIndex = isIndexedSelectedView(graph) ? openIndexedFamilyAccess(graph) : null;
+  try {
+  const memberships = familyIndex ? null : graphFamilyMemberships(graph);
+  const familyOf = (node: GraphNode) => familyIndex?.get(node.id) ?? memberships?.get(node.id) ?? [];
+  const includesTerm = termMatcher();
+  const language = interpretGraphLanguage(input.text);
+  const preferTestSources = language.tokens.some(token => ['test', 'tests', 'spec', 'specs'].includes(token.lemma))
+    || Boolean(input.scope && isWrittenTestSource(input.scope));
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const kinds = new Set(input.nodeKinds ?? []);
+  let relationshipKinds = new Set(input.relationshipKinds ?? []);
+  const statuses = new Set(input.statuses ?? []);
+  let direction = input.direction ?? 'both';
+  const planned = plannedSelections.get(graph)?.get(JSON.stringify(input))
+    ?? selectSubjects(graph, input, language, byId, familyOf, includesTerm, preferTestSources, kinds);
+  const { subjects, excludedWeakerMatches, matchedTermGroups, matchedNameGroups, fullyDescribedSubjects, selection } = planned;
   // Bind action words to the graph's relationship vocabulary, then use their
   // position relative to the selected subject to choose traversal direction.
   // A symbol reference is never promoted to a call by language matching.
@@ -567,7 +604,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   let depthReached = 0;
   for (let hop = 0; hop < depth && frontier.size; hop += 1) {
     const next = new Set<string>();
-    for (const edge of graph.edges) {
+    for (const edge of indexedIncidentEdges(graph, frontier, direction) ?? graph.edges) {
       if ((relationshipKinds.size && !relationshipKinds.has(edge.kind)) || (statuses.size && !statuses.has(edge.status))) continue;
       const outbound = edge.from && frontier.has(edge.from) && direction !== 'inbound';
       const inbound = edge.to && frontier.has(edge.to) && direction !== 'outbound';
@@ -614,7 +651,14 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   const familySubjects = selection === 'exact-name' || selection === 'scope' ? subjects : subjectPage;
   const requestedFamilies = new Set(familySubjects.map(item => item.id));
   const familyMembers = new Map<string, Array<{ id: string; kind: string; name: string | null; locator: string; roles: string[]; via: string[]; matchedGroups: number }>>();
-  if (requestedFamilies.size) for (const node of graph.nodes) for (const membership of familyOf(node)) {
+  function* selectedFamilyMembers(): Iterable<{ node: GraphNode; membership: ReturnType<typeof familyOf>[number] }> {
+    if (familyIndex) {
+      for (const { nodeId, membership } of familyIndex.members(requestedFamilies)) {
+        const node = byId.get(nodeId); if (node) yield { node, membership };
+      }
+    } else for (const node of graph.nodes) for (const membership of familyOf(node)) yield { node, membership };
+  }
+  if (requestedFamilies.size) for (const { node, membership } of selectedFamilyMembers()) {
     if (!requestedFamilies.has(membership.id) || membership.id === node.id) continue;
     const items = familyMembers.get(membership.id) ?? [];
     items.push({ id: node.id, kind: node.kind, name: node.name ?? null, locator: node.locator,
@@ -805,7 +849,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
           let current = new Set([subject.id]);
           for (let hop = 0; hop < depth && current.size; hop += 1) {
             const next = new Set<string>();
-            for (const edge of graph.edges) {
+            for (const edge of indexedIncidentEdges(graph, current, direction) ?? graph.edges) {
               if (!relationshipKinds.has(edge.kind) || (resolvedOnly && edge.status !== 'resolved') || edge.status === 'unresolved') continue;
               const steps = [direction !== 'inbound' && edge.from && current.has(edge.from) ? [edge.from, edge.to] : null,
                 direction !== 'outbound' && edge.to && current.has(edge.to) ? [edge.to, edge.from] : null];
@@ -891,4 +935,5 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       failedFiles: graph.coverage.failedFiles, skippedFiles: graph.coverage.skippedFiles,
       producerCoverage: graph.producerCoverage ?? [] } : null,
   };
+  } finally { familyIndex?.close(); }
 }

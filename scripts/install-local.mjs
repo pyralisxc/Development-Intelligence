@@ -13,7 +13,8 @@ if (args.includes('--help')) {
   process.exit(0);
 }
 if (!['linux', 'win32'].includes(process.platform)) throw new Error('Local installation currently supports Linux and Windows');
-if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node.js 22 or later is required to install');
+const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 13) || (nodeMajor === 23 && nodeMinor < 4)) throw new Error('Node.js 22.13 or 23.4 (or a later supported version) is required to install');
 const appData = process.platform === 'win32' ? process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local') : process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
 const installDir = path.resolve(option('--install-dir', path.join(appData, 'development-intelligence-local')));
 let prior = {};

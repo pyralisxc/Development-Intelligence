@@ -235,7 +235,7 @@ To install and use the local Workbench, terminal and MCP interface, including th
 
 Requirements:
 
-- Node.js 22+
+- Node.js 22.13+ (or 23.4+ on Node 23)
 - Git
 
 ```bash

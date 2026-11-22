@@ -4,7 +4,7 @@ The local runtime builds from the current files in a Git checkout, including non
 
 For Windows, download and extract the `Development-Intelligence-Local-win-x64.zip` artifact built by the Windows package workflow, then run `Install-Local.cmd`. Setup prompts for the checkout and optional install, graph-data and scratch locations, creates a Start Menu entry and builds the current files. Git for Windows must be installed. The ZIP includes its own Node runtime and platform-specific dependencies.
 
-For installation from source on Linux or Windows, use Git, Node.js 22 or later and the project's platform-specific dependencies. From the source checkout run `npm ci` and `npm run build`, then:
+For installation from source on Linux or Windows, use Git, Node.js 22.13 or later (23.4 or later on Node 23) and the project's platform-specific dependencies. From the source checkout run `npm ci` and `npm run build`, then:
 
 ```text
 node scripts/install-local.mjs --repo-path /path/to/your/checkout --project my-project

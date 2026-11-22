@@ -2,6 +2,7 @@ import { isEndpoint, isInteractionPoint } from './graphKnowledge.js';
 import type { GraphEdge, GraphFamilyMembership, GraphNode, IntelligenceGraph } from '../types.js';
 import ts from 'typescript';
 import { TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
+import { indexedFamilyMemberships } from './localGraphIndex.js';
 
 /** A family is an existing graph subject, not a second graph. Memberships are
  * built from source-backed relationships and retain the relationship ids that
@@ -23,6 +24,8 @@ const familyCache = new WeakMap<IntelligenceGraph, Map<string, GraphFamilyMember
 export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, GraphFamilyMembership[]> {
   const cached = familyCache.get(graph);
   if (cached) return cached;
+  const indexed = indexedFamilyMemberships(graph);
+  if (indexed) { familyCache.set(graph, indexed); return indexed; }
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
   const memberships = new Map<string, Map<string, Builder>>();
   const outgoing = new Map<string, GraphEdge[]>();

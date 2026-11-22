@@ -1,11 +1,12 @@
 import { graphFamilyMemberships } from './graphFamilies.js';
+import { indexedIncidentEdges, materializeIndexedQuestionGraph } from './localGraphIndex.js';
 import { investigationSelection, questionSelection } from './investigation.js';
 import { listAuthorizedGithubOwners, loadRegistry } from '../config/registry.js';
 import { projectStatus } from '../projectStatus.js';
 import { listPublicProjects } from '../source/git.js';
 import type { GraphEdge, GraphNode, IntelligenceGraph, RelationshipStatus, TechnicalSourceCapability } from '../types.js';
 import { getCodeSnippet } from './code.js';
-import { currentGraph } from './service.js';
+import { currentGraph, withIndexedLocalGraph } from './service.js';
 import { diffDefaultToSelected, findGraphNodeCandidates, searchGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, type AuditFinding } from './assessment.js';
@@ -14,7 +15,7 @@ import { auditSemanticCandidates } from './semanticAudit.js';
 import { deriveCurrentSemanticTruth } from './semanticCurrentTruth.js';
 import { graphRecordWeight } from './capacity.js';
 import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from './interfaceRuntimeObservation.js';
-import { filterGraph } from './graphFilter.js';
+import { filterGraph, interpretGraphLanguage, planGraphSubjects, rememberGraphSubjects, type GraphFilterInput } from './graphFilter.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -132,7 +133,7 @@ function projectSubjectBrief(graph: IntelligenceGraph, query: string): Record<st
     };
   }
   const selected = candidates.find(node => node.id === query) ?? candidates[0]!;
-  const incident = graph.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+  const incident = indexedIncidentEdges(graph, [selected.id]) ?? graph.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
   const assessment = assessGraph(graph, selected.id) as any;
   return {
     query,
@@ -372,7 +373,7 @@ export async function inspectEntity(input: { project: string; node: string; ref?
     };
   }
   const selected = candidates.find(node => node.id === input.node) ?? candidates[0]!;
-  const incident = graph.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+  const incident = indexedIncidentEdges(graph, [selected.id]) ?? graph.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
   const memberships = graphFamilyMemberships(graph);
   const families = (memberships.get(selected.id) ?? []).map(family => ({ ...family,
@@ -1643,20 +1644,7 @@ export async function queryWorkbenchRequest(input: {
   if (!questions.length) throw new Error('text or questions must contain at least one question');
   if (questions.length > 10) throw new Error('investigation supports at most 10 questions');
 
-  const graph = await currentGraph(input.project, input.ref, input.graphId);
-  const mode = explicit.length ? 'explicit' : questions.length > 1 ? 'decomposed' : 'single';
-
-  // All ordinary language questions use one graph selection and navigation
-  // contract. Explicit technical-source queries retain their source adapter.
-  if (!input.sourceId) {
-    let previousSubject: string | undefined;
-    const items: Array<Record<string, any>> = [];
-    for (const [index, question] of questions.entries()) {
-      if (!question) { previousSubject = undefined; items.push({ index, question, status: 'error', error: 'Question is empty' }); continue; }
-      const inheritedScope = !input.scope && previousSubject && /\b(?:it|its|itself)\b/iu.test(question)
-        ? previousSubject : undefined;
-      const effectiveScope = input.scope ?? inheritedScope;
-      const result = filterGraph(graph, { text: question,
+  const filterInput = (question: string, effectiveScope?: string): GraphFilterInput => ({ text: question,
         ...(effectiveScope ? { scope: effectiveScope } : {}),
         ...(input.offset !== undefined ? { offset: input.offset } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -1671,7 +1659,22 @@ export async function queryWorkbenchRequest(input: {
         ...(input.conditionTruth !== undefined ? { conditionTruth: input.conditionTruth } : {}),
         ...(input.effectKinds?.length ? { effectKinds: input.effectKinds } : {}),
         ...(input.depth !== undefined ? { depth: input.depth } : {}),
-      }) as any;
+  });
+
+  const run = async (graph: IntelligenceGraph): Promise<Record<string, unknown>> => {
+  const mode = explicit.length ? 'explicit' : questions.length > 1 ? 'decomposed' : 'single';
+
+  // All ordinary language questions use one graph selection and navigation
+  // contract. Explicit technical-source queries retain their source adapter.
+  if (!input.sourceId) {
+    let previousSubject: string | undefined;
+    const items: Array<Record<string, any>> = [];
+    for (const [index, question] of questions.entries()) {
+      if (!question) { previousSubject = undefined; items.push({ index, question, status: 'error', error: 'Question is empty' }); continue; }
+      const inheritedScope = !input.scope && previousSubject && /\b(?:it|its|itself)\b/iu.test(question)
+        ? previousSubject : undefined;
+      const effectiveScope = input.scope ?? inheritedScope;
+      const result = filterGraph(graph, filterInput(question, effectiveScope)) as any;
       if (result.interpretation.selection === 'repository' && !result.navigation.operation) {
         const orientation = await scopeOrientation({ project: input.project, graphId: graph.graphId, semanticSummaryOnly: true, orientationReuse: { graph }, rankBy: input.rankBy, semanticDepth: input.semanticDepth, limit: input.limit });
         previousSubject = undefined;
@@ -1901,6 +1904,46 @@ export async function queryWorkbenchRequest(input: {
     questionCount: questions.length, originalText: originalText || null };
   if (items.length === 1 && items[0]!.status === 'ok') return { ...items[0], request };
   return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision, request, items };
+  };
+
+  if (!input.sourceId && !input.rankBy && !input.semanticDepth && questions.length === 1 && questions.every(Boolean)) {
+    const analyzed = questions.map(text => ({ text, terms: interpretGraphLanguage(text).terms }));
+    const repositoryWords = new Set(['project', 'repository', 'repo', 'codebase']);
+    const needsRepository = analyzed.some(item => item.terms.length && item.terms.every(term => repositoryWords.has(term)));
+    if (!needsRepository) {
+      let candidateSource: IntelligenceGraph | undefined;
+      const result = await withIndexedLocalGraph(input.project, { ref: input.ref, graphId: input.graphId }, async envelope => {
+        candidateSource = envelope;
+        const plannedInput = filterInput(questions[0]!, input.scope);
+        let planned: ReturnType<typeof planGraphSubjects> | undefined;
+        const graph = materializeIndexedQuestionGraph(envelope, analyzed, {
+          selectSubjects(candidate) { planned = planGraphSubjects(candidate, plannedInput); return planned.subjects.map(node => node.id); },
+          rememberSelection(selected) {
+            if (!planned) return;
+            const fullSubjects = new Map(selected.nodes.map(node => [node.id, node]));
+            planned.subjects = planned.subjects.map(node => {
+              const full = fullSubjects.get(node.id);
+              if (!full) throw new Error(`Selected graph subject is unavailable: ${node.id}`);
+              return full;
+            });
+            rememberGraphSubjects(selected, plannedInput, planned);
+          },
+          ...(input.depth !== undefined ? { depth: input.depth } : {}),
+          ...(input.scope ? { scope: input.scope } : {}),
+          ...(input.comparisonIds?.length ? { comparisonIds: input.comparisonIds } : {}),
+          ...(input.comparisonScope ? { comparisonScope: input.comparisonScope } : {}),
+          ...(input.comparisonKinds?.length ? { comparisonKinds: input.comparisonKinds } : {}),
+        });
+        return graph ? await run(graph) : null;
+      }, run);
+      if (result) return result;
+      if (candidateSource) {
+        const graph = await currentGraph(input.project, input.ref, input.graphId);
+        return await run(graph);
+      }
+    }
+  }
+  return await run(await currentGraph(input.project, input.ref, input.graphId));
 }
 
 export async function workbenchSources(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {

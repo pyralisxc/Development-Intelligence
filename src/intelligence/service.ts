@@ -28,7 +28,8 @@ import {
   type CanonicalQueryArtifactPointerPublishResult,
 } from './queryArtifactStore.js';
 import { candidateQueryBuckets } from './queryArtifacts.js';
-import { localSourceGraphHistory, readLocalSourceGraph } from './localGraphStore.js';
+import { localSourceGraphHistory, readLocalSourceGraph, withLocalSourceGraphEnvelope } from './localGraphStore.js';
+import { hasLocalGraphIndex } from './localGraphIndex.js';
 
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_GRAPH_MAX_RUNTIME_BYTES ?? process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
 
@@ -998,6 +999,31 @@ export async function graphContext(project: string, options: { ref?: string; gra
 
 export async function currentGraph(project: string, ref?: string, graphId?: string): Promise<IntelligenceGraph> {
   return (await graphContext(project, { ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}) })).graph;
+}
+
+/** Keep the selected local generation pinned while its indexed records are in use. */
+export async function withIndexedLocalGraph<T>(project: string, options: { ref?: string | undefined; graphId?: string | undefined }, use: (graph: IntelligenceGraph) => Promise<T | null>, useLoaded?: (graph: IntelligenceGraph) => Promise<T>): Promise<T | null> {
+  const localDir = process.env.DEVINT_LOCAL_GRAPH_DIR?.trim();
+  if (!localDir) return null;
+  await assertProjectAccessCurrent(project);
+  if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
+  const catalog = await localSourceGraphHistory(localDir, project);
+  const name = options.ref === 'working-tree' ? 'working' : options.ref?.replace(/^branch:/u, '');
+  const generation = name ? catalog?.targets?.[name] : catalog?.active;
+  const entry = options.graphId ? catalog?.entries.find(item => item.graphId === options.graphId) : catalog?.entries.find(item => item.generation === generation);
+  if (!entry) return null;
+  await getProjectConfig(project);
+  const key = `${localDir}\0${project}\0${entry.generation}`;
+  const loaded = localGraphCache.get(key);
+  if (loaded && useLoaded && hasLocalGraphIndex(loaded)) {
+    localGraphCache.delete(key); localGraphCache.set(key, loaded);
+    return await withLocalSourceGraphEnvelope(localDir, project, () => useLoaded(loaded), entry.graphId, entry.generation, true);
+  }
+  try { return await withLocalSourceGraphEnvelope(localDir, project, use, entry.graphId, entry.generation, true); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as Error).message === 'This retained graph needs a current retrieval index') return null;
+    throw error;
+  }
 }
 
 export function clearGraphCache(project?: string): void {
