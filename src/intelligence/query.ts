@@ -1123,16 +1123,42 @@ export async function graphCoverage(project: string, ref?: string, graphId?: str
   const graph = await currentGraph(project, ref, graphId);
   const selectedStatuses = new Set(statuses ?? []);
   const normalizedPrefix = pathPrefix?.replace(/^\.\//u, '');
-  const files = (graph.coverage?.files ?? []).filter(file => (!normalizedPrefix || file.path.startsWith(normalizedPrefix)) && (!selectedStatuses.size || selectedStatuses.has(file.status)));
+  const hasFileInventory = Array.isArray(graph.coverage?.files);
+  const scopeFiles = (hasFileInventory ? graph.coverage!.files : []).filter(file => !normalizedPrefix || file.path.startsWith(normalizedPrefix));
+  const files = scopeFiles.filter(file => !selectedStatuses.size || selectedStatuses.has(file.status));
+  const counts: Record<GraphCoverageStatus, number> = { complete: 0, partial: 0, unsupported: 0, skipped: 0, failed: 0 };
+  for (const file of scopeFiles) counts[file.status] += 1;
+  const { files: _repositoryFiles, ...repositoryCoverage } = graph.coverage ?? { files: [] };
   return {
     project,
     graphId: graph.graphId,
     revision: graph.repositoryRevision,
-    coverage: graph.coverage ? { ...graph.coverage, files } : null,
+    scope: {
+      pathPrefix: normalizedPrefix || null,
+      statusFilter: [...selectedStatuses],
+      matchState: !hasFileInventory ? 'unavailable' : scopeFiles.length ? 'matched' : 'no-match',
+      matchedFiles: hasFileInventory ? scopeFiles.length : null,
+      returnedFiles: hasFileInventory ? files.length : null,
+      countsBeforeStatusFilter: true,
+    },
+    coverage: hasFileInventory ? {
+      trackedFiles: scopeFiles.length,
+      eligibleFiles: scopeFiles.length - counts.unsupported,
+      analyzedFiles: counts.complete + counts.partial,
+      completeFiles: counts.complete,
+      partialFiles: counts.partial,
+      unsupportedFiles: counts.unsupported,
+      skippedFiles: counts.skipped,
+      failedFiles: counts.failed,
+      files,
+    } : null,
+    repositoryCoverage: graph.coverage ? repositoryCoverage : null,
     sourceCapabilityCoverage: sourceCapabilityCoverage(graph),
     producerCoverage: graph.producerCoverage ?? [],
     relationshipCoverage: graph.relationshipCoverage ?? [],
+    summaryScope: 'repository',
     summary: coverageSummary(graph),
+    contextScope: 'repository',
     unavailableSourceIds: graph.unavailableSourceIds,
   };
 }
