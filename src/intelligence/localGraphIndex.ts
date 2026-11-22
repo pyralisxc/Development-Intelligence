@@ -8,7 +8,7 @@ import { normalizeName } from './model.js';
 // Graph records and coverage remain owned by the retained graph itself.
 const require = createRequire(import.meta.url);
 const filename = 'retrieval-index.sqlite';
-const version = 8;
+const version = 9;
 const bound = new WeakMap<IntelligenceGraph, { file: string; generation: string }>();
 const textCandidates = new WeakMap<IntelligenceGraph, Map<string, Set<string>>>();
 const selectedViews = new WeakSet<IntelligenceGraph>();
@@ -18,8 +18,8 @@ export function hasLocalGraphIndex(graph: IntelligenceGraph): boolean { return b
 function sqlite(): any {
   return require('node:sqlite').DatabaseSync;
 }
-function identity(graph: IntelligenceGraph, generation: string): string {
-  return JSON.stringify({ version, generation, project: graph.project, graphId: graph.graphId,
+function identity(graph: IntelligenceGraph, generation: string, indexVersion = version): string {
+  return JSON.stringify({ version: indexVersion, generation, project: graph.project, graphId: graph.graphId,
     analyzerVersion: graph.analyzerVersion, sourceFingerprint: graph.sourceFingerprint,
     topologyFingerprint: graph.topologyFingerprint, evidenceFingerprint: graph.evidenceFingerprint,
     repositoryRevision: graph.repositoryRevision, sourceState: graph.sourceState ?? null });
@@ -53,17 +53,17 @@ export function buildLocalGraphIndex(directory: string, generation: string, grap
   try {
     db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA temp_store=FILE;
       CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
-      CREATE TABLE nodes (id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, name TEXT, name_folded TEXT, name_normalized TEXT, source TEXT NOT NULL, kind TEXT NOT NULL, locator TEXT NOT NULL, owner TEXT, selection_body TEXT NOT NULL, part TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID;
-      CREATE TABLE edges (id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, src TEXT, dst TEXT, kind TEXT NOT NULL, status TEXT NOT NULL, part TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID;
-      CREATE TABLE evidence (id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, source TEXT NOT NULL, locator TEXT NOT NULL, part TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID;
+      CREATE TABLE nodes (id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, name TEXT, name_folded TEXT, name_normalized TEXT, source TEXT NOT NULL, kind TEXT NOT NULL, locator TEXT NOT NULL, owner TEXT, selection_body TEXT NOT NULL, part TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL) WITHOUT ROWID;
+      CREATE TABLE edges (id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, src TEXT, dst TEXT, kind TEXT NOT NULL, status TEXT NOT NULL, part TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL) WITHOUT ROWID;
+      CREATE TABLE evidence (id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, source TEXT NOT NULL, locator TEXT NOT NULL, part TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL) WITHOUT ROWID;
       CREATE TABLE record_evidence (record_id TEXT NOT NULL, evidence_id TEXT NOT NULL, PRIMARY KEY(record_id,evidence_id)) WITHOUT ROWID;
       CREATE TABLE families (node_id TEXT NOT NULL, family_id TEXT NOT NULL, roles TEXT NOT NULL, via TEXT NOT NULL, PRIMARY KEY(node_id,family_id)) WITHOUT ROWID;
       CREATE TABLE node_aliases (alias_folded TEXT NOT NULL, node_id TEXT NOT NULL, PRIMARY KEY(alias_folded,node_id)) WITHOUT ROWID;
       CREATE VIRTUAL TABLE node_text USING fts5(text, content='', tokenize='unicode61');
       BEGIN IMMEDIATE`);
-    const nodeInsert = db.prepare('INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-    const edgeInsert = db.prepare('INSERT INTO edges VALUES (?,?,?,?,?,?,?,?,?,?)');
-    const evidenceInsert = db.prepare('INSERT INTO evidence VALUES (?,?,?,?,?,?,?,?)');
+    const nodeInsert = db.prepare('INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    const edgeInsert = db.prepare('INSERT INTO edges VALUES (?,?,?,?,?,?,?,?,?)');
+    const evidenceInsert = db.prepare('INSERT INTO evidence VALUES (?,?,?,?,?,?,?)');
     const textInsert = db.prepare('INSERT INTO node_text(rowid,text) VALUES (?,?)');
     const linkInsert = db.prepare('INSERT OR IGNORE INTO record_evidence VALUES (?,?)');
     const familyInsert = db.prepare('INSERT INTO families VALUES (?,?,?,?)');
@@ -72,10 +72,10 @@ export function buildLocalGraphIndex(directory: string, generation: string, grap
     const tagsByKind = new Map<string, Set<string>>();
     const position = (field: 'nodes' | 'edges' | 'evidence') => {
       let part = 0, size = 2, offset = 1;
-      return (value: unknown): [string, number, number, string] => {
+      return (value: unknown): [string, number, number] => {
         const body = JSON.stringify(value), length = Buffer.byteLength(body), bytes = length + 1;
         if (offset > 1 && size + bytes > 8 * 1024 * 1024) { part += 1; size = 2; offset = 1; }
-        const result: [string, number, number, string] = [`${field}-${part}.json`, offset, length, createHash('sha256').update(body).digest('hex')];
+        const result: [string, number, number] = [`${field}-${part}.json`, offset, length];
         size += bytes; offset += bytes; return result;
       };
     };
@@ -152,14 +152,15 @@ export function readIndexedQuestionEnvelope(directory: string, project: string, 
   try {
     const recorded = db.prepare("SELECT value FROM metadata WHERE key='identity'").get()?.value;
     if (typeof recorded !== 'string') throw new Error('Local retrieval index identity is missing');
-    if (JSON.parse(recorded)?.version !== version) return null;
+    const indexVersion = JSON.parse(recorded)?.version;
+    if (indexVersion !== 8 && indexVersion !== version) return null;
     const body = db.prepare("SELECT value FROM metadata WHERE key='questionEnvelope'").get()?.value;
     if (typeof body !== 'string') throw new Error('Local retrieval index envelope is missing');
     if (typeof db.prepare("SELECT value FROM metadata WHERE key='nodeTags'").get()?.value !== 'string') return null;
     if (typeof db.prepare("SELECT value FROM metadata WHERE key='aliasLengths'").get()?.value !== 'string') return null;
     const graph = JSON.parse(body) as IntelligenceGraph;
     if (graph.project !== project || graph.graphId !== graphId || graph.sourceFingerprint !== sourceFingerprint
-      || graph.nodes.length || graph.edges.length || graph.evidence.length || recorded !== identity(graph, generation)) throw new Error('Local retrieval index identity mismatch');
+      || graph.nodes.length || graph.edges.length || graph.evidence.length || recorded !== identity(graph, generation, indexVersion)) throw new Error('Local retrieval index identity mismatch');
     return graph;
   } finally { db.close(); }
 }
@@ -308,8 +309,8 @@ export function bindLocalGraphIndex(graph: IntelligenceGraph, generation: string
     const parsed = JSON.parse(recorded) as { version?: unknown };
     // A retained graph from an earlier software version is still usable; its
     // derived index can be regenerated on a later build of that generation.
-    if (parsed.version !== version) return false;
-    if (recorded !== identity(graph, generation)) throw new Error('Local retrieval index identity mismatch');
+    if (parsed.version !== 8 && parsed.version !== version) return false;
+    if (recorded !== identity(graph, generation, parsed.version)) throw new Error('Local retrieval index identity mismatch');
     bound.set(graph, { file, generation });
     return true;
   } finally { db.close(); }
@@ -366,8 +367,7 @@ export function indexedOrdinals(graph: IntelligenceGraph, kind: 'nodes' | 'edges
 }
 
 /** Read selected records directly from their retained graph parts, without
- * reconstructing other graph records. Digests are retained for index audit;
- * ordinary graph navigation does not re-hash every record. */
+ * reconstructing other graph records. */
 export function indexedRecords<K extends 'nodes' | 'edges' | 'evidence'>(graph: IntelligenceGraph, kind: K, ids: Iterable<string>): IntelligenceGraph[K] | null {
   const index = bound.get(graph);
   if (!index) return null;
@@ -379,7 +379,7 @@ export function indexedRecords<K extends 'nodes' | 'edges' | 'evidence'>(graph: 
   const fs = require('node:fs');
   const handles = new Map<string, number>();
   try {
-    const lookup = db.prepare(`SELECT id,ordinal,part,byte_offset,byte_length,digest FROM ${kind} WHERE id=?`);
+    const lookup = db.prepare(`SELECT id,ordinal,part,byte_offset,byte_length FROM ${kind} WHERE id=?`);
     const rows: any[] = [];
     for (const id of new Set(ids)) { const row = lookup.get(id); if (row) rows.push(row); }
     rows.sort((a, b) => Number(a.ordinal) - Number(b.ordinal));

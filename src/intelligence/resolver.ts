@@ -106,9 +106,28 @@ export function deriveNamingDivergences(observations: Observation[], resolutions
     const left = byId.get(rel.from);
     const right = byId.get(rel.to);
     if (!left?.name || !right?.name) continue;
-    const leftName = normalizeName(left.name);
+    // Different things naturally have different names. Compare only an actual
+    // written reference/binding with the subject it resolves to, not owners,
+    // callers, containers, effects or other merely connected subjects.
+    const directReference = rel.kind === 'resolves_to'
+      && ['import-binding', 'call-reference', 'variable-reference', 'sql-reference'].includes(left.kind);
+    const symbolOccurrence = rel.kind === 'references-symbol' && left.kind === 'source-reference'
+      && !['file', 'module'].includes(right.kind);
+    if (!directReference && !symbolOccurrence) continue;
+    // A class expression can refer to its constructor declaration; the class
+    // name and the language keyword are not two names for the same symbol.
+    if (right.name === 'constructor') continue;
+    // Call sites can contain complete chained expressions, not just a name.
+    // Such expressions cannot be compared as identifiers.
+    if (left.kind === 'call-reference' && !/^[\p{L}_$][\p{L}\p{N}_$]*(?:\??\.[\p{L}_$][\p{L}\p{N}_$]*)*$/u.test(left.name)) continue;
+    // Qualified references such as this.change and change name the same member;
+    // retain the original written names when there is an actual difference.
+    const writtenName = /^[\p{L}_$][\p{L}\p{N}_$]*(?:\??\.[\p{L}_$][\p{L}\p{N}_$]*)+$/u.test(left.name)
+      ? left.name.split(/\??\./u).at(-1)! : left.name;
+    const fullLeftName = normalizeName(left.name);
+    const leftName = normalizeName(writtenName);
     const rightName = normalizeName(right.name);
-    if (!leftName || !rightName || leftName === rightName) continue;
+    if (!leftName || !rightName || fullLeftName === rightName || leftName === rightName) continue;
     output.push({
       resolutionId: rel.id,
       fromObservationId: left.id,
