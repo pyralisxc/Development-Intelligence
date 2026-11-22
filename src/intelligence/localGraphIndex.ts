@@ -178,6 +178,24 @@ export function indexedNodeTags(graph: IntelligenceGraph, kinds: Iterable<string
   } finally { db.close(); }
 }
 
+function exactAliasCandidates(db: any, question: string): Set<string> {
+  const result = new Set<string>();
+  const aliasLengths = JSON.parse(db.prepare("SELECT value FROM metadata WHERE key='aliasLengths'").get().value) as number[];
+  const aliasLookup = db.prepare('SELECT node_id FROM node_aliases WHERE alias_folded=?');
+  const word = (value: string) => /[\p{L}\p{N}_]/u.test(value);
+  const lower = question.toLowerCase();
+  for (let start = 0; start < lower.length; start += 1) {
+    if (word(lower[start - 1] ?? '')) continue;
+    for (const length of aliasLengths) {
+      const end = start + length;
+      if (end > lower.length) break;
+      if (word(lower[end] ?? '')) continue;
+      for (const row of aliasLookup.iterate(lower.slice(start, end))) result.add(row.node_id);
+    }
+  }
+  return result;
+}
+
 /** Broad candidate lookup for the same language terms used by graph filtering.
  * Prefixes over-include lexical variants; graph filtering still scores the
  * actual records and decides relevance. Non-ASCII questions retain the full
@@ -215,19 +233,7 @@ export function indexedTextCandidates(graph: IntelligenceGraph, question: string
     // Distinctive exact names and qualified aliases can be stop words for the
     // language model. Match every valid question boundary against the index so
     // those subjects remain available even when no FTS term selects them.
-    const aliasLengths = JSON.parse(db.prepare("SELECT value FROM metadata WHERE key='aliasLengths'").get().value) as number[];
-    const aliasLookup = db.prepare('SELECT node_id FROM node_aliases WHERE alias_folded=?');
-    const word = (value: string) => /[\p{L}\p{N}_]/u.test(value);
-    const lower = question.toLowerCase();
-    for (let start = 0; start < lower.length; start += 1) {
-      if (word(lower[start - 1] ?? '')) continue;
-      for (const length of aliasLengths) {
-        const end = start + length;
-        if (end > lower.length) break;
-        if (word(lower[end] ?? '')) continue;
-        for (const row of aliasLookup.iterate(lower.slice(start, end))) result.add(row.node_id);
-      }
-    }
+    for (const id of exactAliasCandidates(db, question)) result.add(id);
     let cache = textCandidates.get(graph);
     if (!cache) { cache = new Map(); textCandidates.set(graph, cache); }
     cache.set(cacheKey, result);
@@ -468,20 +474,47 @@ export function indexedRelationshipKinds(graph: IntelligenceGraph): string[] | n
  * family handoffs used by graph filtering. If the selected view approaches a
  * full graph, load the complete generation instead. */
 export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questions: Array<{ text: string; terms: string[] }>, options: {
-  selectSubjects: (candidate: IntelligenceGraph) => string[];
+  selectSubjects: (candidate: IntelligenceGraph) => { ids: string[]; selection: string };
   rememberSelection: (selected: IntelligenceGraph) => void;
   depth?: number; scope?: string; comparisonIds?: string[]; comparisonScope?: string; comparisonKinds?: string[];
 }): IntelligenceGraph | null {
   const index = bound.get(graph);
   if (!index) return null;
   const initial = new Set<string>();
+  let exactSubjects: string[] | null = null;
   const exactScope = options.scope ? indexedRecords(graph, 'nodes', [options.scope]) : null;
   if (exactScope?.length) initial.add(exactScope[0]!.id);
   else {
-    for (const question of questions) {
-      const candidates = indexedTextCandidates(graph, question.text, question.terms);
-      if (!candidates) return null;
-      for (const id of candidates) initial.add(id);
+    // A distinctive name can bind through the existing alias index before
+    // scanning full-text candidates. The shared planner decides whether those
+    // aliases actually establish an exact subject; otherwise retain the
+    // ordinary full-text plan and all of its broader matches.
+    if (!options.scope && questions.length === 1 && questions[0]!.terms.length
+      && /^[\x00-\x7f]+$/u.test(questions[0]!.text)) {
+      const Database = sqlite(), aliasDb = new Database(index.file, { readOnly: true });
+      try {
+        const aliases = exactAliasCandidates(aliasDb, questions[0]!.text);
+        const lookup = aliasDb.prepare('SELECT ordinal,selection_body FROM nodes WHERE id=?');
+        const rows = [...aliases].flatMap(id => {
+          const row = lookup.get(id);
+          return row ? [row] : [];
+        });
+        rows.sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+        const nodes = rows.map(row => JSON.parse(row.selection_body));
+        if (nodes.length) {
+          const candidate = { ...graph, nodes, edges: [], evidence: [] };
+          bindLocalGraphIndex(candidate, index.generation, path.dirname(index.file));
+          const planned = options.selectSubjects(candidate);
+          if (planned.selection === 'exact-name') exactSubjects = planned.ids;
+        }
+      } finally { aliasDb.close(); }
+    }
+    if (!exactSubjects) {
+      for (const question of questions) {
+        const candidates = indexedTextCandidates(graph, question.text, question.terms);
+        if (!candidates) return null;
+        for (const id of candidates) initial.add(id);
+      }
     }
   }
   if (options.scope) initial.add(options.scope);
@@ -512,12 +545,15 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
     db.exec(`INSERT OR IGNORE INTO selected SELECT n.id FROM frontier f CROSS JOIN nodes n INDEXED BY node_owner ON n.owner=f.id WHERE n.kind IN ('source-condition','source-effect');
       INSERT OR IGNORE INTO selected_edges SELECT e.id FROM frontier f CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=f.id WHERE e.status <> 'unresolved' AND e.kind IN ('has-source-occurrence','calls-site');
       INSERT OR IGNORE INTO selected SELECT e.src FROM selected_edges x CROSS JOIN edges e ON e.id=x.id JOIN nodes n ON n.id=e.src WHERE e.src IS NOT NULL;`);
-    const candidateNodes = db.prepare('SELECT n.selection_body FROM selected s CROSS JOIN nodes n ON n.id=s.id ORDER BY n.ordinal').all().map((row: any) => JSON.parse(row.selection_body));
-    const candidateEdges = db.prepare('SELECT e.id,e.src,e.dst,e.kind,e.status FROM selected_edges s CROSS JOIN edges e ON e.id=s.id ORDER BY e.ordinal').all().map((row: any) => ({ id: row.id, from: row.src, to: row.dst, kind: row.kind, status: row.status, strategy: '', confidence: null, evidence: [] }));
-    const candidate = { ...graph, nodes: candidateNodes, edges: candidateEdges, evidence: [] };
-    bindLocalGraphIndex(candidate, index.generation, path.dirname(index.file));
-    const candidateCache = textCandidates.get(graph); if (candidateCache) textCandidates.set(candidate, candidateCache);
-    const chosen = options.selectSubjects(candidate);
+    let chosen = exactSubjects;
+    if (!chosen) {
+      const candidateNodes = db.prepare('SELECT n.selection_body FROM selected s CROSS JOIN nodes n ON n.id=s.id ORDER BY n.ordinal').all().map((row: any) => JSON.parse(row.selection_body));
+      const candidateEdges = db.prepare('SELECT e.id,e.src,e.dst,e.kind,e.status FROM selected_edges s CROSS JOIN edges e ON e.id=s.id ORDER BY e.ordinal').all().map((row: any) => ({ id: row.id, from: row.src, to: row.dst, kind: row.kind, status: row.status, strategy: '', confidence: null, evidence: [] }));
+      const candidate = { ...graph, nodes: candidateNodes, edges: candidateEdges, evidence: [] };
+      bindLocalGraphIndex(candidate, index.generation, path.dirname(index.file));
+      const candidateCache = textCandidates.get(graph); if (candidateCache) textCandidates.set(candidate, candidateCache);
+      chosen = options.selectSubjects(candidate).ids;
+    }
     const addSubject = db.prepare('INSERT OR IGNORE INTO subjects SELECT id FROM nodes WHERE id=?');
     for (const id of chosen) addSubject.run(id);
     db.exec('DELETE FROM selected; INSERT INTO selected SELECT id FROM subjects; INSERT OR IGNORE INTO selected SELECT id FROM comparison_nodes; INSERT INTO expansion SELECT id FROM subjects; DELETE FROM selected_edges');

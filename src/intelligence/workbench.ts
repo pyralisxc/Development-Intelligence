@@ -1917,7 +1917,10 @@ export async function queryWorkbenchRequest(input: {
         const plannedInput = filterInput(questions[0]!, input.scope);
         let planned: ReturnType<typeof planGraphSubjects> | undefined;
         const graph = materializeIndexedQuestionGraph(envelope, analyzed, {
-          selectSubjects(candidate) { planned = planGraphSubjects(candidate, plannedInput); return planned.subjects.map(node => node.id); },
+          selectSubjects(candidate) {
+            planned = planGraphSubjects(candidate, plannedInput);
+            return { ids: planned.subjects.map(node => node.id), selection: planned.selection };
+          },
           rememberSelection(selected) {
             if (!planned) return;
             const fullSubjects = new Map(selected.nodes.map(node => [node.id, node]));
