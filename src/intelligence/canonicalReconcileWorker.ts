@@ -1,4 +1,5 @@
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads';
+import { getHeapStatistics } from 'node:v8';
 import { reconcileCanonicalPortfolio, reconcileCanonicalProject, type CanonicalPortfolioReconcileItem, type CanonicalPortfolioReconcileOptions } from './canonicalPortfolio.js';
 import type { GithubInstallationRepository } from '../source/repositoryCredential.js';
 import { currentVercelOidcToken, withVercelRequestContext } from '../vercelRequestContext.js';
@@ -15,16 +16,19 @@ interface WorkerEnvelope {
   item: CanonicalPortfolioReconcileItem;
 }
 
-function positiveSetting(raw: string | undefined, fallback: number, min: number, max: number): number {
+function positiveSetting(raw: string | undefined, fallback: number, min: number): number {
+  if (!raw?.trim()) return fallback;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+  if (!Number.isSafeInteger(parsed) || parsed < min) throw new Error(`Worker setting must be an integer of at least ${min}`);
+  return parsed;
 }
 
 export function canonicalReconcileWorkerLimits(): { timeoutMs: number; maxOldGenerationSizeMb: number } {
+  const timeoutMs = positiveSetting(process.env.DEVINT_CANONICAL_RECONCILE_WORKER_TIMEOUT_MS, 45_000, 5_000);
+  if (timeoutMs > 2_147_483_647) throw new Error('Worker timeout exceeds the Node.js timer maximum');
   return {
-    timeoutMs: positiveSetting(process.env.DEVINT_CANONICAL_RECONCILE_WORKER_TIMEOUT_MS, 45_000, 5_000, 55_000),
-    maxOldGenerationSizeMb: positiveSetting(process.env.DEVINT_CANONICAL_RECONCILE_WORKER_HEAP_MB, 768, 128, 896),
+    timeoutMs,
+    maxOldGenerationSizeMb: positiveSetting(process.env.DEVINT_CANONICAL_RECONCILE_WORKER_HEAP_MB, 1536, 128),
   };
 }
 
@@ -70,7 +74,7 @@ export async function runCanonicalReconcileWorker(
     });
     worker.once('error', (error: Error) => finish(errorItem(input, startedAt, `isolated reconcile worker failed: ${error.message}`)));
     worker.once('exit', (code: number) => {
-      if (!settled && code !== 0) finish(errorItem(input, startedAt, `isolated reconcile worker exited with code ${code}`));
+      if (!settled) finish(errorItem(input, startedAt, `isolated reconcile worker exited with code ${code} before returning a result`));
     });
   });
 }
@@ -107,7 +111,7 @@ async function workerMain(input: WorkerInput): Promise<void> {
     pushedAt: null,
   };
   const item = await withVercelRequestContext(headers, async () => await reconcileCanonicalProject(repository));
-  parentPort?.postMessage({ ok: true, item } satisfies WorkerEnvelope);
+  parentPort?.postMessage({ ok: true, item: { ...item, workerHeapLimitMb: Math.round(getHeapStatistics().heap_size_limit / (1024 * 1024)) } } satisfies WorkerEnvelope);
 }
 
 if (!isMainThread) {

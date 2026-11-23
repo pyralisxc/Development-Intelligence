@@ -45,6 +45,8 @@ export interface CanonicalPortfolioReconcileItem {
   outcome: 'hit' | 'stored' | 'not-configured' | 'error' | 'skipped';
   durationMs: number;
   persistence?: Record<string, unknown>;
+  queryArtifacts?: Record<string, unknown>;
+  workerHeapLimitMb?: number;
   coldBuildMs?: number | null;
   reason?: string;
 }
@@ -57,11 +59,14 @@ export async function reconcileCanonicalProject(repository: GithubInstallationRe
   try {
     const status = await graphStatus(project) as any;
     const persistence = status?.observability?.persistence ?? {};
+    const queryArtifacts = status?.observability?.queryArtifacts ?? {};
     const coldBuildMs = typeof status?.observability?.coldBuild?.totalMs === 'number'
       ? status.observability.coldBuild.totalMs
       : null;
     const outcome: CanonicalPortfolioReconcileItem['outcome'] =
-      persistence.loadState === 'hit'
+      queryArtifacts.state === 'error'
+        ? 'error'
+        : persistence.loadState === 'hit'
         ? 'hit'
         : persistence.saveState === 'stored'
           ? 'stored'
@@ -77,8 +82,10 @@ export async function reconcileCanonicalProject(repository: GithubInstallationRe
       outcome,
       durationMs: Math.max(0, Date.now() - startedAt),
       persistence,
+      queryArtifacts,
       coldBuildMs,
-      ...(outcome === 'error' && typeof persistence.error === 'string' ? { reason: persistence.error } : {}),
+      ...(outcome === 'error' && typeof (queryArtifacts.error ?? persistence.error) === 'string'
+        ? { reason: queryArtifacts.error ?? persistence.error } : {}),
     };
   } catch (error) {
     item = {
