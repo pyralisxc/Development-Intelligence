@@ -129,9 +129,21 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         await update({ state: 'complete', result: { path: directory, parent: path.dirname(directory) === directory ? null : path.dirname(directory), roots, folders } });
         continue;
       }
+      if (job.kind === 'build' && job.stage === 'transfer') {
+        const built = job.result as { graphId?: unknown } | undefined;
+        if (typeof built?.graphId !== 'string' || !job.graph.transfer) throw new Error('The graph transfer has no built generation');
+        const staging = path.join(job.graph.transfer.storageLocation, '.di-transfers', job.id);
+        renewal = setInterval(() => { void update({ progress: { stage: 'transferring-to-storage' } }).catch(() => {}); }, 60_000);
+        const { importLocalSourceGraph } = await import('../intelligence/localGraphStore.js');
+        await importLocalSourceGraph(staging, job.graph.storage.location, job.project.id, built.graphId, job.graph.name, retain);
+        if (renewal) clearInterval(renewal);
+        await update({ state: 'complete', result: built });
+        await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
       let root = job.graph.source.location;
       let ref = job.graph.source.revision;
-      if (job.graph.source.kind === 'git') {
+      if (job.graph.source.kind === 'git' && job.kind !== 'question' && job.kind !== 'investigation') {
         const source = trustedUrl(root);
         await fs.mkdir(scratchDir, { recursive: true });
         temporary = await fs.mkdtemp(path.join(scratchDir, 'di-linked-'));
@@ -147,8 +159,13 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
       let result: unknown;
       if (job.kind === 'question' || job.kind === 'investigation') {
         if (!job.graphId) throw new Error('Investigation has no retained graph');
-        process.env.DEVINT_LOCAL_GRAPH_DIR = path.resolve(job.graph.storage.location);
-        process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [job.project.id]: { repository: pathToFileURL(path.resolve(root)).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
+        const graphDirectory = path.resolve(job.graph.query?.location ?? job.graph.storage.location);
+        process.env.DEVINT_LOCAL_GRAPH_DIR = graphDirectory;
+        const { localSourceGraphHistory } = await import('../intelligence/localGraphStore.js');
+        const catalog = await localSourceGraphHistory(graphDirectory, job.project.id);
+        if (!catalog?.entries.some(entry => entry.graphId === job.graphId)) throw new Error('The selected graph is not available at the query service location');
+        const repository = job.graph.source.kind === 'git' ? trustedUrl(root).href : pathToFileURL(path.resolve(root)).href;
+        process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [job.project.id]: { repository, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
         if (job.kind === 'question') {
           if (!job.question) throw new Error('Missing question');
           const { queryWorkbenchRequest } = await import('../intelligence/workbench.js');
@@ -174,7 +191,9 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
           } finally { server.close(); }
         }
       } else {
-        result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir: job.graph.storage.location,
+        const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer && path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id);
+        if (!dataDir) throw new Error('A transfer method is required for this graph');
+        result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir,
           scratchDir, retain, target: job.graph.name, ...(ref ? { ref } : {}) }, progress => {
           if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); void update({ progress }).catch(() => {}); }
         });

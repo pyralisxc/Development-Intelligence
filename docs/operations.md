@@ -243,9 +243,14 @@ Runtime snapshots:
 
 ## Human Workbench
 
+For the account Workbench, configure `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `CLERK_DEVICE_CLIENT_ID`, `DEVINT_ACCOUNT_NAMESPACE`, and a Redis REST URL/token. Set `DEVINT_ACCOUNT_WORKBENCH=1` for the account landing page at `/`. Namespace Preview and Main independently. The Clerk OAuth application must be public and enable device authorization with `openid profile offline_access`. The account UI produces a one-use link command; run it on the installed computer. It starts the linked process, which also starts when the local Workbench is opened. `di-local account-status` checks the connection and `di-local account-run` runs it in the foreground. A linked computer must be running for its stored graph to be opened or built.
+
+Account records are isolated from the existing single-owner registry. A graph name, source, build computer and storage path are independent settings, with snapshots by default. Current graph building requires the storage location to be on the selected build computer. The GitHub selector uses the signed-in GitHub identity; private repositories require a custom GitHub OAuth connection whose token Clerk can return, as shared development credentials support only public listing. The existing single-owner MCP credentials do not automatically grant access to account-owned projects.
+
 The HTTP entry points are:
 
-- `/` — project chooser;
+- `/` — account landing page when enabled, otherwise the single-owner project chooser;
+- `/account` — account Workbench;
 - `/workbench?project=<project>` — project Workbench;
 - `/workbench?project=<project>&ref=<revision-selector>` — an exact historical workspace;
 - `/workbench/data` — read-only Overview/Explore/Inspector/Sources/Changes projections;

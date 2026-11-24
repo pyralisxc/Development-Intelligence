@@ -6,10 +6,12 @@ export type GraphDefinition = {
   id: string; projectId: string; name: string;
   source: { kind: 'local-folder' | 'git'; location: string; revision?: string };
   buildComputer: string; storage: { computer: string; location: string };
+  query?: { computer: string; location: string };
+  transfer?: { kind: 'shared-folder'; buildLocation: string; storageLocation: string };
   updatePolicy: 'snapshot';
 };
 export type Computer = { id: string; name: string; platform: string; lastSeen: string; state: 'linked' | 'revoked' };
-export type BuildJob = { id: string; kind?: 'build' | 'question' | 'investigation'; question?: string; graphId?: string; request?: { path: string; method: 'GET' | 'POST'; query?: string; body?: unknown }; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; result?: unknown; resultKey?: string; error?: string };
+export type BuildJob = { id: string; kind?: 'build' | 'question' | 'investigation'; question?: string; graphId?: string; request?: { path: string; method: 'GET' | 'POST'; query?: string; body?: unknown }; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; result?: unknown; resultKey?: string; error?: string; assignedComputer?: string; stage?: 'build' | 'transfer' };
 export type BrowseJob = { id: string; kind: 'browse'; computerId: string; path?: string; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; result?: unknown; resultKey?: string; error?: string };
 type ComputerJob = BuildJob | BrowseJob;
 
@@ -63,7 +65,7 @@ export class WorkspaceStore {
   }
   private async enqueue(job: ComputerJob): Promise<void> {
     await this.ensureIndexed();
-    const computer = job.kind === 'browse' ? job.computerId : job.graph.buildComputer;
+    const computer = job.kind === 'browse' ? job.computerId : job.assignedComputer ?? job.graph.buildComputer;
     await this.redis.eval<unknown[], number>(`redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]); redis.call('ZADD',KEYS[2],ARGV[3],ARGV[1]); if ARGV[4]=='1' then redis.call('ZADD',KEYS[3],ARGV[3],ARGV[1]) end; return 1`, [this.key('builds'), this.key(`queue:${computer}`), this.key('build-history')], [job.id, JSON.stringify(job), Date.now(), job.kind === 'investigation' || job.kind === 'browse' ? '0' : '1']);
   }
   async queueBrowse(computerId: unknown, folder: unknown): Promise<BrowseJob> {
@@ -133,9 +135,18 @@ export class WorkspaceStore {
       name: value(data.name, 'Graph name'), source: { kind: source.kind, location: value(source.location, 'Source location'),
         ...(source.revision === undefined || source.revision === '' ? {} : { revision: value(source.revision, 'Revision') }) },
       buildComputer: id(data.buildComputer), storage: { computer: id(storage.computer), location: value(storage.location, 'Graph storage location') }, updatePolicy: 'snapshot' };
+    if (data.transfer !== undefined && data.transfer !== null) {
+      const transfer = object(data.transfer);
+      if (transfer.kind !== 'shared-folder') invalid('Unsupported graph transfer method');
+      graph.transfer = { kind: 'shared-folder', buildLocation: value(transfer.buildLocation, 'Shared folder on the build computer'), storageLocation: value(transfer.storageLocation, 'Shared folder on the storage computer') };
+    }
+    if (data.query !== undefined && data.query !== null) {
+      const query = object(data.query);
+      graph.query = { computer: id(query.computer), location: value(query.location, 'Graph location available to the query service') };
+    }
     if (data.id !== undefined && !await this.redis.hexists(this.key('graphs'), graph.id)) invalid('Graph does not exist');
     const computers = await this.computers();
-    if (![graph.buildComputer, graph.storage.computer].every(computer => computers.some(item => item.id === computer && item.state === 'linked'))) invalid('Choose linked computers');
+    if (![graph.buildComputer, graph.storage.computer, ...(graph.query ? [graph.query.computer] : [])].every(computer => computers.some(item => item.id === computer && item.state === 'linked'))) invalid('Choose linked computers');
     await this.redis.hset(this.key('graphs'), { [graph.id]: graph }); return graph;
   }
   async queueBuild(graphId: unknown): Promise<BuildJob> {
@@ -143,8 +154,8 @@ export class WorkspaceStore {
     if (!graph) invalid('Graph does not exist');
     const project = await this.redis.hget<Project>(this.key('projects'), graph.projectId);
     if (!project) invalid('Project does not exist');
-    if (graph.buildComputer !== graph.storage.computer) invalid('Cross-computer graph storage is not available yet');
-    const job: BuildJob = { id: recordId(), kind: 'build', graph, project, state: 'queued', createdAt: new Date().toISOString() };
+    if (graph.buildComputer !== graph.storage.computer && !graph.transfer) invalid('Choose a transfer method for different build and storage computers');
+    const job: BuildJob = { id: recordId(), kind: 'build', graph, project, assignedComputer: graph.buildComputer, stage: 'build', state: 'queued', createdAt: new Date().toISOString() };
     await this.enqueue(job); return job;
   }
   async queueQuestion(graphId: unknown, question: unknown): Promise<BuildJob> {
@@ -155,7 +166,8 @@ export class WorkspaceStore {
     const latest = (await this.builds()).filter(job => job.graph.id === graph.id && job.kind === 'build' && job.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
     const built = latest?.result as { graphId?: unknown } | undefined;
     if (typeof built?.graphId !== 'string') invalid('Build a snapshot of this graph first');
-    const job: BuildJob = { id: recordId(), kind: 'question', question: value(question, 'Question'), graphId: built.graphId, graph: latest!.graph, project, state: 'queued', createdAt: new Date().toISOString() };
+    const query = graph.query ?? { computer: latest!.graph.storage.computer, location: latest!.graph.storage.location };
+    const job: BuildJob = { id: recordId(), kind: 'question', question: value(question, 'Question'), graphId: built.graphId, graph: { ...latest!.graph, query }, project, assignedComputer: query.computer, state: 'queued', createdAt: new Date().toISOString() };
     await this.enqueue(job); return job;
   }
   async queueInvestigation(graphId: unknown, input: unknown): Promise<BuildJob> {
@@ -170,7 +182,8 @@ export class WorkspaceStore {
     const latest = (await this.builds()).filter(job => job.graph.id === graph.id && job.kind === 'build' && job.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
     const built = latest?.result as { graphId?: unknown } | undefined;
     if (typeof built?.graphId !== 'string') invalid('Build a snapshot of this graph first');
-    const job: BuildJob = { id: recordId(), kind: 'investigation', graphId: built.graphId, graph: latest!.graph, project, state: 'queued', createdAt: new Date().toISOString(), request: { path, method,
+    const query = graph.query ?? { computer: latest!.graph.storage.computer, location: latest!.graph.storage.location };
+    const job: BuildJob = { id: recordId(), kind: 'investigation', graphId: built.graphId, graph: { ...latest!.graph, query }, project, assignedComputer: query.computer, state: 'queued', createdAt: new Date().toISOString(), request: { path, method,
       ...(typeof request.query === 'string' ? { query: request.query } : {}), ...(request.body === undefined ? {} : { body: request.body }) } };
     await this.enqueue(job); return job;
   }
@@ -180,7 +193,9 @@ export class WorkspaceStore {
     const now = Date.now();
     const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
     const claimed = await this.redis.eval<unknown[], string | null>(`if redis.call('HGET',KEYS[3],ARGV[4])~=ARGV[5] then return nil end; local ids=redis.call('ZRANGEBYSCORE',KEYS[2],'-inf',ARGV[1],'LIMIT',0,1); if #ids==0 then return nil end; local raw=redis.call('HGET',KEYS[1],ids[1]); if not raw then redis.call('ZREM',KEYS[2],ids[1]); return nil end; local job=cjson.decode(raw); job.state='running'; job.leaseUntil=tonumber(ARGV[2]); job.claimId=ARGV[3]; local value=cjson.encode(job); redis.call('HSET',KEYS[1],ids[1],value); redis.call('ZADD',KEYS[2],ARGV[2],ids[1]); return value`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets')], [now, now + 900_000, recordId(), computer.id, digest]);
-    return !claimed ? null : typeof claimed === 'string' ? JSON.parse(claimed) as ComputerJob : claimed as unknown as ComputerJob;
+    if (!claimed) return null;
+    const job = typeof claimed === 'string' ? JSON.parse(claimed) as ComputerJob : claimed as unknown as ComputerJob;
+    return job.resultKey ? { ...job, result: await this.redis.get(job.resultKey) } : job;
   }
   async updateBuild(computerId: unknown, secret: unknown, jobId: unknown, update: unknown): Promise<void> {
     const computer = await this.heartbeat(computerId, secret), data = object(update), buildId = id(jobId), claimId = id(data.claimId);
@@ -188,7 +203,7 @@ export class WorkspaceStore {
     const resultKey = this.key(`result:${buildId}:${claimId}`);
     if (data.state === 'complete') await this.redis.set(resultKey, result ?? null);
     const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
-    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[3],ARGV[2])~=ARGV[7] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or job.graph.buildComputer; if job.state~='running' or owner~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; local update=cjson.decode(ARGV[4]); if update.state=='complete' then job.state='complete'; job.resultKey=ARGV[6]; job.result=nil; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]); redis.call('ZADD',KEYS[2],ARGV[5],ARGV[1]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets')], [buildId, computer.id, claimId, JSON.stringify(small), Date.now() + 900_000, resultKey, digest]);
+    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[3],ARGV[2])~=ARGV[7] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or (job.assignedComputer or job.graph.buildComputer); if job.state~='running' or owner~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; local update=cjson.decode(ARGV[4]); if update.state=='complete' then job.resultKey=ARGV[6]; job.result=nil; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]); if job.kind=='build' and job.stage=='build' and job.graph.buildComputer~=job.graph.storage.computer then job.state='queued'; job.stage='transfer'; job.assignedComputer=job.graph.storage.computer; job.progress={stage='waiting-for-storage-computer'}; job.claimId=nil; redis.call('ZADD',ARGV[8]..job.assignedComputer,ARGV[9],ARGV[1]) else job.state='complete' end elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]); redis.call('ZADD',KEYS[2],ARGV[5],ARGV[1]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets')], [buildId, computer.id, claimId, JSON.stringify(small), Date.now() + 900_000, resultKey, digest, `${this.root}:queue:`, Date.now()]);
     if (changed !== 1 && data.state === 'complete') await this.redis.del(resultKey);
     if (changed !== 1) invalid('Build claim is no longer active');
   }

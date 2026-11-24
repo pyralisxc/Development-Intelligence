@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { IntelligenceGraph } from '../types.js';
@@ -125,6 +126,52 @@ export async function saveLocalSourceGraph(root: string, graph: IntelligenceGrap
 
 export async function localSourceGraphHistory(root: string, project: string): Promise<Catalog | null> {
   return await catalogAt(projectDirectory(root, project));
+}
+
+/** Publish one already-built generation into another local store. */
+export async function importLocalSourceGraph(source: string, destination: string, project: string, graphId: string, targetName: string, retain = 3): Promise<void> {
+  if (path.resolve(source) === path.resolve(destination)) throw new Error('Transfer staging and graph storage must be different folders');
+  if (!Number.isSafeInteger(retain) || retain < 1 || !targetName.trim()) throw new Error('Invalid graph retention or name');
+  // Validate the staged graph and every source part before publishing it.
+  await readLocalSourceGraph(source, project, graphId);
+  const sourceDirectory = projectDirectory(source, project), sourceCatalog = await catalogAt(sourceDirectory);
+  const entry = sourceCatalog?.entries.find(item => item.graphId === graphId);
+  if (!entry || !/^[a-f0-9]{32}$/u.test(entry.generation)) throw new Error('The transferred graph generation is unavailable');
+  await fs.access(path.join(sourceDirectory, entry.generation, 'retrieval-index.sqlite'));
+  const directory = projectDirectory(destination, project), temporary = path.join(directory, `.transfer-${randomBytes(16).toString('hex')}`);
+  await fs.mkdir(directory, { recursive: true });
+  try {
+    await fs.cp(path.join(sourceDirectory, entry.generation), temporary, { recursive: true, force: false, errorOnExist: true });
+    for (const item of await fs.readdir(temporary, { withFileTypes: true })) {
+      if (!item.isFile()) throw new Error('Unexpected item in transferred graph');
+      const digest = async (file: string) => {
+        const hash = createHash('sha256');
+        for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
+        return hash.digest('hex');
+      };
+      if (await digest(path.join(sourceDirectory, entry.generation, item.name)) !== await digest(path.join(temporary, item.name))) throw new Error(`Transferred graph file changed: ${item.name}`);
+    }
+    await withCatalogLock(directory, async () => {
+      const previous = await catalogAt(directory);
+      if (previous && previous.project !== project) throw new Error('Local graph project mismatch');
+      const generationPath = path.join(directory, entry.generation);
+      try { await fs.rename(temporary, generationPath); }
+      catch (error) {
+        if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        await fs.rm(temporary, { recursive: true, force: true });
+      }
+      const entries = [entry, ...(previous?.entries ?? []).filter(item => item.generation !== entry.generation)];
+      const targets = { ...(previous?.targets ?? (previous ? { working: previous.active } : {})), [targetName]: entry.generation };
+      const active = previous?.active ?? entry.generation;
+      const keep = new Set([active, ...Object.values(targets)]);
+      for (const item of entries) { if (keep.size >= retain) break; keep.add(item.generation); }
+      const kept = entries.filter(item => keep.has(item.generation));
+      await writeCatalog(directory, { version: 1, project, active, entries: kept, targets });
+      for (const item of entries.filter(item => !keep.has(item.generation))) {
+        if (/^[a-f0-9]{32}$/u.test(item.generation)) await fs.rm(path.join(directory, item.generation), { recursive: true, force: true });
+      }
+    });
+  } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
 /** Copy only catalog-referenced generations while each project is stable. */

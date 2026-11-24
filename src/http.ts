@@ -198,7 +198,7 @@ export function createDevelopmentIntelligenceServer() {
       return;
     }
     if ((requestUrl.pathname === '/account' || (requestUrl.pathname === '/' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1')) && req.method === 'GET') {
-      try { const page = renderAccountWorkbench(process.env.CLERK_PUBLISHABLE_KEY?.trim() ?? ''); res.writeHead(200, htmlHeaders()); res.end(page); }
+      try { const branchHost = process.env.VERCEL_BRANCH_URL?.trim(); const origin = branchHost ? `https://${branchHost}` : accountOrigin(req); const page = renderAccountWorkbench(process.env.CLERK_PUBLISHABLE_KEY?.trim() ?? '', origin); res.writeHead(200, htmlHeaders()); res.end(page); }
       catch { json(res, 503, { error: 'Account sign-in is not configured' }); }
       return;
     }
@@ -230,7 +230,7 @@ export function createDevelopmentIntelligenceServer() {
         const job = (await store.builds()).filter(item => item.graph.id === graph.id && item.kind === 'build' && item.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
         const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
         if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
-        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id);
+        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name);
         res.writeHead(200, htmlHeaders()); res.end(page); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
@@ -265,7 +265,7 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
         if (body.action === 'computer-github-token' && identity.tokenType === 'oauth_token') {
           const computer = await store.verifyComputer(body.computerId, body.secret), job = await store.build(body.jobId);
-          if (!job || job.kind === 'browse' || job.state !== 'running' || job.claimId !== body.claimId || job.graph.buildComputer !== computer.id || job.graph.source.kind !== 'git') { json(res, 403, { error: 'Build is not assigned to this computer' }); return; }
+          if (!job || job.kind === 'browse' || job.state !== 'running' || job.claimId !== body.claimId || (job.assignedComputer ?? job.graph.buildComputer) !== computer.id || job.graph.source.kind !== 'git') { json(res, 403, { error: 'Build is not assigned to this computer' }); return; }
           const source = new URL(job.graph.source.location);
           if (source.protocol !== 'https:' || source.hostname !== 'github.com' || source.username || source.password) { json(res, 403, { error: 'GitHub credentials require a GitHub source' }); return; }
           json(res, 200, { token: await accountGithubToken(identity.userId) }); return;
