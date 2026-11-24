@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 import { compareInteractionRevisions } from './intelligence/interactionParity.js';
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';

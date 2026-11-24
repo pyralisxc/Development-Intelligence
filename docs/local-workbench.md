@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 # Local Development Intelligence
 
 The local runtime builds from the current files in a Git checkout, including non-ignored new files. The resulting graph identifies a working tree and records its HEAD separately. Rebuild after changing source files. Builds report producer coverage; a graph is not a backup of the source files.

@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

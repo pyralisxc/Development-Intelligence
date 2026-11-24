@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 # Development Intelligence agent guide
 
 This repository owns the standalone Development Intelligence technical-intelligence service.

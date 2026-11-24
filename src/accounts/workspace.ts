@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Redis } from '@upstash/redis';
 

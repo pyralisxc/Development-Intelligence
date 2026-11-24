@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 import { getProjectConfig } from '../config/registry.js';
 import { isMainThread } from 'node:worker_threads';
 import { assertProjectAccessCurrent, hasProjectAccess, projectAccessScopeKey, projectAccessSecret } from '../config/projectAccess.js';

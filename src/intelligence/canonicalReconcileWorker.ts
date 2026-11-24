@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads';
 import { getHeapStatistics } from 'node:v8';
 import { reconcileCanonicalPortfolio, reconcileCanonicalProject, type CanonicalPortfolioReconcileItem, type CanonicalPortfolioReconcileOptions } from './canonicalPortfolio.js';

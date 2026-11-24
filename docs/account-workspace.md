@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 # Account and Workbench direction
 
 DI's hosted Workbench is the account's home for projects and investigations. A user can also install DI on a supported computer and link it to the same account. A linked computer is an execution and storage location, not a second account or a requirement that the computer be online for its projects to appear.

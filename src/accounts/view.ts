@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 /** The Clerk publishable key is public; its secret stays on the server. */
 export function renderAccountWorkbench(key: string): string {
   const encoded = key.split('_')[2] ?? '';

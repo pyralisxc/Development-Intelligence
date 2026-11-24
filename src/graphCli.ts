@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 import { compareInteractionGraphs } from './intelligence/interactionParity.js';
 import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
 import { promises as fs } from 'node:fs';
