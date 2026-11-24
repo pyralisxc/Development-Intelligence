@@ -132,24 +132,29 @@ export async function localSourceGraphHistory(root: string, project: string): Pr
 export async function importLocalSourceGraph(source: string, destination: string, project: string, graphId: string, targetName: string, retain = 3): Promise<void> {
   if (path.resolve(source) === path.resolve(destination)) throw new Error('Transfer staging and graph storage must be different folders');
   if (!Number.isSafeInteger(retain) || retain < 1 || !targetName.trim()) throw new Error('Invalid graph retention or name');
-  // Validate the staged graph and every source part before publishing it.
-  await readLocalSourceGraph(source, project, graphId);
   const sourceDirectory = projectDirectory(source, project), sourceCatalog = await catalogAt(sourceDirectory);
   const entry = sourceCatalog?.entries.find(item => item.graphId === graphId);
   if (!entry || !/^[a-f0-9]{32}$/u.test(entry.generation)) throw new Error('The transferred graph generation is unavailable');
-  await fs.access(path.join(sourceDirectory, entry.generation, 'retrieval-index.sqlite'));
+  const generation = path.join(sourceDirectory, entry.generation);
+  const manifest = JSON.parse(await fs.readFile(path.join(generation, 'manifest.json'), 'utf8')) as Manifest;
+  if (manifest.version !== 1 || manifest.graph.project !== project || manifest.graph.graphId !== graphId || !Array.isArray(manifest.parts)) throw new Error('Invalid transferred graph manifest');
+  await fs.access(path.join(generation, 'retrieval-index.sqlite'));
+  const digest = async (file: string) => {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
+    return hash.digest('hex');
+  };
+  for (const part of manifest.parts) {
+    if (!['nodes', 'edges', 'evidence'].includes(part.field) || !new RegExp(`^${part.field}-[0-9]+\\.json$`, 'u').test(part.file)) throw new Error('Invalid transferred graph part');
+    if (await digest(path.join(generation, part.file)) !== part.sha256) throw new Error(`Transferred graph part changed: ${part.file}`);
+  }
   const directory = projectDirectory(destination, project), temporary = path.join(directory, `.transfer-${randomBytes(16).toString('hex')}`);
   await fs.mkdir(directory, { recursive: true });
   try {
-    await fs.cp(path.join(sourceDirectory, entry.generation), temporary, { recursive: true, force: false, errorOnExist: true });
+    await fs.cp(generation, temporary, { recursive: true, force: false, errorOnExist: true });
     for (const item of await fs.readdir(temporary, { withFileTypes: true })) {
       if (!item.isFile()) throw new Error('Unexpected item in transferred graph');
-      const digest = async (file: string) => {
-        const hash = createHash('sha256');
-        for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
-        return hash.digest('hex');
-      };
-      if (await digest(path.join(sourceDirectory, entry.generation, item.name)) !== await digest(path.join(temporary, item.name))) throw new Error(`Transferred graph file changed: ${item.name}`);
+      if (await digest(path.join(generation, item.name)) !== await digest(path.join(temporary, item.name))) throw new Error(`Transferred graph file changed: ${item.name}`);
     }
     await withCatalogLock(directory, async () => {
       const previous = await catalogAt(directory);
@@ -158,6 +163,9 @@ export async function importLocalSourceGraph(source: string, destination: string
       try { await fs.rename(temporary, generationPath); }
       catch (error) {
         if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        for (const item of await fs.readdir(temporary, { withFileTypes: true })) {
+          if (!item.isFile() || await digest(path.join(temporary, item.name)) !== await digest(path.join(generationPath, item.name))) throw new Error('An existing graph generation differs from the transferred generation');
+        }
         await fs.rm(temporary, { recursive: true, force: true });
       }
       const entries = [entry, ...(previous?.entries ?? []).filter(item => item.generation !== entry.generation)];

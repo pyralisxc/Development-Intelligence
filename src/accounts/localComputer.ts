@@ -154,7 +154,8 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         finally { await auth.cleanup(); }
         ref ||= 'HEAD';
       }
-      renewal = setInterval(() => { void update({ progress: { stage: 'building' } }).catch(() => {}); }, 60_000);
+      let activeProgress: unknown = { stage: job.kind === 'question' || job.kind === 'investigation' ? 'querying-snapshot' : 'building' };
+      renewal = setInterval(() => { void update({ progress: activeProgress }).catch(() => {}); }, 60_000);
       let lastProgress = 0;
       let result: unknown;
       if (job.kind === 'question' || job.kind === 'investigation') {
@@ -164,6 +165,8 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         const { localSourceGraphHistory } = await import('../intelligence/localGraphStore.js');
         const catalog = await localSourceGraphHistory(graphDirectory, job.project.id);
         if (!catalog?.entries.some(entry => entry.graphId === job.graphId)) throw new Error('The selected graph is not available at the query service location');
+        activeProgress = { stage: 'querying-snapshot', graphId: job.graphId, location: graphDirectory };
+        await update({ progress: activeProgress });
         const repository = job.graph.source.kind === 'git' ? trustedUrl(root).href : pathToFileURL(path.resolve(root)).href;
         process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [job.project.id]: { repository, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
         if (job.kind === 'question') {
@@ -195,6 +198,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         if (!dataDir) throw new Error('A transfer method is required for this graph');
         result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir,
           scratchDir, retain, target: job.graph.name, ...(ref ? { ref } : {}) }, progress => {
+          activeProgress = progress;
           if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); void update({ progress }).catch(() => {}); }
         });
       }
