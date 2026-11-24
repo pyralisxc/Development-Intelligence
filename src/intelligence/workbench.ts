@@ -1636,13 +1636,11 @@ export async function queryWorkbenchRequest(input: {
 }): Promise<Record<string, unknown>> {
   // Preserve explicit positions: a blank item is an isolated failure, never a silently removed question.
   const explicit = (input.questions ?? []).map(question => question.trim());
-  if (explicit.length > 10) throw new Error('questions supports at most 10 items');
   const originalText = input.text?.trim() ?? '';
   if (explicit.length && originalText) throw new Error('provide text or questions, not both');
 
   const questions = explicit.length ? explicit : decomposeQuestionText(originalText);
   if (!questions.length) throw new Error('text or questions must contain at least one question');
-  if (questions.length > 10) throw new Error('investigation supports at most 10 questions');
 
   const filterInput = (question: string, effectiveScope?: string): GraphFilterInput => ({ text: question,
         ...(effectiveScope ? { scope: effectiveScope } : {}),
