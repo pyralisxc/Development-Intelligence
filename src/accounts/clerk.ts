@@ -3,11 +3,19 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export interface AccountIdentity { userId: string; tokenType: 'session_token' | 'oauth_token'; }
 
+/** validateHost has already checked the request host before this is called. */
+export function accountOrigin(req: IncomingMessage): string {
+  if (process.env.VERCEL === '1') return new URL(`https://${String(req.headers.host ?? '')}`).origin;
+  const configured = process.env.DEVINT_PUBLIC_BASE_URL?.trim();
+  if (!configured) throw new Error('Account origin is not configured');
+  return new URL(configured).origin;
+}
+
 /** Authenticate with Clerk before resolving any account-owned data. */
 export async function authenticateAccount(req: IncomingMessage, res: ServerResponse): Promise<AccountIdentity | null> {
   const secretKey = process.env.CLERK_SECRET_KEY?.trim();
   const publishableKey = process.env.CLERK_PUBLISHABLE_KEY?.trim();
-  const origin = process.env.DEVINT_PUBLIC_BASE_URL?.trim();
+  const origin = accountOrigin(req);
   if (!secretKey || !publishableKey || !origin) {
     res.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ error: 'Account sign-in is not configured' }));

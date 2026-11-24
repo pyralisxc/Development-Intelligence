@@ -20,7 +20,7 @@ import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.j
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { withVercelRequestContext } from './vercelRequestContext.js';
-import { authenticateAccount } from './accounts/clerk.js';
+import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
 import { WorkspaceStore } from './accounts/workspace.js';
 import { renderAccountWorkbench } from './accounts/view.js';
 
@@ -221,7 +221,7 @@ export function createDevelopmentIntelligenceServer() {
           json(res, 200, { projects, graphs, computers, layout, builds }); return;
         }
         if (req.method !== 'POST') { json(res, 405, { error: 'Use GET or POST' }); return; }
-        if (identity.tokenType === 'session_token' && req.headers.origin !== new URL(process.env.DEVINT_PUBLIC_BASE_URL!).origin) {
+        if (identity.tokenType === 'session_token' && req.headers.origin !== accountOrigin(req)) {
           json(res, 403, { error: 'Account changes require the Workbench origin' }); return;
         }
         const body = await readJson(req);
