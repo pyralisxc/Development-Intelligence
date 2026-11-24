@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -84,7 +87,6 @@ export async function startLocalOperation(input: Record<string, unknown>): Promi
   if (action === 'build-revision') {
     if (typeof input.ref !== 'string' || !input.ref.trim()) throw new Error('Enter a revision');
     if (typeof input.target !== 'string' || !input.target.trim()) throw new Error('Enter a target name');
-    if (input.target.trim() === 'working') throw new Error('The working target is reserved for current local files');
     args.push('--ref', input.ref.trim(), '--target', input.target.trim());
   }
   if (action === 'backup' || action === 'restore') {
@@ -102,7 +104,8 @@ export async function startLocalOperation(input: Record<string, unknown>): Promi
     const { runLocalGraphWorker } = await import('./canonicalReconcileWorker.js');
     void runLocalGraphWorker({ kind: 'local', project: settings.project, root: settings.repoPath,
       dataDir: settings.dataDir, scratchDir: settings.scratchDir, retain: settings.retain,
-      ...(action === 'build-revision' ? { ref: (input.ref as string).trim(), target: (input.target as string).trim() } : {}) }, progress => { current.progress = progress; })
+      ...(typeof input.target === 'string' && input.target.trim() ? { target: input.target.trim() } : {}),
+      ...(action === 'build-revision' ? { ref: (input.ref as string).trim() } : {}) }, progress => { current.progress = progress; })
       .then(result => { current.output = JSON.stringify(result, null, 2); current.state = 'complete'; })
       .catch(error => { current.output = error instanceof Error ? error.message : String(error); current.state = 'failed'; })
       .finally(() => { current.finishedAt = new Date().toISOString(); });

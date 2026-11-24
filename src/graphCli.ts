@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 import { compareInteractionGraphs } from './intelligence/interactionParity.js';
 import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
 import { promises as fs } from 'node:fs';
@@ -74,9 +77,10 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ project: project ?? path.basename(path.resolve(root)), ...(await measureSourceCapacity(root, true, undefined, arg('--data-dir'))) }, null, 2));
   } else if (command === 'working-build') {
     const dataDir = arg('--data-dir');
+    const target = arg('--target');
     if (dataDir) {
       const { runLocalGraphWorker } = await import('./intelligence/canonicalReconcileWorker.js');
-      const result = await runLocalGraphWorker({ kind: 'local', root: path.resolve(root), project: project ?? path.basename(path.resolve(root)), dataDir: path.resolve(dataDir), scratchDir: path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir()), retain: Number(arg('--retain') ?? '3'), ...(joern ? { joern } : {}) });
+      const result = await runLocalGraphWorker({ kind: 'local', root: path.resolve(root), project: project ?? path.basename(path.resolve(root)), dataDir: path.resolve(dataDir), scratchDir: path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir()), retain: Number(arg('--retain') ?? '3'), ...(target ? { target } : {}), ...(joern ? { joern } : {}) });
       console.log(JSON.stringify(result, null, 2));
     } else {
       const graph = await buildLocalWorkingGraph(root, project, joern);
@@ -88,7 +92,6 @@ async function main(): Promise<void> {
     const dataDir = arg('--data-dir');
     const target = arg('--target') ?? ref;
     if (!ref || !target || !dataDir) throw new Error('revision-build requires --ref and --data-dir');
-    if (target === 'working') throw new Error('The working target is reserved for current local files');
     const { runLocalGraphWorker } = await import('./intelligence/canonicalReconcileWorker.js');
     const result = await runLocalGraphWorker({ kind: 'local', root: path.resolve(root), project: project ?? path.basename(path.resolve(root)), dataDir: path.resolve(dataDir), scratchDir: path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir()), retain: Number(arg('--retain') ?? '3'), ref, target, ...(joern ? { joern } : {}) });
     console.log(JSON.stringify(result, null, 2));

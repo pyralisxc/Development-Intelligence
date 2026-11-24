@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 {
   "name": "development-intelligence",
   "version": "2.9.0",
@@ -27,6 +30,7 @@
     "@ast-grep/lang-python": "0.0.6",
     "@ast-grep/napi": "0.45.3",
     "@bufbuild/protobuf": "^2.17.0",
+    "@clerk/backend": "3.32.0",
     "@scip-code/scip": "^0.10.0",
     "@sourcegraph/scip-typescript": "0.6.2",
     "@upstash/redis": "1.38.4",

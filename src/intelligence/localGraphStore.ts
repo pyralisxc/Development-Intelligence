@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
@@ -62,9 +65,9 @@ async function withCatalogLock<T>(directory: string, fn: () => Promise<T>): Prom
 }
 
 /** Source graph generations are rebuildable; this directory never owns accepted semantic state. */
-export async function saveLocalSourceGraph(root: string, graph: IntelligenceGraph, retain = 3, targetName = 'working'): Promise<Entry> {
+export async function saveLocalSourceGraph(root: string, graph: IntelligenceGraph, retain = 3, targetName = 'working', activate = true): Promise<Entry> {
   if (!Number.isSafeInteger(retain) || retain < 1) throw new Error('Graph retention must be a positive integer');
-  if (!/^[A-Za-z0-9._-]+$/u.test(targetName)) throw new Error('Graph target must use letters, numbers, dot, underscore or dash');
+  if (!targetName.trim() || targetName !== targetName.trim() || /[\u0000-\u001f\u007f]/u.test(targetName)) throw new Error('Graph name must be non-empty and cannot contain control characters');
   const directory = projectDirectory(root, graph.project);
   await fs.mkdir(directory, { recursive: true });
   const generation = randomBytes(16).toString('hex');
@@ -100,7 +103,7 @@ export async function saveLocalSourceGraph(root: string, graph: IntelligenceGrap
       if (previous && previous.project !== graph.project) throw new Error('Local graph project mismatch');
       const entry: Entry = { generation, graphId: graph.graphId, createdAt: graph.createdAt, sourceFingerprint: graph.sourceFingerprint };
       const entries = [entry, ...(previous?.entries ?? [])];
-      const active = targetName === 'working' ? generation : previous?.active ?? generation;
+      const active = activate ? generation : previous?.active ?? generation;
       const targets = { ...(previous?.targets ?? (previous ? { working: previous.active } : {})), [targetName]: generation };
       const protectedGenerations = new Set([active, ...Object.values(targets)]);
       for (const item of entries) {
@@ -168,11 +171,10 @@ export async function activateLocalSourceGraph(root: string, project: string, gr
 }
 
 export async function removeLocalGraphTarget(root: string, project: string, name: string): Promise<void> {
-  if (name === 'working') throw new Error('The working target is updated by rebuilding the current files');
   const directory = projectDirectory(root, project);
   await withCatalogLock(directory, async () => {
     const catalog = await catalogAt(directory);
-    if (!catalog || catalog.project !== project || !catalog.targets?.[name]) throw new Error(`Unknown local graph target: ${name}`);
+    if (!catalog || catalog.project !== project || !catalog.targets || !Object.hasOwn(catalog.targets, name)) throw new Error(`Unknown local graph target: ${name}`);
     const targets = { ...catalog.targets };
     delete targets[name];
     await writeCatalog(directory, { ...catalog, targets });

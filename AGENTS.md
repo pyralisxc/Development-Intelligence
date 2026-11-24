@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 # Development Intelligence agent guide
 
 This repository owns the standalone Development Intelligence technical-intelligence service.
@@ -46,7 +49,7 @@ Keep each truth in its owner. Update an existing living document when its truth 
 10. External tools may contribute evidence but may not dictate DI graph schema, lifecycle, query semantics, hosting, or storage.
 11. Do not add development workflow, PR orchestration, or Build-authorization policy to the public intelligence API.
 12. MCP, the Workbench, AI Systems Control, and future clients must project the same canonical DI intelligence rather than create client-specific intelligence backends.
-13. The Workbench is a specialist diagnostic/reference surface. Do not add control-plane ownership or duplicate ASC product responsibilities merely to preserve it as a competing primary website.
+13. The Workbench is DI's account-centered home for human investigation and project setup, alongside CLI and MCP access to the same intelligence. Account projects and preferences remain visible when a linked computer is offline. A named graph has independently chosen source, build location, storage location and update policy; snapshots are the default, and names such as `working` do not imply a policy. Support user-configurable panels and layouts across sign-ins. Integrate other products without giving them separate ownership of DI's graph or requiring them to replace the Workbench.
 
 ## Source graph authority
 

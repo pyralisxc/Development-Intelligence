@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 import { getProjectConfig } from '../config/registry.js';
 import { isMainThread } from 'node:worker_threads';
 import { assertProjectAccessCurrent, hasProjectAccess, projectAccessScopeKey, projectAccessSecret } from '../config/projectAccess.js';
@@ -1096,8 +1099,9 @@ function retainedLocalEntry(
   if (options.graphId) return catalog.entries.find(item => item.graphId === options.graphId);
   const commit = /^commit:([0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?)$/u.exec(options.ref ?? '');
   if (commit) return catalog.entries.find(item => item.graphId.startsWith(`repo-${commit[1]!.toLowerCase()}-`));
-  const name = options.ref === 'working-tree' ? 'working' : options.ref?.replace(/^branch:/u, '');
-  const generation = name ? catalog.targets?.[name] : catalog.active;
+  if (options.ref === 'working-tree') return catalog.entries.find(item => item.graphId.startsWith('worktree-'));
+  const name = options.ref?.replace(/^branch:/u, '');
+  const generation = name ? (catalog.targets && Object.hasOwn(catalog.targets, name) ? catalog.targets[name] : undefined) : catalog.active;
   return catalog.entries.find(item => item.generation === generation);
 }
 

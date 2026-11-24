@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 import { MultiGraph } from 'graphology';
 import Sigma from 'sigma';
 
@@ -748,7 +751,7 @@ async function renderLocal(epoch: number): Promise<void> {
   if (!sectionIsCurrent(epoch, 'local')) return;
   const settings = state.settings;
   const field = (label: string, id: string, value: unknown) => `<label style="display:block;margin:10px 0"><span class="muted">${esc(label)}</span><input id="${id}" value="${esc(value)}" style="display:block;width:100%;border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:9px;padding:9px"></label>`;
-  content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Graphs cached in memory (0 disables cache)', 'local-cache', settings.cacheSize ?? 3)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Build current files and keep selected committed revisions as comparison targets.</p><button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}${field('Target name', 'local-target', 'preview')}<button data-local-action="build-revision">Build revision target</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
+  content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Graphs cached in memory (0 disables cache)', 'local-cache', settings.cacheSize ?? 3)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Choose a graph name and build it from current files or a committed revision.</p>${field('Graph name', 'local-target', 'working')}<button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}<button data-local-action="build-revision">Build revision</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
   const installation = content.querySelector('.card');
   if (installation) {
     const heapSettings = document.createElement('div');
@@ -758,7 +761,33 @@ async function renderLocal(epoch: number): Promise<void> {
   const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
   const show = (data: any) => {
     const history = document.getElementById('local-history');
-    if (history) history.textContent = data.history?.targets ? `Retained targets: ${Object.keys(data.history.targets).join(', ')}` : 'No graphs built at this location yet.';
+    if (history) {
+      const selectedGraphId = history.querySelector('select')?.value ?? viewerConfig.graphId;
+      history.replaceChildren();
+      const targets = data.history?.targets ?? {};
+      const entries = Array.isArray(data.history?.entries) ? data.history.entries : [];
+      const available = Object.entries(targets).flatMap(([name, generation]) => {
+        const entry = entries.find((item: any) => item.generation === generation);
+        return entry?.graphId ? [{ name, graphId: String(entry.graphId) }] : [];
+      });
+      if (!available.length) history.textContent = 'No named graphs at this location yet.';
+      else {
+        const label = document.createElement('label');
+        label.textContent = 'Open a named graph ';
+        const select = document.createElement('select');
+        for (const item of available) {
+          const option = document.createElement('option'); option.value = item.graphId; option.textContent = item.name;
+          if (item.graphId === selectedGraphId) option.selected = true;
+          select.append(option);
+        }
+        const open = document.createElement('button'); open.type = 'button'; open.textContent = 'Open graph';
+        open.addEventListener('click', () => {
+          const params = new URLSearchParams({ project: viewerConfig.project, graphId: select.value });
+          window.location.assign(`/workbench?${params.toString()}`);
+        });
+        label.append(select); history.append(label, open);
+      }
+    }
     const target = document.getElementById('local-job');
     if (target) target.textContent = data.job ? `${data.job.action}: ${data.job.state}${data.job.progress ? ` — ${data.job.progress.stage}${data.job.progress.total !== undefined ? ` (${data.job.progress.completed}/${data.job.progress.total} files)` : ''}` : ''}${data.job.output ? `\n${data.job.output}` : ''}` : 'No operation running.';
   };

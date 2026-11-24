@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 import { compareInteractionRevisions } from './intelligence/interactionParity.js';
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
@@ -20,6 +23,9 @@ import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.j
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { withVercelRequestContext } from './vercelRequestContext.js';
+import { authenticateAccount } from './accounts/clerk.js';
+import { WorkspaceStore } from './accounts/workspace.js';
+import { renderAccountWorkbench } from './accounts/view.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
@@ -192,6 +198,48 @@ export function createDevelopmentIntelligenceServer() {
     if (requestUrl.pathname === '/health' && req.method === 'GET') {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;
+    }
+    if (requestUrl.pathname === '/account' && req.method === 'GET') {
+      try { const page = renderAccountWorkbench(process.env.CLERK_PUBLISHABLE_KEY?.trim() ?? ''); res.writeHead(200, htmlHeaders()); res.end(page); }
+      catch { json(res, 503, { error: 'Account sign-in is not configured' }); }
+      return;
+    }
+    if (requestUrl.pathname === '/account/client-config' && req.method === 'GET') {
+      const key = process.env.CLERK_PUBLISHABLE_KEY?.trim();
+      const clientId = process.env.CLERK_DEVICE_CLIENT_ID?.trim();
+      if (!key || !clientId) { json(res, 503, { error: 'Computer linking is not configured' }); return; }
+      const encoded = key.split('_')[2];
+      if (!encoded) { json(res, 503, { error: 'Account identity is not configured' }); return; }
+      const host = Buffer.from(encoded, 'base64').toString('utf8').replace(/\$$/u, '');
+      if (!/^[a-zA-Z0-9.-]+$/u.test(host)) { json(res, 503, { error: 'Invalid account identity configuration' }); return; }
+      json(res, 200, { issuer: `https://${host}`, clientId }); return;
+    }
+    if (requestUrl.pathname === '/account/workspace') {
+      try {
+        const identity = await authenticateAccount(req, res);
+        if (!identity) return;
+        const store = new WorkspaceStore(identity.userId);
+        if (req.method === 'GET') {
+          const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds()]);
+          json(res, 200, { projects, graphs, computers, layout, builds }); return;
+        }
+        if (req.method !== 'POST') { json(res, 405, { error: 'Use GET or POST' }); return; }
+        if (identity.tokenType === 'session_token' && req.headers.origin !== new URL(process.env.DEVINT_PUBLIC_BASE_URL!).origin) {
+          json(res, 403, { error: 'Account changes require the Workbench origin' }); return;
+        }
+        const body = await readJson(req);
+        if (body.action === 'save-project' && identity.tokenType === 'session_token') { json(res, 200, await store.saveProject(body.project)); return; }
+        if (body.action === 'save-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.saveGraph(body.graph)); return; }
+        if (body.action === 'save-layout' && identity.tokenType === 'session_token') { await store.saveLayout(body.layout); json(res, 200, { saved: true }); return; }
+        if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBuild(body.graphId)); return; }
+        if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueQuestion(body.graphId, body.question)); return; }
+        if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer)); return; }
+        if (body.action === 'computer-heartbeat' && identity.tokenType === 'oauth_token') { json(res, 200, await store.heartbeat(body.computerId, body.secret)); return; }
+        if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret)); return; }
+        if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
+        if (body.action === 'revoke-computer' && identity.tokenType === 'session_token') { await store.revokeComputer(body.computerId); json(res, 200, { revoked: true }); return; }
+        json(res, 400, { error: 'Unsupported account operation' }); return;
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
     if (requestUrl.pathname === '/workbench/graph-build') {
       if (!authorize(req, res)) return;

@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 declare type Buffer = any;
 declare const Buffer: any;
 declare namespace NodeJS { interface ProcessEnv { [key: string]: string | undefined } interface ErrnoException extends Error { code?: string } }
@@ -17,7 +20,7 @@ declare module 'node:path' { const value: any; export default value; }
 declare module 'node:os' { const value: any; export default value; }
 declare module 'node:v8' { export function getHeapStatistics(): { heap_size_limit: number }; }
 declare module 'node:module' { export const createRequire: any; }
-declare module 'node:child_process' { export const spawn: any; }
+declare module 'node:child_process' { export const spawn: any; export const spawnSync: any; }
 declare module 'node:worker_threads' {
   export const isMainThread: boolean;
   export const parentPort: { postMessage(value: unknown): void; on(event: 'message', listener: (value: any) => void): void; removeAllListeners(event: 'message'): void; close(): void } | null;

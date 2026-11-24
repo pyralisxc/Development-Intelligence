@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,9 +9,20 @@ import { spawn } from 'node:child_process';
 const home = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(await fs.readFile(path.join(home, 'local-settings.json'), 'utf8'));
 const [command = 'help', ...args] = process.argv.slice(2);
+if (command === 'link' || command === 'account-status' || command === 'account-run') {
+  const account = await import(path.join(home, 'dist', 'src', 'accounts', 'localComputer.js'));
+  const stateDir = path.join(config.dataDir, 'account');
+  if (command === 'link') {
+    const at = args.indexOf('--workbench');
+    if (at < 0 || !args[at + 1]) throw new Error('Use di-local link --workbench https://YOUR-WORKBENCH');
+    await account.linkComputer(stateDir, args[at + 1]);
+  } else if (command === 'account-status') await account.computerHeartbeat(stateDir);
+  else await account.runComputer(stateDir, config.scratchDir, config.retain);
+  process.exit(0);
+}
 const commands = { capacity: 'working-capacity', build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', parity: 'working-parity', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve', 'oss-evidence': 'oss-evidence', 'joern-build': 'joern-build' };
 if (!commands[command]) {
-  console.log('DI local: capacity | build | joern-build [producer options] | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--text | --details] | oss-evidence [producer options] | serve | open | mcp');
+  console.log('DI local: link --workbench URL | account-status | account-run | capacity | build [--target NAME] | joern-build [producer options] | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open | mcp');
   console.log('Options: --repo-path PATH --project NAME --data-dir PATH --retain COUNT --port PORT');
   process.exit(command === 'help' ? 0 : 2);
 }

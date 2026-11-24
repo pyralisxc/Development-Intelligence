@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 # Local Development Intelligence
 
 The local runtime builds from the current files in a Git checkout, including non-ignored new files. The resulting graph identifies a working tree and records its HEAD separately. Rebuild after changing source files. Builds report producer coverage; a graph is not a backup of the source files.
@@ -14,6 +17,7 @@ Use `--install-dir`, `--data-dir`, `--scratch-dir`, `--desktop-dir`, `--retain`,
 
 ```text
 di-local build
+di-local build --target "My graph"
 di-local build-revision --ref main --target main
 di-local build-revision --ref preview --target preview
 di-local history
@@ -30,6 +34,8 @@ di-local mcp
 Terminal questions use the same question route as the Workbench and MCP. The default output summarizes the answer, graph identity, coverage and pagination. Add `--scope PATH_OR_SUBJECT` to focus the investigation, or `--details` for the complete evidence and graph-filter response; `--offset` and `--limit` select its page.
 
 Committed references resolve using the local Git repository. `main` or `preview` selects the local branch when it exists; after fetching, use `--ref origin/preview --target preview` or `--ref origin/main --target main` to select the updated remote-tracking branch explicitly. Revision builds use a disposable checkout and do not change your files. `compare` without `--base` compares main, preview and working pairwise. Use `--offset` and `--limit` to page each category. The shared comparison reports source changes, moved occurrences, unmatched producer output, analysis differences for unchanged source, and provenance separately. An ambiguous occurrence retains its source identity; graph changes do not by themselves imply a runtime behavioral change. Parity contracts also support evaluating one selected graph against supplied expectations.
+
+Graph names are labels for retained targets and can include spaces. `working` remains the default name for a current-file build for compatibility, but no name requires a particular source: the same name can be used for a committed revision or current files. `working-tree` as a revision selector identifies the most recently retained current-file graph rather than requiring a graph named `working`. A named build publishes its replacement only after graph and index construction succeed.
 
 The `open` command starts the local Workbench and opens the browser. `serve` runs the loopback service in the foreground. `mcp` serves the same local graph through standard input/output to a compatible local agent. Connecting ChatGPT to a local process requires a supported connection or tunnel configured separately.
 
