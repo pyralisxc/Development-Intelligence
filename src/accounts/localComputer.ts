@@ -125,12 +125,34 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
       renewal = setInterval(() => { void update({ progress: { stage: 'building' } }).catch(() => {}); }, 60_000);
       let lastProgress = 0;
       let result: unknown;
-      if (job.kind === 'question') {
-        if (!job.question || !job.graphId) throw new Error('Question has no retained graph');
+      if (job.kind === 'question' || job.kind === 'investigation') {
+        if (!job.graphId) throw new Error('Investigation has no retained graph');
         process.env.DEVINT_LOCAL_GRAPH_DIR = path.resolve(job.graph.storage.location);
         process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [job.project.id]: { repository: pathToFileURL(path.resolve(root)).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
-        const { queryWorkbenchRequest } = await import('../intelligence/workbench.js');
-        result = await queryWorkbenchRequest({ project: job.project.id, graphId: job.graphId, text: job.question });
+        if (job.kind === 'question') {
+          if (!job.question) throw new Error('Missing question');
+          const { queryWorkbenchRequest } = await import('../intelligence/workbench.js');
+          result = await queryWorkbenchRequest({ project: job.project.id, graphId: job.graphId, text: job.question });
+        } else {
+          if (!job.request) throw new Error('Missing investigation');
+          const { createDevelopmentIntelligenceServer } = await import('../http.js');
+          process.env.DEVINT_AUTH_MODE = 'none'; process.env.DEVINT_ALLOW_UNAUTHENTICATED = '1';
+          const server = createDevelopmentIntelligenceServer();
+          await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+          try {
+            const address = server.address();
+            if (!address || typeof address === 'string') throw new Error('Local investigation service is unavailable');
+            const url = new URL(job.request.path, `http://127.0.0.1:${address.port}`);
+            const query = new URLSearchParams(job.request.query ?? '');
+            query.set('project', job.project.id);
+            if (!query.has('ref') && !query.has('graphId')) query.set('graphId', job.graphId);
+            url.search = query.toString();
+            const body = job.request.body && typeof job.request.body === 'object' && !Array.isArray(job.request.body) ? job.request.body as Record<string, unknown> : {};
+            const response = await fetch(url, job.request.method === 'POST' ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, project: job.project.id, ...(!body.ref && !body.graphId ? { graphId: job.graphId } : {}) }) } : undefined);
+            result = await response.json();
+            if (!response.ok) throw new Error((result as { error?: string })?.error ?? `Investigation failed (${response.status})`);
+          } finally { server.close(); }
+        }
       } else {
         result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir: job.graph.storage.location,
           scratchDir, retain, target: job.graph.name, ...(ref ? { ref } : {}) }, progress => {

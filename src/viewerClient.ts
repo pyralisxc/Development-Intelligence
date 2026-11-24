@@ -3,7 +3,7 @@ import Sigma from 'sigma';
 
 declare global {
   interface Window {
-    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string };
+    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; accountGraphId?: string; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string };
   }
 }
 
@@ -114,6 +114,7 @@ function withContext(params: URLSearchParams): URLSearchParams {
 }
 
 async function getJson(path: string, params: URLSearchParams): Promise<any> {
+  if (viewerConfig.accountGraphId) return await accountInvestigation({ path, method: 'GET', query: withContext(params).toString() });
   const response = await fetch(`${path}?${withContext(params).toString()}`, { headers: { accept: 'application/json' } });
   if (response.status === 401) { window.location.assign(`/login?returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`); throw new Error('Authentication required'); }
   if (!response.ok) throw new Error(await response.text());
@@ -121,10 +122,27 @@ async function getJson(path: string, params: URLSearchParams): Promise<any> {
 }
 
 async function postJson(path: string, body: Record<string, unknown>): Promise<any> {
+  if (viewerConfig.accountGraphId) return await accountInvestigation({ path, method: 'POST', body });
   const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ project: viewerConfig.project, ...(!body.graphId && viewerConfig.ref ? { ref: viewerConfig.ref } : {}), ...(!body.graphId && viewerConfig.graphId ? { graphId: viewerConfig.graphId } : {}), ...body }) });
   if (response.status === 401) { window.location.assign(`/login?returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`); throw new Error('Authentication required'); }
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
+}
+
+async function accountInvestigation(request: Record<string, unknown>): Promise<any> {
+  const created = await fetch('/account/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'investigate-graph', graphId: viewerConfig.accountGraphId, request }) });
+  if (created.status === 401) { window.location.assign('/account'); throw new Error('Sign in to continue'); }
+  const job = await created.json();
+  if (!created.ok) throw new Error(job.error ?? 'Could not start investigation');
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const response = await fetch(`/account/workspace?job=${encodeURIComponent(job.id)}`);
+    if (response.status === 401) { window.location.assign('/account'); throw new Error('Sign in to continue'); }
+    const current = await response.json();
+    if (!response.ok || !current) throw new Error(current?.error ?? 'Investigation unavailable');
+    if (current.state === 'complete') return current.result;
+    if (current.state === 'failed') throw new Error(current.error ?? 'Investigation failed');
+  }
 }
 
 function setHead(actions = ''): void {

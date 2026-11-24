@@ -9,7 +9,7 @@ export type GraphDefinition = {
   updatePolicy: 'snapshot';
 };
 export type Computer = { id: string; name: string; platform: string; lastSeen: string; state: 'linked' | 'revoked' };
-export type BuildJob = { id: string; kind?: 'build' | 'question'; question?: string; graphId?: string; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; result?: unknown; error?: string };
+export type BuildJob = { id: string; kind?: 'build' | 'question' | 'investigation'; question?: string; graphId?: string; request?: { path: string; method: 'GET' | 'POST'; query?: string; body?: unknown }; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; result?: unknown; error?: string };
 
 function invalid(message: string): never { throw Object.assign(new Error(message), { status: 400 }); }
 function value(input: unknown, label: string): string {
@@ -44,6 +44,7 @@ export class WorkspaceStore {
   async graphs(): Promise<GraphDefinition[]> { return Object.values(await this.redis.hgetall<Record<string, GraphDefinition>>(this.key('graphs')) ?? {}); }
   async computers(): Promise<Computer[]> { return Object.values(await this.redis.hgetall<Record<string, Computer>>(this.key('computers')) ?? {}); }
   async builds(): Promise<BuildJob[]> { return Object.values(await this.redis.hgetall<Record<string, BuildJob>>(this.key('builds')) ?? {}); }
+  async build(jobId: unknown): Promise<BuildJob | null> { return await this.redis.hget<BuildJob>(this.key('builds'), id(jobId)); }
   async linkComputer(input: unknown): Promise<{ computer: Computer; secret: string }> {
     const data = object(input);
     const computer: Computer = { id: recordId(), name: value(data.name, 'Computer name'), platform: value(data.platform, 'Platform'), lastSeen: new Date().toISOString(), state: 'linked' };
@@ -123,6 +124,22 @@ export class WorkspaceStore {
     const job: BuildJob = { id: recordId(), kind: 'question', question: value(question, 'Question'), graphId: built.graphId, graph: latest!.graph, project, state: 'queued', createdAt: new Date().toISOString() };
     await this.redis.hset(this.key('builds'), { [job.id]: job }); return job;
   }
+  async queueInvestigation(graphId: unknown, input: unknown): Promise<BuildJob> {
+    const request = object(input), path = value(request.path, 'Investigation path');
+    if (!['/workbench/data', '/workbench/query', '/workbench/parity', '/graph/data'].includes(path)) invalid('Unsupported investigation');
+    const method = request.method === 'POST' ? 'POST' : 'GET';
+    if ((path === '/workbench/query' || path === '/workbench/parity') !== (method === 'POST')) invalid('Unsupported investigation method');
+    const graph = await this.redis.hget<GraphDefinition>(this.key('graphs'), id(graphId));
+    if (!graph) invalid('Graph does not exist');
+    const project = await this.redis.hget<Project>(this.key('projects'), graph.projectId);
+    if (!project) invalid('Project does not exist');
+    const latest = (await this.builds()).filter(job => job.graph.id === graph.id && job.kind === 'build' && job.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const built = latest?.result as { graphId?: unknown } | undefined;
+    if (typeof built?.graphId !== 'string') invalid('Build a snapshot of this graph first');
+    const job: BuildJob = { id: recordId(), kind: 'investigation', graphId: built.graphId, graph: latest!.graph, project, state: 'queued', createdAt: new Date().toISOString(), request: { path, method,
+      ...(typeof request.query === 'string' ? { query: request.query } : {}), ...(request.body === undefined ? {} : { body: request.body }) } };
+    await this.redis.hset(this.key('builds'), { [job.id]: job }); return job;
+  }
   async claimBuild(computerId: unknown, secret: unknown): Promise<BuildJob | null> {
     const computer = await this.heartbeat(computerId, secret);
     const jobs = (await this.builds()).filter(job => job.graph.buildComputer === computer.id && (job.state === 'queued' || (job.state === 'running' && (job.leaseUntil ?? 0) < Date.now()))).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -134,7 +151,7 @@ export class WorkspaceStore {
     return null;
   }
   async updateBuild(computerId: unknown, secret: unknown, jobId: unknown, update: unknown): Promise<void> {
-    const computer = await this.verifyComputer(computerId, secret), data = object(update), buildId = id(jobId), claimId = id(data.claimId);
+    const computer = await this.heartbeat(computerId, secret), data = object(update), buildId = id(jobId), claimId = id(data.claimId);
     const changed = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.graph.buildComputer~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; local update=cjson.decode(ARGV[4]); if update.state=='complete' then job.state='complete'; job.result=update.result; job.leaseUntil=nil elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds')], [buildId, computer.id, claimId, JSON.stringify(data), Date.now() + 900_000]);
     if (changed !== 1) invalid('Build claim is no longer active');
   }

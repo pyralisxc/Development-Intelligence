@@ -211,12 +211,28 @@ export function createDevelopmentIntelligenceServer() {
       if (!/^[a-zA-Z0-9.-]+$/u.test(host)) { json(res, 503, { error: 'Invalid account identity configuration' }); return; }
       json(res, 200, { issuer: `https://${host}`, clientId }); return;
     }
+    if (requestUrl.pathname === '/account/graph' && req.method === 'GET') {
+      try {
+        const identity = await authenticateAccount(req, res); if (!identity) return;
+        if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
+        const store = new WorkspaceStore(identity.userId), graphId = requestUrl.searchParams.get('id');
+        const graph = (await store.graphs()).find(item => item.id === graphId);
+        if (!graph) { json(res, 404, { error: 'Graph not found' }); return; }
+        const job = (await store.builds()).filter(item => item.graph.id === graph.id && item.kind === 'build' && item.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
+        if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
+        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id);
+        res.writeHead(200, htmlHeaders()); res.end(page); return;
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
     if (requestUrl.pathname === '/account/workspace') {
       try {
         const identity = await authenticateAccount(req, res);
         if (!identity) return;
         const store = new WorkspaceStore(identity.userId);
         if (req.method === 'GET') {
+          const jobId = requestUrl.searchParams.get('job');
+          if (jobId) { json(res, 200, await store.build(jobId)); return; }
           const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds()]);
           json(res, 200, { projects, graphs, computers, layout, builds }); return;
         }
@@ -230,6 +246,7 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'save-layout' && identity.tokenType === 'session_token') { await store.saveLayout(body.layout); json(res, 200, { saved: true }); return; }
         if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBuild(body.graphId)); return; }
         if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueQuestion(body.graphId, body.question)); return; }
+        if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueInvestigation(body.graphId, body.request)); return; }
         if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer)); return; }
         if (body.action === 'computer-heartbeat' && identity.tokenType === 'oauth_token') { json(res, 200, await store.heartbeat(body.computerId, body.secret)); return; }
         if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret)); return; }
