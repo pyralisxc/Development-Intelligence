@@ -28,18 +28,18 @@ export async function buildLocalGraph(rootInput: string, project?: string, role:
 }
 
 /** Build the current files, including non-ignored new files, without equating them to HEAD. */
-export async function buildLocalWorkingGraph(rootInput: string, project?: string, joern?: { bytes: Uint8Array; version: string; projectPrefix?: string }): Promise<IntelligenceGraph> {
+export async function buildLocalWorkingGraph(rootInput: string, project?: string, joern?: { bytes: Uint8Array; version: string; projectPrefix?: string }, progress?: (value: import('./producerInputs.js').GraphBuildProgress) => void): Promise<IntelligenceGraph> {
   const root = path.resolve(rootInput);
   const revision = await gitValue(root, ['rev-parse', 'HEAD']);
   let repository = '';
   try { repository = await gitValue(root, ['remote', 'get-url', 'origin']); } catch { repository = root; }
-  const graph = await buildRepositoryGraph({ project: project?.trim() || path.basename(root), repository, revision, root, role: 'W', workingTree: true, ...(joern ? { joern } : {}) });
+  const graph = await buildRepositoryGraph({ project: project?.trim() || path.basename(root), repository, revision, root, role: 'W', workingTree: true, ...(joern ? { joern } : {}), ...(progress ? { progress } : {}) });
   assertGraphIntegrity(graph);
   return graph;
 }
 
 /** Analyze a committed revision in a disposable clone without touching the user's checkout. */
-export async function buildLocalRevisionGraph(rootInput: string, ref: string, project?: string, joern?: { bytes: Uint8Array; version: string; projectPrefix?: string }): Promise<IntelligenceGraph> {
+export async function buildLocalRevisionGraph(rootInput: string, ref: string, project?: string, joern?: { bytes: Uint8Array; version: string; projectPrefix?: string }, progress?: (value: import('./producerInputs.js').GraphBuildProgress) => void): Promise<IntelligenceGraph> {
   const root = path.resolve(rootInput);
   let revision: string;
   try { revision = await gitValue(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]); }
@@ -54,7 +54,7 @@ export async function buildLocalRevisionGraph(rootInput: string, ref: string, pr
     await runChecked('git', ['-C', checkout, 'checkout', '--detach', revision]);
     let repository = '';
     try { repository = await gitValue(root, ['remote', 'get-url', 'origin']); } catch { repository = root; }
-    const graph = await buildRepositoryGraph({ project: project?.trim() || path.basename(root), repository, revision, root: checkout, role: 'W', ...(joern ? { joern } : {}) });
+    const graph = await buildRepositoryGraph({ project: project?.trim() || path.basename(root), repository, revision, root: checkout, role: 'W', disposableCheckout: true, ...(joern ? { joern } : {}), ...(progress ? { progress } : {}) });
     assertGraphIntegrity(graph);
     return graph;
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }

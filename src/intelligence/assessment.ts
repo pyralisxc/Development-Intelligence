@@ -192,7 +192,7 @@ function candidates(graph: IntelligenceGraph, query: string): GraphNode[] {
   const needle = searchableText(query);
   if (!needle) return [];
   const named = graph.nodes.filter(node => node.name && searchableText(node.name) === needle);
-  return (named.length ? named : graph.nodes.filter(node => searchableText(nodeText(node)).includes(needle))).slice(0, 20);
+  return named.length ? named : graph.nodes.filter(node => searchableText(nodeText(node)).includes(needle));
 }
 
 function subjectFromQuestion(question: string): string {

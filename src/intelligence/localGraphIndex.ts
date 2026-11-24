@@ -219,12 +219,15 @@ export function indexedTextCandidates(graph: IntelligenceGraph, question: string
     if (token.length > 4 && token.endsWith('ed')) { const base = token.slice(0, -2); bases.add(base); bases.add(base + 'e'); }
     for (const base of bases) { prefixes.add(base); if (base.endsWith('e') && base.length > 1) prefixes.add(base.slice(0, -1)); }
   }
-  if (!prefixes.size || prefixes.size + nameRuns.size > 128) return null;
+  if (!prefixes.size) return null;
   const Database = sqlite(), db = new Database(index.file, { readOnly: true });
   try {
     db.exec('CREATE TEMP TABLE matched_nodes(id TEXT PRIMARY KEY) WITHOUT ROWID');
-    const match = [...[...prefixes].map(prefix => `"${prefix}"*`), ...nameRuns].join(' OR ');
-    db.prepare('INSERT OR IGNORE INTO matched_nodes SELECT n.id FROM node_text JOIN nodes n ON n.ordinal=node_text.rowid-1 WHERE node_text MATCH ?').run(match);
+    const terms = [...[...prefixes].map(prefix => `"${prefix}"*`), ...nameRuns];
+    const insert = db.prepare('INSERT OR IGNORE INTO matched_nodes SELECT n.id FROM node_text JOIN nodes n ON n.ordinal=node_text.rowid-1 WHERE node_text MATCH ?');
+    // Keep each FTS expression manageable without limiting the question or
+    // dropping matches: union the results of every batch in the same table.
+    for (let at = 0; at < terms.length; at += 128) insert.run(terms.slice(at, at + 128).join(' OR '));
     const result = new Set<string>();
     for (const row of db.prepare('SELECT n.id,n.owner FROM matched_nodes m JOIN nodes n ON n.id=m.id').iterate()) {
       result.add(row.id); if (row.owner) result.add(row.owner);
@@ -521,11 +524,6 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
   const Database = sqlite(), db = new Database(index.file, { readOnly: true });
   let nodeIds: string[], edgeIds: string[];
   try {
-    // Materializing a very broad candidate population is more expensive than
-    // reusing the full graph. This changes the execution plan, never the set
-    // of graph facts or the requested scope.
-    const graphSize = Number(db.prepare('SELECT count(*) n FROM nodes').get().n);
-    if (graphSize && initial.size * 10 >= graphSize) return null;
     db.exec('CREATE TEMP TABLE selected(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE expansion(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE comparison_nodes(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE subjects(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE visited(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE frontier(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE next_frontier(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE selected_edges(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE edge_delta(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE callbacks(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE callback_delta(id TEXT PRIMARY KEY) WITHOUT ROWID;');
     const add = db.prepare('INSERT OR IGNORE INTO frontier SELECT id FROM nodes WHERE id=?');
     for (const id of initial) add.run(id);
@@ -557,7 +555,6 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
     const addSubject = db.prepare('INSERT OR IGNORE INTO subjects SELECT id FROM nodes WHERE id=?');
     for (const id of chosen) addSubject.run(id);
     db.exec('DELETE FROM selected; INSERT INTO selected SELECT id FROM subjects; INSERT OR IGNORE INTO selected SELECT id FROM comparison_nodes; INSERT INTO expansion SELECT id FROM subjects; DELETE FROM selected_edges');
-    const totals = db.prepare('SELECT (SELECT count(*) FROM nodes) n, (SELECT count(*) FROM edges) e').get();
     db.exec(`INSERT OR IGNORE INTO expansion SELECT m.node_id FROM subjects s CROSS JOIN families m INDEXED BY family_members ON m.family_id=s.id;
       INSERT OR IGNORE INTO expansion SELECT m.family_id FROM subjects s CROSS JOIN families m ON m.node_id=s.id;
       INSERT OR IGNORE INTO selected SELECT id FROM expansion;
@@ -596,7 +593,6 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
         INSERT OR IGNORE INTO next_frontier SELECT n.id FROM frontier s CROSS JOIN nodes n INDEXED BY node_owner ON n.owner=s.id;
         DELETE FROM next_frontier WHERE id IN (SELECT id FROM selected);`);
       const progress = db.prepare('SELECT (SELECT count(*) FROM selected) n, (SELECT count(*) FROM selected_edges) e, (SELECT count(*) FROM next_frontier) pending, (SELECT count(*) FROM edge_delta) new_edges').get();
-      if (Number(progress.n) + Number(progress.pending) >= Number(totals.n) * 0.7 || Number(progress.e) >= Number(totals.e) * 0.7) return null;
       if (!Number(progress.pending) && !Number(progress.new_edges)) break;
       db.exec('INSERT OR IGNORE INTO selected SELECT id FROM next_frontier; DELETE FROM frontier; INSERT INTO frontier SELECT id FROM next_frontier; DELETE FROM next_frontier');
     }

@@ -8,6 +8,18 @@ export interface RunResult {
   timedOut?: boolean;
 }
 
+/** Long source operations have no implicit deadline. Operators can opt into a
+ * deadline for their environment without changing what the graph may contain. */
+export function optionalProcessTimeout(name: string): { timeoutMs?: number } {
+  const value = process.env[name]?.trim();
+  if (!value) return {};
+  const timeoutMs = Number(value);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
+    throw new Error(`${name} must be a positive number of milliseconds within the Node timer range`);
+  }
+  return { timeoutMs };
+}
+
 export async function run(
   command: string,
   args: string[],

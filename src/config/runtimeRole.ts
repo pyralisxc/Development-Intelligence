@@ -5,7 +5,8 @@ export function computeOnly(): boolean {
 }
 
 export function previewRuntime(): boolean {
-  return process.env.VERCEL_ENV === 'preview' || process.env.VERCEL_TARGET_ENV === 'preview';
+  return process.env.DEVINT_DEPLOYMENT_SCOPE === 'preview'
+    || process.env.VERCEL_ENV === 'preview' || process.env.VERCEL_TARGET_ENV === 'preview';
 }
 
 export function assertAuthorityWritesAllowed(): void {

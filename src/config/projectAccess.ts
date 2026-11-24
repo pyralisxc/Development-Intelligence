@@ -83,6 +83,11 @@ export async function assertProjectAccessCurrent(project?: string): Promise<void
 }
 
 export function hasProjectAccess(): boolean { return Boolean(operation()); }
+/** Only trusted in-process worker handoff may read this frozen server binding.
+ * It is never constructed from a tool argument or returned to a client. */
+export function projectAccessWorkerBinding(project: string): ProjectAccessBinding | null {
+  return operation(project)?.binding ?? null;
+}
 export function projectAccessScopeKey(): string { return operation()?.key ?? 'operator'; }
 export function projectAccessConfig(project?: string): { project: string; config: ProjectConfig } | null {
   const binding = operation(project)?.binding;

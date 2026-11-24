@@ -76,10 +76,10 @@ async function main() {
   const workingData = flag('--activate-working-data-dir');
   const javaHome = flag('--joern-java-home');
   const sourceSelection = flag('--joern-source');
-  const memoryMb = Number(flag('--joern-memory-mb') || '1024');
-  const timeoutSeconds = Number(flag('--joern-timeout-seconds') || '300');
-  if (!Number.isSafeInteger(memoryMb) || memoryMb < 512 || memoryMb > 8192) throw new Error('Joern memory must be 512–8192 MiB');
-  if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 10 || timeoutSeconds > 3600) throw new Error('Joern timeout must be 10–3600 seconds per process');
+  const memoryMb = flag('--joern-memory-mb') ? Number(flag('--joern-memory-mb')) : null;
+  const timeoutSeconds = flag('--joern-timeout-seconds') ? Number(flag('--joern-timeout-seconds')) : null;
+  if (memoryMb !== null && (!Number.isSafeInteger(memoryMb) || memoryMb < 1)) throw new Error('Joern memory must be a positive integer in MiB');
+  if (timeoutSeconds !== null && (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 2147483)) throw new Error('Joern timeout must be positive and fit the Node timer');
   if (sliceOutput && !joern) throw new Error('--joern-slice-output requires --joern-executable');
   if ((workingData || javaHome || sourceSelection) && !joern) throw new Error('Joern build options require --joern-executable');
   const retain = Number(flag('--retain') || '3');
@@ -126,8 +126,8 @@ async function main() {
       const sinkFilter = flag('--joern-sink-filter')
         ? limit(flag('--joern-sink-filter'), 'Joern sink filter', 160) : null;
       const depth = Number(flag('--joern-depth') || '12');
-      if (!Number.isInteger(depth) || depth < 1 || depth > 20) {
-        throw new Error('Joern depth must be from 1 to 20');
+      if (!Number.isSafeInteger(depth) || depth < 1) {
+        throw new Error('Joern depth must be a positive integer');
       }
       const executable = await fs.realpath(path.resolve(joern));
       // Pinned Joern v4 slicer accepts a CPG binary, not raw Git directories.
@@ -144,13 +144,13 @@ async function main() {
         const parent = path.posix.dirname(relative);
         if (parent !== '.') joernPrefix = parent;
       }
-      const joernEnv = { JAVA_OPTS: `-Xmx${memoryMb}m`, ...(javaHome ? { JAVA_HOME: await fs.realpath(path.resolve(javaHome)) } : {}) };
+      const joernEnv = { ...(memoryMb === null ? {} : { JAVA_OPTS: `-Xmx${memoryMb}m` }), ...(javaHome ? { JAVA_HOME: await fs.realpath(path.resolve(javaHome)) } : {}) };
       const cpg = path.join(scratch, 'joern-cpg.bin');
       const parseStarted = Date.now();
       const parsed = await runJoern(parser, [
         parseSource, '--output', cpg,
         ...(requestedLanguage ? ['--language', requestedLanguage] : []),
-      ], { cwd: root, timeoutMs: timeoutSeconds * 1000, env: joernEnv });
+      ], { cwd: root, ...(timeoutSeconds === null ? {} : { timeoutMs: timeoutSeconds * 1000 }), env: joernEnv });
       measures.joernParseMs = Date.now() - parseStarted;
       if (parsed.code !== 0) {
         if (parsed.timedOut) throw new Error(`Joern source frontend exceeded ${timeoutSeconds} seconds; the previous graph remains active`);
@@ -168,7 +168,7 @@ async function main() {
         ...(fileFilter ? ['--file-filter', fileFilter] : []),
         ...(sinkFilter ? ['--sink-filter', sinkFilter] : []),
         '--slice-depth', String(depth), cpg],
-      { cwd: scratch, timeoutMs: timeoutSeconds * 1000, env: joernEnv });
+      { cwd: scratch, ...(timeoutSeconds === null ? {} : { timeoutMs: timeoutSeconds * 1000 }), env: joernEnv });
       measures.joernSliceMs = Date.now() - start;
       if (processResult.code !== 0) {
         if (processResult.timedOut) throw new Error(`Joern slicer exceeded ${timeoutSeconds} seconds; the previous graph remains active`);

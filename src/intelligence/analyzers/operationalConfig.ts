@@ -25,7 +25,7 @@ export function isOperationalConfigPath(locator: string): boolean {
 }
 
 function safeText(value: string, field = ''): string {
-  const trimmed = value.trim().slice(0, 300);
+  const trimmed = value.trim();
   return SENSITIVE_KEY.test(field) || SENSITIVE_TEXT.test(trimmed) ? '<redacted>' : trimmed;
 }
 

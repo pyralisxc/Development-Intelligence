@@ -3,7 +3,7 @@ import Sigma from 'sigma';
 
 declare global {
   interface Window {
-    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; section?: string; local?: boolean };
+    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string };
   }
 }
 
@@ -749,21 +749,37 @@ async function renderLocal(epoch: number): Promise<void> {
   const settings = state.settings;
   const field = (label: string, id: string, value: unknown) => `<label style="display:block;margin:10px 0"><span class="muted">${esc(label)}</span><input id="${id}" value="${esc(value)}" style="display:block;width:100%;border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:9px;padding:9px"></label>`;
   content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Graphs cached in memory (0 disables cache)', 'local-cache', settings.cacheSize ?? 3)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Build current files and keep selected committed revisions as comparison targets.</p><button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}${field('Target name', 'local-target', 'preview')}<button data-local-action="build-revision">Build revision target</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
+  const installation = content.querySelector('.card');
+  if (installation) {
+    const heapSettings = document.createElement('div');
+    heapSettings.innerHTML = `${field('Graph worker heap in MiB (blank uses Node default)', 'local-worker-heap', settings.graphWorkerHeapMB ?? '')}${field('SCIP producer heap in MiB (blank uses Node default)', 'local-scip-heap', settings.scipHeapMB ?? '')}`;
+    installation.insertBefore(heapSettings, document.getElementById('local-save'));
+  }
   const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
   const show = (data: any) => {
     const history = document.getElementById('local-history');
     if (history) history.textContent = data.history?.targets ? `Retained targets: ${Object.keys(data.history.targets).join(', ')}` : 'No graphs built at this location yet.';
     const target = document.getElementById('local-job');
-    if (target) target.textContent = data.job ? `${data.job.action}: ${data.job.state}${data.job.output ? `\n${data.job.output}` : ''}` : 'No operation running.';
+    if (target) target.textContent = data.job ? `${data.job.action}: ${data.job.state}${data.job.progress ? ` — ${data.job.progress.stage}${data.job.progress.total !== undefined ? ` (${data.job.progress.completed}/${data.job.progress.total} files)` : ''}` : ''}${data.job.output ? `\n${data.job.output}` : ''}` : 'No operation running.';
   };
   show(state);
+  const capacityButton = document.createElement('button');
+  capacityButton.textContent = 'Measure source and host capacity';
+  const capacityOutput = document.createElement('pre');
+  capacityOutput.className = 'raw';
+  capacityButton.addEventListener('click', async () => {
+    capacityOutput.textContent = 'Measuring current files and the configured scratch location…';
+    try { capacityOutput.textContent = JSON.stringify(await getJson('/workbench/local', new URLSearchParams({ action: 'capacity' })), null, 2); }
+    catch (error) { capacityOutput.textContent = String(error); }
+  });
+  content.querySelector('.card')?.append(capacityButton, capacityOutput);
   const poll = async () => {
     if (!sectionIsCurrent(epoch, 'local')) return;
     try { const current = await getJson('/workbench/local', new URLSearchParams()); show(current); if (current.job?.state === 'running') window.setTimeout(() => void poll(), 2000); }
     catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
   };
   (document.getElementById('local-save') as HTMLButtonElement).addEventListener('click', async () => {
-    try { await postJson('/workbench/local', { action: 'settings', repoPath: value('local-repo'), dataDir: value('local-data'), scratchDir: value('local-scratch'), backupDir: value('local-backup'), retain: Number(value('local-retain')), cacheSize: Number(value('local-cache')), port: Number(value('local-port')) }); await poll(); }
+    try { await postJson('/workbench/local', { action: 'settings', repoPath: value('local-repo'), dataDir: value('local-data'), scratchDir: value('local-scratch'), backupDir: value('local-backup'), retain: Number(value('local-retain')), cacheSize: Number(value('local-cache')), port: Number(value('local-port')), graphWorkerHeapMB: value('local-worker-heap') || null, scipHeapMB: value('local-scip-heap') || null }); await poll(); }
     catch (error) { const target = document.getElementById('local-job'); if (target) target.textContent = String(error); }
   });
   for (const button of Array.from(content.querySelectorAll<HTMLButtonElement>('[data-local-action]'))) button.addEventListener('click', async () => {
@@ -802,4 +818,38 @@ revisionForm.addEventListener('submit', event => { event.preventDefault(); const
 globalForm.addEventListener('submit', event => { event.preventDefault(); const value = globalInput.value.trim(); if (!value) return; void activateSection('query', value); });
 document.addEventListener('keydown', event => { if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') { event.preventDefault(); globalInput.focus(); } });
 
+if (viewerConfig.machineBuild) {
+  const status = document.getElementById('machine-build-status');
+  let awaitingGraph = false;
+  const pollBuild = async (): Promise<void> => {
+    if (!status) return;
+    try {
+      const build = await getJson('/workbench/graph-build', new URLSearchParams(viewerConfig.buildRevision ? { revision: viewerConfig.buildRevision } : {}));
+      if (build.state === 'complete') {
+        status.textContent = `Graph ready · ${String(build.revision).slice(0, 12)}`;
+        if (awaitingGraph) { awaitingGraph = false; void activateSection(section); }
+        return;
+      }
+      if (build.state === 'failed') {
+        status.textContent = `Graph build failed: ${build.error ?? 'unknown error'} `;
+        const retry = document.createElement('button'); retry.textContent = 'Retry';
+        retry.addEventListener('click', async () => {
+          try { const restarted = await postJson('/workbench/graph-build', {}); viewerConfig.buildRevision = restarted.revision; awaitingGraph = true; void pollBuild(); }
+          catch (error) { status.textContent = String(error); }
+        });
+        status.append(retry); return;
+      }
+      if (build.state === 'not-built') {
+        const restarted = await postJson('/workbench/graph-build', {});
+        viewerConfig.buildRevision = restarted.revision;
+        awaitingGraph = true; window.setTimeout(() => void pollBuild(), 2000); return;
+      }
+      awaitingGraph = true;
+      const progress = build.progress;
+      status.textContent = `Graph ${build.state} · ${String(progress?.stage ?? 'waiting').replaceAll('-', ' ')}${progress?.total !== undefined ? ` ${progress.completed}/${progress.total}` : ''}`;
+      window.setTimeout(() => void pollBuild(), 2000);
+    } catch (error) { status.textContent = `Graph status unavailable: ${String(error)}`; }
+  };
+  void pollBuild();
+}
 void activateSection(section);

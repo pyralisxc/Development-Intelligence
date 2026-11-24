@@ -80,7 +80,7 @@ $wrapper = @'
   <log mode="roll-by-size"><sizeThreshold>1024</sizeThreshold><keepFiles>4</keepFiles></log>
 </service>
 '@
-$nodeArgument = if ($LaboratoryFailure) { '--deliberately-invalid-laboratory-flag' } else { "--max-old-space-size=$($descriptor.limits.nodeHeapMB)" }
+$nodeArgument = if ($LaboratoryFailure) { '--deliberately-invalid-laboratory-flag' } elseif ($null -ne $descriptor.limits.nodeHeapMB) { "--max-old-space-size=$($descriptor.limits.nodeHeapMB)" } else { '' }
 $wrapper = $wrapper.Replace('--max-old-space-size=768', $nodeArgument)
 [IO.File]::WriteAllText((Join-Path $payload 'DevelopmentIntelligenceTrial.xml'), $wrapper)
 $files = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object FullName | ForEach-Object {

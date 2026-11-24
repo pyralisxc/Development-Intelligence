@@ -333,7 +333,7 @@ function sourceLanguage(sourcePath: string): string | null {
  * Capability emission is NOT whole-language completeness. A completed file
  * scan has no authority to assert that an unsupported relation never occurs.
  */
-export function sourceCapabilityCoverage(graph: IntelligenceGraph) {
+export function sourceCapabilityCoverage(graph: Pick<IntelligenceGraph, 'coverage'>) {
   const counts = new Map<string, { complete: number; partial: number; failedOrSkipped: number }>();
   for (const file of graph.coverage?.files ?? []) {
     const language = sourceLanguage(file.path);

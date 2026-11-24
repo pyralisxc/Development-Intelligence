@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
 import { createGzip, gunzipSync } from 'node:zlib';
 import { Readable } from 'node:stream';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import {
   canonicalDerivedStorageInfo,
-  readCanonicalDerivedObject,
-  readCanonicalDerivedObjectVersioned,
-  writeCanonicalDerivedObject,
-  writeCanonicalDerivedObjectConditional,
+  readCanonicalDerivedObject as readCanonicalObject,
+  readCanonicalDerivedObjectVersioned as readCanonicalObjectVersioned,
+  writeCanonicalDerivedObject as writeCanonicalObject,
+  writeCanonicalDerivedObjectConditional as writeCanonicalObjectConditional,
+  previewReplayDerivedStorage,
   type CanonicalQueryArtifactGenerationRef,
 } from './canonicalStore.js';
 import {
@@ -19,8 +21,26 @@ import {
   type CanonicalQueryIndexArtifact,
 } from './queryArtifacts.js';
 
+const previewArtifactStorage = new AsyncLocalStorage<ReturnType<typeof previewReplayDerivedStorage>>();
+
+/** Select the same artifact protocol in a revision-scoped Preview namespace. */
+export async function withPreviewQueryArtifactScope<T>(
+  expected: { project: string; repository: string; revision: string }, use: () => Promise<T>,
+): Promise<T> {
+  return await previewArtifactStorage.run(previewReplayDerivedStorage(expected), use);
+}
+
+const readCanonicalDerivedObject: typeof readCanonicalObject = (...args) =>
+  (previewArtifactStorage.getStore()?.read ?? readCanonicalObject)(...args);
+const readCanonicalDerivedObjectVersioned: typeof readCanonicalObjectVersioned = (...args) =>
+  (previewArtifactStorage.getStore()?.readVersioned ?? readCanonicalObjectVersioned)(...args);
+const writeCanonicalDerivedObject: typeof writeCanonicalObject = (...args) =>
+  (previewArtifactStorage.getStore()?.write ?? writeCanonicalObject)(...args);
+const writeCanonicalDerivedObjectConditional: typeof writeCanonicalObjectConditional = (...args) =>
+  (previewArtifactStorage.getStore()?.writeConditional ?? writeCanonicalObjectConditional)(...args);
+
 export const QUERY_ARTIFACT_SLOT_COUNT = 4;
-export const QUERY_ARTIFACT_FORMAT_VERSION = 5;
+export const QUERY_ARTIFACT_FORMAT_VERSION = 9;
 const QUERY_ARTIFACT_SLOT_RESERVATION_STALE_MS = 60 * 60 * 1000;
 
 export interface CanonicalQueryArtifactDescriptor {
@@ -34,7 +54,7 @@ export interface CanonicalQueryArtifactDescriptor {
 
 export interface CanonicalQueryArtifactManifest {
   formatVersion: 1;
-  artifactFormatVersion: 5;
+  artifactFormatVersion: 9;
   generationId: string;
   slot: number;
   project: string;
@@ -81,7 +101,7 @@ export interface CanonicalQueryArtifactLoadResult {
 
 export interface CanonicalQueryArtifactPointer {
   formatVersion: 1;
-  artifactFormatVersion: 5;
+  artifactFormatVersion: number;
   project: string;
   repository: string;
   revision: string;
@@ -121,11 +141,14 @@ function sha256(body: string | Uint8Array): string {
   return createHash('sha256').update(body).digest('hex');
 }
 
-function validGenerationRef(value: unknown): value is CanonicalQueryArtifactGenerationRef {
+function validGenerationRef(value: unknown, acceptOlder = false): value is CanonicalQueryArtifactGenerationRef {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   return item.formatVersion === 1
-    && item.artifactFormatVersion === QUERY_ARTIFACT_FORMAT_VERSION
+    && (item.artifactFormatVersion === QUERY_ARTIFACT_FORMAT_VERSION
+      || (acceptOlder && typeof item.artifactFormatVersion === 'number'
+        && Number.isInteger(item.artifactFormatVersion) && item.artifactFormatVersion > 0
+        && item.artifactFormatVersion < QUERY_ARTIFACT_FORMAT_VERSION))
     && typeof item.generationId === 'string'
     && /^[0-9a-f]{24}$/u.test(item.generationId)
     && typeof item.slot === 'number'
@@ -219,7 +242,6 @@ async function reserveCanonicalQueryArtifactSlot(
       }
     }
 
-    if (existing?.generationId === generation && existing.state === 'reserved') return slot;
     const updatedAt = existing ? Date.parse(existing.updatedAt) : Number.NaN;
     const stale = existing?.state === 'reserved'
       && mayReclaimStale
@@ -392,6 +414,8 @@ export async function publishCanonicalQueryArtifacts(
       });
       return { path, ...encoded, encoding: 'gzip' };
     };
+    // The source-bucket filters identify detail shards directly. The graph's
+    // text is stored in those shards once, not repeated as a search inventory.
     const index = await writeArtifact(`${prefix}/index.json.gz`, artifacts.index);
     // The persisted index has been written; it is no longer needed while the
     // detail buckets are encoded. Avoid retaining a second graph-sized index.
@@ -515,10 +539,19 @@ export async function loadCanonicalQueryArtifacts(
       || index.project !== graph.project
       || index.revision !== graph.repositoryRevision
       || index.graphId !== graph.graphId
+      || !index.sourceMetadata || !Array.isArray(index.sourceMetadata.sources)
+      || !Array.isArray(index.sourceMetadata.unavailableSourceIds)
+      || !Array.isArray(index.sourceSearchFilters)
+      || index.sourceSearchFilters.some(item => !Array.isArray(item) || item.length !== 2
+        || typeof item[0] !== 'string' || !/^(?:[0-2][0-9a-f]|3[0-9a-f])$/u.test(item[0]) || typeof item[1] !== 'string')
     ) throw new Error('Canonical query artifact index identity is invalid');
     const populated = populatedQueryBuckets(index);
     if (populated.join(',') !== manifest.bucketIds.join(',')) {
       throw new Error('Canonical query artifact manifest does not match the index bucket inventory');
+    }
+    const filteredBuckets = new Set(index.sourceSearchFilters.map(([bucket]) => bucket));
+    if (populated.some(bucket => (index.buckets[bucket]!.nodeCount || index.buckets[bucket]!.edgeCount) && !filteredBuckets.has(bucket))) {
+      throw new Error('Canonical query search filters omit a populated graph bucket');
     }
     establishedIndex = index;
     bucketIds = [...new Set(typeof buckets === 'function' ? buckets(index) : buckets)].sort();
@@ -696,16 +729,16 @@ export async function loadCanonicalQueryArtifactPointer(expected: {
     const value = JSON.parse(Buffer.from(body).toString('utf8')) as CanonicalQueryArtifactPointer;
     if (
       value.formatVersion !== 1
-      || value.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION
       || value.project !== expected.project
       || value.repository !== expected.repository
       || value.graphSchemaVersion !== 2
       || typeof value.analyzerVersion !== 'string'
       || typeof value.graphId !== 'string'
       || typeof value.publishedAt !== 'string'
-      || !validGenerationRef(value.ref)
+      || !validGenerationRef(value.ref, true)
+      || value.artifactFormatVersion !== value.ref.artifactFormatVersion
     ) throw new Error('Canonical query pointer identity is malformed');
-    if (value.revision !== expected.revision) {
+    if (value.revision !== expected.revision || value.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION) {
       return { state: 'stale', loadMs: Math.max(0, Date.now() - startedAt), pointer: value };
     }
     return { state: 'hit', loadMs: Math.max(0, Date.now() - startedAt), pointer: value };

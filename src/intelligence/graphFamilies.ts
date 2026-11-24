@@ -110,17 +110,26 @@ export function graphFamilyMemberships(graph: IntelligenceGraph): Map<string, Gr
 
 /** Attach source-derived tags and compiler contributions to graph subjects. */
 export function prepareGraphSubjects(graph: IntelligenceGraph): IntelligenceGraph {
-  const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+  const nodes = new Map<string, GraphNode>();
+  for (const node of graph.nodes) if (node.kind === 'call-reference') nodes.set(node.id, node);
   const compilerSubjects = new Set<string>();
   for (const edge of graph.edges) {
     if (edge.status === 'resolved' && edge.kind === 'resolves_to' && edge.strategy === TYPESCRIPT_COMPILER_LENS
       && edge.from && edge.to && nodes.get(edge.from)?.kind === 'call-reference') compilerSubjects.add(edge.to);
   }
   const result: GraphNode[] = graph.nodes.map(original => {
+    const isInteraction = isInteractionPoint(original);
+    const endpoint = isEndpoint(original);
+    const hasOldFamilies = Object.hasOwn(original, 'families');
+    const needsTags = (isInteraction && !original.tags?.includes('interaction-point'))
+      || (endpoint && !original.tags?.includes('endpoint'));
+    const hasCompilerContribution = original.contributions?.some(item => item.producer === 'typescript-checker');
+    if (!hasOldFamilies && !needsTags && !hasCompilerContribution && !compilerSubjects.has(original.id)
+      && (!original.tags || original.tags.length > 0) && (!original.contributions || original.contributions.length > 0)) return original;
     const { families: _old, contributions: _oldContributions, ...base } = original as GraphNode & { families?: unknown };
     const tags = new Set(original.tags ?? []);
-    if (isInteractionPoint(original)) tags.add('interaction-point');
-    if (isEndpoint(original)) tags.add('endpoint');
+    if (isInteraction) tags.add('interaction-point');
+    if (endpoint) tags.add('endpoint');
     const contributions = (original.contributions ?? []).filter(item => item.producer !== 'typescript-checker');
     if (compilerSubjects.has(original.id)) contributions.push({ producer: 'typescript-checker', version: ts.version,
       symbol: original.name ?? original.id, locator: original.locator });

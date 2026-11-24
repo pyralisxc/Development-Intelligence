@@ -10,7 +10,7 @@ For installation from source on Linux or Windows, use Git, Node.js 22.13 or late
 node scripts/install-local.mjs --repo-path /path/to/your/checkout --project my-project
 ```
 
-Use `--install-dir`, `--data-dir`, `--scratch-dir`, `--desktop-dir`, `--retain`, `--cache-size` and `--port` to select locations and settings. The installer reports the launcher and desktop or Start Menu entry it created. Defaults keep three graph generations; named targets are retained even when their number exceeds the chosen count. Three graphs per project may also be cached in memory for comparison; set the cache size to zero to disable it. The launcher is named `di-local` on Linux and `di-local.cmd` on Windows. The examples below use that name; invoke the reported full path or add its directory to your PATH.
+Use `--install-dir`, `--data-dir`, `--scratch-dir`, `--desktop-dir`, `--retain`, `--cache-size`, `--graph-worker-heap-mb`, `--scip-heap-mb` and `--port` to select locations and settings. The two optional heap settings apply separately to the graph worker and SCIP producer; `default` removes an explicit installer setting. They do not cap total process or system memory. The local Workbench can update them later. The installer reports the launcher and desktop or Start Menu entry it created. Defaults keep three graph generations; named targets are retained even when their number exceeds the chosen count. Three graphs per project may also be cached in memory for comparison; set the cache size to zero to disable it. The launcher is named `di-local` on Linux and `di-local.cmd` on Windows. The examples below use that name; invoke the reported full path or add its directory to your PATH.
 
 ```text
 di-local build

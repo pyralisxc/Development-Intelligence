@@ -2,15 +2,15 @@ import { compareInteractionRevisions } from './intelligence/interactionParity.js
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import http from 'node:http';
-import { computeOnly } from './config/runtimeRole.js';
+import { computeOnly, previewRuntime } from './config/runtimeRole.js';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { authMode, authorize, clearOwnerSession, normalizeReturnTo, ownerPasswordMatches, renderOwnerLogin, setOwnerSession, validateHost } from './auth.js';
 import { callTool, listTools } from './mcp.js';
 import { runtimeIdentity } from './runtimeIdentity.js';
-import { currentGraph } from './intelligence/service.js';
+import { currentGraph, graphSourceMetadata, machineGraphBuildStatus } from './intelligence/service.js';
 import { localSourceGraphHistory } from './intelligence/localGraphStore.js';
-import { localLifecycleStatus, startLocalOperation, updateLocalSettings } from './intelligence/localOperations.js';
+import { localCapacity, localLifecycleStatus, startLocalOperation, updateLocalSettings } from './intelligence/localOperations.js';
 import { compareRevisionSet, diffDefaultToSelected, diffRevisions, graphEvidence, pageGraphDiff, viewerProjection } from './intelligence/query.js';
 import { exploreWorkbench, inspectEntity, projectOverview, queryWorkbenchRequest, scopeOrientation, workbenchProjects, workbenchSources } from './intelligence/workbench.js';
 import { evaluateParityContract } from './intelligence/parityContract.js';
@@ -193,10 +193,26 @@ export function createDevelopmentIntelligenceServer() {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;
     }
+    if (requestUrl.pathname === '/workbench/graph-build') {
+      if (!authorize(req, res)) return;
+      try {
+        if (req.method === 'GET') {
+          const project = requestUrl.searchParams.get('project');
+          if (!project) throw new Error('Missing project');
+          json(res, 200, await machineGraphBuildStatus(project, requestUrl.searchParams.get('ref') ?? undefined, false, requestUrl.searchParams.get('revision') ?? undefined)); return;
+        }
+        if (req.method === 'POST') {
+          const body = await readJson(req);
+          if (typeof body.project !== 'string' || !body.project.trim() || (body.ref !== undefined && typeof body.ref !== 'string')) throw new Error('Project and optional ref must be strings');
+          json(res, 200, await machineGraphBuildStatus(body.project, body.ref, true)); return;
+        }
+        json(res, 405, { error: 'Use GET or POST' }); return;
+      } catch (error) { json(res, 400, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
     if (requestUrl.pathname === '/workbench/local' && process.env.DEVINT_LOCAL_SETTINGS) {
       if (!authorize(req, res)) return;
       try {
-        if (req.method === 'GET') { json(res, 200, await localLifecycleStatus()); return; }
+        if (req.method === 'GET') { json(res, 200, requestUrl.searchParams.get('action') === 'capacity' ? await localCapacity() : await localLifecycleStatus()); return; }
         if (req.method === 'POST') {
           const body = await readJson(req);
           const result = body.action === 'settings' ? await updateLocalSettings(body) : await startLocalOperation(body);
@@ -288,9 +304,13 @@ export function createDevelopmentIntelligenceServer() {
           return;
         }
         const context = contextFromUrl(requestUrl);
-        const graph = await currentGraph(project, context.ref, context.graphId);
+        const machine = Boolean(process.env.DEVINT_MACHINE_GRAPH_DIR?.trim()) && previewRuntime() && !context.graphId;
+        const build = machine ? await machineGraphBuildStatus(project, context.ref, true) : null;
+        const graph = machine && build?.state !== 'complete'
+          ? { project, repositoryRevision: String(build!.revision) }
+          : await graphSourceMetadata(project, context.ref, context.graphId);
         res.writeHead(200, htmlHeaders());
-        res.end(renderGraphViewer(graph, context.ref, context.graphId, links.projects));
+        res.end(renderGraphViewer(graph, context.ref, context.graphId, links.projects, machine));
       } catch (error) {
         res.writeHead((error as any)?.status ?? 500, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(error instanceof Error ? error.message : String(error));

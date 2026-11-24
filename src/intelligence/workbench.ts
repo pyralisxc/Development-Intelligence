@@ -6,7 +6,7 @@ import { projectStatus } from '../projectStatus.js';
 import { listPublicProjects } from '../source/git.js';
 import type { GraphEdge, GraphNode, IntelligenceGraph, RelationshipStatus, TechnicalSourceCapability } from '../types.js';
 import { getCodeSnippet } from './code.js';
-import { currentGraph, withIndexedLocalGraph } from './service.js';
+import { currentGraph, graphSourceMetadata, withIndexedLocalGraph } from './service.js';
 import { diffDefaultToSelected, findGraphNodeCandidates, searchGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, type AuditFinding } from './assessment.js';
@@ -1950,8 +1950,8 @@ export async function queryWorkbenchRequest(input: {
 }
 
 export async function workbenchSources(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {
-  const [configured, graph] = await Promise.all([listTechnicalSources(project), currentGraph(project, ref, graphId)]);
-  return {
+  const configured = await listTechnicalSources(project);
+  const describe = (graph: Awaited<ReturnType<typeof graphSourceMetadata>>) => ({
     project,
     graphId: graph.graphId,
     revision: graph.repositoryRevision,
@@ -1960,5 +1960,8 @@ export async function workbenchSources(project: string, ref?: string | undefined
     unavailableSourceIds: graph.unavailableSourceIds,
     coverage: graph.coverage ?? null,
     note: 'Technical sources are operational read-only inputs. Query results retain their own evidence and observation provenance.',
-  };
+  });
+  // The generation envelope already retains source and coverage metadata.
+  // Reading it does not need to materialize every node and relationship.
+  return describe(await graphSourceMetadata(project, ref, graphId));
 }

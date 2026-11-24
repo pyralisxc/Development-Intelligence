@@ -181,8 +181,8 @@ Working builds include current non-ignored files and use a source fingerprint;
 the separate exact-revision evidence and native-test worker requires a clean
 tracked checkout. `--joern-source` can limit parsing to one source file;
 `--joern-java-home` selects a Java installation.
-`--joern-memory-mb` (default 1024) and `--joern-timeout-seconds` (default 300
-per producer process) bound resources. Windows `.bat` launchers are supported
+`--joern-memory-mb` and `--joern-timeout-seconds` optionally set a JVM heap
+and per-process deadline. Without them DI adds neither limit, so the JVM and host choose available resources. Windows `.bat` launchers are supported
 through a fixed interpreter; arguments containing shell metacharacters are
 rejected. A file-scoped slice is partial coverage, not an exhaustive analysis.
 Joern can report file-scoped output using a basename; the worker derives the

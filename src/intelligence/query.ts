@@ -1,17 +1,17 @@
 import { comparisonSelection, investigationSelection } from './investigation.js';
 import path from 'node:path';
 import { getProjectConfig } from '../config/registry.js';
+import { previewRuntime } from '../config/runtimeRole.js';
 import { changedFilesBetweenRevisions, revisionIdentity } from '../source/git.js';
 import type { GraphEdge, GraphNode, GraphNodeLayer, GraphCoverageStatus, IntelligenceGraph, RelationshipStatus , EvidenceRecord} from '../types.js';
 import { compareGraphRecords } from './graphComparison.js';
-import { currentGraph, graphContext, loadCurrentQueryArtifactBuckets, loadCurrentQueryArtifacts, loadQueryArtifactShadow } from './service.js';
+import { currentGraph, graphContext, graphSourceMetadata, loadCurrentQueryArtifactBuckets, loadCurrentQueryArtifacts, loadQueryArtifactShadow, withIndexedLocalGraph } from './service.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
 import { graphQueryContext, type GraphQueryContext } from './queryContext.js';
 import { normalizeName } from './model.js';
 import { deriveQueryCorrelations } from './resolver.js';
-import { exactEvidenceQueryBuckets } from './queryArtifacts.js';
 import { availableRelationshipContracts, observedRelationshipContracts, sourceCapabilityCoverage } from './graphKnowledge.js';
-import { indexedNameMatches, indexedOrdinals } from './localGraphIndex.js';
+import { indexedNameMatches, indexedOrdinals, indexedRecords } from './localGraphIndex.js';
 
 function requestedCount(value: number | undefined, fallback: number, minimum: number, name: string): number {
   const count = value ?? fallback;
@@ -39,7 +39,7 @@ function layersMatch(layer: GraphNodeLayer | undefined, layers: Set<GraphNodeLay
   return !layers.size || layers.has(layer ?? 'structural');
 }
 
-function coverageSummary(graph: IntelligenceGraph): Record<string, unknown> | null {
+function coverageSummary(graph: Pick<IntelligenceGraph, 'coverage' | 'producerCoverage'>): Record<string, unknown> | null {
   const coverage = graph.coverage;
   if (!coverage) return null;
   return {
@@ -385,6 +385,14 @@ function searchGraphMatches(graph: IntelligenceGraph, input: SearchGraphInput, r
 
 function searchGraphResult(graph: IntelligenceGraph, input: SearchGraphInput, requestedQuery?: string): Record<string, unknown> {
   const { nodes, edges } = searchGraphMatches(graph, input, requestedQuery);
+  // Storage shard order is unrelated to relevance or source order. Establish a
+  // shared stable order before paging so selective and full reads agree.
+  const name = requestedQuery?.trim().toLowerCase();
+  const declarations = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type']);
+  nodes.sort((a, b) => Number(Boolean(name && b.name?.toLowerCase() === name))
+    - Number(Boolean(name && a.name?.toLowerCase() === name))
+    || Number(declarations.has(b.kind)) - Number(declarations.has(a.kind)) || a.id.localeCompare(b.id));
+  edges.sort((a, b) => a.id.localeCompare(b.id));
   const limit = requestedCount(input.limit, 100, 1, 'Limit');
   const offset = Math.max(input.offset ?? 0, 0);
   const returnedNodes = nodes.slice(offset, offset + limit);
@@ -489,6 +497,7 @@ function queryArtifactCoverage(index: any): Record<string, unknown> | null {
     skippedFiles: coverage.skippedFiles,
     unsupportedFiles: coverage.unsupportedFiles,
     completeForEligibleSources: coverage.completeForEligibleSources,
+    producerCoverage: index.producerCoverage ?? [],
   };
 }
 
@@ -500,7 +509,8 @@ function queryArtifactEnvelopeComplete(index: any): boolean {
     && Object.prototype.hasOwnProperty.call(coverage, 'trackedFiles')
     && Object.prototype.hasOwnProperty.call(coverage, 'completeFiles')
     && Object.prototype.hasOwnProperty.call(coverage, 'unsupportedFiles')
-    && Array.isArray(index?.explicitValueConflicts),
+    && Array.isArray(index?.explicitValueConflicts)
+    && Array.isArray(index?.producerCoverage),
   );
 }
 
@@ -508,7 +518,7 @@ async function adaptiveCurrentSearch(
   input: SearchGraphInput,
   queries: string[],
 ): Promise<{ result: Record<string, unknown> | null; reason: string; loadMs: number; selectedBuckets: number }> {
-  if (input.ref) {
+  if (input.ref && !previewRuntime()) {
     return { result: null, reason: 'explicit-ref-requires-exact-source-canonical', loadMs: 0, selectedBuckets: 0 };
   }
   if (!queries.length || queries.some(query => !query.trim())) {
@@ -519,8 +529,8 @@ async function adaptiveCurrentSearch(
   // current query pointer is unavailable. Selection must fall back to its
   // exact source/revision graph rather than failing in the optimization plane.
   const loaded = input.graphId
-    ? await loadCurrentQueryArtifacts(input.project, queries, input.graphId).catch(() => null)
-    : await loadCurrentQueryArtifacts(input.project, queries);
+    ? await loadCurrentQueryArtifacts(input.project, queries, input.graphId, input.ref).catch(() => null)
+    : await loadCurrentQueryArtifacts(input.project, queries, undefined, input.ref);
   if (!loaded) return { result: null, reason: 'pinned-current-query-generation-unavailable', loadMs: 0, selectedBuckets: 0 };
   if (loaded.state !== 'hit' || !loaded.index) {
     return {
@@ -538,15 +548,6 @@ async function adaptiveCurrentSearch(
       selectedBuckets: loaded.bucketIds.length,
     };
   }
-  if (loaded.bucketIds.length > 32) {
-    return {
-      result: null,
-      reason: 'candidate-bucket-count-exceeds-adaptive-bound',
-      loadMs: loaded.loadMs,
-      selectedBuckets: loaded.bucketIds.length,
-    };
-  }
-
   const graph = queryArtifactSearchGraph(loaded.index as any, loaded.shards);
   const common = {
     project: input.project,
@@ -813,13 +814,13 @@ async function adaptiveCurrentTrace(
   input: TraceGraphInput,
   query: string,
 ): Promise<{ result: Record<string, unknown> | null; reason: string; loadMs: number; selectedBuckets: number }> {
-  if (input.ref) {
+  if (input.ref && !previewRuntime()) {
     return { result: null, reason: 'explicit-ref-requires-exact-source-canonical', loadMs: 0, selectedBuckets: 0 };
   }
 
   const loaded = input.graphId
-    ? await loadCurrentQueryArtifacts(input.project, [query], input.graphId).catch(() => null)
-    : await loadCurrentQueryArtifacts(input.project, [query]);
+    ? await loadCurrentQueryArtifacts(input.project, [query], input.graphId, input.ref).catch(() => null)
+    : await loadCurrentQueryArtifacts(input.project, [query], undefined, input.ref);
   if (!loaded) return { result: null, reason: 'pinned-current-query-generation-unavailable', loadMs: 0, selectedBuckets: 0 };
   if (loaded.state !== 'hit' || !loaded.index || !loaded.pointer) {
     return {
@@ -838,16 +839,7 @@ async function adaptiveCurrentTrace(
     };
   }
 
-  const maxBuckets = 32;
   const bucketIds = new Set(loaded.bucketIds);
-  if (bucketIds.size > maxBuckets) {
-    return {
-      result: null,
-      reason: 'candidate-bucket-count-exceeds-adaptive-trace-bound',
-      loadMs: loaded.loadMs,
-      selectedBuckets: bucketIds.size,
-    };
-  }
 
   const shards = { ...loaded.shards };
   let partial = queryArtifactSearchGraph(loaded.index as any, shards);
@@ -936,14 +928,6 @@ async function adaptiveCurrentTrace(
     }
 
     if (neededBuckets.size) {
-      if (bucketIds.size + neededBuckets.size > maxBuckets) {
-        return {
-          result: null,
-          reason: 'adaptive-trace-expansion-exceeds-bucket-bound',
-          loadMs: totalLoadMs,
-          selectedBuckets: bucketIds.size + neededBuckets.size,
-        };
-      }
       const expansion = await loadCurrentQueryArtifactBuckets(loaded, [...neededBuckets]);
       totalLoadMs += expansion.loadMs;
       if (expansion.state !== 'hit' || !expansion.index) {
@@ -1120,7 +1104,7 @@ export async function graphSchema(project: string, ref?: string, graphId?: strin
 }
 
 export async function graphCoverage(project: string, ref?: string, graphId?: string, pathPrefix?: string, statuses?: GraphCoverageStatus[]): Promise<Record<string, unknown>> {
-  const graph = await currentGraph(project, ref, graphId);
+  const graph = await graphSourceMetadata(project, ref, graphId);
   const selectedStatuses = new Set(statuses ?? []);
   const normalizedPrefix = pathPrefix?.replace(/^\.\//u, '');
   const hasFileInventory = Array.isArray(graph.coverage?.files);
@@ -1357,39 +1341,73 @@ async function indexedGraphEvidence(input: {
   project: string; ref?: string | undefined; graphId?: string;
   node?: string; edge?: string; evidenceIds?: string[];
 }): Promise<Record<string, unknown> | null> {
-  if (input.ref || !(input.node || input.edge || input.evidenceIds?.length)) return null;
-  const loaded = await loadCurrentQueryArtifacts(input.project, [], input.graphId).catch(() => null);
+  if ((input.ref && !previewRuntime()) || !(input.node || input.edge || input.evidenceIds?.length)) return null;
+  const graphRevision = input.graphId && /^repo-([0-9a-f]{40}|[0-9a-f]{64})-[0-9a-f]{10}$/u.exec(input.graphId);
+  const loaded = await loadCurrentQueryArtifacts(input.project,
+    [input.node, input.edge].filter((value): value is string => Boolean(value)),
+    input.graphId, input.ref ?? (graphRevision ? `commit:${graphRevision[1]}` : undefined), input.evidenceIds).catch(() => null);
   if (!loaded) return null;
   if (loaded.state !== 'hit' || !loaded.index || !loaded.pointer
     || !queryArtifactEnvelopeComplete(loaded.index)) return null;
   const index = loaded.index;
-  const buckets = exactEvidenceQueryBuckets(index, input);
-  if (!buckets?.length || buckets.length > 32) return null;
-  const detail = await loadCurrentQueryArtifactBuckets(loaded, [...buckets]);
-  if (detail.state !== 'hit' || !detail.index || detail.index.graphId !== index.graphId
-    || detail.index.revision !== index.revision) return null;
+  const bucketIds = new Set(loaded.bucketIds);
+  if (!bucketIds.size) return null;
+  const shards = { ...loaded.shards };
+  let loadMs = loaded.loadMs;
+  const expand = async (needed: Iterable<string>): Promise<boolean> => {
+    const missing = [...new Set(needed)].filter(bucket => !bucketIds.has(bucket));
+    if (!missing.length) return true;
+    const detail = await loadCurrentQueryArtifactBuckets(loaded, missing);
+    if (detail.state !== 'hit' || detail.index?.graphId !== index.graphId || detail.index.revision !== index.revision) return false;
+    Object.assign(shards, detail.shards); missing.forEach(bucket => bucketIds.add(bucket)); loadMs += detail.loadMs;
+    return true;
+  };
   const nodes = new Map<string, GraphNode>(), edges = new Map<string, GraphEdge>();
   const evidence = new Map<string, EvidenceRecord>();
-  for (const shard of Object.values(detail.shards)) {
+  const collect = () => { for (const shard of Object.values(shards)) {
     for (const record of shard.nodes) nodes.set(record.id, record);
     for (const record of shard.edges) edges.set(record.id, record);
     for (const record of shard.evidence) evidence.set(record.id, record);
-  }
+  } };
+  collect();
   const node = input.node ? nodes.get(input.node) : undefined;
   const edge = input.edge ? edges.get(input.edge) : undefined;
   if ((input.node && !node) || (input.edge && !edge)) return null;
+  if (edge) {
+    const required: string[] = [];
+    for (const id of [edge.from, edge.to]) if (id && !nodes.has(id)) {
+      const bucket = traceBoundaryBucket(shards, edge, id);
+      if (!bucket) return null;
+      required.push(bucket);
+    }
+    if (!await expand(required)) return null;
+    collect();
+    if ([edge.from, edge.to].some(id => id && !nodes.has(id))) return null;
+  }
   const ids = new Set([
     ...(input.evidenceIds ?? []), ...(node?.evidenceIds ?? []), ...(edge?.evidenceIds ?? []),
   ]);
+  const selectionNodes = [node, edge?.from ? nodes.get(edge.from) : undefined, edge?.to ? nodes.get(edge.to) : undefined];
+  const selectionEvidence = new Set([...ids, ...selectionNodes.flatMap(item => item?.evidenceIds ?? [])]);
+  const evidenceBuckets = new Map(index.evidenceBucketById ?? []);
+  const neededEvidence = [...selectionEvidence].filter(id => !evidence.has(id));
+  if (neededEvidence.some(id => !evidenceBuckets.has(id)) || !await expand(neededEvidence.map(id => evidenceBuckets.get(id)!))) return null;
+  collect();
   if ([...ids].some(id => !evidence.has(id))) return null;
+  if ([...selectionEvidence].some(id => !evidence.has(id))) return null;
+  const graph = queryArtifactSearchGraph(index, shards);
+  if (index.sourceMetadata.coverage) graph.coverage = index.sourceMetadata.coverage;
+  if (index.sourceMetadata.relationshipCoverage) graph.relationshipCoverage = index.sourceMetadata.relationshipCoverage;
   return {
     project: input.project, graphId: index.graphId, revision: index.revision,
     coverage: queryArtifactCoverage(index), ambiguous: false,
     node: node ?? null, edge: edge ?? null,
     evidence: [...ids].map(id => evidence.get(id)!),
+    investigation: investigationSelection(graph, input.edge ? 'inspect-edge' : 'inspect-node',
+      { nodeIds: node ? [node.id] : [], edgeIds: edge ? [edge.id] : [] }),
     queryPlane: { mode: 'adaptive', authoritative: true,
-      selectedBuckets: buckets.length, bucketIds: buckets,
-      loadMs: loaded.loadMs + detail.loadMs,
+      selectedBuckets: bucketIds.size, bucketIds: [...bucketIds].sort(),
+      loadMs,
       reason: 'exact-identity-evidence-index-no-full-canonical-materialization' },
   };
 }
@@ -1402,8 +1420,26 @@ export async function graphEvidence(input: {
   edge?: string;
   evidenceIds?: string[];
 }): Promise<Record<string, unknown>> {
+  if (input.ref && input.graphId) throw new Error('Use either ref or graphId, not both');
+  if (input.edge || input.node) {
+    const local = await withIndexedLocalGraph(input.project, { ref: input.ref, graphId: input.graphId }, async graph => {
+      const node = input.node ? indexedRecords(graph, 'nodes', [input.node])?.[0] : undefined;
+      // Names and ambiguous names retain the common full-graph resolution path.
+      if (input.node && !node) return null;
+      const edge = input.edge ? indexedRecords(graph, 'edges', [input.edge])?.[0] : undefined;
+      if (input.edge && !edge) return null;
+      const ids = new Set([...(input.evidenceIds ?? []), ...(node?.evidenceIds ?? []), ...(edge?.evidenceIds ?? [])]);
+      const evidence = indexedRecords(graph, 'evidence', ids);
+      if (!evidence) return null;
+      return { project: input.project, graphId: graph.graphId, revision: graph.repositoryRevision,
+        coverage: coverageSummary(graph), ambiguous: false, node: node ?? null, edge: edge ?? null, evidence,
+        investigation: investigationSelection(graph, input.edge ? 'inspect-edge' : 'inspect-node',
+          { nodeIds: node ? [node.id] : [], edgeIds: edge ? [edge.id] : [] }) };
+    });
+    if (local) return local;
+  }
   const indexed = await indexedGraphEvidence(input);
-  if (indexed && !input.edge && !input.node) return indexed;
+  if (indexed) return indexed;
   const graph = await currentGraph(input.project, input.ref, input.graphId);
   const ids = new Set(input.evidenceIds ?? []);
   let node: GraphNode | undefined;

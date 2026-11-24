@@ -8,7 +8,7 @@ Development Intelligence owns **one intrinsic evidence graph**. Source inspectio
 
 Development Intelligence provides technical evidence. It does not decide product intent or development workflow and must not depend on custom agent methodologies.
 
-The [DI Product Vision and Principles](https://docs.google.com/document/d/1BmHkf7Hz2CatjbvMUtui-0BS1V9zVliEgYVNAzYGKAk/edit) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) own durable DI product identity, intended direction, public milestones and enduring product boundaries. Read them before material product or architecture decisions. `docs/product-direction.md` is the revision-bound technical/product-interface context at this source commit, not a second vision owner. Immutable Git, CI and actual provider/runtime evidence establish what is implemented and observed.
+Read the [DI Product Vision and Principles](https://docs.google.com/document/d/1BmHkf7Hz2CatjbvMUtui-0BS1V9zVliEgYVNAzYGKAk/edit) and [Product Version Roadmap](https://docs.google.com/document/d/119DUiDG-ccYzr2R5tnKusT-iAPxpK_PN2qIYNHd9_pU/edit) before material product or architecture decisions. The vision is current in Google Drive; the roadmap document retains its original Confluence source and migration context. Together they describe durable DI product identity, intended direction, milestones and product boundaries. `docs/product-direction.md` is the revision-bound technical/product-interface context at this source commit, not a second vision owner. Immutable Git, CI and actual provider/runtime evidence establish what is implemented and observed.
 
 ## Development expectations
 

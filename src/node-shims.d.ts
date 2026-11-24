@@ -20,13 +20,15 @@ declare module 'node:module' { export const createRequire: any; }
 declare module 'node:child_process' { export const spawn: any; }
 declare module 'node:worker_threads' {
   export const isMainThread: boolean;
-  export const parentPort: { postMessage(value: unknown): void } | null;
+  export const parentPort: { postMessage(value: unknown): void; on(event: 'message', listener: (value: any) => void): void; removeAllListeners(event: 'message'): void; close(): void } | null;
   export const workerData: unknown;
   export class Worker {
-    constructor(filename: URL, options?: { workerData?: unknown; resourceLimits?: { maxOldGenerationSizeMb?: number } });
+    constructor(filename: URL, options?: { workerData?: unknown; env?: NodeJS.ProcessEnv; resourceLimits?: { maxOldGenerationSizeMb?: number } });
     once(event: 'message', listener: (value: any) => void): this;
     once(event: 'error', listener: (error: Error) => void): this;
     once(event: 'exit', listener: (code: number) => void): this;
+    on(event: 'message', listener: (value: any) => void): this;
+    postMessage(value: unknown): void;
     terminate(): Promise<number>;
   }
 }

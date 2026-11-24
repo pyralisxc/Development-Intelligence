@@ -218,7 +218,17 @@ export async function projectLocalScipEvidence(input: {
   // The wire metadata embeds the temporary checkout path. Hash the decoded
   // repository-relative facts separately so replay at the same revision has a
   // stable identity even when its checkout lives in another directory.
-  const contentHash = createHash('sha256').update(JSON.stringify(parsed)).digest('hex');
+  // Hash the same JSON representation incrementally. Stringifying a large
+  // index as one value temporarily holds another graph-sized string in memory.
+  const contentHasher = createHash('sha256');
+  contentHasher.update('{"producer":').update(JSON.stringify(parsed.producer)).update(',"documents":[');
+  for (let i = 0; i < parsed.documents.length; i += 1) {
+    if (i) contentHasher.update(',');
+    contentHasher.update(JSON.stringify(parsed.documents[i]));
+  }
+  contentHasher.update('],"externalSymbols":').update(JSON.stringify(parsed.externalSymbols))
+    .update(',"occurrenceCount":').update(JSON.stringify(parsed.occurrenceCount)).update('}');
+  const contentHash = contentHasher.digest('hex');
 
   const actual = new Map<string, SourceDocument>();
   const graphFiles = new Map(input.graph.nodes.filter(node => node.kind === 'file').map(node => [node.id, node]));
@@ -323,15 +333,13 @@ export async function projectLocalScipEvidence(input: {
 
   // For separately supplied indexes, cross-check source references and
   // destinations with the TypeScript checker when possible.
-  const typeScriptSources = new Map([...actual.values()]
-    .filter(value => /\.(?:[cm]?[jt]s|tsx|jsx)$/iu.test(value.file))
-    .map(value => [value.file, value.text]));
-  const nativeFiles = new Map(input.graph.nodes
-    .filter(node => node.kind === 'file' && node.sourceId.startsWith('repo:'))
-    .map(node => [node.sourceId.slice(5), node]));
   const compiler = input.producerRanOnCheckout ? { edges: [], state: 'not-applicable' as const }
     : compilerTypeScriptReferences({
-      root, sourceTexts: typeScriptSources, nodes: input.graph.nodes, fileNodes: nativeFiles,
+      root, sourceTexts: new Map([...actual.values()]
+        .filter(value => /\.(?:[cm]?[jt]s|tsx|jsx)$/iu.test(value.file))
+        .map(value => [value.file, value.text])), nodes: input.graph.nodes,
+      fileNodes: new Map(input.graph.nodes.filter(node => node.kind === 'file' && node.sourceId.startsWith('repo:'))
+        .map(node => [node.sourceId.slice(5), node])),
       options: loadCompilerOptions(root),
     });
   const compilerSiteProof = new Set<string>();
@@ -350,7 +358,7 @@ export async function projectLocalScipEvidence(input: {
   // canonical TypeChecker lens. An overlapping SCIP edge is *corroboration*,
   // not a newly discovered technical relationship or application meaning.
   const canonicalCompilerSites = new Set<string>();
-  for (const edge of input.graph.edges) {
+  for (const edge of input.producerRanOnCheckout ? [] : input.graph.edges) {
     if (edge.strategy !== TYPESCRIPT_COMPILER_LENS || edge.kind !== 'references-symbol'
       || edge.status !== 'resolved' || !edge.from || !edge.to) continue;
     for (const locator of edge.evidence) {
@@ -370,6 +378,8 @@ export async function projectLocalScipEvidence(input: {
   let ambiguous = 0;
   let externalReferences = 0;
   let referencesWithoutIndexedDefinition = 0;
+  const producerEvidence = 'SCIP index ' + (input.producerRanOnCheckout ? contentHash : indexHash) + ' (' + parsed.producer.name + ' ' + parsed.producer.version + '); '
+    + (input.producerRanOnCheckout ? 'produced by DI on this checkout' : 'caller-supplied, not independently attested');
   for (const file of actual.values()) {
     for (const occurrence of file.index.occurrences) {
       if ((occurrence.roles & 1) || !occurrence.symbol || occurrence.symbol.startsWith('local ')) continue;
@@ -412,8 +422,7 @@ export async function projectLocalScipEvidence(input: {
       const sourceEvidence = [
         locator,
         ...(target.file && target.line ? [target.file + ':' + target.line] : ['Definition location was not present in the indexed checkout']),
-        'SCIP index ' + (input.producerRanOnCheckout ? contentHash : indexHash) + ' (' + parsed.producer.name + ' ' + parsed.producer.version + '); '
-          + (input.producerRanOnCheckout ? 'produced by DI on this checkout' : 'caller-supplied, not independently attested'),
+        producerEvidence,
         ...(independentProof ? [
           'Independent TypeScript TypeChecker (' + TYPESCRIPT_COMPILER_LENS + ') resolved this exact source reference and target; compile-time binding only',
         ] : []),
@@ -458,20 +467,29 @@ export async function projectLocalScipEvidence(input: {
 
   for (const [id, evidence] of aggregateEvidence) byId.get(id)!.evidence = [...evidence].sort();
   const added = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // A DI-produced index is merged into the fresh graph owned by this build.
+  // Supplied indexes keep their existing non-mutating projection contract.
+  const resultNodes = input.producerRanOnCheckout ? input.graph.nodes : [...input.graph.nodes];
+  for (const node of producerNodes.values()) resultNodes.push(node);
+  for (let i = 0; i < resultNodes.length; i += 1) {
+    const node = resultNodes[i]!;
+    const additions = contributions.get(node.id);
+    if (!additions?.length) continue;
+    const unique = new Map([...(node.contributions ?? []), ...additions]
+      .map(item => [JSON.stringify(item), item]));
+    resultNodes[i] = { ...node, contributions: [...unique.values()] };
+  }
+  const resultEdges = input.producerRanOnCheckout ? input.graph.edges : [...input.graph.edges];
+  for (const edge of producerContainment.values()) resultEdges.push(edge);
+  for (const edge of added) resultEdges.push(edge);
   return {
     graph: {
       ...input.graph,
       graphId: 'scip-overlay-' + createHash('sha256')
         .update(JSON.stringify([input.graph.graphId, sha, indexHash, prefix, legacy, SCIP_EVIDENCE_STRATEGY]))
         .digest('hex').slice(0, 24),
-      nodes: [...input.graph.nodes, ...producerNodes.values()].map(node => {
-        const additions = contributions.get(node.id);
-        if (!additions?.length) return node;
-        const unique = new Map([...(node.contributions ?? []), ...additions]
-          .map(item => [JSON.stringify(item), item]));
-        return { ...node, contributions: [...unique.values()] };
-      }),
-      edges: [...input.graph.edges, ...producerContainment.values(), ...added],
+      nodes: resultNodes,
+      edges: resultEdges,
     },
     index: { sha256: indexHash, contentSha256: contentHash, producer: parsed.producer, documents: parsed.documents.length,
       occurrences: parsed.occurrenceCount, projectPrefix: prefix,

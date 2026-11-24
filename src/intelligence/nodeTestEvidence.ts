@@ -7,15 +7,16 @@ import type { IntelligenceGraph } from '../types.js';
 import type { TestClaimCatalog } from './testClaimInventory.js';
 import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
+import { positiveIntegerSetting } from './capacity.js';
 
 /**
  * Read the native Node TestStream reporter without parsing human TAP/spec
  * presentation. An externally supplied report is a provenance-identified
  * observation, NOT independent attestation that any test actually ran.
  */
-const MAX_BYTES = 8 * 1024 * 1024;
-const MAX_EVENTS = 20000;
-const MAX_TEXT = 4096;
+const MAX_BYTES = positiveIntegerSetting(process.env.DEVINT_NODE_EVENTS_MAX_BYTES, Number.MAX_SAFE_INTEGER, 'DEVINT_NODE_EVENTS_MAX_BYTES');
+const MAX_EVENTS = positiveIntegerSetting(process.env.DEVINT_NODE_EVENTS_MAX_EVENTS, Number.MAX_SAFE_INTEGER, 'DEVINT_NODE_EVENTS_MAX_EVENTS');
+const MAX_TEXT = positiveIntegerSetting(process.env.DEVINT_NODE_EVENTS_MAX_TEXT_CHARS, Number.MAX_SAFE_INTEGER, 'DEVINT_NODE_EVENTS_MAX_TEXT_CHARS');
 export interface NodeTestEvidenceProjection {
   identity: { project: string; revision: string; graphId: string; reportSha256: string;
     nodeVersion: string; runId: string | null; independentlyAttested: false };

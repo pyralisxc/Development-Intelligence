@@ -20,9 +20,10 @@ export function assertGraphIntegrity(graph: IntelligenceGraph): void {
   const duplicateEvidence = duplicateIds(graph.evidence);
   if (duplicateEvidence.length) throw new Error(`Graph contains duplicate evidence ids: ${duplicateEvidence.slice(0, 12).join(', ')}`);
 
-  const nodeIds = new Set(graph.nodes.map(node => node.id));
-  const edgeIds = new Set(graph.edges.map(edge => edge.id));
-  const evidenceIds = new Set(graph.evidence.map(item => item.id));
+  const nodeIds = new Set<string>();
+  for (const node of graph.nodes) nodeIds.add(node.id);
+  const evidenceIds = new Set<string>();
+  for (const item of graph.evidence) evidenceIds.add(item.id);
 
   for (const node of graph.nodes) {
     for (const evidenceId of node.evidenceIds ?? []) {

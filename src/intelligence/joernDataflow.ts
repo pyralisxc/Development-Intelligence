@@ -7,6 +7,7 @@ import type { TestClaimCatalog } from './testClaimInventory.js';
 import { observation, resolution } from './model.js';
 import { runChecked } from '../util/process.js';
 import { stableHash } from '../util/hash.js';
+import { positiveIntegerSetting } from './capacity.js';
 
 /**
  * Ephemeral, OSS-only Joern dataflow evidence over ONE already-built DI graph.
@@ -16,12 +17,12 @@ import { stableHash } from '../util/hash.js';
  * proof). No Joern CPG, report, or extra graph becomes durable authority.
  */
 export const JOERN_DATAFLOW_STRATEGY = 'joern-slice-source-correlated.v1';
-const MAX_SLICE_BYTES = 16 * 1024 * 1024;
-const MAX_SLICE_NODES = 25000;
-const MAX_SLICE_EDGES = 75000;
-const MAX_SOURCE_FILES = 250;
-const MAX_SOURCE_FILE_BYTES = 1024 * 1024;
-const MAX_CODE_CHARS = 1024;
+const MAX_SLICE_BYTES = positiveIntegerSetting(process.env.DEVINT_JOERN_MAX_SLICE_BYTES, Number.MAX_SAFE_INTEGER, 'DEVINT_JOERN_MAX_SLICE_BYTES');
+const MAX_SLICE_NODES = positiveIntegerSetting(process.env.DEVINT_JOERN_MAX_NODES, Number.MAX_SAFE_INTEGER, 'DEVINT_JOERN_MAX_NODES');
+const MAX_SLICE_EDGES = positiveIntegerSetting(process.env.DEVINT_JOERN_MAX_EDGES, Number.MAX_SAFE_INTEGER, 'DEVINT_JOERN_MAX_EDGES');
+const MAX_SOURCE_FILES = positiveIntegerSetting(process.env.DEVINT_JOERN_MAX_SOURCE_FILES, Number.MAX_SAFE_INTEGER, 'DEVINT_JOERN_MAX_SOURCE_FILES');
+const MAX_SOURCE_FILE_BYTES = positiveIntegerSetting(process.env.DEVINT_GRAPH_MAX_FILE_BYTES, Number.MAX_SAFE_INTEGER, 'DEVINT_GRAPH_MAX_FILE_BYTES');
+const MAX_CODE_CHARS = positiveIntegerSetting(process.env.DEVINT_JOERN_MAX_CODE_CHARS, Number.MAX_SAFE_INTEGER, 'DEVINT_JOERN_MAX_CODE_CHARS');
 
 type UnknownRecord = Record<string, unknown>;
 interface SliceNode {
@@ -281,7 +282,10 @@ export async function projectJoernDataflowBytes(input: {
     ids.add(item.id);
   }
 
-  const fileCache = new Map<string, Promise<LocalSource | null>>();
+  // Group by source file so each file is read and released after its nodes are
+  // reconciled. This keeps the source-text working set to one file instead of
+  // retaining every file referenced by a large slice.
+  const bySource = new Map<string, SliceNode[]>();
   const mapped = new Map<number, { node: GraphNode; path: string; offset: number; locator: string }>();
   const addedNodes = new Map<string, GraphNode>();
   const addedEdges = new Map<string, GraphEdge>();
@@ -297,11 +301,13 @@ export async function projectJoernDataflowBytes(input: {
   for (const item of sliceNodes) {
     const relative = normalizePath(root, item.parentFile, prefix);
     if (!relative) { missing++; continue; }
-    if (!fileCache.has(relative)) {
-      if (fileCache.size >= MAX_SOURCE_FILES) throw new Error('Joern slice exceeds bounded source-file census');
-      fileCache.set(relative, sourceFile(root, relative, input.graph));
-    }
-    const file = await fileCache.get(relative)!;
+    const items = bySource.get(relative) ?? [];
+    items.push(item); bySource.set(relative, items);
+  }
+  if (bySource.size > MAX_SOURCE_FILES) throw new Error('Joern slice exceeds the configured source-file limit');
+  for (const [relative, items] of bySource) {
+    const file = await sourceFile(root, relative, input.graph);
+    for (const item of items) {
     const exact = file ? exactLocation(file, item) : null;
     if (!exact) { missing++; continue; }
     const id = 'joern-span:' + stableHash([working ? input.graph.sourceFingerprint : head, relative, exact.locator, item.label, item.code.trim()]);
@@ -353,6 +359,7 @@ export async function projectJoernDataflowBytes(input: {
       addedEdges.set(membership.id, membership);
       assertionPairs.add(assertion.id + '\0' + id);
     }
+    }
   }
   let imported = 0;
   let lost = 0;
@@ -401,7 +408,7 @@ export async function projectJoernDataflowBytes(input: {
       sliceEdges: sliceEdges.length,
       sourceLocatedNodes: mapped.size,
       sourceUnlocatedNodes: missing,
-      sourceFilesChecked: fileCache.size,
+      sourceFilesChecked: bySource.size,
       candidateFlowEdges: imported,
       unlocatedFlowEdges: lost,
       assertionSpanAnchors: assertionPairs.size,

@@ -13,7 +13,6 @@ import type { GraphBoundExecutionFact } from './capturedFactGraph.js';
 /** Read-only exact-Git capture of one bounded conditional source selection. */
 export const EXACT_CAPTURED_SELECTOR = 'exact-git-captured-selector.v1';
 const FULL = /^commit:([a-f0-9]{40})$/iu;
-const MAX_SOURCE=1_000_000;
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 
 export async function deriveCapturedSourceSelection(input:{
@@ -49,8 +48,8 @@ export async function deriveCapturedSourceSelection(input:{
     const resolved=path.relative(checkout.root,filename).split(path.sep).join('/');
     if(resolved!==relative) throw new Error('Source path escapes exact checkout');
     const stat=await fs.lstat(filename);
-    if(!stat.isFile()||stat.isSymbolicLink()||stat.size>MAX_SOURCE) {
-      throw new Error('Source is not bounded regular file');
+    if(!stat.isFile()||stat.isSymbolicLink()) {
+      throw new Error('Source is not a regular file');
     }
     const [source,tree]=await Promise.all([
       fs.readFile(filename,'utf8'),

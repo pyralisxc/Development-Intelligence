@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import type { IntelligenceGraph } from '../types.js';
 import { stableHash } from '../util/hash.js';
 import { assertGraphIntegrity } from './integrity.js';
@@ -8,6 +9,7 @@ import { ANALYZER_VERSION } from './repository.js';
 import { currentVercelOidcToken } from '../vercelRequestContext.js';
 import { assertAuthorityWritesAllowed, previewRuntime } from '../config/runtimeRole.js';
 import { assertProjectAccessCurrent, projectAccessCanonical, projectAccessConfig, projectAccessScopeKey } from '../config/projectAccess.js';
+import { positiveIntegerSetting } from './capacity.js';
 
 export interface CanonicalGraphCurrentness {
   acceptedSemanticCurrent: boolean;
@@ -60,12 +62,14 @@ export interface CanonicalPersistenceDiagnostics {
   loadMs: number;
   saveMs: number;
   error?: string;
+  conflict?: boolean;
 }
 
 export interface CanonicalLoadResult {
   diagnostics: CanonicalPersistenceDiagnostics;
   record?: CanonicalGraphRecord;
   staleRecord?: CanonicalGraphRecord;
+  previewManifestEtag?: string;
 }
 
 interface FileBackend { kind: 'file'; root: string; }
@@ -78,7 +82,35 @@ interface BlobBackend {
 }
 type CanonicalBackend = FileBackend | BlobBackend | null;
 
-const MAX_DERIVED_OBJECT_BYTES = 64 * 1024 * 1024;
+const MAX_DERIVED_OBJECT_BYTES = positiveIntegerSetting(process.env.DEVINT_DERIVED_OBJECT_MAX_BYTES, Number.MAX_SAFE_INTEGER, 'DEVINT_DERIVED_OBJECT_MAX_BYTES');
+const require = createRequire(import.meta.url);
+
+/** SQLite provides process-lifetime file locks for the local CAS operation.
+ * A busy lock yields to other work; a terminated writer releases it through
+ * the operating system without a second lease or stale-lock file. */
+async function withLocalConditionalWrite<T>(directory: string, write: () => Promise<T>): Promise<T> {
+  await fs.mkdir(directory, { recursive: true });
+  const Database = require('node:sqlite').DatabaseSync;
+  const database = new Database(path.join(directory, '.conditional-writes.sqlite'));
+  let acquired = false;
+  try {
+    database.exec('PRAGMA busy_timeout=0');
+    for (;;) {
+      try { database.exec('BEGIN IMMEDIATE'); acquired = true; break; }
+      catch (error) {
+        const e = error as { errcode?: number; message?: string };
+        if (e.errcode !== 5 && !/database is locked/iu.test(e.message ?? '')) throw error;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    }
+    const result = await write();
+    database.exec('COMMIT'); acquired = false;
+    return result;
+  } finally {
+    if (acquired) { try { database.exec('ROLLBACK'); } catch {} }
+    database.close();
+  }
+}
 
 interface CanonicalGraphPart {
   graph: 'working' | 'accepted';
@@ -489,6 +521,17 @@ export async function writeCanonicalDerivedObjectConditional(
   expectedEtag: string | null,
 ): Promise<CanonicalDerivedConditionalWriteResult> {
   assertAuthorityWritesAllowed();
+  return await writeDerivedObjectConditional(project, relativePath, body, contentType, expectedEtag);
+}
+
+async function writeDerivedObjectConditional(
+  project: string,
+  relativePath: string,
+  body: string | Uint8Array,
+  contentType: string,
+  expectedEtag: string | null,
+): Promise<CanonicalDerivedConditionalWriteResult> {
+  await assertProjectAccessCurrent(project);
   assertDerivedRelativePath(relativePath);
   const selected = backend();
   if (!selected || (selected.kind === 'vercel-private-blob' && !selected.token)) {
@@ -499,18 +542,21 @@ export async function writeCanonicalDerivedObjectConditional(
 
   if (selected.kind === 'file') {
     const target = canonicalDerivedObjectFilePath(project, relativePath)!;
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    const current = await fs.readFile(target).catch((error: any) => {
-      if (error?.code === 'ENOENT') return null;
-      throw error;
+    const lockDir = path.dirname(canonicalDerivedObjectFilePath(project, '.conditional-writes.sqlite')!);
+    return await withLocalConditionalWrite(lockDir, async () => {
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      const current = await fs.readFile(target).catch((error: any) => {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+      });
+      const currentEtag = current ? localDerivedEtag(new Uint8Array(current)) : null;
+      if (currentEtag !== expectedEtag) return { state: 'conflict', etag: currentEtag };
+      const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
+      await fs.writeFile(temporary, body, { mode: 0o600 });
+      await fs.rename(temporary, target);
+      const nextBody = typeof body === 'string' ? new Uint8Array(Buffer.from(body, 'utf8')) : body;
+      return { state: 'stored', etag: localDerivedEtag(nextBody) };
     });
-    const currentEtag = current ? localDerivedEtag(new Uint8Array(current)) : null;
-    if (currentEtag !== expectedEtag) return { state: 'conflict', etag: currentEtag };
-    const temporary = `${target}.${process.pid ?? 'process'}.${Date.now()}.tmp`;
-    await fs.writeFile(temporary, body, { mode: 0o600 });
-    await fs.rename(temporary, target);
-    const nextBody = typeof body === 'string' ? new Uint8Array(Buffer.from(body, 'utf8')) : body;
-    return { state: 'stored', etag: localDerivedEtag(nextBody) };
   }
 
   const requestUrl = new URL(selected.apiUrl);
@@ -606,13 +652,35 @@ async function writeDerivedObject(
 function previewReplayPrefix(expected: { project: string; repository: string; revision: string }): string {
   if (!previewRuntime()) throw new Error('Preview replay storage is only available in Preview');
   assertExactRevision(expected.revision);
-  const engine = process.env.VERCEL_GIT_COMMIT_SHA || process.env.DEVINT_PREVIEW_ENGINE_REVISION
+  const engine = process.env.VERCEL_GIT_COMMIT_SHA || process.env.DEVINT_PREVIEW_ENGINE_REVISION || process.env.DEVINT_BUILD_SHA
     || process.env.VERCEL_DEPLOYMENT_ID || process.env.VERCEL_URL || ANALYZER_VERSION;
   const limits = [process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES,
     process.env.DEVINT_GRAPH_MAX_FILES ?? process.env.DEVINT_PARITY_MAX_FILES];
   const scope = stableHash([projectAccessScopeKey(), expected.project, expected.repository, expected.revision, ANALYZER_VERSION, engine,
     ...(limits.some(value => value !== undefined) ? limits : [])]);
   return `preview-replay/${scope}`;
+}
+
+/** Reuse the normal derived-object protocol inside the isolated Preview
+ * revision namespace. These functions cannot address canonical objects. */
+export function previewReplayDerivedStorage(expected: { project: string; repository: string; revision: string }) {
+  const accessScope = projectAccessScopeKey();
+  const prefix = previewReplayPrefix(expected);
+  const scoped = (project: string, relativePath: string): string => {
+    if (project !== expected.project || projectAccessScopeKey() !== accessScope) throw new Error('Preview replay project identity mismatch');
+    assertDerivedRelativePath(relativePath);
+    return `${prefix}/${relativePath}`;
+  };
+  return {
+    read: (project: string, relativePath: string, maxBytes?: number) =>
+      readCanonicalDerivedObject(project, scoped(project, relativePath), maxBytes),
+    readVersioned: (project: string, relativePath: string, maxBytes?: number) =>
+      readCanonicalDerivedObjectVersioned(project, scoped(project, relativePath), maxBytes),
+    write: (project: string, relativePath: string, body: string | Uint8Array, contentType?: string) =>
+      writeDerivedObject(project, scoped(project, relativePath), body, contentType),
+    writeConditional: (project: string, relativePath: string, body: string | Uint8Array, contentType: string, etag: string | null) =>
+      writeDerivedObjectConditional(project, scoped(project, relativePath), body, contentType, etag),
+  };
 }
 
 export async function loadPreviewReplayGraph(expected: { project: string; repository: string; revision: string }): Promise<CanonicalLoadResult> {
@@ -624,12 +692,13 @@ export async function loadPreviewReplayGraph(expected: { project: string; reposi
   try {
     const read = (project: string, relativePath: string, maxBytes?: number) =>
       readCanonicalDerivedObject(project, `${prefix}/${relativePath}`, maxBytes);
-    const body = await read(expected.project, 'manifest.json');
-    if (!body) return { diagnostics: { ...diagnostics, loadMs: Date.now() - started } };
-    const parsed = await unshardCanonicalRecord(JSON.parse(new TextDecoder().decode(body)), expected.project, read);
+    const manifest = await readCanonicalDerivedObjectVersioned(expected.project, `${prefix}/manifest.json`);
+    if (!manifest) return { diagnostics: { ...diagnostics, loadMs: Date.now() - started } };
+    if (!manifest.etag) throw new Error('Preview graph manifest has no version');
+    const parsed = await unshardCanonicalRecord(JSON.parse(new TextDecoder().decode(manifest.body)), expected.project, read);
     const record = validateRecord(parsed, expected);
     await assertProjectAccessCurrent(expected.project);
-    return { record, diagnostics: { ...diagnostics, loadState: 'hit', loadMs: Date.now() - started } };
+    return { record, previewManifestEtag: manifest.etag, diagnostics: { ...diagnostics, loadState: 'hit', loadMs: Date.now() - started } };
   } catch (error) {
     await assertProjectAccessCurrent(expected.project);
     return { diagnostics: { ...diagnostics, loadState: 'error', loadMs: Date.now() - started,
@@ -637,7 +706,39 @@ export async function loadPreviewReplayGraph(expected: { project: string; reposi
   }
 }
 
-export async function savePreviewReplayGraph(record: CanonicalGraphRecord): Promise<CanonicalPersistenceDiagnostics> {
+/** Replace only the retained Preview graph's index reference. Graph shards
+ * stay untouched; a concurrent publication cannot overwrite a newer record. */
+export async function replacePreviewReplayQueryArtifacts(
+  expected: { project: string; repository: string; revision: string; graphId: string },
+  ref: CanonicalQueryArtifactGenerationRef,
+  expectedEtag: string,
+): Promise<{ state: 'stored' | 'conflict' | 'error'; saveMs: number; error?: string }> {
+  const started = Date.now();
+  try {
+    await assertProjectAccessCurrent(expected.project);
+    const relativePath = `${previewReplayPrefix(expected)}/manifest.json`;
+    const manifest = await readCanonicalDerivedObjectVersioned(expected.project, relativePath);
+    if (!manifest || manifest.etag !== expectedEtag) return { state: 'conflict', saveMs: Date.now() - started };
+    const payload = JSON.parse(new TextDecoder().decode(manifest.body)) as ShardedCanonicalRecord | CanonicalGraphRecord;
+    const record = 'format' in payload && payload.format === 'canonical-graph-shards-v1'
+      ? (Array.isArray(payload.parts) ? payload.record : null) : payload as CanonicalGraphRecord;
+    if (!record || record.project !== expected.project || record.repository !== expected.repository
+      || record.revision !== expected.revision || record.working?.graphId !== expected.graphId) {
+      throw new Error('Preview graph manifest identity does not match the selected generation');
+    }
+    record.queryArtifacts = ref;
+    const written = await writeDerivedObjectConditional(expected.project, relativePath, JSON.stringify(payload), 'application/json', expectedEtag);
+    await assertProjectAccessCurrent(expected.project);
+    return written.state === 'stored' ? { state: 'stored', saveMs: Date.now() - started }
+      : written.state === 'conflict' ? { state: 'conflict', saveMs: Date.now() - started }
+      : { state: 'error', saveMs: Date.now() - started, error: 'Preview graph storage is unavailable' };
+  } catch (error) {
+    await assertProjectAccessCurrent(expected.project);
+    return { state: 'error', saveMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function savePreviewReplayGraph(record: CanonicalGraphRecord, options?: { expectedEtag: string | null }): Promise<CanonicalPersistenceDiagnostics> {
   await assertProjectAccessCurrent(record.project);
   const prefix = previewReplayPrefix(record);
   const diagnostics = { ...baseDiagnostics(), scope: 'preview-replay' as const };
@@ -651,7 +752,13 @@ export async function savePreviewReplayGraph(record: CanonicalGraphRecord): Prom
       writeDerivedObject(project, `${prefix}/${relativePath}`, body, contentType);
     const payload = await shardCanonicalRecord(validated, write);
     await assertProjectAccessCurrent(record.project);
-    if (!await write(record.project, 'manifest.json', payload, 'application/json')) throw new Error('Preview replay manifest could not be stored');
+    if (options) {
+      const publication = await writeDerivedObjectConditional(record.project, `${prefix}/manifest.json`, payload, 'application/json', options.expectedEtag);
+      await assertProjectAccessCurrent(record.project);
+      if (publication.state === 'conflict') return { ...diagnostics, saveState: 'error', saveMs: Date.now() - started,
+        conflict: true, error: 'Preview replay manifest changed during publication' };
+      if (publication.state !== 'stored') throw new Error('Preview replay manifest could not be stored');
+    } else if (!await write(record.project, 'manifest.json', payload, 'application/json')) throw new Error('Preview replay manifest could not be stored');
     await assertProjectAccessCurrent(record.project);
     return { ...diagnostics, saveState: 'stored', saveMs: Date.now() - started };
   } catch (error) {
