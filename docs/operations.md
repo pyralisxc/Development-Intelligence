@@ -372,6 +372,8 @@ The canonical repository remains usable even if Development Intelligence is unav
 
 ## Automatic canonical currentness reconciliation
 
+Canonical portfolio reconciliation is available only to the authority-capable runtime. Preview and compute-only instances do not expose the portfolio action or start that work; they can inspect and build their own revision-bound derived graphs through the normal graph lifecycle.
+
 Production registers a Vercel Cron request to `/internal/reconcile-canonical` every five minutes. Vercel supplies `Authorization: Bearer $CRON_SECRET`; the route fails closed when `CRON_SECRET` is missing or the bearer value does not match. Ordinary project/ref reads independently resolve the live Git revision before loading canonical W, so this schedule controls background prewarming rather than query correctness.
 
 Each cron request still reconciles **exactly one** active authorized repository. The GitHub installation inventory's repository `pushed_at` timestamp is used only as a bounded acceleration hint: if a repository reports provider activity inside the current five-minute window, the most recently active repository receives that slot. DI does not trust that activity to identify a branch or SHA; the normal reconciliation path independently re-resolves the repository's provider-authoritative default branch before any canonical write. A Preview/work/release push may therefore cause one cheap Main recheck, but can never make that non-default branch canonical.

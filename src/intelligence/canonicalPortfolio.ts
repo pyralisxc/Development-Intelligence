@@ -1,6 +1,7 @@
 import { clearGraphCache, graphStatus } from './service.js';
 import { authorizedInstallationPortfolio } from './installationPortfolio.js';
 import type { GithubInstallationRepository } from '../source/repositoryCredential.js';
+import { assertAuthorityWritesAllowed } from '../config/runtimeRole.js';
 
 export interface CanonicalPortfolioReconcileOptions {
   owners?: string[];
@@ -114,6 +115,7 @@ export async function reconcileCanonicalPortfolio(
   options: CanonicalPortfolioReconcileOptions = {},
   reconcileProject: CanonicalProjectReconciler = reconcileCanonicalProject,
 ): Promise<Record<string, unknown>> {
+  assertAuthorityWritesAllowed();
   const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 250);
   const portfolio = await authorizedInstallationPortfolio({
     ...(options.owners?.length ? { owners: options.owners } : {}),

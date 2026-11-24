@@ -300,7 +300,7 @@ export function createDevelopmentIntelligenceServer() {
         const project = requestUrl.searchParams.get('project');
         if (!project) {
           res.writeHead(200, htmlHeaders());
-          res.end(renderProjectChooser(links.projects, links.githubOwners));
+          res.end(renderProjectChooser(links.projects, links.githubOwners, !computeOnly() && !previewRuntime()));
           return;
         }
         const context = contextFromUrl(requestUrl);
