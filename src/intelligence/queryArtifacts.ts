@@ -8,6 +8,7 @@ import type {
   RelationshipStatus,
 } from '../types.js';
 import { normalizeName } from './model.js';
+import { QuerySourceSearchFilters, querySearchFilterMayMatch } from './querySearchFilter.js';
 
 export const QUERY_DETAIL_BUCKETS = 64;
 const BUCKET_KEYS = Array.from({ length: QUERY_DETAIL_BUCKETS }, (_, index) => index.toString(16).padStart(2, '0'));
@@ -57,7 +58,7 @@ export interface CanonicalQueryBucketSummary {
 }
 
 export interface CanonicalQueryIndexArtifact {
-  formatVersion: 5;
+  formatVersion: 9;
   graphSchemaVersion: 2;
   project: string;
   revision: string;
@@ -74,6 +75,15 @@ export interface CanonicalQueryIndexArtifact {
   semanticEdges: CanonicalQuerySemanticEdge[];
   /** Exact evidence ID to its source bucket; a disposable index, not a proof owner. */
   evidenceBucketById?: Array<[id: string, bucket: string]>;
+  producerCoverage: NonNullable<IntelligenceGraph['producerCoverage']>;
+  /** Graph-owned source details used by all investigation entrances. */
+  sourceMetadata: {
+    sources: IntelligenceGraph['sources'];
+    unavailableSourceIds: IntelligenceGraph['unavailableSourceIds'];
+    coverage: IntelligenceGraph['coverage'] | null;
+    relationshipCoverage: IntelligenceGraph['relationshipCoverage'];
+  };
+  sourceSearchFilters: Array<[bucket: string, filter: string]>;
   coverage: {
     available: boolean;
     completeForEligibleSources: boolean;
@@ -101,7 +111,7 @@ export interface CanonicalQueryIndexArtifact {
 }
 
 export interface CanonicalQueryDetailShard {
-  formatVersion: 5;
+  formatVersion: 9;
   graphSchemaVersion: 2;
   project: string;
   revision: string;
@@ -163,16 +173,13 @@ function layerOf(value: { layer?: GraphNodeLayer }): GraphNodeLayer {
 }
 
 function recordIncludes(
-  needle: string,
+  rawNeedle: string,
+  normalizedNeedle: string,
   fields: Array<string | null | undefined>,
 ): boolean {
-  const rawNeedle = needle.toLowerCase();
-  const normalizedNeedle = normalizeName(needle);
-  return fields.some(value => {
-    if (typeof value !== 'string') return false;
-    if (value.toLowerCase().includes(rawNeedle)) return true;
-    return Boolean(normalizedNeedle && normalizeName(value).includes(normalizedNeedle));
-  });
+  const text = fields.filter(Boolean).join(' ');
+  return text.toLowerCase().includes(rawNeedle)
+    || Boolean(normalizedNeedle && normalizeName(text).includes(normalizedNeedle));
 }
 
 function coverageSummary(graph: IntelligenceGraph): CanonicalQueryIndexArtifact['coverage'] {
@@ -254,6 +261,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
 
   const nodeSearch: CanonicalNodeSearchRecord[] = [];
   const edgeSearch: CanonicalEdgeSearchRecord[] = [];
+  const searchFilters = new QuerySourceSearchFilters();
 
   const addEvidence = (bucket: string, id: string): void => {
     const item = evidenceById.get(id);
@@ -266,7 +274,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
     const bucket = queryBucketForSource(node.sourceId);
     shardNodes.get(bucket)!.set(node.id, node);
     shardSources.get(bucket)!.add(node.sourceId);
-    nodeSearch.push([bucket, node.id, node.kind, layerOf(node), nodeTailText(node)]);
+    searchFilters.add([bucket, node.id, node.kind, layerOf(node), nodeTailText(node)], 'nodeSearch', [{ key: `source\0${node.sourceId}`, bucket }]);
     for (const id of node.evidenceIds ?? []) addEvidence(bucket, id);
   }
 
@@ -282,11 +290,12 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
     const fromBucket = fromSource ? queryBucketForSource(fromSource) : null;
     const toBucket = toSource ? queryBucketForSource(toSource) : null;
     const buckets = new Set<string>();
-    if (fromBucket) buckets.add(fromBucket);
-    if (toBucket) buckets.add(toBucket);
+    const searchSources = new Map<string, string>();
+    if (fromSource && fromBucket) { buckets.add(fromBucket); searchSources.set(fromSource, fromBucket); }
+    if (toSource && toBucket) { buckets.add(toBucket); searchSources.set(toSource, toBucket); }
     for (const evidenceId of edge.evidenceIds ?? []) {
       const sourceId = evidenceById.get(evidenceId)?.sourceId;
-      if (sourceId) buckets.add(queryBucketForSource(sourceId));
+      if (sourceId) { const bucket = queryBucketForSource(sourceId); buckets.add(bucket); searchSources.set(sourceId, bucket); }
     }
     if (!buckets.size) buckets.add(BUCKET_KEYS[hash32(edge.id) & (QUERY_DETAIL_BUCKETS - 1)]!);
 
@@ -297,11 +306,13 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
       if (fromSource) shardSources.get(bucket)!.add(fromSource);
       if (toSource) shardSources.get(bucket)!.add(toSource);
     }
-    edgeSearch.push([[...buckets].sort().join(''), edge.id, edge.kind, edge.strategy, edge.status, layerOf(edge), edgeTailText(edge)]);
+    const sources = searchSources.size ? [...searchSources].map(([key, bucket]) => ({ key: `source\0${key}`, bucket }))
+      : [...buckets].map(bucket => ({ key: `bucket\0${bucket}`, bucket }));
+    searchFilters.add([[...buckets].sort().join(''), edge.id, edge.kind, edge.strategy, edge.status, layerOf(edge), edgeTailText(edge)], 'edgeSearch', sources);
   }
 
   const common = {
-    formatVersion: 5 as const,
+    formatVersion: 9 as const,
     graphSchemaVersion: 2 as const,
     project: graph.project,
     revision,
@@ -331,6 +342,7 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
       bucketCount: QUERY_DETAIL_BUCKETS,
       nodeSearch,
       edgeSearch,
+      sourceSearchFilters: searchFilters.encode(),
       buckets: Object.fromEntries(BUCKET_KEYS.map(bucket => [bucket, {
         nodeCount: shardNodes.get(bucket)!.size,
         edgeCount: shardEdges.get(bucket)!.size,
@@ -339,6 +351,9 @@ export function buildCanonicalQueryArtifacts(graph: IntelligenceGraph): Canonica
       semanticNodes,
       semanticEdges,
       evidenceBucketById: graph.evidence.map(item => [item.id, queryBucketForSource(item.sourceId)] as [string, string]).sort((a, b) => a[0].localeCompare(b[0])),
+      producerCoverage: graph.producerCoverage ?? [],
+      sourceMetadata: { sources: graph.sources, unavailableSourceIds: graph.unavailableSourceIds, coverage: graph.coverage ?? null,
+        relationshipCoverage: graph.relationshipCoverage },
       coverage: coverageSummary(graph),
       explicitValueConflicts: graph.explicitValueConflicts,
       counts: {
@@ -404,12 +419,26 @@ export function populatedQueryBuckets(index: CanonicalQueryIndexArtifact): strin
 export function candidateQueryBuckets(index: CanonicalQueryIndexArtifact, query: string): string[] {
   const needle = query.trim();
   if (!needle) return populatedQueryBuckets(index);
+  if (Array.isArray(index.sourceSearchFilters)) {
+    const buckets = new Set<string>();
+    for (const [bucket, filter] of index.sourceSearchFilters) {
+      if (!buckets.has(bucket) && querySearchFilterMayMatch(filter, [needle])) buckets.add(bucket);
+    }
+    return [...buckets].sort();
+  }
+  const rawNeedle = needle.toLowerCase();
+  const normalizedNeedle = normalizeName(needle);
+  // The full edge text retains empty-field separators. Preserve such unusual
+  // punctuation-only searches even when they cannot be normalized.
+  if (!normalizedNeedle && /\s/u.test(rawNeedle)) return populatedQueryBuckets(index);
   const buckets = new Set<string>();
   for (const [bucket, id, kind, layer, text] of index.nodeSearch) {
-    if (recordIncludes(needle, [id, kind, layer, text])) buckets.add(bucket);
+    if (recordIncludes(rawNeedle, normalizedNeedle, [id, kind, layer, text])
+      || (layer === 'structural' && recordIncludes(rawNeedle, normalizedNeedle, [id, kind, text]))) buckets.add(bucket);
   }
   for (const [bucketIds, id, kind, strategy, status, layer, text] of index.edgeSearch) {
-    if (!recordIncludes(needle, [id, kind, strategy, status, layer, text])) continue;
+    if (!recordIncludes(rawNeedle, normalizedNeedle, [id, kind, layer, strategy, status, text])
+      && !(layer === 'structural' && recordIncludes(rawNeedle, normalizedNeedle, [id, kind, strategy, status, text]))) continue;
     for (let offset = 0; offset < bucketIds.length; offset += 2) buckets.add(bucketIds.slice(offset, offset + 2));
   }
   return [...buckets].sort();
@@ -461,6 +490,6 @@ export function serializedQueryArtifactBytes(artifacts: CanonicalQueryArtifacts)
     shardBytes,
     totalShardBytes: values.reduce((sum, value) => sum + value, 0),
     maxShardBytes: Math.max(0, ...values),
-    searchRecords: artifacts.index.nodeSearch.length + artifacts.index.edgeSearch.length,
+    searchRecords: artifacts.index.counts.nodes + artifacts.index.counts.edges,
   };
 }

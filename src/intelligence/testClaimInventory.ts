@@ -4,6 +4,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import type { IntelligenceGraph, ParityReachabilityPredicate } from '../types.js';
 import { evaluateParityContractGraph } from './parityContract.js';
+import { positiveIntegerSetting } from './capacity.js';
 
 export type TestClaimOutcome = 'equivalent' | 'partial-overlap' | 'distinct-protection' | 'unproven-equivalence' | 'unclassified';
 export const TEST_CLAIM_EVALUATOR_VERSION = '1.4.0';
@@ -13,7 +14,9 @@ interface DeclarationInput { id: string; sourceId: string; start: number; end: n
 interface AssertionInput { id: string; sourceId: string; start: number; end: number; spanSha256: string; dynamic: boolean }
 interface ClaimInput { id: string; originalClaim: string; equivalenceRationale: string; assertionIds: string[]; parityClaimIds: string[]; productionSourceIds: string[]; protectionSignals: string[] }
 export interface TestClaimCatalog { version: 1; revision: string; analyzerVersion: string; name?: string; scope: ScopeInput; files: FileInput[]; declarations: DeclarationInput[]; assertions: AssertionInput[]; claims: ClaimInput[] }
-const MAX_RECORDS = 10000; const MAX_TEXT = 2000; const SHA256 = /^[a-f0-9]{64}$/;
+const MAX_RECORDS = positiveIntegerSetting(process.env.DEVINT_CLAIM_MAX_RECORDS, Number.MAX_SAFE_INTEGER, 'DEVINT_CLAIM_MAX_RECORDS');
+const MAX_TEXT = positiveIntegerSetting(process.env.DEVINT_CLAIM_MAX_TEXT_CHARS, Number.MAX_SAFE_INTEGER, 'DEVINT_CLAIM_MAX_TEXT_CHARS');
+const SHA256 = /^[a-f0-9]{64}$/;
 
 type ParsedSourceFile = ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
 function sourceScriptKind(sourceId: string): ts.ScriptKind {
@@ -148,7 +151,7 @@ export async function generateTestClaimCatalog(root: string, graph: Intelligence
     let stat;
     try { stat = await fs.lstat(lexical); } catch (error) { throw new Error(`test claim catalog source unavailable: ${sourceId}: ${error instanceof Error ? error.message : String(error)}`); }
     if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`test claim catalog refuses non-regular or symbolic-link source: ${sourceId}`);
-    const maxFileBytes = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? 1_000_000);
+    const maxFileBytes = Number(process.env.DEVINT_GRAPH_MAX_FILE_BYTES ?? process.env.DEVINT_PARITY_MAX_FILE_BYTES ?? Number.MAX_SAFE_INTEGER);
     if (!Number.isFinite(maxFileBytes) || maxFileBytes < 1 || stat.size > maxFileBytes) throw new Error(`test claim catalog source exceeds the analyzer file-size boundary: ${sourceId}`);
     const real = await fs.realpath(lexical);
     const realRelative = path.relative(realRoot, real);

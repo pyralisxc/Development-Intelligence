@@ -3,6 +3,7 @@ import { projectAccessSecret } from '../config/projectAccess.js';
 import { stableHash } from '../util/hash.js';
 import { graphContext } from './service.js';
 import { sanitizeExternalPayload, publicTechnicalEndpoint } from './externalSanitization.js';
+import { positiveIntegerSetting } from './capacity.js';
 import type {
   GraphNode,
   TechnicalEvidenceCorrelation,
@@ -14,7 +15,7 @@ import type {
   TechnicalSourceConfig,
 } from '../types.js';
 
-const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = positiveIntegerSetting(process.env.DEVINT_TECHNICAL_SOURCE_MAX_BYTES, 2 * 1024 * 1024, 'DEVINT_TECHNICAL_SOURCE_MAX_BYTES');
 
 function envHeaders(source: TechnicalSourceConfig): Record<string, string> {
   const headers: Record<string, string> = { accept: 'application/json, text/plain;q=0.8' };

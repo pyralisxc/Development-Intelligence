@@ -1,4 +1,5 @@
 import { getProjectConfig } from '../config/registry.js';
+import { isMainThread } from 'node:worker_threads';
 import { assertProjectAccessCurrent, hasProjectAccess, projectAccessScopeKey, projectAccessSecret } from '../config/projectAccess.js';
 import { computeOnly, previewRuntime } from '../config/runtimeRole.js';
 import type { EvidenceRecord, GraphCoverage, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
@@ -13,7 +14,7 @@ import { assertGraphIntegrity } from './integrity.js';
 import { advanceRepositoryGraph, ANALYZER_VERSION, buildRepositoryGraph } from './repository.js';
 import { deriveNamingDivergences, deriveUnmatched, resolveCrossSource } from './resolver.js';
 import { toolExecutionDiagnostics } from '../observability.js';
-import { loadCanonicalGraph, loadPreviewReplayGraph, makeCanonicalGraphRecord, saveCanonicalGraph, savePreviewReplayGraph, type CanonicalPersistenceDiagnostics, type CanonicalQueryArtifactGenerationRef } from './canonicalStore.js';
+import { loadCanonicalGraph, loadPreviewReplayGraph, makeCanonicalGraphRecord, replacePreviewReplayQueryArtifacts, saveCanonicalGraph, savePreviewReplayGraph, type CanonicalPersistenceDiagnostics, type CanonicalQueryArtifactGenerationRef } from './canonicalStore.js';
 import {
   loadCanonicalQueryArtifactPointer,
   loadCanonicalQueryArtifacts,
@@ -22,14 +23,16 @@ import {
   publishCanonicalQueryArtifactPointer,
   publishCanonicalQueryArtifacts,
   releaseCanonicalQueryArtifactSlot,
+  withPreviewQueryArtifactScope,
   QUERY_ARTIFACT_FORMAT_VERSION,
   type CanonicalQueryArtifactLoadResult,
   type CanonicalQueryArtifactPointer,
   type CanonicalQueryArtifactPointerPublishResult,
 } from './queryArtifactStore.js';
-import { candidateQueryBuckets } from './queryArtifacts.js';
+import { candidateQueryBuckets, exactEvidenceQueryBuckets } from './queryArtifacts.js';
 import { localSourceGraphHistory, readLocalSourceGraph, withLocalSourceGraphEnvelope } from './localGraphStore.js';
 import { hasLocalGraphIndex } from './localGraphIndex.js';
+import { machineGraphStoreRoot } from './machineGraphStore.js';
 
 const MAX_RUNTIME_BYTES = Number(process.env.DEVINT_GRAPH_MAX_RUNTIME_BYTES ?? process.env.DEVINT_PARITY_MAX_RUNTIME_BYTES ?? 2_000_000);
 
@@ -108,6 +111,16 @@ interface RepositoryCacheEntry {
 
 const repositoryCache = new Map<string, RepositoryCacheEntry>();
 const localGraphCache = new Map<string, IntelligenceGraph>();
+interface MachineBuild {
+  state: 'queued' | 'running' | 'complete' | 'failed';
+  progress: import('./producerInputs.js').GraphBuildProgress;
+  startedAt: string;
+  finishedAt?: string;
+  graphId?: string;
+  error?: string;
+  promise: Promise<Record<string, unknown>>;
+}
+const machineBuilds = new Map<string, MachineBuild>();
 const snapshotCache = new Map<string, SnapshotGraph>();
 const repositoryBuildGate = new AsyncGate(() => positiveIntegerSetting(process.env.DEVINT_GRAPH_BUILD_CONCURRENCY, 1, 'DEVINT_GRAPH_BUILD_CONCURRENCY'));
 
@@ -206,6 +219,10 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
             ? { state: 'referenced', saveMs: 0, ref: loaded.record.queryArtifacts }
             : { state: 'none', saveMs: 0, ref: null };
 
+          if (loaded.diagnostics.durable && loaded.record.queryArtifacts?.artifactFormatVersion === QUERY_ARTIFACT_FORMAT_VERSION) {
+            queryArtifacts = await ensureSavedQueryArtifactPointer(loaded.record.working, revision, loaded.record.queryArtifacts, true);
+          }
+
           // Canonical W may predate the derived query-plane format. Backfill the
           // disposable generation from the already-valid stored graph without
           // rebuilding/advancing source truth or touching Git checkout state.
@@ -237,7 +254,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
                   queryArtifactPublication.ref,
                   loaded.record.queryArtifacts ?? null,
                 );
-              } else {
+              } else if (saved.saveState !== 'error') {
                 await releaseCanonicalQueryArtifactSlot(project, queryArtifactPublication.ref).catch(() => false);
               }
             }
@@ -320,6 +337,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
               revision: checkout.sha,
               root: checkout.root,
               role: 'W',
+              disposableCheckout: true,
             });
           }
           assertGraphIntegrity(graph);
@@ -356,7 +374,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
             queryArtifactPublication.ref,
             previousQueryArtifacts,
           );
-        } else if (queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
+        } else if (saved.saveState !== 'error' && queryArtifactPublication.state === 'stored' && queryArtifactPublication.ref) {
           await releaseCanonicalQueryArtifactSlot(project, queryArtifactPublication.ref).catch(() => false);
         }
         return {
@@ -396,6 +414,42 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
         ? await loadPreviewReplayGraph({ project, repository: revision.repository, revision: revision.sha })
         : null;
       if (replay?.record) {
+        let queryArtifacts: CachedRepositoryGraph['queryArtifacts'] = replay.record.queryArtifacts
+          ? { state: 'referenced', saveMs: 0, ref: replay.record.queryArtifacts }
+          : { state: 'none', saveMs: 0, ref: null };
+        if (replay.diagnostics.durable) {
+          queryArtifacts = await withPreviewQueryArtifactScope({ project, repository: revision.repository, revision: revision.sha }, async () => {
+            const previous = replay.record!.queryArtifacts ?? null;
+            if (previous?.artifactFormatVersion === QUERY_ARTIFACT_FORMAT_VERSION) {
+              return await ensureSavedQueryArtifactPointer(replay.record!.working, revision, previous, false);
+            }
+            if (!replay.previewManifestEtag) return { state: 'error', saveMs: 0, ref: previous,
+              error: 'Preview graph manifest version is unavailable' };
+            const built = await publishCanonicalQueryArtifacts(replay.record!.working, previous, { repository: revision.repository });
+            if (built.state !== 'stored' || !built.ref) return { state: 'error', saveMs: built.saveMs, ref: previous,
+              error: built.error ?? 'Preview query generation could not be built' };
+            const replacement = await replacePreviewReplayQueryArtifacts({ project, repository: revision.repository,
+              revision: revision.sha, graphId: replay.record!.working.graphId }, built.ref, replay.previewManifestEtag);
+            if (replacement.state === 'conflict') {
+              await releaseCanonicalQueryArtifactSlot(project, built.ref).catch(() => false);
+              const winner = await loadPreviewReplayGraph({ project, repository: revision.repository, revision: revision.sha });
+              const winnerRef = winner.record?.queryArtifacts;
+              if (winner.record && winnerRef?.artifactFormatVersion === QUERY_ARTIFACT_FORMAT_VERSION) {
+                // Return the exact graph that owns the winning reference; the
+                // same source revision can have different producer coverage.
+                replay.record = winner.record;
+                const pointer = await ensureSavedQueryArtifactPointer(winner.record.working, revision, winnerRef, false);
+                return { ...pointer, saveMs: built.saveMs + replacement.saveMs + pointer.saveMs };
+              }
+              return { state: 'error', saveMs: built.saveMs + replacement.saveMs, ref: previous,
+                error: 'Preview graph changed while its query generation was being published' };
+            }
+            if (replacement.state !== 'stored') return { state: 'error', saveMs: built.saveMs + replacement.saveMs,
+              ref: previous, error: replacement.error ?? 'Preview graph generation reference could not be saved' };
+            const pointer = await ensureSavedQueryArtifactPointer(replay.record!.working, revision, built.ref, false);
+            return { ...pointer, saveMs: built.saveMs + replacement.saveMs + pointer.saveMs };
+          });
+        }
         return {
           graph: replay.record.working,
           accepted: null,
@@ -404,7 +458,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
           touchedAt: Date.now(),
           buildTiming: null,
           persistence: replay.diagnostics,
-          queryArtifacts: { state: 'not-configured', saveMs: 0, ref: null },
+          queryArtifacts,
         } satisfies CachedRepositoryGraph;
       }
       // A failed storage read is not a cache miss. Rebuilding here could
@@ -412,6 +466,25 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
       // conceal the reason the existing generation could not be loaded.
       if (replay?.diagnostics.loadState === 'error') {
         throw new Error(`Preview replay graph could not be read: ${replay.diagnostics.error ?? 'storage unavailable'}`);
+      }
+      if (replay?.diagnostics.durable && isMainThread) {
+        // Build in the same worker entrypoint used by local work and canonical
+        // reconciliation. The worker publishes once; the caller resumes from
+        // the graph it actually published rather than transferring a full graph.
+        const { runPreviewGraphWorker } = await import('./canonicalReconcileWorker.js');
+        const result = await runPreviewGraphWorker({ project, revision: revision.sha, ...(ref ? { ref } : {}) });
+        const saved = await loadPreviewReplayGraph({ project, repository: revision.repository, revision: revision.sha });
+        if (!saved.record || saved.record.working.graphId !== result.graphId) {
+          throw new Error('Preview graph worker did not publish the selected graph generation');
+        }
+        const savedRef = saved.record.queryArtifacts;
+        const queryArtifacts = savedRef?.artifactFormatVersion === QUERY_ARTIFACT_FORMAT_VERSION
+          ? await withPreviewQueryArtifactScope({ project, repository: revision.repository, revision: revision.sha },
+            () => ensureSavedQueryArtifactPointer(saved.record!.working, revision, savedRef, false))
+          : { state: 'error' as const, saveMs: 0, ref: savedRef ?? null, error: 'Preview graph needs a current query generation' };
+        return { graph: saved.record.working, accepted: null, currentness: saved.record.currentness,
+          revision, touchedAt: Date.now(), buildTiming: (result.coldBuild as GraphColdBuildTiming | null) ?? null,
+          persistence: saved.diagnostics, queryArtifacts } satisfies CachedRepositoryGraph;
       }
       let graphBuildMs = 0;
       const observed = await withResolvedProjectCheckoutObserved(revision, async checkout => {
@@ -422,6 +495,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
           revision: checkout.sha,
           root: checkout.root,
           role: 'W',
+          disposableCheckout: true,
         });
         assertGraphIntegrity(graph);
         graphBuildMs = elapsedMs(graphBuildStarted);
@@ -430,10 +504,51 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
         const currentness = emptyCurrentness();
         return { graph, accepted, currentness };
       });
-      const saved = replay ? await savePreviewReplayGraph(makeCanonicalGraphRecord({
-        project, repository: revision.repository, revision: revision.sha,
-        working: observed.value.graph, accepted: null, currentness: observed.value.currentness,
-      })) : null;
+      let artifactPublication: QueryArtifactPublicationDiagnostics = { state: 'not-configured', saveMs: 0, ref: null };
+      let saved: CanonicalPersistenceDiagnostics | null = null;
+      if (replay) {
+        const publication = await withPreviewQueryArtifactScope({ project, repository: revision.repository, revision: revision.sha }, async () => {
+          const artifacts = await publishCanonicalQueryArtifacts(observed.value.graph, null, { repository: revision.repository });
+          const stored = await savePreviewReplayGraph(makeCanonicalGraphRecord({
+            project, repository: revision.repository, revision: revision.sha,
+            working: observed.value.graph, accepted: null, currentness: observed.value.currentness,
+            queryArtifacts: artifacts.state === 'stored' ? artifacts.ref : null,
+          }), { expectedEtag: null });
+          if (stored.conflict) {
+            if (artifacts.ref) await releaseCanonicalQueryArtifactSlot(project, artifacts.ref).catch(() => false);
+            // The losing graph is no longer needed. Drop it before loading the
+            // winner so a large repository does not require two full graphs.
+            observed.value.graph = null as unknown as IntelligenceGraph;
+            const winner = await loadPreviewReplayGraph({ project, repository: revision.repository, revision: revision.sha });
+            const graph = winner.record?.working;
+            if (!graph || !winner.record) throw new Error('Concurrent Preview graph generation could not be loaded');
+            // Use the published winner, not this process's losing build. A
+            // graph ID alone does not assert identical producer coverage.
+            observed.value.graph = graph;
+            observed.value.currentness = winner.record.currentness;
+            const winnerRef = winner.record?.queryArtifacts;
+            const diagnostics = winnerRef?.artifactFormatVersion === QUERY_ARTIFACT_FORMAT_VERSION
+              ? await ensureSavedQueryArtifactPointer(graph, revision, winnerRef, false)
+              : { state: 'error' as const, saveMs: 0, ref: winnerRef ?? null, error: 'Concurrent Preview graph needs a current query generation' };
+            return { stored: winner.diagnostics, diagnostics };
+          }
+          let pointer = null;
+          if (stored.saveState === 'stored' && artifacts.state === 'stored' && artifacts.ref) {
+            pointer = await publishCanonicalQueryArtifactPointer(observed.value.graph, revision.repository, artifacts.ref);
+          } else if (artifacts.ref && stored.saveState !== 'error') {
+            await releaseCanonicalQueryArtifactSlot(project, artifacts.ref).catch(() => false);
+          }
+          const diagnostics: QueryArtifactPublicationDiagnostics = {
+            state: pointer?.state === 'stored' ? 'stored' : artifacts.state === 'stored' ? 'error' : artifacts.state,
+            saveMs: artifacts.saveMs + (pointer?.saveMs ?? 0),
+            ref: pointer?.state === 'stored' ? artifacts.ref : null,
+            ...(pointer?.error || artifacts.error ? { error: pointer?.error ?? artifacts.error } : {}),
+          };
+          return { stored, diagnostics };
+        });
+        saved = publication.stored;
+        artifactPublication = publication.diagnostics;
+      }
       return {
         ...observed.value,
         revision,
@@ -457,7 +572,7 @@ async function buildCachedRepositoryGraph(project: string, ref?: string, resolve
           loadMs: 0,
           saveMs: 0,
         },
-        queryArtifacts: { state: 'not-configured', saveMs: 0, ref: null },
+        queryArtifacts: artifactPublication,
       } satisfies CachedRepositoryGraph;
     }).then(value => {
       created.value = value;
@@ -599,13 +714,45 @@ async function publishCurrentQueryArtifactPointer(
   }
 
   if (result.state === 'stored') {
-    if (priorRef && priorRef.generationId !== ref.generationId) {
+    if (priorRef && priorRef.slot !== ref.slot) {
       await releaseCanonicalQueryArtifactSlot(graph.project, priorRef).catch(() => false);
     }
-  } else {
-    await releaseCanonicalQueryArtifactSlot(graph.project, ref).catch(() => false);
   }
   return result;
+}
+
+/** Recover the discovery pointer from the retained graph's own index reference. */
+async function ensureSavedQueryArtifactPointer(
+  graph: IntelligenceGraph, revision: ProjectRevision, ref: CanonicalQueryArtifactGenerationRef, verifyCurrent: boolean,
+): Promise<QueryArtifactPublicationDiagnostics> {
+  const expected = { project: graph.project, repository: revision.repository, revision: revision.sha };
+  const pointer = await loadCanonicalQueryArtifactPointer(expected);
+  const matches = (candidate: typeof pointer) => candidate.state === 'hit'
+    && candidate.pointer?.graphId === graph.graphId
+    && candidate.pointer.analyzerVersion === graph.analyzerVersion
+    && candidate.pointer.sourceFingerprint === graph.sourceFingerprint
+    && candidate.pointer.topologyFingerprint === graph.topologyFingerprint
+    && candidate.pointer.evidenceFingerprint === graph.evidenceFingerprint
+    && candidate.pointer.ref.generationId === ref.generationId
+    && candidate.pointer.ref.slot === ref.slot
+    && candidate.pointer.ref.manifestSha256 === ref.manifestSha256;
+  if (matches(pointer)) return { state: 'referenced', saveMs: 0, ref };
+  if (pointer.state === 'error') return { state: 'error', saveMs: 0, ref, error: pointer.error ?? 'Query generation pointer is unavailable' };
+  const generation = await loadCanonicalQueryArtifacts(graph, ref, []);
+  if (generation.state !== 'hit' || !generation.index) {
+    return { state: 'error', saveMs: 0, ref, error: generation.error ?? 'Saved query generation is unavailable' };
+  }
+  if (verifyCurrent) {
+    const current = await resolveProjectRevision(graph.project);
+    if (current.repository !== revision.repository || current.sha !== revision.sha) {
+      return { state: 'error', saveMs: 0, ref, error: 'Revision changed before restoring the query generation pointer' };
+    }
+  }
+  const restored = await publishCanonicalQueryArtifactPointer(graph, revision.repository, ref);
+  const concurrent = restored.state === 'conflict' ? await loadCanonicalQueryArtifactPointer(expected) : null;
+  return restored.state === 'stored' || (concurrent && matches(concurrent))
+    ? { state: 'referenced', saveMs: restored.saveMs, ref }
+    : { state: 'error', saveMs: restored.saveMs, ref, error: restored.error ?? 'Query generation pointer could not be restored' };
 }
 
 function selectQueryArtifactBuckets(index: Parameters<typeof candidateQueryBuckets>[0], queries: string[]): string[] {
@@ -617,11 +764,11 @@ export async function loadCurrentQueryArtifacts(
   project: string,
   queries: string[],
   expectedGraphId?: string,
+  ref?: string,
+  evidenceIds?: string[],
 ): Promise<QueryArtifactShadowLoad> {
-  // Preview's disposable replay graph is a different generation from Main's
-  // canonical pointer, even when both happen to reference the same commit.
-  if (previewRuntime()) return { state: 'unavailable', loadMs: 0, bucketIds: [], index: null, shards: {}, reason: 'preview-replay-uses-revision-bound-graph' };
-  const revision = await resolveProjectRevision(project);
+  const revision = await resolveProjectRevision(project, ref);
+  const load = async (): Promise<QueryArtifactShadowLoad> => {
   const pointerLoad = await loadCanonicalQueryArtifactPointer({
     project,
     repository: revision.repository,
@@ -652,7 +799,12 @@ export async function loadCurrentQueryArtifacts(
     };
   }
 
-  const loaded = await loadCanonicalQueryArtifactsFromPointer(pointer, index => selectQueryArtifactBuckets(index, queries));
+  const hasQueries = queries.some(query => query.trim());
+  const loaded = await loadCanonicalQueryArtifactsFromPointer(pointer,
+    hasQueries ? index => [...new Set([
+      ...selectQueryArtifactBuckets(index, queries),
+      ...(evidenceIds?.length ? exactEvidenceQueryBuckets(index, { evidenceIds }) ?? [] : []),
+    ])].sort() : []);
   if (!loaded.index) {
     return {
       state: loaded.state,
@@ -663,6 +815,15 @@ export async function loadCurrentQueryArtifacts(
       ...(loaded.error ? { reason: loaded.error } : {}),
     };
   }
+  if (!hasQueries && evidenceIds?.length) {
+    const buckets = exactEvidenceQueryBuckets(loaded.index, { evidenceIds });
+    if (buckets?.length) {
+      const detail = await loadCanonicalQueryDetailShardsFromPointer(pointer, loaded.index, buckets);
+      return { state: detail.state, loadMs: pointerLoad.loadMs + loaded.loadMs + detail.loadMs,
+        bucketIds: buckets, index: loaded.index, shards: detail.shards ?? {}, pointer,
+        ...(detail.error ? { reason: detail.error } : {}) };
+    }
+  }
   return {
     state: loaded.state,
     loadMs: pointerLoad.loadMs + loaded.loadMs,
@@ -672,6 +833,10 @@ export async function loadCurrentQueryArtifacts(
     pointer,
     ...(loaded.error ? { reason: loaded.error } : {}),
   };
+  };
+  return previewRuntime()
+    ? await withPreviewQueryArtifactScope({ project, repository: revision.repository, revision: revision.sha }, load)
+    : await load();
 }
 
 export async function loadCurrentQueryArtifactBuckets(
@@ -689,7 +854,12 @@ export async function loadCurrentQueryArtifactBuckets(
     };
   }
   const selected = [...new Set(bucketIds)].sort();
-  const detailLoad = await loadCanonicalQueryDetailShardsFromPointer(established.pointer, established.index, selected);
+  const pointer = established.pointer;
+  const index = established.index;
+  const load = () => loadCanonicalQueryDetailShardsFromPointer(pointer, index, selected);
+  const detailLoad = previewRuntime()
+    ? await withPreviewQueryArtifactScope({ project: pointer.project, repository: pointer.repository, revision: pointer.revision }, load)
+    : await load();
   return {
     state: detailLoad.state,
     loadMs: detailLoad.loadMs,
@@ -876,7 +1046,9 @@ export async function scanGraph(project: string, options: { ref?: string | undef
     || cached.value.queryArtifacts.ref.artifactFormatVersion !== QUERY_ARTIFACT_FORMAT_VERSION)) {
     repositoryCache.delete(key);
   }
-  const repository = await buildCachedRepositoryGraph(project, options.ref, revision);
+  const repository = machineGraphStoreRoot(project, revision.repository)
+    ? await graphContext(project, options.ref ? { ref: options.ref } : {})
+    : await buildCachedRepositoryGraph(project, options.ref, revision);
   const urls = options.urls ?? [];
   // Current semantic understanding is a pure reconstruction of repository.graph.
   // Canonical scans cannot write a second derived semantic history or promote
@@ -916,16 +1088,116 @@ export async function scanGraph(project: string, options: { ref?: string | undef
   return graph;
 }
 
+function retainedLocalEntry(
+  catalog: Awaited<ReturnType<typeof localSourceGraphHistory>>,
+  options: { ref?: string | undefined; graphId?: string | undefined },
+) {
+  if (!catalog) return undefined;
+  if (options.graphId) return catalog.entries.find(item => item.graphId === options.graphId);
+  const commit = /^commit:([0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?)$/u.exec(options.ref ?? '');
+  if (commit) return catalog.entries.find(item => item.graphId.startsWith(`repo-${commit[1]!.toLowerCase()}-`));
+  const name = options.ref === 'working-tree' ? 'working' : options.ref?.replace(/^branch:/u, '');
+  const generation = name ? catalog.targets?.[name] : catalog.active;
+  return catalog.entries.find(item => item.generation === generation);
+}
+
+function queueMachineBuild(project: string, revision: ProjectRevision, root: string, ref?: string, retry = false): MachineBuild {
+  const key = `${root}\0${project}\0${revision.sha}`;
+  let job = machineBuilds.get(key);
+  if (job && !(retry && job.state === 'failed')) return job;
+  job = { state: 'queued', progress: { stage: 'queued' }, startedAt: new Date().toISOString(), promise: undefined as unknown as Promise<Record<string, unknown>> };
+  const current = job;
+  machineBuilds.set(key, current);
+  current.promise = repositoryBuildGate.run(async () => {
+    current.state = 'running';
+    const { runPreviewGraphWorker } = await import('./canonicalReconcileWorker.js');
+    return await runPreviewGraphWorker({ project, revision: revision.sha, ...(ref ? { ref } : {}) }, progress => { current.progress = progress; });
+  }).then(result => {
+    current.state = 'complete'; current.finishedAt = new Date().toISOString();
+    if (typeof result.graphId === 'string') current.graphId = result.graphId;
+    return result;
+  }, error => {
+    current.state = 'failed'; current.finishedAt = new Date().toISOString();
+    current.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  });
+  // A caller may start a graph and move elsewhere without awaiting the job.
+  void current.promise.catch(() => {});
+  return current;
+}
+
+/** Request or inspect the machine's exact-revision build without loading a
+ * graph. State is scoped to the authorized project and the running server. */
+export async function machineGraphBuildStatus(project: string, ref?: string, start = false, revisionHint?: string): Promise<Record<string, unknown>> {
+  await assertProjectAccessCurrent(project);
+  if (!process.env.DEVINT_MACHINE_GRAPH_DIR?.trim() || !previewRuntime()) throw new Error('Persistent-machine Preview graph builds are not configured');
+  if (!start && revisionHint) {
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(revisionHint)) throw new Error('Revision must be an exact Git identity');
+    const config = await getProjectConfig(project);
+    const knownRoot = machineGraphStoreRoot(project, config.repository);
+    const known = knownRoot ? machineBuilds.get(`${knownRoot}\0${project}\0${revisionHint}`) : undefined;
+    if (known) {
+      await assertProjectAccessCurrent(project);
+      return { project, revision: revisionHint, state: known.state, progress: known.progress, startedAt: known.startedAt,
+        ...(known.graphId ? { graphId: known.graphId } : {}), ...(known.finishedAt ? { finishedAt: known.finishedAt } : {}), ...(known.error ? { error: known.error } : {}) };
+    }
+  }
+  const revision = await resolveProjectRevision(project, ref);
+  if (revisionHint && revision.sha !== revisionHint) throw new Error('The requested revision is no longer selected by this ref');
+  const root = machineGraphStoreRoot(project, revision.repository);
+  if (!root) throw new Error('Persistent-machine Preview graph storage is unavailable');
+  const catalog = await localSourceGraphHistory(root, project);
+  const entry = catalog?.entries.find(item => item.graphId.startsWith(`repo-${revision.sha}-`));
+  const key = `${root}\0${project}\0${revision.sha}`;
+  const job = start && !entry ? queueMachineBuild(project, revision, root, ref, true) : machineBuilds.get(key);
+  await assertProjectAccessCurrent(project);
+  return { project, revision: revision.sha, ...(entry ? { graphId: entry.graphId } : {}),
+    state: entry ? 'complete' : job?.state ?? 'not-built',
+    ...(job ? { progress: job.progress, startedAt: job.startedAt, ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}), ...(job.error ? { error: job.error } : {}) } : {}) };
+}
+
+async function machineGraphSelection(project: string, options: { ref?: string | undefined; graphId?: string | undefined }, allowBuild = true) {
+  if (!process.env.DEVINT_MACHINE_GRAPH_DIR?.trim() || !previewRuntime()) return null;
+  const match = options.graphId && /^repo-([0-9a-f]{40}|[0-9a-f]{64})-[0-9a-f]{10}$/u.exec(options.graphId);
+  if (options.graphId && !match) return null;
+  const ref = match ? `commit:${match[1]}` : options.ref;
+  const revision = await resolveProjectRevision(project, ref);
+  const root = machineGraphStoreRoot(project, revision.repository);
+  if (!root) return null;
+  const find = async () => {
+    const catalog = await localSourceGraphHistory(root, project);
+    return catalog?.entries.find(item => options.graphId ? item.graphId === options.graphId
+      : item.graphId.startsWith(`repo-${revision.sha}-`));
+  };
+  let entry = await find();
+  if (!entry && options.graphId) throw new Error(`Graph generation is not retained: ${options.graphId}`);
+  if (!entry && !allowBuild) return null;
+  if (!entry) {
+    const result = await queueMachineBuild(project, revision, root, ref).promise;
+    await assertProjectAccessCurrent(project);
+    const catalog = await localSourceGraphHistory(root, project);
+    entry = catalog?.entries.find(item => item.graphId === result.graphId);
+    if (!entry) throw new Error('Graph worker did not publish the selected machine generation');
+  }
+  await assertProjectAccessCurrent(project);
+  return { root, entry, revision };
+}
+
 export async function graphContext(project: string, options: { ref?: string; graphId?: string } = {}): Promise<{ graph: IntelligenceGraph; revision: ProjectRevision }> {
   await assertProjectAccessCurrent(project);
   if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
+  const machine = await machineGraphSelection(project, options);
+  if (machine) {
+    const graph = await readLocalSourceGraph(machine.root, project, machine.entry.graphId, machine.entry.generation);
+    await assertProjectAccessCurrent(project);
+    return { graph, revision: machine.revision };
+  }
   const localDir = process.env.DEVINT_LOCAL_GRAPH_DIR?.trim();
   if (localDir) {
     const catalog = await localSourceGraphHistory(localDir, project);
-    const name = options.ref === 'working-tree' ? 'working' : options.ref?.replace(/^branch:/u, '');
-    const generation = name ? catalog?.targets?.[name] : catalog?.active;
-    const entry = options.graphId ? catalog?.entries.find(item => item.graphId === options.graphId) : catalog?.entries.find(item => item.generation === generation);
+    const entry = retainedLocalEntry(catalog, options);
     if (entry) {
+      if (options.ref?.startsWith('commit:')) await resolveProjectRevision(project, options.ref);
       const config = await getProjectConfig(project);
       const prefix = `${localDir}\0${project}\0`;
       const key = `${prefix}${entry.generation}`;
@@ -1025,15 +1297,21 @@ export async function currentGraph(project: string, ref?: string, graphId?: stri
 
 /** Keep the selected local generation pinned while its indexed records are in use. */
 export async function withIndexedLocalGraph<T>(project: string, options: { ref?: string | undefined; graphId?: string | undefined }, use: (graph: IntelligenceGraph) => Promise<T | null>, useLoaded?: (graph: IntelligenceGraph) => Promise<T>): Promise<T | null> {
+  if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
+  const machine = await machineGraphSelection(project, options);
+  if (machine) {
+    const result = await withLocalSourceGraphEnvelope(machine.root, project, use, machine.entry.graphId, machine.entry.generation, true);
+    await assertProjectAccessCurrent(project);
+    return result;
+  }
   const localDir = process.env.DEVINT_LOCAL_GRAPH_DIR?.trim();
   if (!localDir) return null;
   await assertProjectAccessCurrent(project);
   if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
   const catalog = await localSourceGraphHistory(localDir, project);
-  const name = options.ref === 'working-tree' ? 'working' : options.ref?.replace(/^branch:/u, '');
-  const generation = name ? catalog?.targets?.[name] : catalog?.active;
-  const entry = options.graphId ? catalog?.entries.find(item => item.graphId === options.graphId) : catalog?.entries.find(item => item.generation === generation);
+  const entry = retainedLocalEntry(catalog, options);
   if (!entry) return null;
+  if (options.ref?.startsWith('commit:')) await resolveProjectRevision(project, options.ref);
   await getProjectConfig(project);
   const key = `${localDir}\0${project}\0${entry.generation}`;
   const loaded = localGraphCache.get(key);
@@ -1046,6 +1324,31 @@ export async function withIndexedLocalGraph<T>(project: string, options: { ref?:
     if ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as Error).message === 'This retained graph needs a current retrieval index') return null;
     throw error;
   }
+}
+
+/** Read graph-owned source and coverage metadata from the selected generation. */
+export async function graphSourceMetadata(project: string, ref?: string, graphId?: string): Promise<Pick<IntelligenceGraph,
+  'project' | 'graphId' | 'repositoryRevision' | 'sourceState' | 'sources' | 'unavailableSourceIds' | 'coverage' | 'producerCoverage' | 'relationshipCoverage'>> {
+  if (ref && graphId) throw new Error('Use either ref or graphId, not both');
+  const select = (graph: IntelligenceGraph) => ({ project: graph.project, graphId: graph.graphId,
+    repositoryRevision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}), sources: graph.sources, unavailableSourceIds: graph.unavailableSourceIds,
+    ...(graph.coverage ? { coverage: graph.coverage } : {}),
+    ...(graph.producerCoverage ? { producerCoverage: graph.producerCoverage } : {}),
+    ...(graph.relationshipCoverage ? { relationshipCoverage: graph.relationshipCoverage } : {}) });
+  const local = await withIndexedLocalGraph(project, { ref, graphId }, async graph => select(graph));
+  if (local) return local;
+  const match = graphId && /^repo-([0-9a-f]{40}|[0-9a-f]{64})-[0-9a-f]{10}$/u.exec(graphId);
+  if (!process.env.DEVINT_LOCAL_GRAPH_DIR?.trim() && (!graphId || match)) {
+    const saved = await loadCurrentQueryArtifacts(project, [], graphId, ref ?? (match ? `commit:${match[1]}` : undefined));
+    if (saved.state === 'hit' && saved.index) {
+      const metadata = saved.index.sourceMetadata;
+      return { project, graphId: saved.index.graphId, repositoryRevision: saved.index.revision,
+        sources: metadata.sources, unavailableSourceIds: metadata.unavailableSourceIds,
+        ...(metadata.coverage ? { coverage: metadata.coverage } : {}), producerCoverage: saved.index.producerCoverage,
+        ...(metadata.relationshipCoverage ? { relationshipCoverage: metadata.relationshipCoverage } : {}) };
+    }
+  }
+  return select(await currentGraph(project, ref, graphId));
 }
 
 export function clearGraphCache(project?: string): void {
@@ -1089,7 +1392,14 @@ export function graphCacheDiagnostics(): Record<string, unknown> {
 }
 
 export async function graphStatus(project: string, ref?: string, materialize = true): Promise<Record<string, unknown>> {
-  const repository = materialize
+  const machineActive = Boolean(process.env.DEVINT_MACHINE_GRAPH_DIR?.trim()) && previewRuntime();
+  const machine = machineActive ? await machineGraphSelection(project, { ref }, materialize) : null;
+  if (machineActive && !machine) throw new Error(`No retained Preview graph for ${project}`);
+  const repository = machine ? {
+    graph: await readLocalSourceGraph(machine.root, project, machine.entry.graphId, machine.entry.generation),
+    revision: machine.revision, accessTiming: { cacheState: 'hit', persistence: { mode: 'machine-file', scope: 'preview-replay', durable: true, loadState: 'hit', saveState: 'skipped' } },
+    buildTiming: null, queryArtifacts: { state: 'referenced', storage: 'sqlite', ref: null },
+  } : materialize
     ? await buildCachedRepositoryGraph(project, ref)
     : await loadCachedRepositoryGraphForRead(project, ref);
   const graphs = { working: repository.graph };

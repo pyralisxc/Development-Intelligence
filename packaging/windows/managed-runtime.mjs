@@ -30,9 +30,10 @@ async function main() {
     DEVINT_AUTH_MODE:'bearer',DEVINT_BEARER_TOKEN:config.agentToken,
     DEVINT_HOST:'127.0.0.1',DEVINT_PORT:'8788',DEVINT_ALLOWED_HOSTS:'127.0.0.1,localhost',
     DEVINT_PROJECTS_JSON:JSON.stringify(config.projects),DEVINT_SCRATCH_DIR:scratch,
-    DEVINT_GRAPH_BUILD_CONCURRENCY:String(limits.buildConcurrency),DEVINT_GRAPH_CACHE_SIZE:String(limits.graphCacheEntries),
+    DEVINT_GRAPH_BUILD_CONCURRENCY:String(config.capacity?.buildConcurrency ?? limits.buildConcurrency),DEVINT_GRAPH_CACHE_SIZE:String(limits.graphCacheEntries),
     DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE:String(limits.snapshotCacheEntries),DEVINT_GRAPH_CACHE_MAX_RECORDS:String(limits.graphCacheRecords),
     GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:path.join(scratch,'empty-gitconfig'),GIT_TERMINAL_PROMPT:'0',
+    ...(config.capacity?.scipHeapMB?{DEVINT_SCIP_HEAP_MB:String(config.capacity.scipHeapMB)}:{}),
     ...(config.remoteStorage?{DEVINT_CANONICAL_BLOB_STORE_ID:config.remoteStorage.storeId,DEVINT_CANONICAL_BLOB_TOKEN:config.remoteStorage.token}:{}),
   });
   // Engine metadata imports initialize normal runtime modules. Keep them behind
@@ -66,7 +67,8 @@ async function main() {
   const quotaTimer=setInterval(async()=>{
     try {
       const files=await scratchInventory(scratch,true);
-      if(files.reduce((sum,item)=>sum+item.bytes,0)>limits.scratchBytes) throw new Error('Scratch budget exceeded');
+      const scratchBytes=config.capacity?.scratchBytes ?? limits.scratchBytes;
+      if(scratchBytes !== null && files.reduce((sum,item)=>sum+item.bytes,0)>scratchBytes) throw new Error('Scratch budget exceeded');
     } catch {console.error('Managed scratch budget/integrity failure; stopping');shutdown();}
   },limits.scratchPollMs);
   process.once('SIGTERM',shutdown);process.once('SIGINT',shutdown);

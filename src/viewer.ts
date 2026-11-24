@@ -44,7 +44,7 @@ function assessmentCss(): string {
   return `.assessment{display:grid;gap:13px}.assessment-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.assessment-head h2{margin:2px 0 0;text-transform:capitalize}.assessment-meta{text-align:right;color:#8295ad;font-size:9px;line-height:1.55}.assessment-section{border-top:1px solid #213047;padding-top:12px}.assessment-section>h3{margin-bottom:8px}.assessment-facets{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px}.assessment-facet{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:7px;border:1px solid #283951;background:#0d1724;border-radius:10px;padding:8px}.assessment-facet strong{font-size:11px;text-transform:capitalize}.assessment-facet small{grid-column:2;color:#8396ad;font-size:9px}.assessment-item{display:grid;gap:5px;border:1px solid #283951;background:#101a29;border-radius:11px;padding:10px 11px}.assessment-item>strong{font-size:11px;line-height:1.45}.assessment-item>small{color:#8396ad;font-size:9px}.assessment-item details{font-size:9px}.assessment-item ul{margin:7px 0 0;padding-left:18px;color:#aebdce}`;
 }
 
-export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: string, requestedGraphId?: string, projects: WorkbenchProjectLink[] = []): string {
+export function renderGraphViewer(graph: Pick<IntelligenceGraph, 'project' | 'sourceState' | 'repositoryRevision'>, requestedRef?: string, requestedGraphId?: string, projects: WorkbenchProjectLink[] = [], machineBuild = false): string {
   const project = escapeHtml(graph.project);
   const revision = escapeHtml(graph.sourceState ? `Working files · HEAD ${graph.sourceState.headRevision.slice(0, 12)}` : graph.repositoryRevision ?? 'unknown revision');
   const visibleProjects = projects.some(item => item.project === graph.project) ? projects : [{ project: graph.project, defaultRef: requestedRef ?? 'HEAD' }, ...projects];
@@ -57,7 +57,8 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
 <div class="app" data-project="${project}" data-revision="${revision}">
 <header class="top">
   <div class="brand"><div class="mark">DI</div><select id="project-select" class="project-select" aria-label="Project">${projectOptions}</select></div>
-  <div class="revision">${revision}${graph.sourceState ? '' : requestedGraphId ? ' · observed snapshot' : ' · canonical source'}</div>
+  <div class="revision">${revision}${graph.sourceState ? '' : requestedGraphId ? ' · selected graph' : ' · source revision'}</div>
+  ${machineBuild ? '<div id="machine-build-status" role="status" aria-live="polite">Checking graph…</div>' : ''}
   <form id="revision-form" style="display:flex;gap:5px"><input id="revision-input" aria-label="Revision selector" value="${escapeHtml(selectedRef)}" placeholder="HEAD, branch:main, pr:75/head" style="width:190px;border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:9px;padding:7px 9px;font-size:10px"><button type="submit" class="primary">Open</button></form>
   <form class="askbar" id="global-query"><input id="global-query-input" autocomplete="off" placeholder="Ask about this project…"><button type="submit">Ask</button></form>
   <a class="logout" href="/logout">Sign out</a>
@@ -81,7 +82,7 @@ export function renderGraphViewer(graph: IntelligenceGraph, requestedRef?: strin
   <aside class="inspector"><div class="inspector-head"><h2>Inspector</h2><span id="inspector-context" class="muted"></span></div><div id="inspector-tabs" class="inspector-tabs"></div><div id="inspector-body" class="inspector-body"><div class="empty"><div><strong>Nothing selected</strong>Choose an entity from Overview or Explore to get quick notes, connections, code, evidence and change context.</div></div></div></aside>
 </main>
 </div>
-<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedGraphId ? '' : requestedRef ?? '')},graphId:${JSON.stringify(requestedGraphId ?? '')},local:${JSON.stringify(Boolean(process.env.DEVINT_LOCAL_GRAPH_DIR))},section:${JSON.stringify(process.env.DEVINT_LOCAL_GRAPH_DIR ? 'explore' : 'overview')}};</script>
+<script>window.__DEVINT_VIEWER__={project:${JSON.stringify(graph.project)},ref:${JSON.stringify(requestedGraphId ? '' : requestedRef ?? '')},graphId:${JSON.stringify(requestedGraphId ?? '')},local:${JSON.stringify(Boolean(process.env.DEVINT_LOCAL_GRAPH_DIR))},machineBuild:${JSON.stringify(machineBuild)},buildRevision:${JSON.stringify(machineBuild ? graph.repositoryRevision ?? '' : '')},section:${JSON.stringify(process.env.DEVINT_LOCAL_GRAPH_DIR ? 'explore' : 'overview')}};</script>
 <script src="/viewer.js?source=workbench" defer></script>
 </body></html>`;
 }

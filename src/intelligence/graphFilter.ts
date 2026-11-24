@@ -813,8 +813,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       to: edge.to ? byId.get(edge.to) ?? null : null })) };
   let comparison: Record<string, unknown> | null = null;
   let comparisonTotal = 0;
-  if (language.negated && operationToken && !relationshipKinds.size) {
-    comparison = { state: 'relationship-required', reason: 'Select a relationship kind for the negative filter.' };
+  if (language.negated && !relationshipKinds.size) {
+    comparison = { state: 'relationship-required', reason: 'The negative wording was recognized, but no graph relationship was selected for comparison. Select a subject and relationship or refine the request.' };
   }
   if (language.negated && relationshipKinds.size) {
     const comparisonProvided = Boolean(input.comparisonIds?.length || input.comparisonScope || input.comparisonKinds?.length);

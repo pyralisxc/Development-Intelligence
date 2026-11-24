@@ -11,7 +11,6 @@ import { resolveProjectRevision, withResolvedProjectCheckout } from '../source/g
 import { isWrittenTestSource } from './independentSourceVerification.js';
 
 export const CONDITION_EFFECT_LENS = 'typescript-ast-condition-effect-source.v1';
-const MAX_FILE_BYTES = 1_000_000;
 const MAX_PREVIEW_ROWS = 80;
 const CALLABLE = new Set(['function', 'method']);
 
@@ -70,7 +69,8 @@ export function projectSourceConditionEffects(input: {
 
   const { branches, effects, unknownConstructs, boundedOut, completeForSupportedStatements } =
     analyzeSourceConditionStatements(parsed, sourcePath, statements);
-  const maxRows = Math.max(1, Math.min(MAX_PREVIEW_ROWS, Math.floor(input.maxRows ?? MAX_PREVIEW_ROWS)));
+  const maxRows = input.maxRows ?? MAX_PREVIEW_ROWS;
+  if (!Number.isSafeInteger(maxRows) || maxRows < 1) throw new Error('maxRows must be a positive integer');
   return {
     status: branches.length || effects.length ? 'supported' : 'unproven',
     reason: boundedOut ? 'bounded-source-analysis' : parseErrors ? 'parse-failed'
@@ -151,7 +151,7 @@ export async function projectExactConditionSignatures(input: {
         } else {
           try {
             const stat = await fs.lstat(file);
-            const body = stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_FILE_BYTES
+            const body = stat.isFile() && !stat.isSymbolicLink()
               ? await fs.readFile(file, 'utf8') : null;
             files.set(relative, body && !body.includes('\0') ? body : null);
           } catch { files.set(relative, null); }

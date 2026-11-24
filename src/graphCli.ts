@@ -2,16 +2,18 @@ import { compareInteractionGraphs } from './intelligence/interactionParity.js';
 import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, readLocalParityContract, readLocalTestClaimCatalog, sealLocalGraph } from './intelligence/local.js';
 import { promises as fs } from 'node:fs';
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
-import { buildLocalGraph, buildLocalRevisionGraph, buildLocalWorkingGraph } from './intelligence/local.js';
-import { activateLocalSourceGraph, backupLocalSourceGraphs, localSourceGraphHistory, readLocalSourceGraph, removeLocalGraphTarget, saveLocalSourceGraph } from './intelligence/localGraphStore.js';
+import { buildLocalGraph, buildLocalWorkingGraph } from './intelligence/local.js';
+import { activateLocalSourceGraph, backupLocalSourceGraphs, localSourceGraphHistory, readLocalSourceGraph, removeLocalGraphTarget } from './intelligence/localGraphStore.js';
 import { compareRevisionSet, diffGraphs, pageGraphDiff } from './intelligence/query.js';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import os from 'node:os';
 import { projectLocalScipEvidence } from './intelligence/scipEvidence.js';
 import { projectLocalJoernDataflow } from './intelligence/joernDataflow.js';
 import { pageNodeTestEvents, projectNodeTestEvents } from './intelligence/nodeTestEvidence.js';
 import { joinAssertionEvidence } from './intelligence/assertionEvidenceRouting.js';
 import { generateTestClaimCatalog } from './intelligence/testClaimInventory.js';
+import { measureSourceCapacity } from './intelligence/capacityModel.js';
 
 const command = process.argv[2];
 const arg = (name: string): string | undefined => {
@@ -63,24 +65,33 @@ async function main(): Promise<void> {
     if (!joernSlicePath || !joernProducerVersion) throw new Error('Graph build requires both --joern-slice-json and --joern-version');
     const slice = path.resolve(root, joernSlicePath);
     const stat = await fs.lstat(slice);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > 16 * 1024 * 1024) throw new Error('Joern slice must be a bounded, ordinary file');
+    const maxSlice = process.env.DEVINT_JOERN_MAX_SLICE_BYTES === undefined ? Number.MAX_SAFE_INTEGER : Number(process.env.DEVINT_JOERN_MAX_SLICE_BYTES);
+    if (!Number.isSafeInteger(maxSlice) || maxSlice < 1) throw new Error('DEVINT_JOERN_MAX_SLICE_BYTES must be a positive integer');
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > maxSlice) throw new Error('Joern slice must be an ordinary file within the configured size');
     joern = { bytes: await fs.readFile(slice), version: joernProducerVersion, ...(joernProjectPrefix ? { projectPrefix: joernProjectPrefix } : {}) };
   }
-  if (command === 'working-build') {
-    const graph = await buildLocalWorkingGraph(root, project, joern);
+  if (command === 'working-capacity') {
+    console.log(JSON.stringify({ project: project ?? path.basename(path.resolve(root)), ...(await measureSourceCapacity(root, true, undefined, arg('--data-dir'))) }, null, 2));
+  } else if (command === 'working-build') {
     const dataDir = arg('--data-dir');
-    const retained = dataDir ? await saveLocalSourceGraph(dataDir, graph, Number(arg('--retain') ?? '3')) : undefined;
-    const { files: _files, ...coverage } = graph.coverage ?? {};
-    console.log(JSON.stringify({ project: graph.project, graphId: graph.graphId, sourceState: graph.sourceState, sourceFingerprint: graph.sourceFingerprint, nodes: graph.nodes.length, edges: graph.edges.length, coverage, producerCoverage: graph.producerCoverage, ...(retained ? { retained } : {}) }, null, 2));
+    if (dataDir) {
+      const { runLocalGraphWorker } = await import('./intelligence/canonicalReconcileWorker.js');
+      const result = await runLocalGraphWorker({ kind: 'local', root: path.resolve(root), project: project ?? path.basename(path.resolve(root)), dataDir: path.resolve(dataDir), scratchDir: path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir()), retain: Number(arg('--retain') ?? '3'), ...(joern ? { joern } : {}) });
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      const graph = await buildLocalWorkingGraph(root, project, joern);
+      const { files: _files, ...coverage } = graph.coverage ?? {};
+      console.log(JSON.stringify({ project: graph.project, graphId: graph.graphId, sourceState: graph.sourceState, sourceFingerprint: graph.sourceFingerprint, nodes: graph.nodes.length, edges: graph.edges.length, coverage, producerCoverage: graph.producerCoverage }, null, 2));
+    }
   } else if (command === 'revision-build') {
     const ref = arg('--ref');
     const dataDir = arg('--data-dir');
     const target = arg('--target') ?? ref;
     if (!ref || !target || !dataDir) throw new Error('revision-build requires --ref and --data-dir');
     if (target === 'working') throw new Error('The working target is reserved for current local files');
-    const graph = await buildLocalRevisionGraph(root, ref, project, joern);
-    const retained = await saveLocalSourceGraph(dataDir, graph, Number(arg('--retain') ?? '3'), target);
-    console.log(JSON.stringify({ project: graph.project, target, revision: graph.repositoryRevision, graphId: graph.graphId, nodes: graph.nodes.length, edges: graph.edges.length, retained, producerCoverage: graph.producerCoverage }, null, 2));
+    const { runLocalGraphWorker } = await import('./intelligence/canonicalReconcileWorker.js');
+    const result = await runLocalGraphWorker({ kind: 'local', root: path.resolve(root), project: project ?? path.basename(path.resolve(root)), dataDir: path.resolve(dataDir), scratchDir: path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir()), retain: Number(arg('--retain') ?? '3'), ref, target, ...(joern ? { joern } : {}) });
+    console.log(JSON.stringify(result, null, 2));
   } else if (command === 'working-backup' || command === 'working-restore') {
     const dataDir = arg('--data-dir');
     const backupDir = arg('--backup-dir');

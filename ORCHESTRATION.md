@@ -4,7 +4,7 @@ This file owns only **project-local execution policy** for Development Intellige
 
 Use the existing owners for those concerns:
 
-- [DI Product Vision and Principles](https://docs.google.com/document/d/1BmHkf7Hz2CatjbvMUtui-0BS1V9zVliEgYVNAzYGKAk/edit) and [Product Version Roadmap](https://pyralisholdings.atlassian.net/wiki/spaces/PYPH/pages/4128770) — durable product vision, intended boundaries and milestone acceptance.
+- [DI Product Vision and Principles](https://docs.google.com/document/d/1BmHkf7Hz2CatjbvMUtui-0BS1V9zVliEgYVNAzYGKAk/edit) and [Product Version Roadmap](https://docs.google.com/document/d/119DUiDG-ccYzr2R5tnKusT-iAPxpK_PN2qIYNHd9_pU/edit) — product vision, intended boundaries and milestone acceptance; the roadmap copy retains its original source context.
 - `docs/product-direction.md` — revision-bound product-interface and implementation context, not product roadmap authority.
 - `docs/architecture.md` — graph/system semantics and technical boundaries.
 - `docs/testing.md` — real-use acceptance and test-intelligence capabilities.

@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import ts from 'typescript';
 import { fromBinary, toBinary } from '@bufbuild/protobuf';
-import { IndexSchema } from '@scip-code/scip';
+import { DocumentSchema, SymbolInformationSchema } from '@scip-code/scip';
+import { BinaryReader, BinaryWriter, WireType } from '@bufbuild/protobuf/wire';
 import type { EvidenceRecord, ExplicitValueConflict, GraphCoverage, GraphCoverageFile, GraphEdge, GraphNode, IntelligenceGraph, SourceDescriptor } from '../types.js';
 import type { RepositoryChangedFile } from '../source/git.js';
 import { runChecked } from '../util/process.js';
@@ -19,9 +20,11 @@ import { resolveFrameworkSpine } from './frameworkSpine.js';
 import { compilerTypeScriptReferences, compilerPrecisionWarning, TYPESCRIPT_COMPILER_LENS } from './typescriptCompilerLens.js';
 import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnowledge.js';
 import { prepareGraphSubjects } from './graphFamilies.js';
+import { withPreparedProducerInputs, type GraphBuildProgress } from './producerInputs.js';
+import { positiveIntegerSetting } from './capacity.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.42.0-naming-relationships';
+export const ANALYZER_VERSION = '2.43.0-producer-inputs';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -46,13 +49,39 @@ async function prepareLanguageProducer(root: string, files: Array<{ path: string
     }
     const indexPath = path.join(temp, 'index.scip');
     const indexer = createRequire(import.meta.url).resolve('@sourcegraph/scip-typescript');
-    await runChecked(process.execPath, [indexer, 'index', '--cwd', root, '--output', indexPath,
-      '--no-progress-bar', ...configs]);
-    let bytes: Uint8Array = await fs.readFile(indexPath);
-    const primary = fromBinary(IndexSchema, bytes);
-    // scip-typescript uses the host path separator in document paths on Windows.
-    for (const document of primary.documents) document.relativePath = document.relativePath.replace(/\\/gu, '/');
-    const indexed = new Set(primary.documents.map(document => document.relativePath));
+    const configuredHeap = process.env.DEVINT_SCIP_HEAP_MB?.trim();
+    const scipNodeArgs = configuredHeap ? [`--max-old-space-size=${positiveIntegerSetting(configuredHeap, 1, 'DEVINT_SCIP_HEAP_MB')}`] : [];
+    await runChecked(process.execPath, [...scipNodeArgs, indexer, 'index', '--cwd', root, '--output', indexPath,
+      '--no-progress-bar', '--max-file-byte-size', '0', ...configs]);
+    const writer = new BinaryWriter();
+    const indexed = new Set<string>();
+    const external = new Set<string>();
+    const appendIndex = async (file: string, fallback: boolean): Promise<void> => {
+      const reader = new BinaryReader(await fs.readFile(file));
+      while (reader.pos < reader.len) {
+        const [field, wire] = reader.tag();
+        if ((field === 1 || field === 2 || field === 3) && wire !== WireType.LengthDelimited) throw new Error('Malformed SCIP index field');
+        if (field === 1) {
+          const body = reader.bytes();
+          if (!fallback) writer.tag(field, wire).bytes(body);
+        } else if (field === 2) {
+          const document = fromBinary(DocumentSchema, reader.bytes());
+          document.relativePath = document.relativePath.replace(/\\/gu, '/');
+          if (!fallback || !indexed.has(document.relativePath)) {
+            indexed.add(document.relativePath);
+            writer.tag(field, wire).bytes(toBinary(DocumentSchema, document));
+          }
+        } else if (field === 3) {
+          const body = reader.bytes();
+          const symbol = fromBinary(SymbolInformationSchema, body).symbol;
+          if (!fallback || !external.has(symbol)) { external.add(symbol); writer.tag(field, wire).bytes(body); }
+        } else {
+          const body = reader.skip(wire, field);
+          if (!fallback) writer.tag(field, wire).raw(body);
+        }
+      }
+    };
+    await appendIndex(indexPath, false);
     let fallbackError: string | undefined;
     const missing = files.map(file => file.path)
       .filter(file => /\.[cm]?[jt]sx?$/iu.test(file) && !indexed.has(file));
@@ -63,28 +92,16 @@ async function prepareLanguageProducer(root: string, files: Array<{ path: string
       }, files: missing.map(file => path.join(root, file)) }));
       const fallbackIndex = path.join(temp, 'remaining.scip');
       try {
-        await runChecked(process.execPath, [indexer, 'index', '--cwd', root, '--output', fallbackIndex,
-          '--no-progress-bar', fallback]);
-        const remaining = fromBinary(IndexSchema, await fs.readFile(fallbackIndex));
-        for (const document of remaining.documents) document.relativePath = document.relativePath.replace(/\\/gu, '/');
-        for (const document of remaining.documents) {
-          if (!indexed.has(document.relativePath)) {
-            indexed.add(document.relativePath);
-            primary.documents.push(document);
-          }
-        }
-        const external = new Set(primary.externalSymbols.map(symbol => symbol.symbol));
-        for (const symbol of remaining.externalSymbols) if (!external.has(symbol.symbol)) {
-          external.add(symbol.symbol);
-          primary.externalSymbols.push(symbol);
-        }
+        await runChecked(process.execPath, [...scipNodeArgs, indexer, 'index', '--cwd', root, '--output', fallbackIndex,
+          '--no-progress-bar', '--max-file-byte-size', '0', fallback]);
+        await appendIndex(fallbackIndex, true);
       } catch (error) {
         // The ordinary producer output remains useful; uncovered paths are
         // reported by reconciliation rather than disappearing from coverage.
         fallbackError = error instanceof Error ? error.message : String(error);
       }
     }
-    bytes = toBinary(IndexSchema, primary);
+    const bytes = writer.finish();
     return { bytes, ...(fallbackError ? { fallbackError } : {}) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
@@ -102,11 +119,13 @@ async function addLanguageProducerFacts(root: string, graph: IntelligenceGraph, 
     const result = await projectLocalScipEvidence({ root, graph, indexBytes: producer.bytes,
       producerRanOnCheckout: true, legacyPositionEncoding: 'utf16' });
     const nodes = result.graph.nodes;
-    const edges = dedupeEdges(result.graph.edges);
+    // Native edges were already reconciled and SCIP owns distinct strategy
+    // identities and deduplicates its own emissions. Sort without creating a
+    // second graph-sized map; graph integrity still checks every identity.
+    const edges = result.graph.edges.sort((a, b) => a.id.localeCompare(b.id));
     const fingerprints = graphFingerprints(nodes, edges, graph.evidence);
     return { ...graph, nodes, edges, ...fingerprints,
       graphId: graph.sourceState ? `worktree-${graph.sourceFingerprint}-${stableHash([graph.sourceState.headRevision, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}` : `repo-${graph.repositoryRevision}-${stableHash([graph.sourceFingerprint, ANALYZER_VERSION, result.index.contentSha256]).slice(0, 10)}`,
-      namingDivergences: deriveNamingDivergences(nodes, edges), unmatchedNodeIds: deriveUnmatched(nodes, edges),
       producerCoverage: [{ producer: result.index.producer.name,
         state: result.counts.sourceDocumentsSkipped || result.counts.sourceDocumentsNotIndexed || result.counts.unresolvedOrUnsafeOccurrences || result.counts.referencesWithoutIndexedDefinition ? 'partial' : 'complete',
         version: result.index.producer.version, indexSha256: result.index.sha256,
@@ -2435,8 +2454,11 @@ export async function advanceRepositoryGraph(input: {
   changedFiles: RepositoryChangedFile[];
   role?: 'A' | 'W' | 'B';
 }): Promise<RepositoryGraphAdvanceResult> {
-  const maxChanged = Number(process.env.DEVINT_CANONICAL_INCREMENTAL_MAX_CHANGED_FILES ?? 32);
-  const maxFrontier = Number(process.env.DEVINT_CANONICAL_INCREMENTAL_MAX_FRONTIER_FILES ?? 64);
+  const maxChanged = Number(process.env.DEVINT_CANONICAL_INCREMENTAL_MAX_CHANGED_FILES ?? Number.MAX_SAFE_INTEGER);
+  const maxFrontier = Number(process.env.DEVINT_CANONICAL_INCREMENTAL_MAX_FRONTIER_FILES ?? Number.MAX_SAFE_INTEGER);
+  if (!Number.isSafeInteger(maxChanged) || maxChanged < 1 || !Number.isSafeInteger(maxFrontier) || maxFrontier < 1) {
+    throw new Error('Incremental graph limits must be positive safe integers');
+  }
   const sourceChanges = input.changedFiles.filter(change =>
     !isGraphMetadataPath(change.path) || Boolean(change.previousPath && !isGraphMetadataPath(change.previousPath)));
   if (sourceChanges.length > maxChanged) {
@@ -2648,11 +2670,35 @@ export async function buildRepositoryGraph(input: {
   root: string;
   role?: 'A' | 'W' | 'B';
   workingTree?: boolean;
+  disposableCheckout?: boolean;
+  progress?: (value: GraphBuildProgress) => void;
+  joern?: { bytes: Uint8Array; version: string; projectPrefix?: string };
+}): Promise<IntelligenceGraph> {
+  const before = input.workingTree ? await sourceFingerprint(input.root, true) : null;
+  return await withPreparedProducerInputs(input, isRepositoryAnalysisIgnoredPath, async prepared => {
+    if (before && before !== await sourceFingerprint(prepared.root, true)) throw new Error('Working files changed while preparing producer inputs');
+    const graph = await buildPreparedRepositoryGraph({ ...input, root: prepared.root });
+    if (before && before !== await sourceFingerprint(input.root, true)) throw new Error('Working files changed during graph construction; rebuild to use one consistent source state');
+    return prepared.dependencyProducer
+      ? { ...graph, producerCoverage: [...(graph.producerCoverage ?? []), prepared.dependencyProducer] }
+      : graph;
+  });
+}
+
+async function buildPreparedRepositoryGraph(input: {
+  project: string;
+  repository: string;
+  revision: string;
+  root: string;
+  role?: 'A' | 'W' | 'B';
+  workingTree?: boolean;
+  progress?: (value: GraphBuildProgress) => void;
   joern?: { bytes: Uint8Array; version: string; projectPrefix?: string };
 }): Promise<IntelligenceGraph> {
   const createdAt = new Date().toISOString();
   const tracked = input.workingTree ? await workingFiles(input.root) : await trackedFiles(input.root);
   const beforeFingerprint = input.workingTree ? await sourceFingerprint(input.root, true) : null;
+  input.progress?.({ stage: 'language-producer' });
   const languageProducer = await prepareLanguageProducer(input.root, tracked, input.workingTree);
   const eligible = tracked.filter(file => supportsSourcePath(file.path));
   const selected = [...eligible]
@@ -2681,8 +2727,12 @@ export async function buildRepositoryGraph(input: {
   const fileNodes = new Map<string, GraphNode>();
   const sourceTexts = new Map<string, string>();
   const trackedPaths = new Set(tracked.map(file => file.path));
+  input.progress?.({ stage: 'analyzing-source', completed: 0, total: selected.length });
+  let analyzedProgress = 0;
 
   for (const trackedFile of selected) {
+    if (analyzedProgress && analyzedProgress % 32 === 0) input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length });
+    analyzedProgress++;
     const root = path.resolve(input.root);
     const absolute = path.resolve(root, trackedFile.path);
     if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
@@ -2747,6 +2797,7 @@ export async function buildRepositoryGraph(input: {
     }
   }
 
+  input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length });
   if (skippedOversizedFiles > 0) warnings.push(`Skipped ${skippedOversizedFiles} tracked files larger than ${MAX_FILE_BYTES} bytes.`);
   if (failedFiles > 0) warnings.push(`${failedFiles} eligible tracked files failed analysis; negative/exhaustive claims must be qualified.`);
   const repositorySource: SourceDescriptor = {
@@ -2759,6 +2810,7 @@ export async function buildRepositoryGraph(input: {
     ...(warnings.length ? { warnings } : {}),
   };
 
+  input.progress?.({ stage: 'resolving-relationships' });
   resolveUnityGraph({
     revision: input.workingTree ? null : input.revision,
     createdAt,
@@ -2829,12 +2881,13 @@ export async function buildRepositoryGraph(input: {
     evidence,
     nodes,
     edges,
-    namingDivergences: deriveNamingDivergences(nodes, edges),
+    namingDivergences: [],
     explicitValueConflicts: merged.conflicts,
-    unmatchedNodeIds: deriveUnmatched(nodes, edges),
+    unmatchedNodeIds: [],
     unavailableSourceIds: [],
     coverage,
   };
+  input.progress?.({ stage: 'reconciling-producers' });
   let produced = await addLanguageProducerFacts(input.root, graph, languageProducer);
   if (input.joern) {
     const { projectJoernDataflowBytes } = await import('./joernDataflow.js');
@@ -2851,5 +2904,8 @@ export async function buildRepositoryGraph(input: {
     produced = { ...projection.graph, graphId, producerCoverage: [...(produced.producerCoverage ?? []), producerCoverage] };
   }
   if (beforeFingerprint && beforeFingerprint !== await sourceFingerprint(input.root, true)) throw new Error('Working files changed during graph construction; rebuild to use one consistent source state');
+  produced.namingDivergences = deriveNamingDivergences(produced.nodes, produced.edges);
+  produced.unmatchedNodeIds = deriveUnmatched(produced.nodes, produced.edges);
+  input.progress?.({ stage: 'preparing-families' });
   return prepareGraphSubjects(produced);
 }

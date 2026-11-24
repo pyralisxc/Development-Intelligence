@@ -7,6 +7,8 @@ param(
   [string]$DesktopDir,
   [int]$Retain = 0,
   [int]$CacheSize = -1,
+  [int]$GraphWorkerHeapMB = 0,
+  [int]$ScipHeapMB = 0,
   [int]$Port = 0,
   [switch]$SkipInitialBuild,
   [switch]$NonInteractive
@@ -29,6 +31,8 @@ if (-not $NonInteractive) {
 }
 $arguments = @($installer, '--repo-path', $RepoPath)
 if ($Retain) { $arguments += @('--retain', "$Retain") }
+if ($GraphWorkerHeapMB) { $arguments += @('--graph-worker-heap-mb', "$GraphWorkerHeapMB") }
+if ($ScipHeapMB) { $arguments += @('--scip-heap-mb', "$ScipHeapMB") }
 if ($CacheSize -ge 0) { $arguments += @('--cache-size', "$CacheSize") }
 if ($Port) { $arguments += @('--port', "$Port") }
 if ($Project) { $arguments += @('--project', $Project) }

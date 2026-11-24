@@ -4,7 +4,8 @@ import { computeOnly, assertAuthorityWritesAllowed } from './config/runtimeRole.
 import { getProjectConfig, listAuthorizedGithubOwners, previewCanonicalRuntimeRole } from './config/registry.js';
 import { localSourceGraphHistory } from './intelligence/localGraphStore.js';
 import { projectStatus } from './projectStatus.js';
-import { scanGraph } from './intelligence/service.js';
+import { projectCapacity } from './intelligence/capacityModel.js';
+import { machineGraphBuildStatus, scanGraph } from './intelligence/service.js';
 import { analyzeImpact, compareRevisionSet, diffDefaultToSelected, diffRevisions, graphArchitecture, graphCoverage, graphEvidence, graphSchema, parityLens, searchGraph, traceGraph } from './intelligence/query.js';
 import { getCodeSnippet, searchCode, type FilePatternMode } from './intelligence/code.js';
 import { inspectEntity, interfaceProjection, projectOverview, projectStatistics, queryWorkbenchRequest, scopeOrientation, semanticAudit, workbenchSources, type ScopeRankBy, type SemanticQueryDepth } from './intelligence/workbench.js';
@@ -112,10 +113,6 @@ function compactCoverage(coverage: any): Record<string, unknown> | null {
 }
 
 
-function sampleIds(value: unknown, max = 40): unknown {
-  return Array.isArray(value) && value.length > max ? value.slice(0, max) : value;
-}
-
 function compactCoverageEvidence(value: any): any {
   if (!value || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(item => compactCoverageEvidence(item));
@@ -146,7 +143,7 @@ function compactReach(value: any): any {
     ? Object.fromEntries(Object.entries(value.dimensions).map(([name, dimension]: [string, any]) => [name, {
         observed: Boolean(dimension?.observed),
         count: Number(dimension?.count ?? 0),
-        targetIds: sampleIds(dimension?.targetIds ?? [], 20),
+        targetIds: dimension?.targetIds ?? [],
         pathCount: Array.isArray(dimension?.paths) ? dimension.paths.length : 0,
       }]))
     : value.dimensions;
@@ -158,7 +155,7 @@ function compactRealization(value: any): any {
   const facets = value.facets && typeof value.facets === 'object'
     ? Object.fromEntries(Object.entries(value.facets).map(([name, facet]: [string, any]) => [name, {
         observed: Boolean(facet?.observed),
-        nodeIds: sampleIds(facet?.nodeIds ?? [], 20),
+        nodeIds: facet?.nodeIds ?? [],
         pathCount: Array.isArray(facet?.paths) ? facet.paths.length : 0,
       }]))
     : value.facets;
@@ -180,10 +177,10 @@ function compactProof(value: any): any {
   if (!value || typeof value !== 'object') return value;
   return compactCoverageEvidence({
     ruleId: value.ruleId,
-    nodeIds: sampleIds(value.nodeIds ?? []),
-    edgeIds: sampleIds(value.edgeIds ?? []),
-    evidenceIds: sampleIds(value.evidenceIds ?? []),
-    evidence: Array.isArray(value.evidence) ? value.evidence.slice(0, 20) : value.evidence,
+    nodeIds: value.nodeIds ?? [],
+    edgeIds: value.edgeIds ?? [],
+    evidenceIds: value.evidenceIds ?? [],
+    evidence: value.evidence,
     admissibility: value.admissibility,
     coverage: value.coverage,
   });
@@ -197,7 +194,7 @@ function compactFinding(value: any): any {
     category: value.category,
     status: value.status,
     summary: value.summary,
-    affectedIds: sampleIds(value.affectedIds ?? [], 30),
+    affectedIds: value.affectedIds ?? [],
     ...(value.proof ? { proof: compactProof(value.proof) } : {}),
   });
 }
@@ -214,7 +211,7 @@ function compactAssessment(value: any): any {
       total: value.hypotheses.total,
       truncated: value.hypotheses.truncated,
       note: value.hypotheses.note,
-      items: Array.isArray(value.hypotheses.items) ? value.hypotheses.items.slice(0, 10).map((item: any) => compactCoverageEvidence(item)) : [],
+      items: Array.isArray(value.hypotheses.items) ? value.hypotheses.items.map((item: any) => compactCoverageEvidence(item)) : [],
     } : value.hypotheses,
   });
 }
@@ -360,6 +357,9 @@ export const tools: ToolDefinition[] = [
   }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'project_status', description: 'Report the selected repository revision, graph identity, coverage and access diagnostics without assigning product intent.', inputSchema: objectSchema({ project: string, checkUpstream: boolean }, ['project']), handler: async args => await projectStatus(s(args, 'project'), args.checkUpstream !== false) },
   { name: 'project_overview', description: 'Return a compact revision-bound project brief synthesized from one graph context. Pass up to 10 subjects to include bounded entity orientation/reach in the same response; use check_graph_coverage for per-file coverage detail.', inputSchema: objectSchema({ project: string, ref: string, graphId: string, subjects: boundedSubjects }, ['project']), handler: async args => compactAgentResult(await projectOverview(s(args, 'project'), optString(args, 'ref'), optString(args, 'graphId'), Array.isArray(args.subjects) ? args.subjects.filter(value => typeof value === 'string') as string[] : [])) },
+  { name: 'project_capacity', description: 'Measure the selected source revision and current host capacity before building a graph. Reports source file counts and bytes by extension and supported analysis, available host measurements, and explicitly unknown graph, index and producer requirements.', inputSchema: objectSchema({ project: string, ref: string }, ['project']), handler: async args => await projectCapacity(s(args, 'project'), optString(args, 'ref')), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
+  { name: 'graph_build_status', description: 'Inspect the exact-revision graph build and its current stage on a persistent-machine Preview host, without loading the graph. Supply revision from a build response to follow that existing job without re-resolving the ref.', inputSchema: objectSchema({ project: string, ref: string, revision: string }, ['project']), handler: async args => await machineGraphBuildStatus(s(args, 'project'), optString(args, 'ref'), false, optString(args, 'revision')), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
+  { name: 'start_graph_build', description: 'Start or reuse an exact-revision graph build on a persistent-machine Preview host and return immediately with its current state.', inputSchema: objectSchema({ project: string, ref: string }, ['project']), handler: async args => await machineGraphBuildStatus(s(args, 'project'), optString(args, 'ref'), true), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'project_statistics', description: 'Return a revision-bound descriptive project capacity profile: source coverage counts, graph cardinality/layers/evidence, canonical persistence/currentness, cache/build pressure and configured limits. Unknown byte/storage values remain null; provider storage is included only when live provider evidence exists.', inputSchema: objectSchema({ project: string, ref: string, graphId: string }, ['project']), handler: async args => compactAgentResult(await projectStatistics(s(args, 'project'), optString(args, 'ref'), optString(args, 'graphId'))), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'investigate', description: 'Interpret one or up to 10 ordinary technical questions with non-generative language analysis and filter the same source graph used by the Workbench. Results include source conditions, effects, their requirements, related graph facts, coverage and page offsets. An explicit sourceId queries that configured technical source.', inputSchema: objectSchema({ project: string, question: string, questions: boundedQuestions, ref: string, graphId: string, sourceId: string, capability: technicalCapabilitySchema, scope: string, rankBy: scopeRankSchema, semanticDepth: semanticDepthSchema, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1 }, nodeKinds: strings, relationshipKinds: strings, statuses: strings, direction: { enum: ['inbound', 'outbound', 'both'] }, comparisonIds: strings, comparisonScope: string, comparisonKinds: strings, conditionContains: string, conditionTruth: { type: 'boolean' }, effectKinds: strings, depth: { type: 'integer', minimum: 1 } }, ['project']), handler: async args => { const question = optString(args, 'question'); const questions = Array.isArray(args.questions) ? args.questions.filter(value => typeof value === 'string') as string[] : []; if (!question && !questions.length) throw new Error('question or questions is required'); if (question && questions.length) throw new Error('provide question or questions, not both'); return compactAgentResult(await queryWorkbenchRequest({ project: s(args, 'project'), ...(question ? { text: question } : {}), ...(questions.length ? { questions } : {}), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), sourceId: optString(args, 'sourceId'), capability: optString(args, 'capability') as TechnicalSourceCapability | undefined, scope: optString(args, 'scope'), rankBy: optString(args, 'rankBy') as ScopeRankBy | undefined, semanticDepth: optString(args, 'semanticDepth') as SemanticQueryDepth | undefined, offset: typeof args.offset === 'number' ? args.offset : undefined, limit: typeof args.limit === 'number' ? args.limit : undefined, nodeKinds: Array.isArray(args.nodeKinds) ? args.nodeKinds.filter((value): value is string => typeof value === 'string') : undefined, relationshipKinds: Array.isArray(args.relationshipKinds) ? args.relationshipKinds.filter((value): value is string => typeof value === 'string') : undefined, statuses: Array.isArray(args.statuses) ? args.statuses.filter((value): value is string => typeof value === 'string') : undefined, direction: args.direction === 'inbound' || args.direction === 'outbound' || args.direction === 'both' ? args.direction : undefined, comparisonIds: Array.isArray(args.comparisonIds) ? args.comparisonIds.filter((value): value is string => typeof value === 'string') : undefined, comparisonScope: optString(args, 'comparisonScope'), comparisonKinds: Array.isArray(args.comparisonKinds) ? args.comparisonKinds.filter((value): value is string => typeof value === 'string') : undefined, conditionContains: optString(args, 'conditionContains'), conditionTruth: typeof args.conditionTruth === 'boolean' ? args.conditionTruth : undefined, effectKinds: Array.isArray(args.effectKinds) ? args.effectKinds.filter((value): value is string => typeof value === 'string') : undefined, depth: typeof args.depth === 'number' ? args.depth : undefined })); }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
   { name: 'orient_scope', description: 'Return an evidence-linked orientation for a repository, path, file, or exact/unambiguous entity. semanticDepth controls repository semantic projection as nucleus, expanded supporting layers, or an exhaustive evidence-qualified candidate census; it retains source provenance and does not invent product intent. Key entities are ranked only by the caller-selected graph facet.', inputSchema: objectSchema({ project: string, scope: string, ref: string, graphId: string, rankBy: scopeRankSchema, semanticDepth: semanticDepthSchema, limit: integer }, ['project']), handler: async args => await scopeOrientation({ project: s(args, 'project'), scope: optString(args, 'scope'), ref: optString(args, 'ref'), graphId: optString(args, 'graphId'), rankBy: optString(args, 'rankBy') as ScopeRankBy | undefined, semanticDepth: optString(args, 'semanticDepth') as SemanticQueryDepth | undefined, limit: typeof args.limit === 'number' ? args.limit : undefined }), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } },

@@ -1,12 +1,19 @@
 import os from 'node:os';
 import fs from 'node:fs/promises';
 
-export const MANAGED_LIMITS = Object.freeze({ nodeHeapMB:768, buildConcurrency:1, graphCacheEntries:2, snapshotCacheEntries:1, graphCacheRecords:50000, scratchBytes:2*1024**3, scratchPollMs:5000, shutdownMs:15000, logKiB:1024, logFiles:4 });
+export const MANAGED_LIMITS = Object.freeze({ nodeHeapMB:null, buildConcurrency:1, graphCacheEntries:2, snapshotCacheEntries:1, graphCacheRecords:50000, scratchBytes:null, scratchPollMs:5000, shutdownMs:15000, logKiB:1024, logFiles:4 });
 
 export function validateConfiguration(config) {
   if (![1,2].includes(config?.formatVersion) || config.authMode !== 'bearer' || typeof config.agentToken !== 'string' || config.agentToken.trim().length < 32 || config.agentToken !== config.agentToken.trim()) throw new Error('Explicit supported bearer configuration with a token of at least 32 characters is required');
   if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects)) throw new Error('An explicit project access registry is required');
-  if (Object.keys(config).some(key => !['formatVersion','authMode','agentToken','projects','remoteStorage','requiredCapabilities','githubApp'].includes(key))) throw new Error('Unknown managed configuration field');
+  if (Object.keys(config).some(key => !['formatVersion','authMode','agentToken','projects','remoteStorage','requiredCapabilities','githubApp','capacity'].includes(key))) throw new Error('Unknown managed configuration field');
+  if (config.capacity !== undefined) {
+    if (!config.capacity || typeof config.capacity !== 'object' || Array.isArray(config.capacity)
+      || Object.keys(config.capacity).some(key => !['scratchBytes','scipHeapMB','buildConcurrency'].includes(key))
+      || Object.values(config.capacity).some(value => !Number.isSafeInteger(value) || value < 1)) {
+      throw new Error('Managed capacity settings must be positive integers');
+    }
+  }
   const references=Object.values(config.projects).filter(project=>project?.credential?.type==='github-app-bound');
   if (config.githubApp !== undefined) {
     if (config.formatVersion!==2 || !config.githubApp || Object.keys(config.githubApp).some(key=>!['appId','privateKeyFile'].includes(key)) || !/^[1-9][0-9]*$/.test(config.githubApp.appId) || !Number.isSafeInteger(Number(config.githubApp.appId)) || typeof config.githubApp.appId!=='string' || config.githubApp.privateKeyFile!=='github-app.pem' || !references.length) throw new Error('Invalid explicit managed GitHub App configuration');
@@ -70,7 +77,7 @@ export function assessCompatibility(descriptor, config, host, remote={state:'not
     identity:{engineSha:descriptor.engineSha,packagingSha:descriptor.packagingSha},
     replay:{softwareCompatibility:'supported',sourceReachability:'not-probed'},
     remote:{...remote,readCompatibility:remoteRead,currentness:'not-verified',acceptedAuthorityCompatibility:'not-verified',runtimeIntegrityValidation:'still-required'},
-    authorityWrites:false,host,declared:{engine:descriptor.engine,workloads:descriptor.workloads,limits:descriptor.limits,sensorEvidence:descriptor.sensorEvidence},
+    authorityWrites:false,host,declared:{engine:descriptor.engine,workloads:descriptor.workloads,limits:descriptor.limits,configuredCapacity:config.capacity ?? {},sensorEvidence:descriptor.sensorEvidence},
   };
 }
 

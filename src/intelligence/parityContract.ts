@@ -12,11 +12,12 @@ import type {
   ParityRelationshipExpectation,
 } from '../types.js';
 import { currentGraph } from './service.js';
+import { positiveIntegerSetting } from './capacity.js';
 
-const MAX_EXPECTATIONS = 200;
-const MAX_TEXT_LENGTH = 500;
-const MAX_SELECTOR_VALUES = 200;
-const MAX_DEPTH = 20;
+const MAX_EXPECTATIONS = positiveIntegerSetting(process.env.DEVINT_PARITY_MAX_EXPECTATIONS, Number.MAX_SAFE_INTEGER, 'DEVINT_PARITY_MAX_EXPECTATIONS');
+const MAX_TEXT_LENGTH = positiveIntegerSetting(process.env.DEVINT_PARITY_MAX_TEXT_CHARS, Number.MAX_SAFE_INTEGER, 'DEVINT_PARITY_MAX_TEXT_CHARS');
+const MAX_SELECTOR_VALUES = positiveIntegerSetting(process.env.DEVINT_PARITY_MAX_SELECTOR_VALUES, Number.MAX_SAFE_INTEGER, 'DEVINT_PARITY_MAX_SELECTOR_VALUES');
+const MAX_DEPTH = positiveIntegerSetting(process.env.DEVINT_PARITY_MAX_DEPTH, Number.MAX_SAFE_INTEGER, 'DEVINT_PARITY_MAX_DEPTH');
 
 function cleanText(value: unknown, field: string, required = false): string | undefined {
   if (value === undefined) {

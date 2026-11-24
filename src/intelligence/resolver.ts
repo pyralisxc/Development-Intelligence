@@ -95,11 +95,12 @@ export function resolveCrossSource(_observations: Observation[], existing: Resol
   // Lexical similarity remains useful for discovery, but it is not repository
   // topology. Keep canonical W compact and derive these hypotheses only for a
   // bounded query result through deriveQueryCorrelations().
-  return [...existing];
+  return existing;
 }
 
 export function deriveNamingDivergences(observations: Observation[], resolutions: Resolution[]): NamingDivergence[] {
-  const byId = new Map(observations.map(obs => [obs.id, obs]));
+  const byId = new Map<string, Observation>();
+  for (const obs of observations) byId.set(obs.id, obs);
   const output: NamingDivergence[] = [];
   for (const rel of resolutions) {
     if (rel.status !== 'resolved' || !rel.from || !rel.to) continue;

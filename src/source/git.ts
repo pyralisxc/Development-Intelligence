@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getProjectConfig, loadRegistry } from '../config/registry.js';
 import type { ProjectConfig } from '../types.js';
-import { runChecked } from '../util/process.js';
+import { optionalProcessTimeout, runChecked } from '../util/process.js';
 import { gitAuth } from './gitAuth.js';
 import { resolveRepositoryCredential } from './repositoryCredential.js';
 import { projectAccessScratchPrefix } from '../config/projectAccess.js';
@@ -87,7 +87,7 @@ function assertAllowedRef(project: string, config: ProjectConfig, parsed: Parsed
 async function lsRemote(config: ProjectConfig, patterns: string[]): Promise<Array<{ sha: string; ref: string }>> {
   const auth = await gitAuth(config);
   try {
-    const result = await runChecked('git', ['ls-remote', config.repository, ...patterns], { env: auth.env, timeoutMs: 60_000 });
+    const result = await runChecked('git', ['ls-remote', config.repository, ...patterns], { env: auth.env, ...optionalProcessTimeout('DEVINT_GIT_TIMEOUT_MS') });
     return result.stdout.trim().split(/\r?\n/).filter(Boolean).map(line => {
       const [sha, ref] = line.trim().split(/\s+/, 2);
       if (!sha || !ref) throw new Error(`Malformed git ls-remote response for ${config.repository}`);
@@ -312,12 +312,12 @@ export async function changedFilesBetweenRevisions(
   let auth: Awaited<ReturnType<typeof gitAuth>> | undefined;
   try {
     auth = await gitAuth(config);
-    await runChecked('git', ['init', '--initial-branch=devint', root], { timeoutMs: 60_000 });
+    await runChecked('git', ['init', '--initial-branch=devint', root], optionalProcessTimeout('DEVINT_GIT_TIMEOUT_MS'));
     await runChecked('git', ['-C', root, 'remote', 'add', 'origin', config.repository]);
     for (const sha of new Set([base.sha, head.sha])) {
-      await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', sha], { env: auth.env, timeoutMs: 5 * 60_000 });
+      await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', sha], { env: auth.env, ...optionalProcessTimeout('DEVINT_GIT_TIMEOUT_MS') });
     }
-    const result = await runChecked('git', ['-C', root, 'diff', '--name-status', '-z', '-M', base.sha, head.sha, '--'], { timeoutMs: 2 * 60_000 });
+    const result = await runChecked('git', ['-C', root, 'diff', '--name-status', '-z', '-M', base.sha, head.sha, '--'], optionalProcessTimeout('DEVINT_GIT_TIMEOUT_MS'));
     const files = parseExactGitDiffNameStatus(result.stdout);
     return { base, head, files };
   } finally {
@@ -359,18 +359,18 @@ export async function withResolvedProjectCheckoutObserved<T>(
   let value!: T;
   try {
     auth = await gitAuth(config);
-    await runChecked('git', ['init', '--initial-branch=devint', root], { timeoutMs: 60_000 });
+    await runChecked('git', ['init', '--initial-branch=devint', root], optionalProcessTimeout('DEVINT_GIT_TIMEOUT_MS'));
     await runChecked('git', ['-C', root, 'remote', 'add', 'origin', config.repository]);
     setupMs = elapsedMs(setupStarted);
 
     const fetchStarted = Date.now();
-    await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', revision.sha], { env: auth.env, timeoutMs: 5 * 60_000 });
+    await runChecked('git', ['-C', root, 'fetch', '--depth=1', 'origin', revision.sha], { env: auth.env, ...optionalProcessTimeout('DEVINT_GIT_TIMEOUT_MS') });
     const fetched = (await runChecked('git', ['-C', root, 'rev-parse', 'FETCH_HEAD'])).stdout.trim();
     fetchMs = elapsedMs(fetchStarted);
     if (fetched !== revision.sha) throw new Error(`Repository revision changed while reading ${revision.project}: expected ${revision.sha}, fetched ${fetched}`);
 
     const checkoutStarted = Date.now();
-    await runChecked('git', ['-C', root, 'checkout', '--detach', fetched], { timeoutMs: 2 * 60_000 });
+    await runChecked('git', ['-C', root, 'checkout', '--detach', fetched], optionalProcessTimeout('DEVINT_GIT_TIMEOUT_MS'));
     checkoutMs = elapsedMs(checkoutStarted);
 
     const bodyStarted = Date.now();

@@ -35,7 +35,7 @@ export interface TypedReachProjection {
   dimensions: Record<ReachDimension, TypedReachDimension>;
   mechanisms: Record<ReachMechanism, number>;
   relationshipKinds: Record<string, number>;
-  totals: { reachableNodes: number; traversedEdges: number };
+  totals: { reachableNodes: number; traversedEdges: number; nodeLimitReached: boolean; depthLimitReached: boolean };
   excludedRelationships: { candidate: number; unresolved: number };
   note: string;
 }
@@ -74,8 +74,11 @@ export function projectTypedReach(
   root: GraphNode,
   options: { depth?: number; maxNodes?: number } = {},
 ): TypedReachProjection {
-  const depth = Math.min(Math.max(options.depth ?? 4, 0), 10);
-  const maxNodes = Math.min(Math.max(options.maxNodes ?? 300, 1), 2000);
+  const depth = options.depth ?? 4;
+  const maxNodes = options.maxNodes ?? Math.max(1, graph.nodes.length);
+  if (!Number.isSafeInteger(depth) || depth < 0 || !Number.isSafeInteger(maxNodes) || maxNodes < 1) {
+    throw new Error('Reach depth must be a non-negative integer and maxNodes a positive integer');
+  }
   // Graphs are immutable per exact revision. Reuse DI's existing indexed
   // neighborhood rather than rebuilding full maps for every assessment.
   const context = graphQueryContext(graph);
@@ -85,13 +88,16 @@ export function projectTypedReach(
     [root.id, { nodeIds: [root.id], edgeIds: [] }],
   ]);
   let frontier = [root.id];
-  for (let level = 0; level < depth && frontier.length && pathByNode.size < maxNodes; level += 1) {
+  let level = 0;
+  let nodeLimitReached = false;
+  for (; level < depth && frontier.length && !nodeLimitReached; level += 1) {
     const next: string[] = [];
     for (const id of frontier) {
       for (const edge of context.incident(id)) {
         if (edge.status !== 'resolved' || !edge.from || !edge.to) continue;
         const neighbor = edge.from === id ? edge.to : edge.from;
-        if (!neighbor || pathByNode.has(neighbor) || pathByNode.size >= maxNodes) continue;
+        if (!neighbor || pathByNode.has(neighbor)) continue;
+        if (pathByNode.size >= maxNodes) { nodeLimitReached = true; continue; }
         const parent = pathByNode.get(id)!;
         pathByNode.set(neighbor, {
           nodeIds: [...parent.nodeIds, neighbor],
@@ -158,6 +164,9 @@ export function projectTypedReach(
   }
 
   const reachedIds = new Set(pathByNode.keys());
+  const depthLimitReached = level >= depth && frontier.some(id => context.incident(id).some(edge =>
+    edge.status === 'resolved' && edge.from && edge.to
+    && !reachedIds.has(edge.from === id ? edge.to : edge.from)));
   let candidate = 0;
   let unresolved = 0;
   const seenExcluded = new Set<string>();
@@ -189,6 +198,8 @@ export function projectTypedReach(
     totals: {
       reachableNodes: Math.max(0, pathByNode.size - 1),
       traversedEdges: usedEdgeIds.size,
+      nodeLimitReached,
+      depthLimitReached,
     },
     excludedRelationships: { candidate, unresolved },
     note: 'Typed reach is a revision-bound projection over resolved relationships. Candidate and unresolved relationships are excluded from reach paths and remain hypotheses or gaps.',
