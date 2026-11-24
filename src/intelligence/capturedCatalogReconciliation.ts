@@ -81,8 +81,8 @@ export function reconcileCapturedCatalog(input: {
   if (evidence.source.adapter !== 'database-schema') {
     throw new Error('Only sanitized database-schema observations are admissible');
   }
-  if (evidence.observations.length > 20000 || graph.nodes.length > 200000) {
-    throw new Error('Exceeds bounded catalog graph comparison; no absence proof');
+  if (evidence.observations.length > 20000) {
+    throw new Error('Exceeds bounded catalog observation comparison; no absence proof');
   }
 
   const coverage = graph.coverage?.files ?? [];
@@ -166,7 +166,7 @@ export function reconcileCapturedCatalog(input: {
   const publicObservationId = evidence.snapshot.id === null ? null
     : 'sha256:' + digest([evidence.source.id,evidence.snapshot.id]);
   const overlayId = 'snapshot-catalog:' + projectionDigest.slice(0,32);
-  const sourceIds = new Set(graph.nodes.map(n => n.id));
+  const sourceIds = new Set(source.map(n => n.id));
   for (const row of page) {
     if (!row.observedRoutineId) continue;
     const id = overlayId+':routine:'+row.observedRoutineId;
