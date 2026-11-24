@@ -136,6 +136,8 @@ export async function importLocalSourceGraph(source: string, destination: string
   const entry = sourceCatalog?.entries.find(item => item.graphId === graphId);
   if (!entry || !/^[a-f0-9]{32}$/u.test(entry.generation)) throw new Error('The transferred graph generation is unavailable');
   const generation = path.join(sourceDirectory, entry.generation);
+  const destinationPath = path.resolve(destination);
+  if (destinationPath === generation || destinationPath.startsWith(`${generation}${path.sep}`)) throw new Error('Graph storage cannot be inside the transferred generation');
   const manifest = JSON.parse(await fs.readFile(path.join(generation, 'manifest.json'), 'utf8')) as Manifest;
   if (manifest.version !== 1 || manifest.graph.project !== project || manifest.graph.graphId !== graphId || !Array.isArray(manifest.parts)) throw new Error('Invalid transferred graph manifest');
   await fs.access(path.join(generation, 'retrieval-index.sqlite'));
@@ -170,7 +172,7 @@ export async function importLocalSourceGraph(source: string, destination: string
       }
       const entries = [entry, ...(previous?.entries ?? []).filter(item => item.generation !== entry.generation)];
       const targets = { ...(previous?.targets ?? (previous ? { working: previous.active } : {})), [targetName]: entry.generation };
-      const active = previous?.active ?? entry.generation;
+      const active = manifest.graph.sourceState ? entry.generation : previous?.active ?? entry.generation;
       const keep = new Set([active, ...Object.values(targets)]);
       for (const item of entries) { if (keep.size >= retain) break; keep.add(item.generation); }
       const kept = entries.filter(item => keep.has(item.generation));
