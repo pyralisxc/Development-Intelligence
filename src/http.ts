@@ -23,6 +23,7 @@ import { withVercelRequestContext } from './vercelRequestContext.js';
 import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
 import { WorkspaceStore } from './accounts/workspace.js';
 import { renderAccountWorkbench } from './accounts/view.js';
+import { accountGithubBranches, accountGithubRepositories, accountGithubToken } from './accounts/github.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
@@ -196,7 +197,7 @@ export function createDevelopmentIntelligenceServer() {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;
     }
-    if (requestUrl.pathname === '/account' && req.method === 'GET') {
+    if ((requestUrl.pathname === '/account' || (requestUrl.pathname === '/' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1')) && req.method === 'GET') {
       try { const page = renderAccountWorkbench(process.env.CLERK_PUBLISHABLE_KEY?.trim() ?? ''); res.writeHead(200, htmlHeaders()); res.end(page); }
       catch { json(res, 503, { error: 'Account sign-in is not configured' }); }
       return;
@@ -210,6 +211,14 @@ export function createDevelopmentIntelligenceServer() {
       const host = Buffer.from(encoded, 'base64').toString('utf8').replace(/\$$/u, '');
       if (!/^[a-zA-Z0-9.-]+$/u.test(host)) { json(res, 503, { error: 'Invalid account identity configuration' }); return; }
       json(res, 200, { issuer: `https://${host}`, clientId }); return;
+    }
+    if (requestUrl.pathname === '/account/github/repositories' && req.method === 'GET') {
+      try {
+        const identity = await authenticateAccount(req, res); if (!identity) return;
+        if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
+        const repository = requestUrl.searchParams.get('branches');
+        json(res, 200, repository ? { branches: await accountGithubBranches(identity.userId, repository) } : await accountGithubRepositories(identity.userId)); return;
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
     if (requestUrl.pathname === '/account/graph' && req.method === 'GET') {
       try {
@@ -231,6 +240,7 @@ export function createDevelopmentIntelligenceServer() {
         if (!identity) return;
         const store = new WorkspaceStore(identity.userId);
         if (req.method === 'GET') {
+          if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
           const jobId = requestUrl.searchParams.get('job');
           if (jobId) { json(res, 200, await store.build(jobId)); return; }
           const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds()]);
@@ -247,10 +257,19 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBuild(body.graphId)); return; }
         if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueQuestion(body.graphId, body.question)); return; }
         if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueInvestigation(body.graphId, body.request)); return; }
-        if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer)); return; }
+        if (body.action === 'browse-folders' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBrowse(body.computerId, body.path)); return; }
+        if (body.action === 'begin-computer-link' && identity.tokenType === 'session_token') { json(res, 200, { code: await store.beginComputerLink() }); return; }
+        if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer, body.pairingCode)); return; }
         if (body.action === 'computer-heartbeat' && identity.tokenType === 'oauth_token') { json(res, 200, await store.heartbeat(body.computerId, body.secret)); return; }
         if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret)); return; }
         if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
+        if (body.action === 'computer-github-token' && identity.tokenType === 'oauth_token') {
+          const computer = await store.verifyComputer(body.computerId, body.secret), job = await store.build(body.jobId);
+          if (!job || job.kind === 'browse' || job.state !== 'running' || job.claimId !== body.claimId || job.graph.buildComputer !== computer.id || job.graph.source.kind !== 'git') { json(res, 403, { error: 'Build is not assigned to this computer' }); return; }
+          const source = new URL(job.graph.source.location);
+          if (source.protocol !== 'https:' || source.hostname !== 'github.com' || source.username || source.password) { json(res, 403, { error: 'GitHub credentials require a GitHub source' }); return; }
+          json(res, 200, { token: await accountGithubToken(identity.userId) }); return;
+        }
         if (body.action === 'revoke-computer' && identity.tokenType === 'session_token') { await store.revokeComputer(body.computerId); json(res, 200, { revoked: true }); return; }
         json(res, 400, { error: 'Unsupported account operation' }); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }

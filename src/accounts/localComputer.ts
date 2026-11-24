@@ -5,7 +5,8 @@ import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { runChecked } from '../util/process.js';
 import { runLocalGraphWorker } from '../intelligence/canonicalReconcileWorker.js';
-import type { BuildJob } from './workspace.js';
+import type { BuildJob, BrowseJob } from './workspace.js';
+import { gitAuth } from '../source/gitAuth.js';
 
 type Discovery = { device_authorization_endpoint: string; token_endpoint: string };
 type DeviceCredentials = { origin: string; clientId: string; tokenEndpoint: string; refreshToken: string; computerId: string; secret: string };
@@ -47,7 +48,7 @@ async function workspace(origin: string, token: string, data: unknown): Promise<
 }
 
 /** Link this installation using Clerk's device grant; a secret is never embedded in the installer. */
-export async function linkComputer(home: string, workbench: string): Promise<void> {
+export async function linkComputer(home: string, workbench: string, pairingCode: string): Promise<void> {
   const origin = trustedUrl(workbench, true).origin;
   const configResponse = await fetch(new URL('/account/client-config', origin), { redirect: 'error' });
   if (!configResponse.ok) throw new Error('This Workbench does not yet offer computer linking');
@@ -71,7 +72,7 @@ export async function linkComputer(home: string, workbench: string): Promise<voi
     if (tokens.error === 'authorization_pending') continue;
     if (tokens.error === 'slow_down') { interval += 5000; continue; }
     if (tokens.error || !tokens.access_token || !tokens.refresh_token) throw new Error(`Computer authorization did not complete: ${tokens.error || 'missing credentials'}`);
-    const linked = await workspace(origin, tokens.access_token, { action: 'link-computer', computer: { name: os.hostname(), platform: `${os.platform()} ${os.arch()}` } });
+    const linked = await workspace(origin, tokens.access_token, { action: 'link-computer', pairingCode, computer: { name: os.hostname(), platform: `${os.platform()} ${os.arch()}` } });
     await save(home, { origin, clientId: config.clientId, tokenEndpoint: discovery.token_endpoint, refreshToken: tokens.refresh_token, computerId: linked.computer.id, secret: linked.secret });
     console.log(`Linked ${linked.computer.name} to ${origin}.`); return;
   }
@@ -106,12 +107,28 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
   };
   console.log(`Waiting for DI account work from ${credentials.origin}.`);
   for (;;) {
-    const job = await send({ action: 'computer-claim-build' }) as BuildJob | null;
+    let job: BuildJob | BrowseJob | null;
+    try { job = await send({ action: 'computer-claim-build' }) as BuildJob | BrowseJob | null; }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/authorization expired|not linked to this account/i.test(message)) throw error;
+      console.error(`Account connection interrupted: ${message}`);
+      await new Promise(resolve => setTimeout(resolve, 5000)); continue;
+    }
     if (!job) { await new Promise(resolve => setTimeout(resolve, 5000)); continue; }
     const update = (data: Record<string, unknown>) => send({ action: 'computer-update-build', jobId: job.id, update: { ...data, claimId: job.claimId } });
     let temporary: string | null = null;
     let renewal: ReturnType<typeof setInterval> | undefined;
     try {
+      if (job.kind === 'browse') {
+        const directory = path.resolve(job.path ?? os.homedir());
+        const entries = await fs.readdir(directory, { withFileTypes: true });
+        const candidates = await Promise.all(entries.map(async (entry: { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }) => ({ name: entry.name, path: path.join(directory, entry.name), directory: entry.isDirectory() || (entry.isSymbolicLink() && await fs.stat(path.join(directory, entry.name)).then((stat: { isDirectory(): boolean }) => stat.isDirectory()).catch(() => false)) })));
+        const folders = candidates.filter((entry: { directory: boolean }) => entry.directory).map((entry: { name: string; path: string }) => ({ name: entry.name, path: entry.path })).sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+        const roots = process.platform === 'win32' ? (await Promise.all('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(async letter => { const root = `${letter}:\\`; return await fs.access(root).then(() => root).catch(() => null); }))).filter(Boolean) : ['/'];
+        await update({ state: 'complete', result: { path: directory, parent: path.dirname(directory) === directory ? null : path.dirname(directory), roots, folders } });
+        continue;
+      }
       let root = job.graph.source.location;
       let ref = job.graph.source.revision;
       if (job.graph.source.kind === 'git') {
@@ -119,7 +136,10 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         await fs.mkdir(scratchDir, { recursive: true });
         temporary = await fs.mkdtemp(path.join(scratchDir, 'di-linked-'));
         root = path.join(temporary, 'repository');
-        await runChecked('git', ['clone', '--', source.href, root]);
+        const token = source.hostname === 'github.com' ? (await send({ action: 'computer-github-token', jobId: job.id, claimId: job.claimId })).token as string | null : null;
+        const auth = await gitAuth({ repository: source.href, defaultRef: 'HEAD' }, token ? { token, username: 'x-access-token', kind: 'token-env' } : undefined);
+        try { await runChecked('git', ['clone', '--', source.href, root], { env: { GIT_TERMINAL_PROMPT: '0', ...auth.env } }); }
+        finally { await auth.cleanup(); }
         ref ||= 'HEAD';
       }
       renewal = setInterval(() => { void update({ progress: { stage: 'building' } }).catch(() => {}); }, 60_000);
