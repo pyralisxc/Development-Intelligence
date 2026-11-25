@@ -1,5 +1,12 @@
 import { MultiGraph } from 'graphology';
 import Sigma from 'sigma';
+import { basicSetup, EditorView } from 'codemirror';
+import { EditorState } from '@codemirror/state';
+import { javascript } from '@codemirror/lang-javascript';
+import { python } from '@codemirror/lang-python';
+import { html } from '@codemirror/lang-html';
+import { css } from '@codemirror/lang-css';
+import { oneDark } from '@codemirror/theme-one-dark';
 
 declare global {
   interface Window {
@@ -953,7 +960,18 @@ if (document.getElementById('question-dock')) {
   tabs.append(moveInspector); inspector.prepend(tabs); inspector.append(filesPane);
   const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorBody];
   const fileTabs = document.createElement('div'); fileTabs.className = 'inspector-tabs';
-  const fileBody = document.createElement('pre'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;white-space:pre;';
+  const fileBody = document.createElement('div'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;';
+  const fileStatus = document.createElement('div');
+  const fileEditor = document.createElement('div');
+  fileBody.append(fileStatus, fileEditor);
+  let editor: EditorView | undefined;
+  const fileLanguage = (file: string) => {
+    if (/\.(tsx?|jsx?)$/i.test(file)) return javascript({ typescript: /\.tsx?$/i.test(file), jsx: /\.[jt]sx$/i.test(file) });
+    if (/\.py$/i.test(file)) return python();
+    if (/\.html?$/i.test(file)) return html();
+    if (/\.css$/i.test(file)) return css();
+    return [];
+  };
   sectionHead.before(fileTabs); content.after(fileBody);
   const graphTab = document.createElement('button'); graphTab.textContent = 'Graph'; fileTabs.append(graphTab);
   const panelToggle = document.createElement('button'); panelToggle.type = 'button'; panelToggle.textContent = 'Inspector & files'; panelToggle.onclick = () => { inspectorOpen = !inspectorOpen; applyLayout(); saveLayout(); }; fileTabs.append(panelToggle);
@@ -977,16 +995,17 @@ if (document.getElementById('question-dock')) {
     const existing = openFiles.indexOf(file); if (existing >= 0) openFiles.splice(existing, 1); openFiles.push(file);
     activeFile = file; const sequence = ++fileSequence;
     fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', item.dataset.file === file ? 'true' : 'false'));
-    sectionHead.hidden = true; content.hidden = true; fileBody.hidden = false; fileBody.textContent = 'Loading ' + file + '…';
+    sectionHead.hidden = true; content.hidden = true; fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
     try {
       const result = await getJson('/workbench/source', new URLSearchParams({ file }));
       if (sequence !== fileSequence || activeFile !== file) return;
       if (result.file !== file || (viewerConfig.graphId && result.graphId !== viewerConfig.graphId) || (viewerConfig.revision && result.revision !== viewerConfig.revision)) throw new Error('Source identity does not match the selected file and graph. Reopen the graph and try again.');
-      fileBody.textContent = `${result.file} · ${result.revision ? 'revision ' + result.revision : 'working source snapshot'}\n\n${result.content}`;
+      fileStatus.textContent = `${result.file} · ${result.revision ? 'revision ' + result.revision : 'working source snapshot'} · Read only`;
+      editor = new EditorView({ parent: fileEditor, state: EditorState.create({ doc: result.content, extensions: [basicSetup, oneDark, fileLanguage(file), EditorState.readOnly.of(true), EditorView.editable.of(false)] }) });
     } catch (error) {
       if (sequence !== fileSequence || activeFile !== file) return;
-      fileBody.textContent = error instanceof Error ? error.message : String(error);
-      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => void openFile(file); fileBody.append('\n', retry);
+      fileStatus.textContent = error instanceof Error ? error.message : String(error);
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => void openFile(file); fileStatus.append(' ', retry);
     }
   };
   let loaded = false;
@@ -1015,7 +1034,7 @@ for (const button of navButtons) button.addEventListener('click', () => void act
 projectSelect.addEventListener('change', () => { window.location.assign(`/workbench?project=${encodeURIComponent(projectSelect.value)}`); });
 revisionForm.addEventListener('submit', event => { event.preventDefault(); const ref = revisionInput.value.trim(); if (!ref) return; window.location.assign(`/workbench?project=${encodeURIComponent(viewerConfig.project)}&ref=${encodeURIComponent(ref)}`); });
 globalForm.addEventListener('submit', event => { event.preventDefault(); const value = globalInput.value.trim(); if (!value) return; void activateSection('query', value); });
-document.addEventListener('keydown', event => { if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') { event.preventDefault(); globalInput.focus(); } });
+document.addEventListener('keydown', event => { if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA' && !(event.target instanceof Element && event.target.closest('.cm-editor'))) { event.preventDefault(); globalInput.focus(); } });
 
 if (viewerConfig.machineBuild) {
   const status = document.getElementById('machine-build-status');
