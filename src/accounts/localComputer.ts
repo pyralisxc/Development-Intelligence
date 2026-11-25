@@ -142,6 +142,12 @@ export async function executeAccountGraphJob(
           if (!address || typeof address === 'string') throw new Error('Local investigation service is unavailable');
           const url = new URL(job.request.path, `http://127.0.0.1:${address.port}`);
           const query = new URLSearchParams(job.request.query ?? '');
+          const action = query.get('action');
+          if (action === 'changes' || action === 'interaction-parity') {
+            const names = [query.get('baseRef'), query.get('headRef')];
+            if (names.some(name => !name || !catalog.targets || !Object.hasOwn(catalog.targets, name))) throw new Error('Choose two saved graph targets available to this query service');
+            query.delete('graphId'); query.set('ref', names[1]!);
+          }
           query.set('project', job.project.id);
           if (!query.has('ref') && !query.has('graphId')) query.set('graphId', job.graphId);
           url.search = query.toString();

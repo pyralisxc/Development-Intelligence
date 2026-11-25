@@ -632,7 +632,8 @@ async function renderParity(epoch: number): Promise<void> {
       const baseRef = (document.getElementById('parity-base') as HTMLInputElement).value;
       const headRef = (document.getElementById('parity-head') as HTMLInputElement).value;
       const scope = (document.getElementById('parity-scope') as HTMLInputElement).value.trim();
-      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'interaction-parity', baseRef, headRef, ...(scope ? { scope } : {}), offset: String(parityOffset), limit: '10' }));
+      if (viewerConfig.accountGraphId && (!baseRef || !headRef)) throw new Error('Choose two saved graphs');
+      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'interaction-parity', baseRef, headRef, ...(viewerConfig.accountGraphId ? { ref: headRef } : {}), ...(scope ? { scope } : {}), offset: String(parityOffset), limit: '10' }));
       if (!sectionIsCurrent(epoch, 'parity')) return;
       target.innerHTML = `<p>${esc(result.note)}</p><p class="muted">${esc(result.potentiallyAffected)} with potentially affected paths · ${esc(result.page.total)} interaction identities · showing ${esc(result.page.total ? result.page.offset + 1 : 0)}–${esc(Math.min(result.page.offset + result.page.limit, result.page.total))}</p><div class="list">${result.items.map((item: any, index: number) => `<div class="row"><span class="badge">${esc(item.status)}</span><div class="row-main"><strong>${esc(item.after?.name ?? item.before?.name ?? item.after?.[0]?.name ?? item.before?.[0]?.name ?? 'Ambiguous interaction')}</strong><small>${esc(item.after?.locator ?? item.before?.locator ?? item.after?.[0]?.locator ?? item.before?.[0]?.locator ?? item.reason ?? '')}${item.path ? ` · ${esc(item.path.addedFacts)} added and ${esc(item.path.removedFacts)} removed path facts · ${esc(item.path.afterUnresolved)} unresolved` : ''}</small>${parityChangeDetails(item)}</div>${item.investigations?.[0] ? `<button type="button" data-parity-item="${index}" data-parity-side="0">Base graph</button>` : ''}${item.investigations?.[1] ? `<button type="button" data-parity-item="${index}" data-parity-side="1">Compared graph</button>` : ''}</div>`).join('')}</div><div><button type="button" id="parity-previous" ${result.page.offset === 0 ? 'disabled' : ''}>Previous</button><button type="button" id="parity-next" ${result.page.nextOffset == null ? 'disabled' : ''}>Next</button></div>`;
       target.querySelectorAll<HTMLButtonElement>('[data-parity-item]').forEach(button => button.addEventListener('click', () => followInvestigation(result.items[Number(button.dataset.parityItem)].investigations[Number(button.dataset.paritySide)])));
@@ -641,7 +642,11 @@ async function renderParity(epoch: number): Promise<void> {
     } catch (error) { target.innerHTML = `<p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p>`; }
   };
   (document.getElementById('compare-interactions') as HTMLButtonElement).addEventListener('click', () => { parityOffset = 0; void compare(); });
-  void compare();
+  if (viewerConfig.accountGraphId) {
+    const targets = await getJson('/workbench/data', new URLSearchParams({ action: 'graph-targets' }));
+    if (!sectionIsCurrent(epoch, 'parity')) return;
+    for (const id of ['parity-base', 'parity-head']) { const input = document.getElementById(id) as HTMLInputElement; const select = document.createElement('select'); select.id = id; select.setAttribute('aria-label', id === 'parity-base' ? 'Base graph' : 'Compared graph'); select.add(new Option('Choose a saved graph', '')); for (const target of targets.targets ?? []) select.add(new Option(target.name, target.name)); input.replaceWith(select); }
+  } else void compare();
   const run = async () => {
     const textarea = document.getElementById('parity-contract') as HTMLTextAreaElement;
     const target = document.getElementById('parity-result') as HTMLElement;
@@ -694,7 +699,7 @@ async function renderSources(epoch: number): Promise<void> {
 
 async function renderChanges(epoch: number): Promise<void> {
   setHead();
-  const defaultHead = viewerConfig.ref || (viewerConfig.local ? 'working-tree' : 'HEAD');
+  const defaultHead = viewerConfig.accountGraphId ? '' : viewerConfig.ref || (viewerConfig.local ? 'working-tree' : 'HEAD');
   content.innerHTML = `<div class="card"><h3>Graph comparison</h3><h2>Compare repository states</h2><p>${viewerConfig.local ? 'Compare the retained main, preview and working graphs, or choose two targets below.' : 'Leave the base empty to compare the default source revision with the selected revision. Historical comparisons replay both exact revisions through the same current analyzer.'}</p>${viewerConfig.local ? '<button class="primary" id="compare-three" type="button">Compare main, preview and working</button>' : ''}<div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare two</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
   let offset = 0;
   const detailPageSize = 10;
@@ -706,7 +711,8 @@ async function renderChanges(epoch: number): Promise<void> {
     const target = document.getElementById('change-result') as HTMLElement;
     target.innerHTML = empty('Loading change intelligence', viewerConfig.local ? 'Comparing the selected graph targets…' : baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing the default and selected source states…');
     try {
-      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef } : {}), ...(viewerConfig.local ? { offset: String(offset), limit: String(detailPageSize) } : {}) }));
+      if (viewerConfig.accountGraphId && (!baseRef || !headRef)) throw new Error('Choose two saved graphs');
+      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef, ...(viewerConfig.accountGraphId ? { ref: headRef } : {}) } : {}), ...(viewerConfig.local ? { offset: String(offset), limit: String(detailPageSize) } : {}) }));
       if (!sectionIsCurrent(epoch, 'changes') || request !== requestNumber) return;
       const counts = data.counts ?? {};
       const baseIdentity = data.detail?.base?.identity;
@@ -748,7 +754,12 @@ async function renderChanges(epoch: number): Promise<void> {
   };
   (document.getElementById('compare-revisions') as HTMLButtonElement).addEventListener('click', () => { offset = 0; void run(); });
   document.getElementById('compare-three')?.addEventListener('click', () => { offset = 0; void runAll(); });
-  if (viewerConfig.local) await runAll(); else await run();
+  if (viewerConfig.accountGraphId) {
+    const targets = await getJson('/workbench/data', new URLSearchParams({ action: 'graph-targets' }));
+    if (!sectionIsCurrent(epoch, 'changes')) return;
+    for (const id of ['change-base', 'change-head']) { const input = document.getElementById(id) as HTMLInputElement; const select = document.createElement('select'); select.id = id; select.setAttribute('aria-label', input.getAttribute('aria-label') ?? id); select.add(new Option('Choose a saved graph', '')); for (const target of targets.targets ?? []) select.add(new Option(target.name, target.name)); input.replaceWith(select); }
+    const target = document.getElementById('change-result'); if (target) target.textContent = 'Choose two saved graphs available to this query service.';
+  } else if (viewerConfig.local) await runAll(); else await run();
 }
 
 function renderChangeBucket(detail: any): string {

@@ -481,6 +481,11 @@ export function createDevelopmentIntelligenceServer() {
           result = await exploreWorkbench({ project, query: requestUrl.searchParams.get('query') ?? undefined, limit: numberParam(requestUrl, 'limit', 250), ...context });
         } else if (action === 'audit') result = await repositoryAudit({ project, ...context, offset: numberParam(requestUrl, 'offset', 0), limit: numberParam(requestUrl, 'limit', 20) });
         else if (action === 'sources') result = await workbenchSources(project, context.ref, context.graphId);
+        else if (action === 'graph-targets') {
+          const root = process.env.DEVINT_LOCAL_GRAPH_DIR?.trim();
+          const catalog = root ? await localSourceGraphHistory(root, project) : null;
+          result = { targets: Object.entries(catalog?.targets ?? {}).map(([name, generation]) => ({ name, graphId: catalog?.entries.find(entry => entry.generation === generation)?.graphId ?? null })).filter(item => item.graphId) };
+        }
         else if (action === 'interaction-parity') {
           const baseRef = requestUrl.searchParams.get('baseRef') ?? 'main';
           const ref = requestUrl.searchParams.get('headRef') ?? 'preview';
