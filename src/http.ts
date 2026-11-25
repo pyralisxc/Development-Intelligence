@@ -3,6 +3,7 @@ import { compareInteractionRevisions } from './intelligence/interactionParity.js
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import http from 'node:http';
+import { Sandbox } from '@vercel/sandbox';
 import { computeOnly, previewRuntime } from './config/runtimeRole.js';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -253,9 +254,13 @@ export function createDevelopmentIntelligenceServer() {
     if (requestUrl.pathname === '/internal/account-dispatch-readiness' && req.method === 'POST') {
       if (!canonicalReconcileCronAuthorized(req.headers ?? {})) { json(res, 401, { error: 'Unauthorized' }); return; }
       const token = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim();
-      const ready = Boolean(token && vercelOidcProjectIdentity(token));
-      console.info(JSON.stringify({ event: 'account-dispatch-readiness', credentialAvailable: ready }));
-      json(res, 200, { credentialAvailable: ready }); return;
+      const identity = token && vercelOidcProjectIdentity(token);
+      let sandboxRead = false;
+      if (token && identity) {
+        try { await Sandbox.list({ token, ...identity, limit: 1 }); sandboxRead = true; } catch { /* Provider access remains unavailable. */ }
+      }
+      console.info(JSON.stringify({ event: 'account-dispatch-readiness', credentialAvailable: Boolean(identity), sandboxRead }));
+      json(res, 200, { credentialAvailable: Boolean(identity), sandboxRead }); return;
     }
     if (requestUrl.pathname === '/account/hosted-finish' && req.method === 'POST') {
       try {
