@@ -514,18 +514,21 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
   }
   if (prefill) queryDraft = prefill;
   prefill = queryDraft;
-  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden><option value="">Development Intelligence</option></select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-source-status" role="status" class="muted"></div><div id="query-result" class="query-result"></div>`;
+  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden aria-label="Question source"><option value="">Development Intelligence</option></select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><button type="button" id="load-query-sources">Choose a technical source</button><div id="query-source-status" role="status" class="muted"></div><div id="query-result" class="query-result"></div>`;
   queryPanelReady = true;
-  void getJson('/workbench/data', new URLSearchParams({ action: 'sources' })).then(sourceData => {
-    const select = queryPanel.querySelector<HTMLSelectElement>('#query-source');
-    if (!select) return;
-    for (const source of (sourceData.sources ?? []).filter((item: any) => item.type === 'read-only-http')) {
-      const option = new Option(`${source.label} · ${(source.capabilities ?? []).join('/')}`, source.id);
-      select.add(option);
-    }
-    select.hidden = select.options.length === 1;
-    if (preferredQuerySource) select.value = preferredQuerySource;
-  }).catch(() => { const status = queryPanel.querySelector<HTMLElement>('#query-source-status'); if (status) status.textContent = 'Other configured sources are unavailable; DI questions remain available.'; });
+  queryPanel.querySelector<HTMLButtonElement>('#load-query-sources')?.addEventListener('click', async event => {
+    const button = event.currentTarget as HTMLButtonElement;
+    const status = queryPanel.querySelector<HTMLElement>('#query-source-status')!;
+    button.disabled = true; status.textContent = 'Loading configured sources…';
+    try {
+      const sourceData = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
+      const select = queryPanel.querySelector<HTMLSelectElement>('#query-source')!;
+      for (const source of (sourceData.sources ?? []).filter((item: any) => item.type === 'read-only-http')) select.add(new Option(`${source.label} · ${(source.capabilities ?? []).join('/')}`, source.id));
+      select.hidden = select.options.length === 1;
+      status.textContent = select.hidden ? 'No additional query sources are available.' : '';
+      button.hidden = true;
+    } catch (error) { status.textContent = `Could not load sources: ${error instanceof Error ? error.message : String(error)}`; button.disabled = false; }
+  });
   queryPanel.querySelector<HTMLInputElement>('#query-limit')?.addEventListener('change', event => {
     const value = Number((event.target as HTMLInputElement).value);
     if (Number.isSafeInteger(value) && value > 0) { queryPageSize = value; savePositiveSetting('queryPageSize', value); }
@@ -958,6 +961,7 @@ if (document.getElementById('question-dock')) {
   const openFiles: string[] = [];
   const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; sectionHead.hidden = false; content.hidden = false; window.dispatchEvent(new Event('resize')); };
   graphTab.onclick = showGraph;
+  for (const button of navButtons) button.addEventListener('click', showGraph);
   const openFile = async (file: string) => {
     let b = Array.from(fileTabs.querySelectorAll<HTMLButtonElement>('button')).find(item => item.dataset.file === file);
     if (!b) {
