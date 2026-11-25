@@ -45,6 +45,8 @@ export function hostedTransferToken(secretDigest: string, jobId: string, claimId
 export class WorkspaceStore {
   private readonly redis: Redis;
   private readonly root: string;
+  private readonly hostedAccountsKey: string;
+  private readonly userId: string;
   constructor(userId: string) {
     const url = process.env.UPSTASH_REDIS_REST_URL?.trim() || process.env.KV_REST_API_URL?.trim();
     const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() || process.env.KV_REST_API_TOKEN?.trim();
@@ -53,16 +55,22 @@ export class WorkspaceStore {
     this.redis = new Redis({ url, token, enableTelemetry: false });
     const account = createHash('sha256').update(userId).digest('hex');
     this.root = `di:accounts:${scope}:${account}`;
+    this.hostedAccountsKey = `di:accounts:${scope}:hosted-dispatch`;
+    this.userId = userId;
   }
   private key(kind: string): string { return `${this.root}:${kind}`; }
   private async ensureIndexed(): Promise<void> {
-    await this.redis.eval<unknown[], number>(`if redis.call('EXISTS',KEYS[1])==1 then return 0 end; local all=redis.call('HGETALL',KEYS[2]); for i=1,#all,2 do local ok,job=pcall(cjson.decode,all[i+1]); if ok and job.id then local score=tonumber(ARGV[2])+i; if job.kind~='investigation' and job.kind~='browse' then redis.call('ZADD',KEYS[3],score,job.id) end; local computer=job.kind=='browse' and job.computerId or (job.graph and job.graph.buildComputer); if computer and (job.state=='queued' or job.state=='running') then redis.call('ZADD',ARGV[1]..computer,job.leaseUntil or score,job.id) end end end; redis.call('SET',KEYS[1],'1'); return 1`, [this.key('jobs-index-v1'), this.key('builds'), this.key('build-history')], [`${this.root}:queue:`, Date.now()]);
+    await this.redis.eval<unknown[], number>(`if redis.call('EXISTS',KEYS[1])==1 then return 0 end; local all=redis.call('HGETALL',KEYS[2]); for i=1,#all,2 do local ok,job=pcall(cjson.decode,all[i+1]); if ok and job.id then local score=tonumber(ARGV[2])+i; if job.kind~='investigation' and job.kind~='browse' then redis.call('ZADD',KEYS[3],score,job.id) end; local computer=job.kind=='browse' and job.computerId or (job.assignedComputer or (job.graph and job.graph.buildComputer)); if computer and (job.state=='queued' or job.state=='running') then redis.call('ZADD',ARGV[1]..computer,job.leaseUntil or score,job.id) end end end; redis.call('SET',KEYS[1],'1'); return 1`, [this.key('jobs-index-v1'), this.key('builds'), this.key('build-history')], [`${this.root}:queue:`, Date.now()]);
   }
   async projects(): Promise<Project[]> { return Object.values(await this.redis.hgetall<Record<string, Project>>(this.key('projects')) ?? {}); }
   async graphs(): Promise<GraphDefinition[]> { return Object.values(await this.redis.hgetall<Record<string, GraphDefinition>>(this.key('graphs')) ?? {}); }
   async computers(): Promise<Computer[]> { return Object.values(await this.redis.hgetall<Record<string, Computer>>(this.key('computers')) ?? {}); }
   async builds(includeResults = true): Promise<BuildJob[]> {
-    await this.ensureIndexed();
+    if (!await this.redis.exists(this.key('jobs-index-v1'))) {
+      const all = Object.values(await this.redis.hgetall<Record<string, ComputerJob>>(this.key('builds')) ?? {});
+      const jobs = all.filter((job): job is BuildJob => job.kind !== 'browse' && job.kind !== 'investigation');
+      return includeResults ? await Promise.all(jobs.map(async job => job.resultKey ? { ...job, result: await this.redis.get(job.resultKey) } : job)) : jobs.map(({ result: _result, ...job }) => job);
+    }
     const ids = await this.redis.zrange<string[]>(this.key('build-history'), 0, -1);
     if (!ids.length) return [];
     const pipe = this.redis.pipeline();
@@ -94,7 +102,29 @@ export class WorkspaceStore {
   private async enqueue(job: ComputerJob): Promise<void> {
     await this.ensureIndexed();
     const computer = job.kind === 'browse' ? job.computerId : job.assignedComputer ?? job.graph.buildComputer;
-    await this.redis.eval<unknown[], number>(`redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]); redis.call('ZADD',KEYS[2],ARGV[3],ARGV[1]); if ARGV[4]=='1' then redis.call('ZADD',KEYS[3],ARGV[3],ARGV[1]) end; return 1`, [this.key('builds'), this.key(`queue:${computer}`), this.key('build-history')], [job.id, JSON.stringify(job), Date.now(), job.kind === 'investigation' || job.kind === 'browse' ? '0' : '1']);
+    await this.redis.eval<unknown[], number>(`redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]); redis.call('ZADD',KEYS[2],ARGV[3],ARGV[1]); if ARGV[4]=='1' then redis.call('ZADD',KEYS[3],ARGV[3],ARGV[1]) end; if ARGV[5]=='1' then redis.call('ZADD',KEYS[4],ARGV[3],ARGV[6]) end; return 1`, [this.key('builds'), this.key(`queue:${computer}`), this.key('build-history'), this.hostedAccountsKey], [job.id, JSON.stringify(job), Date.now(), job.kind === 'investigation' || job.kind === 'browse' ? '0' : '1', computer === 'hosted' ? '1' : '0', this.userId]);
+  }
+  /** Explicitly enroll pre-existing hosted work without executing it as part of a read. */
+  async registerHostedWork(): Promise<boolean> {
+    await this.ensureIndexed();
+    return await this.redis.eval<unknown[], number>(`local all=redis.call('HGETALL',KEYS[3]); for i=1,#all,2 do local ok,job=pcall(cjson.decode,all[i+1]); if ok and job.kind~='browse' and job.graph and (job.state=='queued' or job.state=='running') and (job.assignedComputer or job.graph.buildComputer)=='hosted' then redis.call('ZADD',KEYS[1],job.leaseUntil or ARGV[1],job.id); if job.assignedComputer=='hosted' and job.graph.buildComputer~='hosted' then redis.call('ZREM',ARGV[3]..job.graph.buildComputer,job.id) end end end; if redis.call('ZCARD',KEYS[1])>0 then redis.call('ZADD',KEYS[2],ARGV[1],ARGV[2]); return 1 end; return 0`, [this.key('queue:hosted'), this.hostedAccountsKey, this.key('builds')], [Date.now(), this.userId, `${this.root}:queue:`]) === 1;
+  }
+  /** Reserve a bounded, fair batch; a crash makes accounts eligible again. */
+  async reserveHostedAccounts(): Promise<string[]> {
+    const now = Date.now();
+    return await this.redis.eval<unknown[], string[]>(`local users=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',ARGV[1],'LIMIT',0,8); for _,user in ipairs(users) do redis.call('ZADD',KEYS[1],ARGV[2],user) end; return users`, [this.hostedAccountsKey], [now, now + 60000]) ?? [];
+  }
+  async hostedJobs(): Promise<ComputerJob[]> {
+    const ids = await this.redis.zrange<string[]>(this.key('queue:hosted'), 0, -1);
+    const jobs = await Promise.all(ids.map(id => this.build(id)));
+    for (let i = 0; i < ids.length; i++) if (!jobs[i]) {
+      await this.redis.eval<unknown[], number>(`if redis.call('HEXISTS',KEYS[1],ARGV[1])==0 then return redis.call('ZREM',KEYS[2],ARGV[1]) end; return 0`, [this.key('builds'), this.key('queue:hosted')], [ids[i]]);
+    }
+    return jobs.filter((job): job is ComputerJob => Boolean(job)).sort((a,b) => Number(b.state === 'running') - Number(a.state === 'running')).slice(0, 10);
+  }
+  /** Remove idle accounts atomically with enqueue so new work cannot be lost. */
+  async forgetIdleHostedAccount(): Promise<void> {
+    await this.redis.eval<unknown[], number>(`if redis.call('ZCARD',KEYS[1])==0 then return redis.call('ZREM',KEYS[2],ARGV[1]) end; return 0`, [this.key('queue:hosted'), this.hostedAccountsKey], [this.userId]);
   }
   async queueBrowse(computerId: unknown, folder: unknown): Promise<BrowseJob> {
     const selected = id(computerId), computer = (await this.computers()).find(item => item.id === selected && item.state === 'linked');

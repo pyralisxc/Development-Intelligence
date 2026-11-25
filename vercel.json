@@ -7,9 +7,9 @@
     }
   },
   "schedules": {
-    "account-dispatch-readiness": {
+    "account-hosted-dispatch": {
       "schedule": "* * * * *",
-      "path": "/internal/account-dispatch-readiness",
+      "path": "/internal/dispatch-account-jobs",
       "requestMethod": "POST"
     }
   },

@@ -3,7 +3,6 @@ import { compareInteractionRevisions } from './intelligence/interactionParity.js
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import http from 'node:http';
-import { Sandbox } from '@vercel/sandbox';
 import { computeOnly, previewRuntime } from './config/runtimeRole.js';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -21,10 +20,10 @@ import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import type { TechnicalSourceCapability } from './types.js';
-import { currentVercelOidcToken, vercelOidcProjectIdentity, withVercelRequestContext } from './vercelRequestContext.js';
+import { withVercelRequestContext } from './vercelRequestContext.js';
 import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
 import { WorkspaceStore } from './accounts/workspace.js';
-import { advanceHostedJob } from './accounts/hostedQueue.js';
+import { advanceHostedJob, dispatchHostedAccounts } from './accounts/hostedQueue.js';
 import { hostedTransferStatus, startHostedTransfer, stopHostedTransfer } from './accounts/hosted.js';
 import { renderAccountWorkbench } from './accounts/view.js';
 import { accountGithubBranches, accountGithubRepositories, accountGithubToken } from './accounts/github.js';
@@ -187,7 +186,7 @@ export function canonicalReconcileCronAuthorized(headers: Record<string, unknown
 }
 
 export function createDevelopmentIntelligenceServer() {
-  return http.createServer((req: any, res: any) => withVercelRequestContext(req.headers ?? {}, async () => {
+  const server = http.createServer((req: any, res: any) => withVercelRequestContext(req.headers ?? {}, async () => {
     if (!validateHost(req, res)) return;
     const requestUrl = new URL(req.url ?? '/', 'http://development-intelligence.local');
     if (computeOnly() && (
@@ -250,17 +249,12 @@ export function createDevelopmentIntelligenceServer() {
         json(res, 200, { active: true }); return;
       } catch { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
     }
-    // Temporary Preview evidence for the account execution owner's scheduler.
-    if (requestUrl.pathname === '/internal/account-dispatch-readiness' && req.method === 'POST') {
+    if (requestUrl.pathname === '/internal/dispatch-account-jobs' && req.method === 'POST') {
       if (!canonicalReconcileCronAuthorized(req.headers ?? {})) { json(res, 401, { error: 'Unauthorized' }); return; }
-      const token = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim();
-      const identity = token && vercelOidcProjectIdentity(token);
-      let sandboxRead = false;
-      if (token && identity) {
-        try { await Sandbox.list({ token, ...identity, limit: 1 }); sandboxRead = true; } catch { /* Provider access remains unavailable. */ }
-      }
-      console.info(JSON.stringify({ event: 'account-dispatch-readiness', credentialAvailable: Boolean(identity), sandboxRead }));
-      json(res, 200, { credentialAvailable: Boolean(identity), sandboxRead }); return;
+      if (process.env.DEVINT_ACCOUNT_WORKBENCH !== '1') { json(res, 200, { enabled: false }); return; }
+      try { json(res, 200, await dispatchHostedAccounts(accountOrigin(req))); }
+      catch (error) { json(res, 503, { error: error instanceof Error ? error.message : String(error) }); }
+      return;
     }
     if (requestUrl.pathname === '/account/hosted-finish' && req.method === 'POST') {
       try {
@@ -282,9 +276,8 @@ export function createDevelopmentIntelligenceServer() {
           if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
           const jobId = requestUrl.searchParams.get('job');
           if (jobId && requestUrl.searchParams.has('part')) { json(res, 200, { part: await store.investigationPart(jobId, Number(requestUrl.searchParams.get('part'))) }); return; }
-          if (jobId) { json(res, 200, await advanceHostedJob(store, identity.userId, await store.build(jobId), accountOrigin(req))); return; }
+          if (jobId) { json(res, 200, await store.build(jobId)); return; }
           const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds(false)]);
-          const updated = await Promise.all(builds.map(job => advanceHostedJob(store, identity.userId, job, accountOrigin(req))));
           const snapshots = await Promise.all(graphs.map(async graph => {
             const latest = builds.filter(job => job.kind === 'build' && job.graph.id === graph.id && job.state === 'complete')
               .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
@@ -297,7 +290,7 @@ export function createDevelopmentIntelligenceServer() {
               sourceState: result?.sourceState ?? null, requestedAt: latest.createdAt,
               source: latest.graph.source, storage: latest.graph.storage } };
           }));
-          json(res, 200, { projects, graphs, computers, layout, builds: updated.filter(Boolean), snapshots }); return;
+          json(res, 200, { projects, graphs, computers, layout, builds, snapshots }); return;
         }
         if (req.method !== 'POST') { json(res, 405, { error: 'Use GET or POST' }); return; }
         if (identity.tokenType === 'session_token' && req.headers.origin !== accountOrigin(req)) {
@@ -307,6 +300,7 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'save-project' && identity.tokenType === 'session_token') { json(res, 200, await store.saveProject(body.project)); return; }
         if (body.action === 'save-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.saveGraph(body.graph)); return; }
         if (body.action === 'save-layout' && identity.tokenType === 'session_token') { await store.saveLayout(body.layout); json(res, 200, { saved: true }); return; }
+        if (body.action === 'resume-hosted-work' && identity.tokenType === 'session_token') { json(res, 200, { registered: await store.registerHostedWork() }); return; }
         if (body.action === 'retry-build' && identity.tokenType === 'session_token') { json(res, 200, await store.retryDirectBuild(body.jobId)); return; }
         if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueBuild(body.graphId), accountOrigin(req))); return; }
         if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueQuestion(body.graphId, body.question), accountOrigin(req))); return; }
@@ -703,6 +697,21 @@ export function createDevelopmentIntelligenceServer() {
       json(res, statusCode, rpcError(null, code, error instanceof Error ? error.message : String(error)));
     }
   }));
+  // A long-lived local account service owns its own recovery timer. Vercel uses
+  // the authenticated schedule instead; reads never drive this timer.
+  let dispatchTimer: ReturnType<typeof setInterval> | undefined;
+  server.on('listening', () => {
+    if (process.env.VERCEL === '1' || process.env.DEVINT_ACCOUNT_WORKBENCH !== '1') return;
+    const configured = process.env.DEVINT_PUBLIC_BASE_URL?.trim();
+    if (!configured) return;
+    let origin: string;
+    try { origin = new URL(configured).origin; } catch { return; }
+    const run = () => void dispatchHostedAccounts(origin).catch(() => {});
+    dispatchTimer = setInterval(run, 60000);
+    run();
+  });
+  server.on('close', () => { if (dispatchTimer) clearInterval(dispatchTimer); });
+  return server;
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;

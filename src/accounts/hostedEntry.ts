@@ -12,12 +12,18 @@ async function main(): Promise<void> {
   delete process.env.DEVINT_HOSTED_GITHUB_TOKEN;
   // The mounted Drive is the store visible to this execution service.
   const graph = { ...job.graph, buildComputer: 'hosted', storage: { computer: 'hosted', location: dataDir }, query: { computer: 'hosted', location: dataDir } };
-  let writes = Promise.resolve();
+  let writes = Promise.resolve(), lastProgressNotice = 0;
   const publish = (value: unknown) => {
     writes = writes.then(async () => {
       const temporary = `${statusFile}.${process.pid}.tmp`;
       await fs.writeFile(temporary, JSON.stringify(value), { mode: 0o600 });
       await fs.rename(temporary, statusFile);
+      if ((value as { state?: string })?.state === 'running' && Date.now() - lastProgressNotice >= 10000) {
+        lastProgressNotice = Date.now();
+        // A worker-owned notice updates observed progress; it is never triggered by a Workbench read.
+        void fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+          headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId }) }).catch(() => {});
+      }
     });
     return writes;
   };
@@ -37,7 +43,7 @@ async function main(): Promise<void> {
         const response = await fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error',
           headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId }) });
         if (response.ok) break;
-      } catch { /* A later Workbench poll can also finish the job. */ }
+      } catch { /* The scheduled dispatcher can also finish the job. */ }
       await new Promise(resolve => setTimeout(resolve, 3000));
     }
   }
