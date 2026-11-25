@@ -1690,9 +1690,28 @@ export async function queryWorkbenchRequest(input: {
           .filter((fact: any) => fact.matchedKind || (fact.effectKind && result.interpretation.requestedEffects.some((effect: string) => fact.effectKind.split('-').includes(effect))))
         : [];
       const related = result.navigation.relationships.filter((item: any) => item.edge.status === 'resolved' || item.edge.status === 'candidate');
+      // A call occurrence and a source effect are distinct graph facts. Join
+      // only the same callable, file and exact syntax offset; a declaration
+      // edge may represent several sites with different guards.
+      const callConditions = (item: any): string => {
+        if (item.edge.kind !== 'calls-site') return '';
+        const offset = /:call-offset-(\d+)-\d+$/u.exec(item.to?.locator ?? '')?.[1];
+        if (!offset) return '';
+        const family = result.sourceFamilies.find((entry: any) => entry.subjectId === item.edge.from);
+        const matches = (family?.facts ?? []).filter((fact: any) => fact.kind === 'source-effect'
+          && fact.effectKind === 'call' && fact.sourceId === item.to?.sourceId
+          && fact.locator.endsWith(`:effect-offset-${offset}`));
+        if (matches.length !== 1) return '';
+        const fact = matches[0];
+        const conditions = (fact.requirements ?? []).map((requirement: any) =>
+          `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`);
+        const contexts = (fact.controlContext ?? []).map((context: any) =>
+          `${context.kind}${context.expression ? ` (${context.expression})` : ''}`);
+        return `${conditions.length ? ` when ${conditions.join(' and ')}` : ''}${contexts.length ? ` within ${contexts.join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`;
+      };
       const relationshipAnswer = !result.interpretation.negated && result.interpretation.selection !== 'terms' && result.navigation.relationshipKinds.length && related.length
         ? related.map((item: any) => item.edge.kind === 'calls-site'
-          ? `${item.from?.name ?? item.edge.from} has ${item.edge.status === 'candidate' ? 'possible source call' : 'source call'} ${item.to?.name ?? item.edge.to} at ${item.to?.locator ?? item.edge.evidence?.[0] ?? 'source'}${item.to?.value?.interpretation === 'call-or-conversion' ? ' (may be a type conversion)' : ''}`
+          ? `${item.from?.name ?? item.edge.from} has ${item.edge.status === 'candidate' ? 'possible source call' : 'source call'} ${item.to?.name ?? item.edge.to} at ${item.to?.locator ?? item.edge.evidence?.[0] ?? 'source'}${item.to?.value?.interpretation === 'call-or-conversion' ? ' (may be a type conversion)' : ''}${callConditions(item)}`
           : `${item.from?.name ?? item.edge.from}${item.from?.locator ? ` (${item.from.locator})` : ''} ${item.edge.kind}${item.edge.status === 'candidate' ? ' (candidate)' : ''} ${item.to?.name ?? item.edge.to}${item.to?.locator ? ` (${item.to.locator})` : ''}`).join('; ')
           + (related.some((item: any) => item.edge.kind === 'calls-site') ? '. Source call occurrences do not by themselves bind target declarations.' : '')
           + ((result.page.offset + result.navigation.relationships.length < result.navigation.total)
