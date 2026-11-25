@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Redis } from '@upstash/redis';
 
 export type Project = { id: string; name: string };
@@ -8,11 +8,11 @@ export type GraphDefinition = {
   buildComputer: string; storage: { computer: string; location: string };
   query?: { computer: string; location: string };
   hostedResources?: { buildVcpus: number; queryVcpus: number; timeoutMinutes: number };
-  transfer?: { kind: 'shared-folder'; buildLocation: string; storageLocation: string };
+  transfer?: { kind: 'shared-folder'; buildLocation: string; storageLocation: string } | { kind: 'direct-hosted' };
   updatePolicy: 'snapshot';
 };
 export type Computer = { id: string; name: string; platform: string; lastSeen: string; state: 'linked' | 'revoked' };
-export type BuildJob = { id: string; kind?: 'build' | 'question' | 'investigation'; question?: string; graphId?: string; request?: { path: string; method: 'GET' | 'POST'; query?: string; body?: unknown }; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; result?: unknown; resultKey?: string; resultParts?: number; error?: string; assignedComputer?: string; stage?: 'build' | 'transfer'; hosted?: { sandbox: string; command: string; statusFile: string } };
+export type BuildJob = { id: string; kind?: 'build' | 'question' | 'investigation'; question?: string; graphId?: string; request?: { path: string; method: 'GET' | 'POST'; query?: string; body?: unknown }; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; result?: unknown; resultKey?: string; resultParts?: number; transferGraphId?: string; previousTransfer?: { claimId: string; graphId: string }; error?: string; assignedComputer?: string; stage?: 'build' | 'transfer'; hosted?: { sandbox: string; command: string; statusFile: string } };
 export type BrowseJob = { id: string; kind: 'browse'; computerId: string; path?: string; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; result?: unknown; resultKey?: string; error?: string };
 type ComputerJob = BuildJob | BrowseJob;
 
@@ -31,6 +31,7 @@ function object(input: unknown): Record<string, unknown> {
   return input as Record<string, unknown>;
 }
 function recordId(): string { return randomBytes(16).toString('hex'); }
+export function hostedTransferToken(secretDigest: string, jobId: string, claimId: string, graphId: string): string { return createHmac('sha256', secretDigest).update(`${jobId}:${claimId}:${graphId}`).digest('base64url'); }
 
 /** Account records are separate Redis fields so project count is not a whole-document limit. */
 export class WorkspaceStore {
@@ -127,12 +128,17 @@ export class WorkspaceStore {
     if (!result) throw Object.assign(new Error('Computer is not linked to this account'), { status: 403 });
     return typeof result === 'string' ? JSON.parse(result) as Computer : result as unknown as Computer;
   }
-  async revokeComputer(computerId: unknown): Promise<void> {
+  async revokeComputer(computerId: unknown): Promise<BuildJob[]> {
     const computerKey = id(computerId);
-    const computer = await this.redis.hget<Computer>(this.key('computers'), computerKey);
-    if (!computer) invalid('Computer does not exist');
-    await this.redis.hdel(this.key('computer-secrets'), computerKey);
-    await this.redis.hset(this.key('computers'), { [computerKey]: { ...computer, state: 'revoked' } });
+    const revoked = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local computer=cjson.decode(raw); computer.state='revoked'; redis.call('HDEL',KEYS[2],ARGV[1]); redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(computer)); return 1`, [this.key('computers'), this.key('computer-secrets')], [computerKey]);
+    if (revoked !== 1) invalid('Computer does not exist');
+    const queue = this.key(`queue:${computerKey}`), ids = await this.redis.zrange<string[]>(queue, 0, -1);
+    const transfers: BuildJob[] = [];
+    for (const jobId of ids) {
+      const raw = await this.redis.eval<unknown[], string | null>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then redis.call('ZREM',KEYS[2],ARGV[1]); return nil end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or (job.assignedComputer or job.graph.buildComputer); if owner~=ARGV[2] or (job.state~='running' and job.state~='queued') then return nil end; job.state='failed'; job.error='The linked computer was unlinked while work was pending'; job.leaseUntil=nil; local out=cjson.encode(job); redis.call('HSET',KEYS[1],ARGV[1],out); redis.call('ZREM',KEYS[2],ARGV[1]); return out`, [this.key('builds'), queue], [jobId, computerKey]);
+      if (raw) { const job = typeof raw === 'string' ? JSON.parse(raw) as ComputerJob : raw as unknown as ComputerJob; if (job.kind === 'build' && job.graph.transfer?.kind === 'direct-hosted' && job.transferGraphId && job.claimId) transfers.push(job); }
+    }
+    return transfers;
   }
   async layout(): Promise<unknown> { return await this.redis.get(this.key('layout')); }
   async saveLayout(layout: unknown): Promise<void> {
@@ -156,9 +162,12 @@ export class WorkspaceStore {
       buildComputer: serviceId(data.buildComputer), storage: { computer: serviceId(storage.computer), location: storage.computer === 'hosted' ? '/data/graphs' : value(storage.location, 'Graph storage location') }, updatePolicy: 'snapshot' };
     if (data.transfer !== undefined && data.transfer !== null) {
       const transfer = object(data.transfer);
-      if (transfer.kind !== 'shared-folder') invalid('Unsupported graph transfer method');
-      graph.transfer = { kind: 'shared-folder', buildLocation: value(transfer.buildLocation, 'Shared folder on the build computer'), storageLocation: value(transfer.storageLocation, 'Shared folder on the storage computer') };
+      if (transfer.kind === 'direct-hosted') graph.transfer = { kind: 'direct-hosted' };
+      else if (transfer.kind === 'shared-folder') graph.transfer = { kind: 'shared-folder', buildLocation: value(transfer.buildLocation, 'Shared folder on the build computer'), storageLocation: value(transfer.storageLocation, 'Shared folder on the storage computer') };
+      else invalid('Unsupported graph transfer method');
     }
+    if (graph.transfer?.kind === 'direct-hosted' && (graph.buildComputer === 'hosted' || graph.storage.computer !== 'hosted')) invalid('Direct hosted transfer requires a linked build computer and hosted storage');
+    if (graph.transfer?.kind === 'shared-folder' && (graph.buildComputer === 'hosted' || graph.storage.computer === 'hosted')) invalid('Shared-folder transfer requires linked computers');
     if (data.query !== undefined && data.query !== null) {
       const query = object(data.query);
       graph.query = { computer: serviceId(query.computer), location: query.computer === 'hosted' ? '/data/graphs' : value(query.location, 'Graph location available to the query service') };
@@ -180,10 +189,18 @@ export class WorkspaceStore {
     const project = await this.redis.hget<Project>(this.key('projects'), graph.projectId);
     if (!project) invalid('Project does not exist');
     if (graph.buildComputer === 'hosted' && graph.source.kind === 'local-folder') invalid('A hosted build needs a repository source accessible to the hosted service');
-    if (graph.buildComputer !== graph.storage.computer && (graph.buildComputer === 'hosted' || graph.storage.computer === 'hosted')) invalid('Transfer between a linked computer and hosted storage is not available yet');
+    if (graph.buildComputer !== graph.storage.computer && (graph.buildComputer === 'hosted' || graph.storage.computer === 'hosted') && !(graph.buildComputer !== 'hosted' && graph.storage.computer === 'hosted' && graph.transfer?.kind === 'direct-hosted')) invalid('This build and storage combination is not available yet');
     if (graph.buildComputer !== graph.storage.computer && !graph.transfer) invalid('Choose a transfer method for different build and storage computers');
     const job: BuildJob = { id: recordId(), kind: 'build', graph, project, assignedComputer: graph.buildComputer, stage: 'build', state: 'queued', createdAt: new Date().toISOString() };
     await this.enqueue(job); return job;
+  }
+  /** Retry a failed direct transfer using its staged generation when available. */
+  async retryDirectBuild(jobId: unknown): Promise<BuildJob> {
+    const key = id(jobId), existing = await this.redis.hget<BuildJob>(this.key('builds'), key);
+    if (!existing || existing.kind !== 'build' || existing.state !== 'failed' || existing.graph.transfer?.kind !== 'direct-hosted' || existing.graph.storage.computer !== 'hosted' || existing.graph.buildComputer === 'hosted') invalid('This build cannot be retried as a direct transfer');
+    const raw = await this.redis.eval<unknown[], string | null>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return nil end; local job=cjson.decode(raw); if job.state~='failed' or job.kind~='build' or not job.graph.transfer or job.graph.transfer.kind~='direct-hosted' then return nil end; if job.claimId and job.transferGraphId then job.previousTransfer={claimId=job.claimId,graphId=job.transferGraphId} end; job.state='queued'; job.stage='build'; job.assignedComputer=job.graph.buildComputer; job.error=nil; job.claimId=nil; job.leaseUntil=nil; job.transferGraphId=nil; job.progress={stage='retrying-build-or-transfer'}; local out=cjson.encode(job); redis.call('HSET',KEYS[1],ARGV[1],out); redis.call('ZADD',KEYS[2],ARGV[2],ARGV[1]); return out`, [this.key('builds'), this.key(`queue:${existing.graph.buildComputer}`)], [key, Date.now()]);
+    if (!raw) invalid('This build is no longer available to retry');
+    return typeof raw === 'string' ? JSON.parse(raw) as BuildJob : raw as unknown as BuildJob;
   }
   async queueQuestion(graphId: unknown, question: unknown): Promise<BuildJob> {
     const graph = await this.redis.hget<GraphDefinition>(this.key('graphs'), id(graphId));
@@ -218,12 +235,37 @@ export class WorkspaceStore {
       ...(typeof request.query === 'string' ? { query: request.query } : {}), ...(request.body === undefined ? {} : { body: request.body }) } };
     await this.enqueue(job); return job;
   }
+  async recordHostedTransfer(job: BuildJob, secret: string, graphId: string): Promise<void> {
+    const digest = createHash('sha256').update(secret).digest('hex');
+    const saved = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[2],ARGV[2])~=ARGV[3] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.claimId~=ARGV[4] or job.assignedComputer~=ARGV[2] then return 0 end; if job.transferGraphId and job.transferGraphId~=ARGV[5] then return 0 end; job.transferGraphId=ARGV[5]; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key('computer-secrets')], [job.id, job.graph.buildComputer, digest, job.claimId, graphId]);
+    if (saved !== 1) invalid('Graph transfer claim is no longer active');
+  }
+  async clearPreviousHostedTransfer(job: BuildJob): Promise<void> {
+    const changed = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.claimId~=ARGV[2] then return 0 end; job.previousTransfer=nil; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds')], [job.id, job.claimId]);
+    if (changed !== 1) invalid('Graph transfer claim is no longer active');
+  }
+  /** The receiver keeps its claim only while the linked computer remains authorized. */
+  async verifyHostedTransferLease(jobId: unknown, claimId: unknown, graphId: unknown, token: unknown): Promise<boolean> {
+    if (typeof graphId !== 'string' || !graphId || typeof token !== 'string') return false;
+    const job = await this.redis.hget<BuildJob>(this.key('builds'), id(jobId));
+    if (!job || job.kind !== 'build' || job.state !== 'running' || job.stage !== 'build' || job.claimId !== id(claimId) || job.graph.transfer?.kind !== 'direct-hosted' || job.graph.storage.computer !== 'hosted' || job.assignedComputer !== job.graph.buildComputer) return false;
+    const computer = await this.redis.hget<Computer>(this.key('computers'), job.graph.buildComputer);
+    const digest = await this.redis.hget<string>(this.key('computer-secrets'), job.graph.buildComputer);
+    if (!computer || computer.state !== 'linked' || typeof digest !== 'string') return false;
+    const expected = hostedTransferToken(digest, job.id, job.claimId!, graphId);
+    return token.length === expected.length && timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+  }
+  async directHostedTransferClaim(computerId: unknown, secret: unknown, jobId: unknown, claimId: unknown, graphId: unknown, allowComplete = false): Promise<BuildJob> {
+    const computer = await this.verifyComputer(computerId, secret), job = await this.build(jobId);
+    if (!job || job.kind !== 'build' || (job.state !== 'running' && !(allowComplete && job.state === 'complete')) || job.stage !== 'build' || job.claimId !== id(claimId) || job.assignedComputer !== computer.id || job.graph.buildComputer !== computer.id || job.graph.storage.computer !== 'hosted' || job.graph.transfer?.kind !== 'direct-hosted' || typeof graphId !== 'string' || !graphId) throw Object.assign(new Error('Graph transfer is not assigned to this computer'), { status: 403 });
+    return job;
+  }
   async claimBuild(computerId: unknown, secret: unknown): Promise<ComputerJob | null> {
     await this.ensureIndexed();
     const computer = await this.heartbeat(computerId, secret);
     const now = Date.now();
     const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
-    const claimed = await this.redis.eval<unknown[], string | null>(`if redis.call('HGET',KEYS[3],ARGV[4])~=ARGV[5] then return nil end; local ids=redis.call('ZRANGEBYSCORE',KEYS[2],'-inf',ARGV[1],'LIMIT',0,1); if #ids==0 then return nil end; local raw=redis.call('HGET',KEYS[1],ids[1]); if not raw then redis.call('ZREM',KEYS[2],ids[1]); return nil end; local job=cjson.decode(raw); job.state='running'; job.leaseUntil=tonumber(ARGV[2]); job.claimId=ARGV[3]; local value=cjson.encode(job); redis.call('HSET',KEYS[1],ids[1],value); redis.call('ZADD',KEYS[2],ARGV[2],ids[1]); return value`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets')], [now, now + 900_000, recordId(), computer.id, digest]);
+    const claimed = await this.redis.eval<unknown[], string | null>(`if redis.call('HGET',KEYS[3],ARGV[4])~=ARGV[5] then return nil end; local ids=redis.call('ZRANGEBYSCORE',KEYS[2],'-inf',ARGV[1],'LIMIT',0,1); if #ids==0 then return nil end; local raw=redis.call('HGET',KEYS[1],ids[1]); if not raw then redis.call('ZREM',KEYS[2],ids[1]); return nil end; local job=cjson.decode(raw); if job.state=='running' and job.kind=='build' and job.graph.transfer and job.graph.transfer.kind=='direct-hosted' and job.claimId and job.transferGraphId then job.previousTransfer={claimId=job.claimId,graphId=job.transferGraphId} end; job.state='running'; job.leaseUntil=tonumber(ARGV[2]); job.claimId=ARGV[3]; local value=cjson.encode(job); redis.call('HSET',KEYS[1],ids[1],value); redis.call('ZADD',KEYS[2],ARGV[2],ids[1]); return value`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets')], [now, now + 900_000, recordId(), computer.id, digest]);
     if (!claimed) return null;
     const job = typeof claimed === 'string' ? JSON.parse(claimed) as ComputerJob : claimed as unknown as ComputerJob;
     return job.resultKey ? { ...job, result: await this.redis.get(job.resultKey) } : job;
@@ -265,6 +307,16 @@ export class WorkspaceStore {
     }
     if (changed !== 1) invalid('Hosted job claim is no longer active');
   }
+  /** Serialize writes to an account Drive with hosted graph builds. */
+  async acquireHostedTransfer(job: BuildJob): Promise<boolean> {
+    const duration = job.graph.hostedResources?.timeoutMinutes ? job.graph.hostedResources.timeoutMinutes * 60_000 : Number(process.env.DEVINT_HOSTED_SANDBOX_TIMEOUT_MS || 3_600_000);
+    if (!Number.isSafeInteger(duration) || duration < 1 || duration > 86_400_000) invalid('Invalid hosted sandbox duration');
+    const acquired = await this.redis.eval<unknown[], number>(`local owner=redis.call('GET',KEYS[1]); if owner==ARGV[1] then return 1 end; if owner then return 0 end; if redis.call('SET',KEYS[1],ARGV[1],'NX','PX',ARGV[2]) then return 1 end; return 0`, [this.key('hosted-build-lock')], [`transfer:${job.id}:${job.claimId}`, duration + 60_000]);
+    return acquired === 1;
+  }
+  async releaseHostedTransfer(job: BuildJob): Promise<void> {
+    await this.redis.eval<unknown[], number>(`if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end; return 0`, [this.key('hosted-build-lock')], [`transfer:${job.id}:${job.claimId}`]);
+  }
   async releaseHostedBuild(jobId: string): Promise<void> {
     await this.redis.eval<unknown[], number>(`if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end; return 0`, [this.key('hosted-build-lock')], [id(jobId)]);
   }
@@ -276,7 +328,7 @@ export class WorkspaceStore {
     if (resultParts !== undefined && (!Number.isSafeInteger(resultParts) || Number(resultParts) < 1)) invalid('Invalid investigation result manifest');
     if (data.state === 'complete' && resultParts === undefined) await this.redis.set(resultKey, result ?? null);
     const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
-    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[3],ARGV[2])~=ARGV[7] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or (job.assignedComputer or job.graph.buildComputer); if job.state~='running' or owner~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; local update=cjson.decode(ARGV[4]); if update.state=='complete' then if update.resultParts then if job.kind~='investigation' or redis.call('HLEN',KEYS[4])~=update.resultParts then return 0 end; job.resultParts=update.resultParts; redis.call('PERSIST',KEYS[4]) end; job.resultKey=ARGV[6]; job.result=nil; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]); if job.kind=='build' and job.stage=='build' and job.graph.buildComputer~=job.graph.storage.computer then job.state='queued'; job.stage='transfer'; job.assignedComputer=job.graph.storage.computer; job.progress={stage='waiting-for-storage-computer'}; job.claimId=nil; redis.call('ZADD',ARGV[8]..job.assignedComputer,ARGV[9],ARGV[1]) else job.state='complete' end elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]); redis.call('ZADD',KEYS[2],ARGV[5],ARGV[1]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets'), resultKey], [buildId, computer.id, claimId, JSON.stringify(small), Date.now() + 900_000, resultKey, digest, `${this.root}:queue:`, Date.now()]);
+    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[3],ARGV[2])~=ARGV[7] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or (job.assignedComputer or job.graph.buildComputer); if job.state~='running' or owner~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; local update=cjson.decode(ARGV[4]); if update.state=='complete' then if update.resultParts then if job.kind~='investigation' or redis.call('HLEN',KEYS[4])~=update.resultParts then return 0 end; job.resultParts=update.resultParts; redis.call('PERSIST',KEYS[4]) end; job.resultKey=ARGV[6]; job.result=nil; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]); if job.kind=='build' and job.stage=='build' and job.graph.buildComputer~=job.graph.storage.computer and not update.hostedTransferred then job.state='queued'; job.stage='transfer'; job.assignedComputer=job.graph.storage.computer; job.progress={stage='waiting-for-storage-computer'}; job.claimId=nil; redis.call('ZADD',ARGV[8]..job.assignedComputer,ARGV[9],ARGV[1]) else job.state='complete' end elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]); redis.call('ZADD',KEYS[2],ARGV[5],ARGV[1]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets'), resultKey], [buildId, computer.id, claimId, JSON.stringify(small), Date.now() + 900_000, resultKey, digest, `${this.root}:queue:`, Date.now()]);
     if (changed !== 1 && data.state === 'complete') {
       const current = await this.redis.hget<ComputerJob>(this.key('builds'), buildId);
       if (current?.resultKey !== resultKey) await this.redis.del(resultKey);

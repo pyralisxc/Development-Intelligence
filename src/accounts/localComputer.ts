@@ -44,8 +44,8 @@ async function workspace(origin: string, token: string, data: unknown): Promise<
   const response = await fetch(new URL('/account/workspace', trustedUrl(origin, true)), { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(data), redirect: 'error' });
   const text = await response.text();
   let result: any;
-  try { result = JSON.parse(text); } catch { throw new Error(`Workbench returned ${response.status}: ${text.slice(0, 200)}`); }
-  if (!response.ok) throw new Error(result.error || `Workbench returned ${response.status}`);
+  try { result = JSON.parse(text); } catch { throw Object.assign(new Error(`Workbench returned ${response.status}: ${text.slice(0, 200)}`), { status: response.status }); }
+  if (!response.ok) throw Object.assign(new Error(result.error || `Workbench returned ${response.status}`), { status: response.status });
   return result;
 }
 
@@ -106,6 +106,17 @@ export async function executeAccountGraphJob(
   let temporary: string | null = null;
   let renewal: ReturnType<typeof setInterval> | undefined;
   try {
+    if (job.kind === 'build' && job.graph.transfer?.kind === 'direct-hosted') {
+      const staging = path.join(scratchDir, 'di-hosted-transfer', job.id), checkpoint = path.join(staging, 'build-result.json');
+      const saved = await fs.readFile(checkpoint, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+      if (saved) {
+        const built = JSON.parse(saved) as { graphId?: unknown };
+        const { localSourceGraphHistory } = await import('../intelligence/localGraphStore.js');
+        const catalog = await localSourceGraphHistory(staging, job.project.id);
+        if (typeof built.graphId !== 'string' || !catalog?.entries.some(entry => entry.graphId === built.graphId)) throw new Error('The staged graph build is incomplete');
+        await report({ stage: 'resuming-staged-graph' }); return built;
+      }
+    }
     let root = job.graph.source.location;
     let ref = job.graph.source.revision;
     if (job.graph.source.kind === 'git' && job.kind !== 'question' && job.kind !== 'investigation') {
@@ -165,13 +176,18 @@ export async function executeAccountGraphJob(
         } finally { server.close(); }
       }
     } else {
-      const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer && path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id);
+      const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer?.kind === 'shared-folder' ? path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id) : job.graph.transfer?.kind === 'direct-hosted' ? path.join(scratchDir, 'di-hosted-transfer', job.id) : null;
       if (!dataDir) throw new Error('A transfer method is required for this graph');
       result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir,
         scratchDir, retain, target: job.graph.name, ...(ref ? { ref } : {}) }, progress => {
         activeProgress = progress;
         if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); void report(progress).catch(() => {}); }
       });
+      if (job.graph.transfer?.kind === 'direct-hosted') {
+        const temporary = path.join(dataDir, `build-result.${process.pid}.tmp`);
+        await fs.writeFile(temporary, JSON.stringify(result), { mode: 0o600 });
+        await fs.rename(temporary, path.join(dataDir, 'build-result.json'));
+      }
     }
     return result;
   } finally {
@@ -222,7 +238,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
       }
       if (job.kind === 'build' && job.stage === 'transfer') {
         const built = job.result as { graphId?: unknown } | undefined;
-        if (typeof built?.graphId !== 'string' || !job.graph.transfer) throw new Error('The graph transfer has no built generation');
+        if (typeof built?.graphId !== 'string' || job.graph.transfer?.kind !== 'shared-folder') throw new Error('The graph transfer has no shared-folder generation');
         const staging = path.join(job.graph.transfer.storageLocation, '.di-transfers', job.id);
         renewal = setInterval(() => { void update({ progress: { stage: 'transferring-to-storage' } }).catch(() => {}); }, 60_000);
         const { importLocalSourceGraph } = await import('../intelligence/localGraphStore.js');
@@ -234,7 +250,57 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
       }
       const result = await executeAccountGraphJob(job, scratchDir, retain, async () => (await send({ action: 'computer-github-token', jobId: job.id, claimId: job.claimId })).token as string | null, progress => update({ progress }));
       if (renewal) clearInterval(renewal);
-      if (job.kind === 'investigation') {
+      if (job.kind === 'build' && job.graph.transfer?.kind === 'direct-hosted' && job.graph.storage.computer === 'hosted') {
+        const built = result as { graphId?: unknown };
+        if (typeof built?.graphId !== 'string') throw new Error('The graph build did not return a generation');
+        const graphId = built.graphId, staging = path.join(scratchDir, 'di-hosted-transfer', job.id);
+        renewal = setInterval(() => { void update({ progress: { stage: 'transferring-to-hosted-storage' } }).catch(() => {}); }, 60_000);
+        let started = false;
+        try {
+          let target: any, retryUntil = 0;
+          for (;;) {
+            try {
+              target = await send({ action: 'computer-start-hosted-transfer', jobId: job.id, claimId: job.claimId, graphId, retain });
+              if (!target.waiting) break;
+              retryUntil = 0;
+              await update({ progress: { stage: 'waiting-for-hosted-storage' } });
+            } catch (error) {
+              const status = (error as { status?: number })?.status;
+              if (!(error instanceof TypeError) && !(typeof status === 'number' && status >= 500)) throw error;
+              if (!retryUntil) retryUntil = Date.now() + (job.graph.hostedResources?.timeoutMinutes ?? 60) * 60_000;
+              if (Date.now() >= retryUntil) throw error;
+              await update({ progress: { stage: 'reconnecting-hosted-transfer' } }).catch(() => {});
+            }
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+          started = true;
+          const endpoint = trustedUrl(target.endpoint), until = Date.now() + (job.graph.hostedResources?.timeoutMinutes ?? 60) * 60_000;
+          let lastStatus = 0;
+          for (;;) {
+            let response: Response | undefined;
+            try { response = await fetch(new URL('/ready', endpoint), { headers: { authorization: `Bearer ${target.token}` }, redirect: 'error' }); }
+            catch { /* The Sandbox prepares its engine asynchronously. */ }
+            if (response?.ok) break;
+            if (response?.status === 403) throw new Error('Hosted graph transfer authorization was rejected');
+            if (Date.now() - lastStatus >= 15_000) {
+              lastStatus = Date.now();
+              const status = await send({ action: 'computer-hosted-transfer-status', jobId: job.id, claimId: job.claimId, graphId });
+              if (!status.running) throw new Error(status.error || 'Hosted graph transfer receiver stopped');
+            }
+            if (Date.now() >= until) throw new Error('Hosted graph transfer receiver did not become ready within its configured session');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+          const { sendGraphTransfer } = await import('./graphTransfer.js');
+          await sendGraphTransfer({ root: staging, project: job.project.id, graphId, endpoint: endpoint.href, token: target.token,
+            progress: (completed, total, bytes, totalBytes) => { void update({ progress: { stage: 'transferring-to-hosted-storage', completed, total, bytes, totalBytes } }).catch(() => {}); } });
+          try { await send({ action: 'computer-stop-hosted-transfer', jobId: job.id, claimId: job.claimId, graphId }); started = false; } catch { /* The receiver also expires at the configured session duration. */ }
+          await update({ state: 'complete', result: built, hostedTransferred: true });
+          await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+        } finally {
+          if (renewal) clearInterval(renewal);
+          if (started) await send({ action: 'computer-stop-hosted-transfer', jobId: job.id, claimId: job.claimId, graphId }).catch(() => {});
+        }
+      } else if (job.kind === 'investigation') {
         const bytes = Buffer.from(JSON.stringify(result), 'utf8'), size = 192 * 1024;
         const parts = Math.ceil(bytes.length / size);
         renewal = setInterval(() => { void update({ progress: { stage: 'transferring-investigation' } }).catch(() => {}); }, 60_000);

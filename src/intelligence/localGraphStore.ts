@@ -141,7 +141,6 @@ export async function importLocalSourceGraph(source: string, destination: string
   if (destinationPath === generation || destinationPath.startsWith(`${generation}${path.sep}`)) throw new Error('Graph storage cannot be inside the transferred generation');
   const manifest = JSON.parse(await fs.readFile(path.join(generation, 'manifest.json'), 'utf8')) as Manifest;
   if (manifest.version !== 1 || manifest.graph.project !== project || manifest.graph.graphId !== graphId || !Array.isArray(manifest.parts)) throw new Error('Invalid transferred graph manifest');
-  await fs.access(path.join(generation, 'retrieval-index.sqlite'));
   const digest = async (file: string) => {
     const hash = createHash('sha256');
     for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);

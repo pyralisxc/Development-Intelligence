@@ -24,6 +24,7 @@ import { withVercelRequestContext } from './vercelRequestContext.js';
 import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
 import { WorkspaceStore } from './accounts/workspace.js';
 import { advanceHostedJob } from './accounts/hostedQueue.js';
+import { hostedTransferStatus, startHostedTransfer, stopHostedTransfer } from './accounts/hosted.js';
 import { renderAccountWorkbench } from './accounts/view.js';
 import { accountGithubBranches, accountGithubRepositories, accountGithubToken } from './accounts/github.js';
 
@@ -239,6 +240,15 @@ export function createDevelopmentIntelligenceServer() {
         res.writeHead(200, embedded ? { ...htmlHeaders(), 'x-frame-options': 'SAMEORIGIN' } : htmlHeaders()); res.end(page); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
+    if (requestUrl.pathname === '/account/hosted-transfer-lease' && req.method === 'POST') {
+      try {
+        const body = await readJson(req);
+        if (typeof body.userId !== 'string' || !body.userId) { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
+        const store = new WorkspaceStore(body.userId);
+        if (!await store.verifyHostedTransferLease(body.jobId, body.claimId, body.graphId, body.token)) { json(res, 403, { error: 'Graph transfer claim expired' }); return; }
+        json(res, 200, { active: true }); return;
+      } catch { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
+    }
     if (requestUrl.pathname === '/account/hosted-finish' && req.method === 'POST') {
       try {
         const body = await readJson(req);
@@ -272,6 +282,7 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'save-project' && identity.tokenType === 'session_token') { json(res, 200, await store.saveProject(body.project)); return; }
         if (body.action === 'save-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.saveGraph(body.graph)); return; }
         if (body.action === 'save-layout' && identity.tokenType === 'session_token') { await store.saveLayout(body.layout); json(res, 200, { saved: true }); return; }
+        if (body.action === 'retry-build' && identity.tokenType === 'session_token') { json(res, 200, await store.retryDirectBuild(body.jobId)); return; }
         if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueBuild(body.graphId), accountOrigin(req))); return; }
         if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueQuestion(body.graphId, body.question), accountOrigin(req))); return; }
         if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueInvestigation(body.graphId, body.request), accountOrigin(req))); return; }
@@ -282,6 +293,24 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret)); return; }
         if (body.action === 'computer-investigation-part' && identity.tokenType === 'oauth_token') { await store.putInvestigationPart(body.computerId, body.secret, body.jobId, body.claimId, body.index, body.part); json(res, 200, { saved: true }); return; }
         if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
+        if ((['computer-start-hosted-transfer', 'computer-hosted-transfer-status', 'computer-stop-hosted-transfer'].includes(body.action)) && identity.tokenType === 'oauth_token') {
+          const job = await store.directHostedTransferClaim(body.computerId, body.secret, body.jobId, body.claimId, body.graphId, body.action === 'computer-stop-hosted-transfer');
+          if (body.action === 'computer-start-hosted-transfer') {
+            if (!Number.isSafeInteger(body.retain) || body.retain < 1) throw new Error('Graph retention must be a positive integer');
+            if (job.previousTransfer) {
+              const previous = { ...job, claimId: job.previousTransfer.claimId };
+              await stopHostedTransfer(previous, job.previousTransfer.graphId);
+              await store.releaseHostedTransfer(previous);
+              await store.clearPreviousHostedTransfer(job);
+            }
+            await store.recordHostedTransfer(job, body.secret, body.graphId);
+            if (!await store.acquireHostedTransfer(job)) { json(res, 200, { waiting: true }); return; }
+            json(res, 200, await startHostedTransfer(identity.userId, job, body.graphId, body.secret, body.retain, accountOrigin(req))); return;
+          }
+          if (body.action === 'computer-hosted-transfer-status') { json(res, 200, await hostedTransferStatus(job, body.graphId)); return; }
+          await stopHostedTransfer(job, body.graphId); await store.releaseHostedTransfer(job);
+          json(res, 200, { stopped: true }); return;
+        }
         if (body.action === 'computer-github-token' && identity.tokenType === 'oauth_token') {
           const computer = await store.verifyComputer(body.computerId, body.secret), job = await store.build(body.jobId);
           if (!job || job.kind === 'browse' || job.state !== 'running' || job.claimId !== body.claimId || (job.assignedComputer ?? job.graph.buildComputer) !== computer.id || job.graph.source.kind !== 'git') { json(res, 403, { error: 'Build is not assigned to this computer' }); return; }
@@ -289,7 +318,14 @@ export function createDevelopmentIntelligenceServer() {
           if (source.protocol !== 'https:' || source.hostname !== 'github.com' || source.username || source.password) { json(res, 403, { error: 'GitHub credentials require a GitHub source' }); return; }
           json(res, 200, { token: await accountGithubToken(identity.userId) }); return;
         }
-        if (body.action === 'revoke-computer' && identity.tokenType === 'session_token') { await store.revokeComputer(body.computerId); json(res, 200, { revoked: true }); return; }
+        if (body.action === 'revoke-computer' && identity.tokenType === 'session_token') {
+          const transfers = await store.revokeComputer(body.computerId);
+          for (const job of transfers) if (job.transferGraphId) {
+            try { await stopHostedTransfer(job, job.transferGraphId); await store.releaseHostedTransfer(job); }
+            catch { /* Its claim is revoked; the receiver also stops on its lease check. */ }
+          }
+          json(res, 200, { revoked: true }); return;
+        }
         json(res, 400, { error: 'Unsupported account operation' }); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
