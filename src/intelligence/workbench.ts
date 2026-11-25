@@ -7,7 +7,7 @@ import { listPublicProjects } from '../source/git.js';
 import type { GraphEdge, GraphNode, IntelligenceGraph, RelationshipStatus, TechnicalSourceCapability } from '../types.js';
 import { getCodeSnippet } from './code.js';
 import { currentGraph, graphCacheDiagnostics, graphContext, graphSourceMetadata, withIndexedLocalGraph } from './service.js';
-import { runtimeInstanceId, toolExecutionDiagnostics } from '../observability.js';
+import { runtimeInstanceId } from '../observability.js';
 import { diffDefaultToSelected, findGraphNodeCandidates, searchGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, type AuditFinding } from './assessment.js';
@@ -260,7 +260,7 @@ export async function projectStatistics(project: string, ref?: string | undefine
   // These timings describe the selected graph access in this request. Local
   // and runtime snapshots without comparable diagnostics remain unknown.
   const observability = access ? { graphAccess: access.accessTiming, coldBuild: access.buildTiming,
-    persistence: access.persistence, queryArtifacts: access.queryArtifacts, lastToolCall: toolExecutionDiagnostics(project) } : null;
+    persistence: access.persistence, queryArtifacts: access.queryArtifacts } : null;
   const maxRetainedRecords = typeof cache?.maxRetainedRecords === 'number' ? cache.maxRetainedRecords : null;
   const retainedRecords = typeof cache?.retainedRecords === 'number' ? cache.retainedRecords : null;
   const cacheUtilization = maxRetainedRecords && retainedRecords !== null
@@ -315,7 +315,8 @@ export async function projectStatistics(project: string, ref?: string | undefine
       } : null,
       coldBuild: observability?.coldBuild ?? null,
       graphAccess: observability?.graphAccess ?? null,
-      lastToolCall: observability?.lastToolCall ?? null,
+      // Process-wide last-tool records do not identify a graph revision.
+      lastToolCall: null,
       limits: {
         maxRetainedRecords,
         repositoryMaxEntries: cache?.repository?.maxEntries ?? null,
@@ -1955,7 +1956,7 @@ export async function queryWorkbenchRequest(input: {
       }, run);
       if (result) return { ...result, observability: { instanceId: runtimeInstanceId, graphAccess: null, generationColdBuild: null,
         queryArtifacts: null, analysisMs: null, elapsedBeforeSerializationMs: Date.now() - requestStarted,
-        mode: 'indexed-local', serializationMs: null } };
+        mode: 'local-selection', serializationMs: null } };
       if (candidateSource) {
         const { graph, access } = await graphContext(input.project, { ...(input.ref ? { ref: input.ref } : {}), ...(input.graphId ? { graphId: input.graphId } : {}) });
         const analysisStarted = Date.now();
