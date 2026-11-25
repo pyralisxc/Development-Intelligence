@@ -56,6 +56,8 @@ Local and persistent-machine workers can keep a disposable source-stage cache al
 
 The cache resides under `.source-stage` in the selected build store; deleting that directory reclaims all of that store's source handoffs without deleting published graphs. It is not part of graph backup or graph-generation retention, and caches for projects no longer built are not automatically removed.
 
+Completed account build results and Activity report the number of source handoffs reused and the number of selected files. This is a source-stage count, not a claim that the compiler, SCIP, graph relationships or retrieval index were reused.
+
 This is reuse of file-local analysis followed by complete repository-wide reconciliation, not incremental reuse of the finished graph, SCIP, compiler results or retrieval indexes. More selective advancement needs dependencies and producer evidence that can invalidate all affected facts, including facts owned by unchanged files. Existing graph fingerprints are not sufficient to establish that every source location and piece of relationship evidence is unchanged.
 
 External tools may contribute evidence. They do not own DI identity, graph semantics, lifecycle, storage, query contracts, or product intent. No production analyzer may branch on project identity.
