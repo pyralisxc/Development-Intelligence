@@ -6,7 +6,8 @@ import { projectStatus } from '../projectStatus.js';
 import { listPublicProjects } from '../source/git.js';
 import type { GraphEdge, GraphNode, IntelligenceGraph, RelationshipStatus, TechnicalSourceCapability } from '../types.js';
 import { getCodeSnippet } from './code.js';
-import { currentGraph, graphSourceMetadata, withIndexedLocalGraph } from './service.js';
+import { currentGraph, graphCacheDiagnostics, graphContext, graphSourceMetadata, withIndexedLocalGraph } from './service.js';
+import { runtimeInstanceId, toolExecutionDiagnostics } from '../observability.js';
 import { diffDefaultToSelected, findGraphNodeCandidates, searchGraph } from './query.js';
 import { listTechnicalSources, queryTechnicalSource } from './technicalSources.js';
 import { assessGraph, auditGraph, type AuditFinding } from './assessment.js';
@@ -250,21 +251,16 @@ export async function projectOverview(project: string, ref?: string | undefined,
 }
 
 export async function projectStatistics(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {
-  const graph = await currentGraph(project, ref, graphId);
-  let graphStatus: any = null;
-  try {
-    const status = await projectStatus(project, false);
-    const candidate = (status as any).graph ?? null;
-    if (candidate?.revision === graph.repositoryRevision) graphStatus = candidate;
-  } catch {
-    graphStatus = null;
-  }
+  const { graph, access } = await graphContext(project, { ...(ref ? { ref } : {}), ...(graphId ? { graphId } : {}) });
   const semantic = graph.nodes.filter(node => node.layer === 'semantic').length;
   const structural = graph.nodes.filter(node => (node.layer ?? 'structural') === 'structural').length;
   const representation = graph.nodes.filter(node => node.layer === 'representation').length;
   const coverage = compactCoverage(graph) as any;
-  const cache = graphStatus?.cache ?? null;
-  const observability = graphStatus?.observability ?? null;
+  const cache: any = access ? graphCacheDiagnostics() : null;
+  // These timings describe the selected graph access in this request. Local
+  // and runtime snapshots without comparable diagnostics remain unknown.
+  const observability = access ? { graphAccess: access.accessTiming, coldBuild: access.buildTiming,
+    persistence: access.persistence, queryArtifacts: access.queryArtifacts, lastToolCall: toolExecutionDiagnostics(project) } : null;
   const maxRetainedRecords = typeof cache?.maxRetainedRecords === 'number' ? cache.maxRetainedRecords : null;
   const retainedRecords = typeof cache?.retainedRecords === 'number' ? cache.retainedRecords : null;
   const cacheUtilization = maxRetainedRecords && retainedRecords !== null
@@ -338,7 +334,7 @@ export async function projectStatistics(project: string, ref?: string | undefine
       semanticAuthority: false,
       unknownValuesRemainNull: true,
       operationalStatsRequireExactRevisionMatch: true,
-      operationalStatsAvailable: Boolean(graphStatus),
+      operationalStatsAvailable: Boolean(access),
     },
   };
 }
@@ -1634,6 +1630,7 @@ export async function queryWorkbenchRequest(input: {
   effectKinds?: string[] | undefined;
   depth?: number | undefined;
 }): Promise<Record<string, unknown>> {
+  const requestStarted = Date.now();
   // Preserve explicit positions: a blank item is an isolated failure, never a silently removed question.
   const explicit = (input.questions ?? []).map(question => question.trim());
   const originalText = input.text?.trim() ?? '';
@@ -1956,14 +1953,27 @@ export async function queryWorkbenchRequest(input: {
         });
         return graph ? await run(graph) : null;
       }, run);
-      if (result) return result;
+      if (result) return { ...result, observability: { instanceId: runtimeInstanceId, graphAccess: null, generationColdBuild: null,
+        queryArtifacts: null, analysisMs: null, elapsedBeforeSerializationMs: Date.now() - requestStarted,
+        mode: 'indexed-local', serializationMs: null } };
       if (candidateSource) {
-        const graph = await currentGraph(input.project, input.ref, input.graphId);
-        return await run(graph);
+        const { graph, access } = await graphContext(input.project, { ...(input.ref ? { ref: input.ref } : {}), ...(input.graphId ? { graphId: input.graphId } : {}) });
+        const analysisStarted = Date.now();
+        const answer = await run(graph);
+        return { ...answer, observability: { instanceId: runtimeInstanceId, graphAccess: access?.accessTiming ?? null,
+          generationColdBuild: access?.buildTiming ?? null, queryArtifacts: access?.queryArtifacts ?? null,
+          analysisMs: Date.now() - analysisStarted, elapsedBeforeSerializationMs: Date.now() - requestStarted,
+          mode: 'full-graph-fallback', serializationMs: null } };
       }
     }
   }
-  return await run(await currentGraph(input.project, input.ref, input.graphId));
+  const { graph, access } = await graphContext(input.project, { ...(input.ref ? { ref: input.ref } : {}), ...(input.graphId ? { graphId: input.graphId } : {}) });
+  const analysisStarted = Date.now();
+  const answer = await run(graph);
+  return { ...answer, observability: { instanceId: runtimeInstanceId, graphAccess: access?.accessTiming ?? null,
+    generationColdBuild: access?.buildTiming ?? null, queryArtifacts: access?.queryArtifacts ?? null,
+    analysisMs: Date.now() - analysisStarted, elapsedBeforeSerializationMs: Date.now() - requestStarted,
+    mode: 'full-graph', serializationMs: null } };
 }
 
 export async function workbenchSources(project: string, ref?: string | undefined, graphId?: string | undefined): Promise<Record<string, unknown>> {

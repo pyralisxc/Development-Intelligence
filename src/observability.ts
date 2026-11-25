@@ -1,4 +1,8 @@
 import { hasProjectAccess, projectAccessScopeKey } from './config/projectAccess.js';
+import { randomBytes } from 'node:crypto';
+
+/** Ephemeral process identity for comparing observations, not an authority ID. */
+export const runtimeInstanceId = randomBytes(16).toString('hex');
 
 export interface ToolExecutionTiming {
   project: string;

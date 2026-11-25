@@ -1184,7 +1184,8 @@ async function machineGraphSelection(project: string, options: { ref?: string | 
   return { root, entry, revision };
 }
 
-export async function graphContext(project: string, options: { ref?: string; graphId?: string } = {}): Promise<{ graph: IntelligenceGraph; revision: ProjectRevision }> {
+export async function graphContext(project: string, options: { ref?: string; graphId?: string } = {}): Promise<{ graph: IntelligenceGraph; revision: ProjectRevision; access?: RepositoryGraphAccess }> {
+  const started = Date.now();
   await assertProjectAccessCurrent(project);
   if (options.ref && options.graphId) throw new Error('Use either ref or graphId, not both');
   const machine = await machineGraphSelection(project, options);
@@ -1231,52 +1232,58 @@ export async function graphContext(project: string, options: { ref?: string; gra
       const sha = canonical[1]!;
       const cachedCanonical = repositoryCache.get(cacheKey(project, sha, 'canonical'));
       if (cachedCanonical) {
+        const cacheState = cachedCanonical.value ? 'hit' : 'coalesced';
+        const loadStarted = Date.now();
         const value = await cachedCanonical.promise;
         if (value.graph.graphId === options.graphId && value.revision.sha === sha) {
           value.touchedAt = Date.now();
           pruneGraphCaches(repositoryRetentionId(cacheKey(project, sha, 'canonical')));
-          return { graph: value.graph, revision: value.revision };
+          return { graph: value.graph, revision: value.revision, access: { ...value, accessTiming: {
+            cacheState, revisionResolutionMs: 0, graphLoadMs: elapsedMs(loadStarted), totalMs: elapsedMs(started), persistence: value.persistence } } };
         }
       }
 
       const cachedReplay = repositoryCache.get(cacheKey(project, sha, 'replay'));
       if (cachedReplay) {
+        const cacheState = cachedReplay.value ? 'hit' : 'coalesced';
+        const loadStarted = Date.now();
         const value = await cachedReplay.promise;
         if (value.graph.graphId === options.graphId && value.revision.sha === sha) {
           value.touchedAt = Date.now();
           pruneGraphCaches(repositoryRetentionId(cacheKey(project, sha, 'replay')));
-          return { graph: value.graph, revision: value.revision };
+          return { graph: value.graph, revision: value.revision, access: { ...value, accessTiming: {
+            cacheState, revisionResolutionMs: 0, graphLoadMs: elapsedMs(loadStarted), totalMs: elapsedMs(started), persistence: value.persistence } } };
         }
       }
 
-      let repository: CachedRepositoryGraph;
+      let repository: RepositoryGraphAccess;
       if (previewRuntime()) {
         // Preview only has process-local replays. A cold exact-ID read
         // should never build the configured default revision first.
         repository = await buildCachedRepositoryGraph(project, `commit:${sha}`);
         if (repository.graph.graphId !== options.graphId) throw new Error(`Graph identifier does not match the Preview replay: ${options.graphId}`);
-        return { graph: repository.graph, revision: repository.revision };
+        return { graph: repository.graph, revision: repository.revision, access: repository };
       }
       if (hasProjectAccess()) {
         // Reconstruct against the adopted authority before considering source
         // replay. Never use another binding's snapshot or ambient operator W.
         try {
           const current = await loadCachedRepositoryGraphForRead(project);
-          if (current.revision.sha === sha && current.graph.graphId === options.graphId) return { graph: current.graph, revision: current.revision };
+          if (current.revision.sha === sha && current.graph.graphId === options.graphId) return { graph: current.graph, revision: current.revision, access: current };
         } catch (error) {
           await assertProjectAccessCurrent(project);
           if ((error as any)?.status === 403) throw error;
         }
         repository = await buildCachedRepositoryGraph(project, `commit:${sha}`);
         if (repository.graph.graphId !== options.graphId) throw new Error(`Graph identifier does not match the selected binding replay: ${options.graphId}`);
-        return { graph: repository.graph, revision: repository.revision };
+        return { graph: repository.graph, revision: repository.revision, access: repository };
       }
       try {
         // An explicit graph-id lookup is a read. Loading a current saved graph
         // must not trigger artifact migration or publication as a side effect.
         const current = await loadCachedRepositoryGraphForRead(project);
         if (current.revision.sha === sha && current.graph.graphId === options.graphId) {
-          return { graph: current.graph, revision: current.revision };
+          return { graph: current.graph, revision: current.revision, access: current };
         }
         repository = await buildCachedRepositoryGraph(project, `commit:${sha}`);
       } catch (error) {
@@ -1284,12 +1291,12 @@ export async function graphContext(project: string, options: { ref?: string; gra
         if (repository.revision.sha !== sha) throw error;
       }
       if (repository.graph.graphId !== options.graphId) throw new Error(`Canonical graph identifier does not match the current analyzer result: ${options.graphId}`);
-      return { graph: repository.graph, revision: repository.revision };
+      return { graph: repository.graph, revision: repository.revision, access: repository };
     }
     throw new Error(`Runtime graph snapshot is unavailable or expired: ${options.graphId}`);
   }
   const repository = await loadCachedRepositoryGraphForRead(project, options.ref);
-  return { graph: repository.graph, revision: repository.revision };
+  return { graph: repository.graph, revision: repository.revision, access: repository };
 }
 
 export async function currentGraph(project: string, ref?: string, graphId?: string): Promise<IntelligenceGraph> {
