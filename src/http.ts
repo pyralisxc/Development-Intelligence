@@ -236,7 +236,7 @@ export function createDevelopmentIntelligenceServer() {
         const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
         if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
         const embedded = requestUrl.searchParams.get('embedded') === '1';
-        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded);
+        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded, job.graph.storage.computer === 'hosted' ? 'Stored in DI hosted storage' : `Stored on linked computer (${job.graph.storage.computer})`);
         res.writeHead(200, embedded ? { ...htmlHeaders(), 'x-frame-options': 'SAMEORIGIN' } : htmlHeaders()); res.end(page); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
@@ -285,7 +285,7 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'retry-build' && identity.tokenType === 'session_token') { json(res, 200, await store.retryDirectBuild(body.jobId)); return; }
         if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueBuild(body.graphId), accountOrigin(req))); return; }
         if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueQuestion(body.graphId, body.question), accountOrigin(req))); return; }
-        if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueInvestigation(body.graphId, body.request), accountOrigin(req))); return; }
+        if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueInvestigation(body.graphId, body.request, body.snapshotGraphId), accountOrigin(req))); return; }
         if (body.action === 'browse-folders' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBrowse(body.computerId, body.path)); return; }
         if (body.action === 'begin-computer-link' && identity.tokenType === 'session_token') { json(res, 200, { code: await store.beginComputerLink() }); return; }
         if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer, body.pairingCode)); return; }

@@ -27,17 +27,25 @@ export async function advanceHostedJob(store: WorkspaceStore, userId: string, in
     }
   }
   if (job.state === 'running' && job.hosted && job.claimId && job.leaseUntil && Date.now() >= job.leaseUntil) {
-    await store.updateHosted(job.id, job.claimId, { state: 'failed', error: 'Hosted worker exceeded its configured session duration' });
+    try { await store.updateHosted(job.id, job.claimId, { state: 'failed', error: 'Hosted worker exceeded its configured session duration' }); }
+    catch (error) {
+      const current = await store.build(job.id).catch(() => null);
+      if (current?.claimId === job.claimId && (current.state === 'complete' || current.state === 'failed')) return current;
+      throw error;
+    }
     await stopHostedGraphJob(job.hosted).catch(() => {});
     await store.releaseHostedBuild(job.id);
     return await store.build(job.id);
   }
   if (job.state === 'running' && job.hosted?.command && job.claimId) {
-    const status = await readHostedGraphJob(job.hosted);
-    try { await store.updateHosted(job.id, job.claimId, status); }
+    let status: Awaited<ReturnType<typeof readHostedGraphJob>>;
+    try {
+      status = await readHostedGraphJob(job.hosted);
+      await store.updateHosted(job.id, job.claimId, status);
+    }
     catch (error) {
-      const current = await store.build(job.id);
-      if (current?.state === 'complete' || current?.state === 'failed') return current;
+      const current = await store.build(job.id).catch(() => null);
+      if (current?.claimId === job.claimId && (current.state === 'complete' || current.state === 'failed')) return current;
       throw error;
     }
     if (status.state !== 'running') {
