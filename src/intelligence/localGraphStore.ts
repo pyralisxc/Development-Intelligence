@@ -7,7 +7,7 @@ import { bindLocalGraphIndex, buildLocalGraphIndex, readIndexedQuestionEnvelope 
 import { graphFamilyMemberships } from './graphFamilies.js';
 
 type Field = 'nodes' | 'edges' | 'evidence';
-type Entry = { generation: string; graphId: string; createdAt: string; sourceFingerprint: string | null };
+type Entry = { generation: string; graphId: string; createdAt: string; sourceFingerprint: string | null; lastBuiltAt?: string };
 type Catalog = { version: 1; project: string; active: string; entries: Entry[]; targets?: Record<string, string> };
 type Part = { field: Field; file: string; sha256: string };
 type Manifest = { version: 1; graph: IntelligenceGraph; parts: Part[] };
@@ -73,6 +73,7 @@ export async function saveLocalSourceGraph(root: string, graph: IntelligenceGrap
   const target = path.join(directory, generation);
   await fs.mkdir(target);
   const parts: Part[] = [];
+  const lengths = { nodes: new Float64Array(graph.nodes.length), edges: new Float64Array(graph.edges.length), evidence: new Float64Array(graph.evidence.length) };
   try {
     for (const field of ['nodes', 'edges', 'evidence'] as Field[]) {
       let batch: string[] = [];
@@ -86,16 +87,57 @@ export async function saveLocalSourceGraph(root: string, graph: IntelligenceGrap
         parts.push({ field, file, sha256: createHash('sha256').update(body).digest('hex') });
         batch = []; size = 2;
       };
+      let ordinal = 0;
       for (const item of graph[field]) {
         const body = JSON.stringify(item);
-        const bytes = Buffer.byteLength(body) + 1;
+        const length = Buffer.byteLength(body);
+        lengths[field][ordinal++] = length;
+        const bytes = length + 1;
         if (batch.length && size + bytes > 8 * 1024 * 1024) await flush();
         batch.push(body); size += bytes;
       }
       await flush();
     }
-    buildLocalGraphIndex(target, generation, graph, graphFamilyMemberships(graph));
     const manifest: Manifest = { version: 1, graph: { ...graph, nodes: [], edges: [], evidence: [] }, parts };
+    // Sharing is based on the complete serialized graph and metadata, not a
+    // graph ID or topology fingerprint. Each name keeps its own catalog link.
+    const comparable = (value: IntelligenceGraph) => JSON.stringify({ ...value, createdAt: undefined,
+      sources: value.sources.map(source => source.id === 'repository' && source.kind === 'repository' && source.observedAt === value.createdAt
+        ? { ...source, observedAt: undefined } : source) });
+    const reused = await withCatalogLock(directory, async () => {
+      const catalog = await catalogAt(directory);
+      if (!catalog || catalog.project !== graph.project) return null;
+      for (const candidate of catalog.entries) {
+        if (candidate.graphId !== graph.graphId || !/^[a-f0-9]{32}$/u.test(candidate.generation)) continue;
+        const candidateDirectory = path.join(directory, candidate.generation);
+        try {
+          const saved = JSON.parse(await fs.readFile(path.join(candidateDirectory, 'manifest.json'), 'utf8')) as Manifest;
+          if (saved.version !== 1 || comparable(saved.graph) !== comparable(manifest.graph)
+              || JSON.stringify(saved.parts) !== JSON.stringify(parts)
+              || !bindLocalGraphIndex({ ...graph }, candidate.generation, candidateDirectory)) continue;
+          let intact = true;
+          for (const part of saved.parts) {
+            if (!['nodes', 'edges', 'evidence'].includes(part.field) || !new RegExp(`^${part.field}-[0-9]+\\.json$`, 'u').test(part.file)
+                || createHash('sha256').update(await fs.readFile(path.join(candidateDirectory, part.file))).digest('hex') !== part.sha256) { intact = false; break; }
+          }
+          if (!intact) continue;
+        } catch { continue; }
+        const entry: Entry = { ...candidate, lastBuiltAt: graph.createdAt };
+        const entries = [entry, ...catalog.entries.filter(item => item.generation !== entry.generation)];
+        const active = activate ? entry.generation : catalog.active;
+        const targets = { ...(catalog.targets ?? { working: catalog.active }), [targetName]: entry.generation };
+        const keep = new Set([active, ...Object.values(targets)]);
+        for (const item of entries) { if (keep.size >= retain) break; keep.add(item.generation); }
+        await writeCatalog(directory, { version: 1, project: graph.project, active, entries: entries.filter(item => keep.has(item.generation)), targets });
+        for (const old of entries.filter(item => !keep.has(item.generation))) {
+          if (/^[a-f0-9]{32}$/u.test(old.generation)) await fs.rm(path.join(directory, old.generation), { recursive: true, force: true });
+        }
+        return entry;
+      }
+      return null;
+    });
+    if (reused) { await fs.rm(target, { recursive: true, force: true }); return reused; }
+    buildLocalGraphIndex(target, generation, graph, graphFamilyMemberships(graph), lengths);
     await fs.writeFile(path.join(target, 'manifest.json'), JSON.stringify(manifest));
     return await withCatalogLock(directory, async () => {
       const previous = await catalogAt(directory);
@@ -127,6 +169,35 @@ export async function saveLocalSourceGraph(root: string, graph: IntelligenceGrap
 
 export async function localSourceGraphHistory(root: string, project: string): Promise<Catalog | null> {
   return await catalogAt(projectDirectory(root, project));
+}
+
+/** Storage accounting for the generations referenced by this project's catalog. */
+export async function localSourceGraphStorage(root: string, project: string): Promise<Record<string, unknown> | null> {
+  const directory = projectDirectory(root, project);
+  const initial = await catalogAt(directory);
+  if (!initial) return null;
+  return await withCatalogLock(directory, async () => {
+    const catalog = await catalogAt(directory);
+    if (!catalog) return null;
+    const generations = [];
+    for (const entry of catalog.entries) {
+      if (!/^[a-f0-9]{32}$/u.test(entry.generation)) throw new Error('Invalid local graph generation');
+      const target = path.join(directory, entry.generation);
+      let graphBytes = 0, indexBytes = 0;
+      for (const item of await fs.readdir(target, { withFileTypes: true })) {
+        if (!item.isFile()) continue;
+        const size = (await fs.stat(path.join(target, item.name))).size;
+        if (item.name === 'retrieval-index.sqlite') indexBytes += size;
+        else graphBytes += size;
+      }
+      generations.push({ ...entry, active: catalog.active === entry.generation,
+        names: Object.entries(catalog.targets ?? {}).filter(([, value]) => value === entry.generation).map(([name]) => name),
+        graphBytes, indexBytes, indexPresent: indexBytes > 0, totalBytes: graphBytes + indexBytes });
+    }
+    return { project, generations, totalBytes: generations.reduce((sum, entry) => sum + entry.totalBytes, 0),
+      retention: 'Active and named generations remain protected; other generations are pruned after a successful publication.',
+      backup: 'Graph backup includes catalog-referenced generations and their indexes; it does not include source files or analysis caches.' };
+  }, process.env.DEVINT_GRAPH_READ_ONLY_SNAPSHOT === '1');
 }
 
 /** Publish one already-built generation into another local store. */
@@ -235,7 +306,7 @@ export async function removeLocalGraphTarget(root: string, project: string, name
   });
 }
 
-export async function readLocalSourceGraph(root: string, project: string, graphId?: string, generation?: string): Promise<IntelligenceGraph> {
+export async function readLocalSourceGraph(root: string, project: string, graphId?: string, generation?: string, skipIndex = false): Promise<IntelligenceGraph> {
   const directory = projectDirectory(root, project);
   try { await fs.access(directory); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`No local graph for ${project}; build it first`); throw error; }
@@ -255,7 +326,7 @@ export async function readLocalSourceGraph(root: string, project: string, graphI
     if (!Array.isArray(items)) throw new Error('Invalid local graph part contents');
     for (const item of items) (manifest.graph[part.field] as unknown[]).push(item);
   }
-    try {
+    if (!skipIndex) try {
       await fs.access(path.join(target, 'retrieval-index.sqlite'));
       bindLocalGraphIndex(manifest.graph, entry.generation, target);
     } catch (error) {
@@ -263,6 +334,44 @@ export async function readLocalSourceGraph(root: string, project: string, graphI
     }
     return manifest.graph;
   }, process.env.DEVINT_GRAPH_READ_ONLY_SNAPSHOT === '1');
+}
+
+/** Rebuild a disposable retrieval index from its retained, validated graph. */
+export async function rebuildLocalGraphIndex(root: string, project: string, targetName?: string): Promise<Record<string, unknown>> {
+  if (process.env.DEVINT_GRAPH_READ_ONLY_SNAPSHOT === '1') throw new Error('A read-only graph snapshot cannot be reindexed');
+  const directory = projectDirectory(root, project);
+  const catalog = await catalogAt(directory);
+  if (!catalog || catalog.project !== project) throw new Error(`No local graph for ${project}; build it first`);
+  const generation = targetName ? catalog.targets?.[targetName] : catalog.active;
+  const entry = catalog.entries.find(item => item.generation === generation);
+  if (!entry || !/^[a-f0-9]{32}$/u.test(entry.generation)) throw new Error(`No retained graph for ${targetName ?? 'active target'}`);
+  const graph = await readLocalSourceGraph(root, project, entry.graphId, entry.generation, true);
+  const temporary = await fs.mkdtemp(path.join(directory, '.reindex-'));
+  let preserveTemporary = false;
+  try {
+    const lengths = { nodes: Float64Array.from(graph.nodes, item => Buffer.byteLength(JSON.stringify(item))),
+      edges: Float64Array.from(graph.edges, item => Buffer.byteLength(JSON.stringify(item))),
+      evidence: Float64Array.from(graph.evidence, item => Buffer.byteLength(JSON.stringify(item))) };
+    const audit = buildLocalGraphIndex(temporary, entry.generation, graph, graphFamilyMemberships(graph), lengths);
+    await withCatalogLock(directory, async () => {
+      const current = await catalogAt(directory);
+      if (!current?.entries.some(item => item.generation === entry.generation && item.graphId === entry.graphId)) throw new Error('The graph was removed while its index was being rebuilt');
+      const target = path.join(directory, entry.generation, 'retrieval-index.sqlite');
+      const backup = path.join(temporary, 'previous.sqlite');
+      let hadPrevious = false;
+      try { await fs.rename(target, backup); hadPrevious = true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      try { await fs.rename(path.join(temporary, 'retrieval-index.sqlite'), target); }
+      catch (error) {
+        if (hadPrevious) {
+          try { await fs.rename(backup, target); }
+          catch { preserveTemporary = true; throw new Error(`Could not install or restore the retrieval index; the previous index remains at ${backup}`, { cause: error }); }
+        }
+        throw error;
+      }
+    });
+    return { project, graphId: entry.graphId, generation: entry.generation, audit };
+  } finally { if (!preserveTemporary) await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
 /** Open the identity and coverage envelope for generation-bound record access.

@@ -2736,7 +2736,7 @@ async function buildPreparedRepositoryGraph(input: {
   const sourceStageCache = await SourceStageCache.open(input.sourceStageCacheRoot, input.project, input.repository);
 
   for (const trackedFile of selected) {
-    if (analyzedProgress && analyzedProgress % 32 === 0) input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length, reused: reusedSourceFiles });
+    if (analyzedProgress && analyzedProgress % 32 === 0) input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length, ...(sourceStageCache ? { reused: reusedSourceFiles } : {}) });
     analyzedProgress++;
     const root = path.resolve(input.root);
     const absolute = path.resolve(root, trackedFile.path);
@@ -2805,7 +2805,7 @@ async function buildPreparedRepositoryGraph(input: {
     }
   }
 
-  input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length, reused: reusedSourceFiles });
+  input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length, ...(sourceStageCache ? { reused: reusedSourceFiles } : {}) });
   if (skippedOversizedFiles > 0) warnings.push(`Skipped ${skippedOversizedFiles} tracked files larger than ${MAX_FILE_BYTES} bytes.`);
   if (failedFiles > 0) warnings.push(`${failedFiles} eligible tracked files failed analysis; negative/exhaustive claims must be qualified.`);
   const repositorySource: SourceDescriptor = {

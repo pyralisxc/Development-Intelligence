@@ -102,7 +102,6 @@ The `windows-package` workflow builds an unsigned package on a disposable GitHub
 | `DEVINT_DERIVED_OBJECT_MAX_BYTES` | Optional maximum per derived storage object; callers may request a smaller bound. Unset imposes no additional DI size cap. |
 | `DEVINT_TECHNICAL_SOURCE_MAX_BYTES` | External technical-source response bound; defaults to 2 MiB. |
 | `DEVINT_JOERN_MAX_SLICE_BYTES`, `DEVINT_JOERN_MAX_NODES`, `DEVINT_JOERN_MAX_EDGES`, `DEVINT_JOERN_MAX_SOURCE_FILES`, `DEVINT_JOERN_MAX_CODE_CHARS` | Optional Joern input limits; unset means no additional DI cutoff. |
-| `DEVINT_CANONICAL_INCREMENTAL_MAX_CHANGED_FILES`, `DEVINT_CANONICAL_INCREMENTAL_MAX_FRONTIER_FILES` | Optional thresholds for switching to a complete rebuild. Unset does not impose the former 32/64-file thresholds; other producer and coverage constraints still require a full rebuild. |
 | `DEVINT_GRAPH_CACHE_SIZE` | Warm canonical exact-revision graph cache bound; zero or a negative integer preserves the legacy minimum of one entry |
 | `DEVINT_GRAPH_SNAPSHOT_CACHE_SIZE` | Bound for explicit ephemeral runtime graph snapshots; zero or a negative integer preserves the legacy minimum of one entry |
 | `DEVINT_GRAPH_CACHE_MAX_RECORDS` | Combined process-local retention budget across canonical graphs and runtime snapshots; defaults to 150,000 graph records |

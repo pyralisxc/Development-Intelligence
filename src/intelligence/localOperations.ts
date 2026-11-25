@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { localSourceGraphHistory } from './localGraphStore.js';
+import { localSourceGraphHistory, localSourceGraphStorage } from './localGraphStore.js';
 import { measureSourceCapacity } from './capacityModel.js';
 
 type Settings = { installDir: string; dataDir: string; scratchDir: string; repoPath: string; project: string; retain: number; cacheSize?: number; port: number; backupDir?: string; graphWorkerHeapMB?: number; scipHeapMB?: number };
@@ -29,7 +29,7 @@ export async function localCapacity(): Promise<Record<string, unknown>> {
 }
 export async function localLifecycleStatus(): Promise<Record<string, unknown>> {
   const settings = await localSettings();
-  return { settings, history: await localSourceGraphHistory(settings.dataDir, settings.project), job };
+  return { settings, history: await localSourceGraphHistory(settings.dataDir, settings.project), storage: await localSourceGraphStorage(settings.dataDir, settings.project), job };
 }
 export async function updateLocalSettings(input: Record<string, unknown>): Promise<Settings> {
   reserveTransition();
@@ -78,8 +78,8 @@ export async function startLocalOperation(input: Record<string, unknown>): Promi
   try {
   const settings = await localSettings();
   const action = input.action;
-  if (typeof action !== 'string' || !['build', 'build-revision', 'backup', 'restore', 'unpin'].includes(action)) throw new Error('Unsupported local operation');
-  const commands: Record<string, string> = { build: 'working-build', 'build-revision': 'revision-build', backup: 'working-backup', restore: 'working-restore', unpin: 'working-unpin' };
+  if (typeof action !== 'string' || !['build', 'build-revision', 'backup', 'restore', 'unpin', 'reindex'].includes(action)) throw new Error('Unsupported local operation');
+  const commands: Record<string, string> = { build: 'working-build', 'build-revision': 'revision-build', backup: 'working-backup', restore: 'working-restore', unpin: 'working-unpin', reindex: 'working-reindex' };
   const args = [fileURLToPath(new URL('../graphCli.js', import.meta.url)), commands[action]!, '--repo-path', settings.repoPath, '--project', settings.project, '--data-dir', settings.dataDir, '--retain', String(settings.retain)];
   if (action === 'build-revision') {
     if (typeof input.ref !== 'string' || !input.ref.trim()) throw new Error('Enter a revision');
@@ -91,7 +91,7 @@ export async function startLocalOperation(input: Record<string, unknown>): Promi
     if (!backup) throw new Error('Choose a backup directory');
     args.push('--backup-dir', path.resolve(backup));
   }
-  if (action === 'unpin') {
+  if (action === 'unpin' || action === 'reindex') {
     if (typeof input.target !== 'string' || !input.target.trim()) throw new Error('Enter a target name');
     args.push('--target', input.target.trim());
   }
