@@ -339,9 +339,9 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   exploreQuery = query;
   setHead(exploreActions());
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; void renderExploreResult(epoch); });
-  content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto"><textarea id="explore-input" placeholder="Search a feature, tool, route, file, function, provider…">${esc(exploreQuery)}</textarea><button class="primary" type="submit">Search</button></form><div class="investigation-layout"><button type="button" id="explore-audit">Investigate repository audit</button><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
+  content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto auto"><input id="explore-input" aria-label="Search the graph" placeholder="Search the graph" value="${esc(exploreQuery)}"><button class="primary" type="submit">Search</button><button type="button" id="explore-audit">Audit</button></form><div class="investigation-layout"><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
-  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLTextAreaElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
+  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLInputElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
   const showAudit = async () => {
     try {
       const result = await getJson('/workbench/data', new URLSearchParams({ action: 'audit', offset: String(auditOffset), ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
@@ -401,7 +401,7 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const sequence = ++graphRenderSequence;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}<label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button><button id="graph-scope" type="button" disabled>Use selected subject for question</button><button id="graph-compare-selection" type="button">Use selected nodes for comparison</button><span id="graph-selected-label" class="muted"></span><span class="muted">Drag to pan · scroll to zoom · select to inspect · shift-click to select multiple nodes</span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}<details class="graph-display"><summary>Display</summary><label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button></details><button id="graph-scope" type="button" disabled>Use selected subject for question</button><button id="graph-compare-selection" type="button">Use selected nodes for comparison</button><span id="graph-selected-label" class="muted"></span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
     const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
@@ -861,32 +861,34 @@ if (document.getElementById('question-dock')) {
   const inspector = document.querySelector<HTMLElement>('.inspector')!;
   const dock = document.getElementById('question-dock')!, shell = document.querySelector<HTMLElement>('.shell')!;
   let layoutReady = false, lastLayout = '', layoutTimer: number | undefined;
-  let inspectorSide = 'right', questionPosition = 'bottom';
+  let inspectorSide = 'right', questionPosition = 'bottom', inspectorOpen = window.innerWidth >= 850, panelWidth = 320;
   const applyLayout = () => {
-    const width = Math.round(inspector.getBoundingClientRect().width) || 320;
+    const width = Math.min(panelWidth, Math.max(180, Math.round(shell.getBoundingClientRect().width * .45)));
+    inspector.hidden = !inspectorOpen; inspector.style.width = width + 'px';
     inspector.style.order = inspectorSide === 'left' ? '-1' : '1';
-    shell.style.gridTemplateColumns = inspectorSide === 'left' ? width + 'px minmax(0,1fr)' : 'minmax(0,1fr) ' + width + 'px';
+    shell.style.gridTemplateColumns = !inspectorOpen ? 'minmax(0,1fr)' : inspectorSide === 'left' ? width + 'px minmax(0,1fr)' : 'minmax(0,1fr) ' + width + 'px';
     dock.style.order = questionPosition === 'top' ? '-1' : '1';
     window.dispatchEvent(new Event('resize'));
   };
   const saveLayout = () => {
     if (!layoutReady) return;
-    const layout = { inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height), inspectorSide, questionPosition };
+    if (inspectorOpen) panelWidth = Math.round(inspector.getBoundingClientRect().width) || panelWidth;
+    const layout = { inspectorWidth: panelWidth, questionHeight: Math.round(dock.getBoundingClientRect().height), inspectorSide, questionPosition, inspectorOpen };
     const next = JSON.stringify(layout); if (next === lastLayout) return; lastLayout = next;
     applyLayout(); parent.postMessage({ type: 'di-layout', layout }, location.origin);
   };
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
     const saved = event.data.layout ?? {};
-    inspectorSide = saved.inspectorSide === 'left' ? 'left' : 'right'; questionPosition = saved.questionPosition === 'top' ? 'top' : 'bottom';
-    if (Number.isFinite(saved.inspectorWidth) && saved.inspectorWidth >= 180) inspector.style.width = saved.inspectorWidth + 'px';
+    inspectorSide = saved.inspectorSide === 'left' ? 'left' : 'right'; questionPosition = saved.questionPosition === 'top' ? 'top' : 'bottom'; if (typeof saved.inspectorOpen === 'boolean') inspectorOpen = saved.inspectorOpen;
+    if (Number.isFinite(saved.inspectorWidth) && saved.inspectorWidth >= 180) panelWidth = saved.inspectorWidth;
     if (Number.isFinite(saved.questionHeight) && saved.questionHeight >= 100) dock.style.height = saved.questionHeight + 'px';
     applyLayout(); requestAnimationFrame(() => { layoutReady = true; });
   });
   const observer = new ResizeObserver(() => { if (layoutReady) { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700); } });
   observer.observe(inspector); observer.observe(dock);
-  const moveInspector = document.createElement('button'); moveInspector.type = 'button'; moveInspector.textContent = 'Move panel'; moveInspector.onclick = () => { inspectorSide = inspectorSide === 'left' ? 'right' : 'left'; saveLayout(); };
-  const moveQuestions = document.createElement('button'); moveQuestions.type = 'button'; moveQuestions.textContent = 'Move questions'; moveQuestions.onclick = () => { questionPosition = questionPosition === 'top' ? 'bottom' : 'top'; saveLayout(); }; dock.prepend(moveQuestions);
+  const moveInspector = document.createElement('button'); moveInspector.type = 'button'; moveInspector.title = 'Move inspector'; moveInspector.setAttribute('aria-label', 'Move inspector'); moveInspector.textContent = '⇄'; moveInspector.onclick = () => { inspectorSide = inspectorSide === 'left' ? 'right' : 'left'; saveLayout(); };
+  const moveQuestions = document.createElement('button'); moveQuestions.type = 'button'; moveQuestions.title = 'Move questions'; moveQuestions.setAttribute('aria-label', 'Move questions'); moveQuestions.textContent = '⇅'; moveQuestions.onclick = () => { questionPosition = questionPosition === 'top' ? 'bottom' : 'top'; saveLayout(); }; dock.prepend(moveQuestions);
   const tabs = document.createElement('div'); tabs.className = 'inspector-tabs';
   tabs.innerHTML = '<button type="button" data-pane="inspection">Inspector</button><button type="button" data-pane="files">Files</button>';
   const filesPane = document.createElement('div'); filesPane.className = 'inspector-body'; filesPane.hidden = true;
@@ -896,6 +898,7 @@ if (document.getElementById('question-dock')) {
   const fileBody = document.createElement('pre'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;white-space:pre;';
   sectionHead.before(fileTabs); content.after(fileBody);
   const graphTab = document.createElement('button'); graphTab.textContent = 'Graph'; fileTabs.append(graphTab);
+  const panelToggle = document.createElement('button'); panelToggle.type = 'button'; panelToggle.textContent = 'Inspector & files'; panelToggle.onclick = () => { inspectorOpen = !inspectorOpen; applyLayout(); saveLayout(); }; fileTabs.append(panelToggle);
   const showGraph = () => { fileBody.hidden = true; sectionHead.hidden = false; content.hidden = false; window.dispatchEvent(new Event('resize')); };
   graphTab.onclick = showGraph;
   const openFile = async (file: string) => {
