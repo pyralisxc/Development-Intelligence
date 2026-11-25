@@ -479,7 +479,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
-  renderer = new Sigma(graph, container, { enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
+  renderer = new Sigma(graph, container, { allowInvalidContainer: true, enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
   renderer.on('clickNode', event => {
     graphSelected = event.node;
     if (event.event.original.shiftKey) { if (selectedGraphNodes.has(event.node)) selectedGraphNodes.delete(event.node); else selectedGraphNodes.add(event.node); }
@@ -655,7 +655,7 @@ function parityChangeDetails(item: any): string {
 
 async function renderParity(epoch: number): Promise<void> {
   setHead();
-  content.innerHTML = `<div class="card"><h3>Interaction parity</h3><h2>Compare connected behavior</h2><p>Compare interaction points and their captured graph paths across two revisions.</p><div class="query-box"><label>Base revision <input id="parity-base" value="${viewerConfig.local ? 'preview' : 'main'}"></label><label>Compare revision <input id="parity-head" value="${viewerConfig.local ? 'working-tree' : 'preview'}"></label><label>Filter by interaction or connected source or name <input id="parity-scope" placeholder="All interactions"></label><button id="compare-interactions" type="button">Compare</button></div><div id="interaction-parity-result" class="query-result"></div></div><details style="margin-top:13px"><summary>Optional expectation overlay</summary><div class="card"><h3>Expectation overlay E</h3><h2>Define what must be true</h2><p>Use stable graph IDs to describe required or forbidden entities and relationships. Development Intelligence evaluates this contract against the selected working graph without storing it or promoting it into A.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) auto;margin-top:13px"><textarea id="parity-contract" aria-label="Parity contract JSON" style="min-height:260px">${esc(parityContractText)}</textarea><button class="primary" id="evaluate-parity" type="button" style="align-self:start">Evaluate</button></div><p class="muted">Supported requirements: required and forbidden. Missing negative evidence becomes unproven when graph coverage is incomplete.</p></div><div id="parity-result" class="query-result"></div></details>`;
+  content.innerHTML = `<div class="card"><h3>Interaction parity</h3><h2>Compare connected behavior</h2><p>Compare interaction points and their captured graph paths across two revisions.</p><div class="query-box"><label>Base revision <input id="parity-base" value="${viewerConfig.local ? 'preview' : 'main'}"></label><label>Compare revision <input id="parity-head" value="${viewerConfig.local ? 'working-tree' : 'preview'}"></label><label>Filter by interaction or connected source or name <input id="parity-scope" placeholder="All interactions"></label><button id="compare-interactions" type="button">Compare</button></div><div id="interaction-parity-result" class="query-result"></div></div><details style="margin-top:13px"><summary>Optional expectation overlay</summary><div class="card"><h3>Expectation overlay E</h3><h2>Define what must be true</h2><p>Use stable graph IDs to describe required or forbidden entities and relationships. Development Intelligence evaluates this contract against the selected working graph without storing it or changing the selected graph.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) auto;margin-top:13px"><textarea id="parity-contract" aria-label="Parity contract JSON" style="min-height:260px">${esc(parityContractText)}</textarea><button class="primary" id="evaluate-parity" type="button" style="align-self:start">Evaluate</button></div><p class="muted">Supported requirements: required and forbidden. Missing negative evidence becomes unproven when graph coverage is incomplete.</p></div><div id="parity-result" class="query-result"></div></details>`;
   let parityOffset = 0;
   const compare = async () => {
     const target = document.getElementById('interaction-parity-result') as HTMLElement;
@@ -942,7 +942,7 @@ if (document.getElementById('question-dock')) {
   const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorBody];
   const fileTabs = document.createElement('div'); fileTabs.className = 'inspector-tabs';
   const fileBody = document.createElement('div'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;';
-  const fileStatus = document.createElement('div');
+  const fileStatus = document.createElement('div'); fileStatus.setAttribute('role', 'status');
   const fileEditor = document.createElement('div');
   fileBody.append(fileStatus, fileEditor);
   let editor: EditorView | undefined;
@@ -954,6 +954,7 @@ if (document.getElementById('question-dock')) {
     return [];
   };
   const graphPane = document.querySelector<HTMLElement>('.workspace')!;
+  const navigation = shell.querySelector<HTMLElement>('.nav')!;
   const sourcePane = document.createElement('section'); sourcePane.className = 'di-source-pane'; sourcePane.append(fileTabs, fileBody);
   const host = document.createElement('div'); host.className = 'dockview-theme-dark di-dockview';
   const style = document.createElement('style'); style.textContent = dockviewCss + `
@@ -961,9 +962,16 @@ if (document.getElementById('question-dock')) {
     .di-dockview .workspace,.di-dockview .inspector,.di-source-pane{height:100%;width:100%;min-width:0;min-height:0;overflow:auto}
     .di-source-pane{display:flex;flex-direction:column;background:#090f18}
     .di-dockview #question-dock{height:100%;max-height:none;resize:none;overflow:auto;padding:8px;background:#0b1420}
+    .di-dockview #question-dock .query-box{grid-template-columns:minmax(0,1fr) minmax(90px,140px) auto;margin:0}
+    .di-dockview #question-dock .query-box:has(#query-source[hidden]){grid-template-columns:minmax(0,1fr) auto}
+    .di-dockview #question-dock button{background:#14243a;color:#dbe7f6;border:1px solid #334963;border-radius:5px;padding:5px 8px;cursor:pointer}
     .di-dockview .inspector{resize:none}.di-dockview .graph-shell{height:calc(100% - 45px);min-height:240px}
+    .di-layout-toolbar{display:flex;gap:6px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid #26364d;background:#0c131e}
+    .di-layout-toolbar button,.di-source-pane .inspector-tabs button{font-size:12px;color:#dbe7f6;background:#14243a;border:1px solid #334963;border-radius:5px;padding:6px 9px;cursor:pointer}
+    .di-source-pane button[aria-current="true"]{border-color:#75d6f5;background:#1b3850}
   `; document.head.append(style);
-  shell.replaceChildren(host);
+  const parkedPanels = document.createElement('div'); parkedPanels.hidden = true;
+  shell.replaceChildren(navigation, host, parkedPanels);
   const panes: Record<string, HTMLElement> = { graph: graphPane, questions: dock, inspector, source: sourcePane };
   dockApi = createDockview(host, { createComponent: ({ name }) => {
     const element = panes[name]; if (!element) throw new Error('Unknown workspace panel');
@@ -973,11 +981,11 @@ if (document.getElementById('question-dock')) {
     const existing = dockApi.getPanel(id); if (existing) { existing.api.setActive(); return; }
     const titles: Record<string, string> = { graph: 'Graph', questions: 'Questions', inspector: 'Inspector & files', source: 'Source' };
     const direction = id === 'questions' ? 'below' : 'right';
-    dockApi.addPanel({ id, component: id, title: titles[id] ?? id, ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
+    dockApi.addPanel({ id, component: id, title: titles[id] ?? id, ...(id === 'questions' ? { initialHeight: 220 } : id === 'inspector' ? { initialWidth: 280 } : id === 'source' ? { initialWidth: 460 } : {}), ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
   };
   const resetLayout = () => { dockApi.clear(); addPanel('graph'); addPanel('questions'); addPanel('inspector'); dockApi.getPanel('graph')?.api.setActive(); };
   resetLayout();
-  const layoutControls = document.createElement('div'); layoutControls.className = 'inspector-tabs';
+  const layoutControls = document.createElement('div'); layoutControls.className = 'di-layout-toolbar';
   for (const [label, action] of [['Graph', () => addPanel('graph')], ['Questions', () => addPanel('questions')], ['Inspector & files', () => addPanel('inspector')], ['Reset layout', resetLayout]] as const) {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = action; layoutControls.append(button);
   }
@@ -993,7 +1001,7 @@ if (document.getElementById('question-dock')) {
   const graphTab = document.createElement('button'); graphTab.textContent = 'Return to graph'; fileTabs.append(graphTab);
   let activeFile = '', fileSequence = 0;
   const openFiles: string[] = [];
-  dockApi.onDidRemovePanel(panel => { if (panel.id === 'source') { ++fileSequence; activeFile = ''; fileBody.hidden = true; } });
+  dockApi.onDidRemovePanel(panel => { queueMicrotask(() => { if (!dockApi.getPanel(panel.id) && panes[panel.id]) parkedPanels.append(panes[panel.id]!); }); });
   const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; dockApi.getPanel('source')?.api.close(); addPanel('graph'); window.dispatchEvent(new Event('resize')); };
   graphTab.onclick = showGraph;
   for (const button of navButtons) button.addEventListener('click', showGraph);
@@ -1043,7 +1051,10 @@ if (document.getElementById('question-dock')) {
         const link = document.createElement('button'); link.type = 'button'; link.textContent = parts.at(-1) ?? file; link.title = file; link.className = 'nav-button'; link.onclick = () => void openFile(file); container.append(link);
       }
       loaded = true;
-    } catch (error) { filesPane.textContent = error instanceof Error ? error.message : String(error); }
+    } catch (error) {
+      filesPane.textContent = `Could not load files: ${error instanceof Error ? error.message : String(error)} `;
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => button.click(); filesPane.append(retry);
+    }
   });
 }
 
