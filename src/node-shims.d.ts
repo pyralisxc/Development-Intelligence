@@ -49,3 +49,4 @@ declare module 'node:zlib' {
   export const createGzip: any;
 }
 declare module 'node:stream' { export const Readable: any; }
+declare module '*.css' { const css: string; export default css; }

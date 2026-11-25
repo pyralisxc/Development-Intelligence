@@ -7,6 +7,8 @@ import { python } from '@codemirror/lang-python';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { oneDark } from '@codemirror/theme-one-dark';
+import { createDockview, type DockviewApi } from 'dockview';
+import dockviewCss from 'dockview/dist/styles/dockview.css';
 
 declare global {
   interface Window {
@@ -926,38 +928,17 @@ if (document.getElementById('question-dock')) {
   const inspector = document.querySelector<HTMLElement>('.inspector')!;
   const dock = document.getElementById('question-dock')!, shell = document.querySelector<HTMLElement>('.shell')!;
   let layoutReady = false, lastLayout = '', layoutTimer: number | undefined;
-  let inspectorSide = 'right', questionPosition = 'bottom', inspectorOpen = window.innerWidth >= 850, panelWidth = 320;
-  const applyLayout = () => {
-    const width = Math.min(panelWidth, Math.max(180, Math.round(shell.getBoundingClientRect().width * .45)));
-    inspector.hidden = !inspectorOpen; inspector.style.width = width + 'px';
-    inspector.style.order = inspectorSide === 'left' ? '-1' : '1';
-    shell.style.gridTemplateColumns = !inspectorOpen ? 'minmax(0,1fr)' : inspectorSide === 'left' ? width + 'px minmax(0,1fr)' : 'minmax(0,1fr) ' + width + 'px';
-    dock.style.order = questionPosition === 'top' ? '-1' : '1';
-    window.dispatchEvent(new Event('resize'));
-  };
+  let dockApi: DockviewApi;
   const saveLayout = () => {
-    if (!layoutReady) return;
-    if (inspectorOpen) panelWidth = Math.round(inspector.getBoundingClientRect().width) || panelWidth;
-    const layout = { inspectorWidth: panelWidth, questionHeight: Math.round(dock.getBoundingClientRect().height), inspectorSide, questionPosition, inspectorOpen };
+    if (!layoutReady || !dockApi) return;
+    const layout = { dockview: dockApi.toJSON() };
     const next = JSON.stringify(layout); if (next === lastLayout) return; lastLayout = next;
-    applyLayout(); parent.postMessage({ type: 'di-layout', layout }, location.origin);
+    parent.postMessage({ type: 'di-layout', layout }, location.origin);
   };
-  window.addEventListener('message', event => {
-    if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
-    const saved = event.data.layout ?? {};
-    inspectorSide = saved.inspectorSide === 'left' ? 'left' : 'right'; questionPosition = saved.questionPosition === 'top' ? 'top' : 'bottom'; if (typeof saved.inspectorOpen === 'boolean') inspectorOpen = saved.inspectorOpen;
-    if (Number.isFinite(saved.inspectorWidth) && saved.inspectorWidth >= 180) panelWidth = saved.inspectorWidth;
-    if (Number.isFinite(saved.questionHeight) && saved.questionHeight >= 100) dock.style.height = saved.questionHeight + 'px';
-    applyLayout(); requestAnimationFrame(() => { layoutReady = true; });
-  });
-  const observer = new ResizeObserver(() => { if (layoutReady) { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700); } });
-  observer.observe(inspector); observer.observe(dock);
-  const moveInspector = document.createElement('button'); moveInspector.type = 'button'; moveInspector.title = 'Move inspector'; moveInspector.setAttribute('aria-label', 'Move inspector'); moveInspector.textContent = '⇄'; moveInspector.onclick = () => { inspectorSide = inspectorSide === 'left' ? 'right' : 'left'; saveLayout(); };
-  const moveQuestions = document.createElement('button'); moveQuestions.type = 'button'; moveQuestions.title = 'Move questions'; moveQuestions.setAttribute('aria-label', 'Move questions'); moveQuestions.textContent = '⇅'; moveQuestions.onclick = () => { questionPosition = questionPosition === 'top' ? 'bottom' : 'top'; saveLayout(); }; dock.prepend(moveQuestions);
   const tabs = document.createElement('div'); tabs.className = 'inspector-tabs';
   tabs.innerHTML = '<button type="button" data-pane="inspection">Inspector</button><button type="button" data-pane="files">Files</button>';
   const filesPane = document.createElement('div'); filesPane.className = 'inspector-body'; filesPane.hidden = true;
-  tabs.append(moveInspector); inspector.prepend(tabs); inspector.append(filesPane);
+  inspector.prepend(tabs); inspector.append(filesPane);
   const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorBody];
   const fileTabs = document.createElement('div'); fileTabs.className = 'inspector-tabs';
   const fileBody = document.createElement('div'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;';
@@ -972,12 +953,48 @@ if (document.getElementById('question-dock')) {
     if (/\.css$/i.test(file)) return css();
     return [];
   };
-  sectionHead.before(fileTabs); content.after(fileBody);
-  const graphTab = document.createElement('button'); graphTab.textContent = 'Graph'; fileTabs.append(graphTab);
-  const panelToggle = document.createElement('button'); panelToggle.type = 'button'; panelToggle.textContent = 'Inspector & files'; panelToggle.onclick = () => { inspectorOpen = !inspectorOpen; applyLayout(); saveLayout(); }; fileTabs.append(panelToggle);
+  const graphPane = document.querySelector<HTMLElement>('.workspace')!;
+  const sourcePane = document.createElement('section'); sourcePane.className = 'di-source-pane'; sourcePane.append(fileTabs, fileBody);
+  const host = document.createElement('div'); host.className = 'dockview-theme-dark di-dockview';
+  const style = document.createElement('style'); style.textContent = dockviewCss + `
+    .shell{display:flex;flex-direction:column;min-width:0;min-height:0}.di-dockview{flex:1;min-height:0;width:100%}
+    .di-dockview .workspace,.di-dockview .inspector,.di-source-pane{height:100%;width:100%;min-width:0;min-height:0;overflow:auto}
+    .di-source-pane{display:flex;flex-direction:column;background:#090f18}
+    .di-dockview #question-dock{height:100%;max-height:none;resize:none;overflow:auto;padding:8px;background:#0b1420}
+    .di-dockview .inspector{resize:none}.di-dockview .graph-shell{height:calc(100% - 45px);min-height:240px}
+  `; document.head.append(style);
+  shell.replaceChildren(host);
+  const panes: Record<string, HTMLElement> = { graph: graphPane, questions: dock, inspector, source: sourcePane };
+  dockApi = createDockview(host, { createComponent: ({ name }) => {
+    const element = panes[name]; if (!element) throw new Error('Unknown workspace panel');
+    return { element, init: () => {} };
+  } });
+  const addPanel = (id: string) => {
+    const existing = dockApi.getPanel(id); if (existing) { existing.api.setActive(); return; }
+    const titles: Record<string, string> = { graph: 'Graph', questions: 'Questions', inspector: 'Inspector & files', source: 'Source' };
+    const direction = id === 'questions' ? 'below' : 'right';
+    dockApi.addPanel({ id, component: id, title: titles[id] ?? id, ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
+  };
+  const resetLayout = () => { dockApi.clear(); addPanel('graph'); addPanel('questions'); addPanel('inspector'); dockApi.getPanel('graph')?.api.setActive(); };
+  resetLayout();
+  const layoutControls = document.createElement('div'); layoutControls.className = 'inspector-tabs';
+  for (const [label, action] of [['Graph', () => addPanel('graph')], ['Questions', () => addPanel('questions')], ['Inspector & files', () => addPanel('inspector')], ['Reset layout', resetLayout]] as const) {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = action; layoutControls.append(button);
+  }
+  shell.prepend(layoutControls);
+  dockApi.onDidLayoutChange(() => { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700); });
+  window.addEventListener('message', event => {
+    if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
+    const saved = event.data.layout?.dockview;
+    if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } }
+    if (!dockApi.getPanel('graph')) addPanel('graph');
+    requestAnimationFrame(() => { layoutReady = true; });
+  });
+  const graphTab = document.createElement('button'); graphTab.textContent = 'Return to graph'; fileTabs.append(graphTab);
   let activeFile = '', fileSequence = 0;
   const openFiles: string[] = [];
-  const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; sectionHead.hidden = false; content.hidden = false; window.dispatchEvent(new Event('resize')); };
+  dockApi.onDidRemovePanel(panel => { if (panel.id === 'source') { ++fileSequence; activeFile = ''; fileBody.hidden = true; } });
+  const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; dockApi.getPanel('source')?.api.close(); addPanel('graph'); window.dispatchEvent(new Event('resize')); };
   graphTab.onclick = showGraph;
   for (const button of navButtons) button.addEventListener('click', showGraph);
   const openFile = async (file: string) => {
@@ -995,7 +1012,7 @@ if (document.getElementById('question-dock')) {
     const existing = openFiles.indexOf(file); if (existing >= 0) openFiles.splice(existing, 1); openFiles.push(file);
     activeFile = file; const sequence = ++fileSequence;
     fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', item.dataset.file === file ? 'true' : 'false'));
-    sectionHead.hidden = true; content.hidden = true; fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
+    addPanel('source'); fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
     try {
       const result = await getJson('/workbench/source', new URLSearchParams({ file }));
       if (sequence !== fileSequence || activeFile !== file) return;
