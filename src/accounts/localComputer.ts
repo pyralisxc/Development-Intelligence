@@ -79,6 +79,11 @@ export async function linkComputer(home: string, workbench: string, pairingCode:
   throw new Error('Computer authorization expired; start the link again');
 }
 
+/** The linked desktop opens the same account Workbench used by the browser. */
+export async function accountWorkbenchOrigin(home: string): Promise<string> {
+  return trustedUrl((await read(home)).origin, true).origin;
+}
+
 export async function computerHeartbeat(home: string): Promise<void> {
   const credentials = await read(home);
   const tokens = await postForm(credentials.tokenEndpoint, { client_id: credentials.clientId, grant_type: 'refresh_token', refresh_token: credentials.refreshToken });

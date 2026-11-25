@@ -65,21 +65,34 @@ if (command === 'link' || command === 'account-status' || command === 'account-r
 }
 const commands = { capacity: 'working-capacity', build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', parity: 'working-parity', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve', 'oss-evidence': 'oss-evidence', 'joern-build': 'joern-build' };
 if (!commands[command]) {
-  console.log('DI local: link --workbench URL --pair-code CODE [--no-autostart] | account-status | account-run | account-autostart on|off | capacity | build [--target NAME] | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open | mcp');
+  console.log('DI local: link --workbench URL --pair-code CODE [--no-autostart] | account-status | account-run | account-autostart on|off | capacity | build [--target NAME] | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open [--local] | mcp');
   console.log('Options: --repo-path PATH --project NAME --data-dir PATH --retain COUNT --port PORT');
   process.exit(command === 'help' ? 0 : 2);
 }
 const executable = process.execPath;
+const forwardedArgs = command === 'open' ? args.filter(arg => arg !== '--local') : args;
 const defaults = ['--repo-path', config.repoPath, '--project', config.project, '--data-dir', config.dataDir, '--retain', String(config.retain), '--port', String(config.port)];
 const argv = command === 'oss-evidence' || command === 'joern-build'
   ? [path.join(home, 'scripts', 'run-oss-understanding.mjs'), ...args, '--repo-path', config.repoPath, '--project', config.project,
     ...(command === 'joern-build' ? ['--activate-working-data-dir', config.dataDir, '--retain', String(config.retain)] : [])]
-  : [path.join(home, 'dist', 'src', 'graphCli.js'), commands[command], ...args, ...defaults];
+  : [path.join(home, 'dist', 'src', 'graphCli.js'), commands[command], ...forwardedArgs, ...defaults];
 const env = { ...process.env, DEVINT_SCRATCH_DIR: config.scratchDir, DEVINT_LOCAL_GRAPH_CACHE_SIZE: String(config.cacheSize ?? 3), DEVINT_LOCAL_SETTINGS: path.join(home, 'local-settings.json'),
   ...(config.graphWorkerHeapMB ? { DEVINT_GRAPH_WORKER_HEAP_MB: String(config.graphWorkerHeapMB) } : {}),
   ...(config.scipHeapMB ? { DEVINT_SCIP_HEAP_MB: String(config.scipHeapMB) } : {}) };
 if (command === 'open') {
   await startAccountAgent();
+  if (!args.includes('--local')) {
+    try {
+      const account = await import(path.join(home, 'dist', 'src', 'accounts', 'localComputer.js'));
+      const origin = await account.accountWorkbenchOrigin(path.join(config.dataDir, 'account'));
+      const response = await fetch(new URL('/health', origin), { signal: AbortSignal.timeout(3000) });
+      if (response.ok) {
+        const url = new URL('/account', origin).href;
+        const browser = process.platform === 'win32' ? spawn('cmd.exe', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }) : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+        browser.unref(); process.exit(0);
+      }
+    } catch { /* A local workbench remains available without the hosted connection. */ }
+  }
   const server = spawn(executable, argv, { env, detached: true, stdio: 'ignore' });
   server.unref();
   const portAt = args.indexOf('--port');
