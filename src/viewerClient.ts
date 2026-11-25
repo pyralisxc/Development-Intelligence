@@ -978,6 +978,9 @@ if (document.getElementById('question-dock')) {
     .di-dockview .graph-shell{flex:1;height:auto;min-height:240px}
     .di-layout-toolbar{display:flex;gap:6px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid #26364d;background:#0c131e}
     .di-layout-toolbar button,.di-source-pane .inspector-tabs button{font-size:12px;color:#dbe7f6;background:#14243a;border:1px solid #334963;border-radius:5px;padding:6px 9px;cursor:pointer}
+    .di-layout-toolbar details{position:relative;color:#dbe7f6;font-size:12px}.di-layout-toolbar summary{cursor:pointer;padding:6px 9px;border:1px solid #334963;border-radius:5px;background:#14243a}
+    .di-move-controls{position:absolute;z-index:20;right:0;min-width:220px;display:grid;gap:8px;padding:12px;background:#101b29;border:1px solid #334963;border-radius:6px;box-shadow:0 8px 24px #0008}
+    .di-move-controls label{display:grid;gap:4px}.di-move-controls select{background:#0d1624;color:#edf4ff;border:1px solid #334963;border-radius:5px;padding:6px}
     .di-source-pane button[aria-current="true"]{border-color:#75d6f5;background:#1b3850}
   `; document.head.append(style);
   const parkedPanels = document.createElement('div'); parkedPanels.hidden = true;
@@ -1005,6 +1008,16 @@ if (document.getElementById('question-dock')) {
   for (const [label, action] of [['Graph', () => addPanel('graph')], ['Questions', () => addPanel('questions')], ['Inspector & files', () => addPanel('inspector')], ['Reset layout', resetLayout]] as const) {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = action; layoutControls.append(button);
   }
+  const moveMenu = document.createElement('details');
+  moveMenu.innerHTML = '<summary>Move panel</summary><div class="di-move-controls"><label>Panel<select aria-label="Panel to move"><option value="questions">Questions</option><option value="inspector">Inspector & files</option><option value="source">Source</option></select></label><label>Position relative to graph<select aria-label="Position relative to graph"><option value="left">Left</option><option value="right">Right</option><option value="top">Above</option><option value="bottom">Below</option><option value="center">As a tab</option></select></label><button type="button">Move</button><span role="status"></span></div>';
+  moveMenu.querySelector('button')!.onclick = () => {
+    const panelId = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Panel to move"]')!.value;
+    const position = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Position relative to graph"]')!.value as 'left' | 'right' | 'top' | 'bottom' | 'center';
+    addPanel('graph'); addPanel(panelId);
+    const panel = dockApi.getPanel(panelId), graph = dockApi.getPanel('graph');
+    if (panel && graph) { panel.api.moveTo({ group: graph.group, position }); panel.api.setActive(); moveMenu.querySelector('[role="status"]')!.textContent = 'Panel moved.'; }
+  };
+  layoutControls.append(moveMenu);
   shell.prepend(layoutControls);
   dockApi.onDidLayoutChange(() => {
     if (layoutReady && compactMedia.matches === compact) layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
