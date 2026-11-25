@@ -44,7 +44,11 @@ function assessmentCss(): string {
   return `.assessment{display:grid;gap:13px}.assessment-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.assessment-head h2{margin:2px 0 0;text-transform:capitalize}.assessment-meta{text-align:right;color:#8295ad;font-size:9px;line-height:1.55}.assessment-section{border-top:1px solid #213047;padding-top:12px}.assessment-section>h3{margin-bottom:8px}.assessment-facets{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px}.assessment-facet{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:7px;border:1px solid #283951;background:#0d1724;border-radius:10px;padding:8px}.assessment-facet strong{font-size:11px;text-transform:capitalize}.assessment-facet small{grid-column:2;color:#8396ad;font-size:9px}.assessment-item{display:grid;gap:5px;border:1px solid #283951;background:#101a29;border-radius:11px;padding:10px 11px}.assessment-item>strong{font-size:11px;line-height:1.45}.assessment-item>small{color:#8396ad;font-size:9px}.assessment-item details{font-size:9px}.assessment-item ul{margin:7px 0 0;padding-left:18px;color:#aebdce}`;
 }
 
-export function renderGraphViewer(graph: Pick<IntelligenceGraph, 'project' | 'sourceState' | 'repositoryRevision'>, requestedRef?: string, requestedGraphId?: string, projects: WorkbenchProjectLink[] = [], machineBuild = false, accountGraphId?: string, displayProject?: string): string {
+function embeddedWorkbenchCss(): string {
+  return `.app{grid-template-rows:1fr}.top,.nav{display:none}.shell{grid-template-columns:minmax(0,1fr) 320px}.workspace{overflow:hidden;display:flex;flex-direction:column}.workspace #content{overflow:auto;min-height:0;flex:1}.workspace #question-dock{min-height:140px;height:220px;max-height:70vh;resize:vertical;overflow:auto;border-top:1px solid var(--border);padding:8px}.section-head{position:static;padding:8px 12px}.section-title{font-size:14px}.section-description{display:none}.content{padding:8px}.investigation-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}.investigation-layout #investigation-query{display:none}.graph-shell{height:calc(100vh - 360px);min-height:240px}.query-box textarea{min-height:48px}.inspector{min-width:220px;resize:horizontal;overflow:auto}@media(max-width:820px){.app{height:100vh;overflow:hidden}.shell{display:grid;grid-template-columns:minmax(0,1fr) 240px}.workspace{min-height:0}.inspector{min-height:0}}`;
+}
+
+export function renderGraphViewer(graph: Pick<IntelligenceGraph, 'project' | 'sourceState' | 'repositoryRevision'>, requestedRef?: string, requestedGraphId?: string, projects: WorkbenchProjectLink[] = [], machineBuild = false, accountGraphId?: string, displayProject?: string, embedded = false): string {
   const project = escapeHtml(displayProject ?? graph.project);
   const revision = escapeHtml(graph.sourceState ? `Working files · HEAD ${graph.sourceState.headRevision.slice(0, 12)}` : graph.repositoryRevision ?? 'unknown revision');
   const visibleProjects = projects.some(item => item.project === graph.project) ? projects : [{ project: graph.project, defaultRef: requestedRef ?? 'HEAD' }, ...projects];
@@ -56,7 +60,7 @@ export function renderGraphViewer(graph: Pick<IntelligenceGraph, 'project' | 'so
   const clerkScripts = accountGraphId ? `<script defer crossorigin="anonymous" src="https://${clerkHost}/npm/@clerk/ui@1/dist/ui.browser.js"></script><script defer crossorigin="anonymous" data-clerk-publishable-key="${clerkKey}" src="https://${clerkHost}/npm/@clerk/clerk-js@6/dist/clerk.browser.js"></script><script>window.addEventListener('load',()=>Clerk.load({ui:{ClerkUI:window.__internal_ClerkUICtor}}));</script>` : '';
   return `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${project} — Development Intelligence</title><style>${sharedCss()}${assessmentCss()}</style>${clerkScripts}</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${project} — Development Intelligence</title><style>${sharedCss()}${assessmentCss()}${embedded ? embeddedWorkbenchCss() : ''}</style>${clerkScripts}</head>
 <body>
 <div class="app" data-project="${project}" data-revision="${revision}">
 <header class="top">
@@ -82,7 +86,7 @@ export function renderGraphViewer(graph: Pick<IntelligenceGraph, 'project' | 'so
     <button class="nav-button" data-section="parity"><span class="nav-icon">P</span><span class="nav-copy"><strong>Parity</strong><span>Compare interaction paths</span></span></button>
     <div class="nav-foot">The graph is one representation of the same intelligence agents query. Parity follows interaction paths across revisions; optional expectations use the same graph evidence.</div>
   </aside>
-  <section class="workspace"><div id="section-head" class="section-head"></div><div id="content" class="content"></div></section>
+  <section class="workspace"><div id="section-head" class="section-head"></div><div id="content" class="content"></div>${embedded ? '<div id="question-dock" aria-label="Questions and answers"></div>' : ''}</section>
   <aside class="inspector"><div class="inspector-head"><h2>Inspector</h2><span id="inspector-context" class="muted"></span></div><div id="inspector-tabs" class="inspector-tabs"></div><div id="inspector-body" class="inspector-body"><div class="empty"><div><strong>Nothing selected</strong>Choose an entity from Overview or Explore to get quick notes, connections, code, evidence and change context.</div></div></div></aside>
 </main>
 </div>

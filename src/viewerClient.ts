@@ -355,7 +355,7 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
     } catch (error) { const panel = document.getElementById('query-result'); if (panel) panel.textContent = String(error); }
   };
   document.getElementById('explore-audit')?.addEventListener('click', () => { auditOffset = 0; void showAudit(); });
-  const queryHost = document.getElementById('investigation-query') as HTMLElement;
+  const queryHost = (document.getElementById('question-dock') ?? document.getElementById('investigation-query')) as HTMLElement;
   await Promise.all([fetchExplore(epoch), renderQuery(epoch, '', queryHost)]);
 }
 
@@ -838,7 +838,7 @@ async function activateSection(next: Section, queryPrefill = ''): Promise<void> 
   section = next;
   for (const button of navButtons) button.classList.toggle('active', button.dataset.section === section);
   renderer?.kill(); renderer = null;
-  queryPanel.remove();
+  if (!document.getElementById('question-dock')) queryPanel.remove();
   content.replaceChildren();
   try {
     if (section === 'overview') await renderOverview(epoch);
@@ -854,6 +854,70 @@ async function activateSection(next: Section, queryPrefill = ''): Promise<void> 
     setHead();
     content.innerHTML = `<div class="card"><h3>Workbench error</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`;
   }
+}
+
+// Account Workbench keeps source navigation and graph investigation in the same surface.
+if (document.getElementById('question-dock')) {
+  const inspector = document.querySelector<HTMLElement>('.inspector')!;
+  const dock = document.getElementById('question-dock')!, shell = document.querySelector<HTMLElement>('.shell')!;
+  let layoutReady = false, lastLayout = '', layoutTimer: number | undefined;
+  window.addEventListener('message', event => {
+    if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
+    const saved = event.data.layout ?? {};
+    if (Number.isFinite(saved.inspectorWidth) && saved.inspectorWidth >= 180) { inspector.style.width = saved.inspectorWidth + 'px'; shell.style.gridTemplateColumns = 'minmax(0,1fr) ' + saved.inspectorWidth + 'px'; }
+    if (Number.isFinite(saved.questionHeight) && saved.questionHeight >= 100) dock.style.height = saved.questionHeight + 'px';
+    requestAnimationFrame(() => { layoutReady = true; });
+  });
+  new ResizeObserver(() => {
+    if (!layoutReady) return;
+    window.clearTimeout(layoutTimer);
+    layoutTimer = window.setTimeout(() => {
+      const layout = { inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height) };
+      const next = JSON.stringify(layout); if (next === lastLayout) return; lastLayout = next;
+      shell.style.gridTemplateColumns = 'minmax(0,1fr) ' + layout.inspectorWidth + 'px';
+      parent.postMessage({ type: 'di-layout', layout }, location.origin);
+    }, 700);
+  }).observe(inspector);
+  new ResizeObserver(() => { if (layoutReady) { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(() => { const layout = { inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height) }; const next = JSON.stringify(layout); if (next !== lastLayout) { lastLayout = next; parent.postMessage({ type: 'di-layout', layout }, location.origin); } }, 700); } }).observe(dock);
+  const tabs = document.createElement('div'); tabs.className = 'inspector-tabs';
+  tabs.innerHTML = '<button type="button" data-pane="inspection">Inspector</button><button type="button" data-pane="files">Files</button>';
+  const filesPane = document.createElement('div'); filesPane.className = 'inspector-body'; filesPane.hidden = true;
+  inspector.prepend(tabs); inspector.append(filesPane);
+  const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorBody];
+  const fileTabs = document.createElement('div'); fileTabs.className = 'inspector-tabs';
+  const fileBody = document.createElement('pre'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;white-space:pre;';
+  sectionHead.before(fileTabs); content.after(fileBody);
+  const graphTab = document.createElement('button'); graphTab.textContent = 'Graph'; fileTabs.append(graphTab);
+  const showGraph = () => { fileBody.hidden = true; sectionHead.hidden = false; content.hidden = false; window.dispatchEvent(new Event('resize')); };
+  graphTab.onclick = showGraph;
+  const openFile = async (file: string) => {
+    let b = Array.from(fileTabs.querySelectorAll<HTMLButtonElement>('button')).find(item => item.dataset.file === file);
+    if (!b) { const group = document.createElement('span'); b = document.createElement('button'); b.dataset.file = file; b.textContent = file.split('/').pop() ?? file; const close = document.createElement('button'); close.type = 'button'; close.textContent = '×'; close.setAttribute('aria-label', 'Close ' + file); close.onclick = () => { group.remove(); showGraph(); }; group.append(b, close); fileTabs.append(group); }
+    b.onclick = () => void openFile(file);
+    sectionHead.hidden = true; content.hidden = true; fileBody.hidden = false; fileBody.textContent = 'Loading ' + file + '…';
+    try { const result = await getJson('/workbench/source', new URLSearchParams({ file })); fileBody.textContent = result.content; }
+    catch (error) { fileBody.textContent = error instanceof Error ? error.message : String(error); }
+  };
+  let loaded = false;
+  tabs.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.onclick = async () => {
+    const files = button.dataset.pane === 'files'; original.forEach(item => { item.hidden = files; }); filesPane.hidden = !files;
+    if (!files || loaded) return;
+    filesPane.textContent = 'Loading files…';
+    try {
+      const result = await getJson('/workbench/source', new URLSearchParams()); filesPane.replaceChildren();
+      const dirs = new Map<string, HTMLElement>(); dirs.set('', filesPane);
+      for (const file of result.files as string[]) {
+        const parts = file.split('/'); let parent = '', container: HTMLElement = filesPane;
+        for (const part of parts.slice(0, -1)) {
+          const key = parent ? parent + '/' + part : part;
+          if (!dirs.has(key)) { const details = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = part; details.append(summary); container.append(details); dirs.set(key, details); }
+          container = dirs.get(key)!; parent = key;
+        }
+        const link = document.createElement('button'); link.type = 'button'; link.textContent = parts.at(-1) ?? file; link.title = file; link.className = 'nav-button'; link.onclick = () => void openFile(file); container.append(link);
+      }
+      loaded = true;
+    } catch (error) { filesPane.textContent = error instanceof Error ? error.message : String(error); }
+  });
 }
 
 for (const button of navButtons) button.addEventListener('click', () => void activateSection(button.dataset.section as Section));

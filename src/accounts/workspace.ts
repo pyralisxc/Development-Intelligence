@@ -52,14 +52,14 @@ export class WorkspaceStore {
   async projects(): Promise<Project[]> { return Object.values(await this.redis.hgetall<Record<string, Project>>(this.key('projects')) ?? {}); }
   async graphs(): Promise<GraphDefinition[]> { return Object.values(await this.redis.hgetall<Record<string, GraphDefinition>>(this.key('graphs')) ?? {}); }
   async computers(): Promise<Computer[]> { return Object.values(await this.redis.hgetall<Record<string, Computer>>(this.key('computers')) ?? {}); }
-  async builds(): Promise<BuildJob[]> {
+  async builds(includeResults = true): Promise<BuildJob[]> {
     await this.ensureIndexed();
     const ids = await this.redis.zrange<string[]>(this.key('build-history'), 0, -1);
     if (!ids.length) return [];
     const pipe = this.redis.pipeline();
     for (const jobId of ids) pipe.hget(this.key('builds'), jobId);
     const jobs = (await pipe.exec()).filter((job): job is BuildJob => Boolean(job && typeof job === 'object'));
-    return await Promise.all(jobs.map(async job => job.resultKey ? { ...job, result: await this.redis.get(job.resultKey) } : job));
+    return includeResults ? await Promise.all(jobs.map(async job => job.resultKey ? { ...job, result: await this.redis.get(job.resultKey) } : job)) : jobs.map(({ result: _result, ...job }) => job);
   }
   async build(jobId: unknown): Promise<ComputerJob | null> {
     const job = await this.redis.hget<ComputerJob>(this.key('builds'), id(jobId));
@@ -183,7 +183,7 @@ export class WorkspaceStore {
   }
   async queueInvestigation(graphId: unknown, input: unknown): Promise<BuildJob> {
     const request = object(input), path = value(request.path, 'Investigation path');
-    if (!['/workbench/data', '/workbench/query', '/workbench/parity', '/graph/data'].includes(path)) invalid('Unsupported investigation');
+    if (!['/workbench/data', '/workbench/source', '/workbench/query', '/workbench/parity', '/graph/data'].includes(path)) invalid('Unsupported investigation');
     const method = request.method === 'POST' ? 'POST' : 'GET';
     if ((path === '/workbench/query' || path === '/workbench/parity') !== (method === 'POST')) invalid('Unsupported investigation method');
     const graph = await this.redis.hget<GraphDefinition>(this.key('graphs'), id(graphId));

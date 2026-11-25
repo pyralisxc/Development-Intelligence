@@ -1,3 +1,4 @@
+import { browseGraphSource } from './intelligence/code.js';
 import { compareInteractionRevisions } from './intelligence/interactionParity.js';
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
@@ -231,8 +232,9 @@ export function createDevelopmentIntelligenceServer() {
         const job = (await store.builds()).filter(item => item.graph.id === graph.id && item.kind === 'build' && item.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
         const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
         if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
-        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name);
-        res.writeHead(200, htmlHeaders()); res.end(page); return;
+        const embedded = requestUrl.searchParams.get('embedded') === '1';
+        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded);
+        res.writeHead(200, embedded ? { ...htmlHeaders(), 'x-frame-options': 'SAMEORIGIN' } : htmlHeaders()); res.end(page); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
     if (requestUrl.pathname === '/account/hosted-finish' && req.method === 'POST') {
@@ -255,7 +257,7 @@ export function createDevelopmentIntelligenceServer() {
           if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
           const jobId = requestUrl.searchParams.get('job');
           if (jobId) { json(res, 200, await advanceHostedJob(store, identity.userId, await store.build(jobId), accountOrigin(req))); return; }
-          const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds()]);
+          const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds(false)]);
           const updated = await Promise.all(builds.map(job => advanceHostedJob(store, identity.userId, job, accountOrigin(req))));
           json(res, 200, { projects, graphs, computers, layout, builds: updated.filter(Boolean) }); return;
         }
@@ -446,6 +448,14 @@ export function createDevelopmentIntelligenceServer() {
           items: [],
         }));
       }
+      return;
+    }
+    if (requestUrl.pathname === '/workbench/source' && req.method === 'GET') {
+      if (!authorize(req, res)) return;
+      const project = requestUrl.searchParams.get('project'), graphId = requestUrl.searchParams.get('graphId');
+      if (!project || !graphId) { json(res, 400, { error: 'Choose a graph first' }); return; }
+      try { json(res, 200, await browseGraphSource({ project, graphId, ...(requestUrl.searchParams.has('file') ? { file: requestUrl.searchParams.get('file')! } : {}) })); }
+      catch (error) { json(res, 400, { error: error instanceof Error ? error.message : String(error) }); }
       return;
     }
     if (requestUrl.pathname === '/workbench/data' && req.method === 'GET') {
