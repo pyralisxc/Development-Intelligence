@@ -88,6 +88,85 @@ export async function computerHeartbeat(home: string): Promise<void> {
   console.log(`Connected ${computer.name} to ${credentials.origin}.`);
 }
 
+/** Execute the same account graph job on a linked computer or hosted runtime. */
+export async function executeAccountGraphJob(
+  job: BuildJob,
+  scratchDir: string,
+  retain: number,
+  githubToken: () => Promise<string | null>,
+  report: (progress: unknown) => Promise<unknown>,
+): Promise<unknown> {
+  let temporary: string | null = null;
+  let renewal: ReturnType<typeof setInterval> | undefined;
+  try {
+    let root = job.graph.source.location;
+    let ref = job.graph.source.revision;
+    if (job.graph.source.kind === 'git' && job.kind !== 'question' && job.kind !== 'investigation') {
+      const source = trustedUrl(root);
+      await fs.mkdir(scratchDir, { recursive: true });
+      temporary = await fs.mkdtemp(path.join(scratchDir, 'di-linked-'));
+      root = path.join(temporary, 'repository');
+      const token = source.hostname === 'github.com' ? await githubToken() : null;
+      const auth = await gitAuth({ repository: source.href, defaultRef: 'HEAD' }, token ? { token, username: 'x-access-token', kind: 'token-env' } : undefined);
+      try { await runChecked('git', ['clone', '--', source.href, root], { env: { GIT_TERMINAL_PROMPT: '0', ...auth.env } }); }
+      finally { await auth.cleanup(); }
+      ref ||= 'HEAD';
+    }
+    let activeProgress: unknown = { stage: job.kind === 'question' || job.kind === 'investigation' ? 'querying-snapshot' : 'building' };
+    renewal = setInterval(() => { void report(activeProgress).catch(() => {}); }, 60_000);
+    let lastProgress = 0;
+    let result: unknown;
+    if (job.kind === 'question' || job.kind === 'investigation') {
+      if (!job.graphId) throw new Error('Investigation has no retained graph');
+      const graphDirectory = path.resolve(job.graph.query?.location ?? job.graph.storage.location);
+      process.env.DEVINT_LOCAL_GRAPH_DIR = graphDirectory;
+      const { localSourceGraphHistory } = await import('../intelligence/localGraphStore.js');
+      const catalog = await localSourceGraphHistory(graphDirectory, job.project.id);
+      if (!catalog?.entries.some(entry => entry.graphId === job.graphId)) throw new Error('The selected graph is not available at the query service location');
+      activeProgress = { stage: 'querying-snapshot', graphId: job.graphId, location: graphDirectory };
+      await report(activeProgress);
+      const repository = job.graph.source.kind === 'git' ? trustedUrl(root).href : pathToFileURL(path.resolve(root)).href;
+      process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [job.project.id]: { repository, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
+      if (job.kind === 'question') {
+        if (!job.question) throw new Error('Missing question');
+        const { queryWorkbenchRequest } = await import('../intelligence/workbench.js');
+        result = await queryWorkbenchRequest({ project: job.project.id, graphId: job.graphId, text: job.question });
+      } else {
+        if (!job.request) throw new Error('Missing investigation');
+        const { createDevelopmentIntelligenceServer } = await import('../http.js');
+        process.env.DEVINT_AUTH_MODE = 'none'; process.env.DEVINT_ALLOW_UNAUTHENTICATED = '1';
+        const server = createDevelopmentIntelligenceServer();
+        await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+        try {
+          const address = server.address();
+          if (!address || typeof address === 'string') throw new Error('Local investigation service is unavailable');
+          const url = new URL(job.request.path, `http://127.0.0.1:${address.port}`);
+          const query = new URLSearchParams(job.request.query ?? '');
+          query.set('project', job.project.id);
+          if (!query.has('ref') && !query.has('graphId')) query.set('graphId', job.graphId);
+          url.search = query.toString();
+          const body = job.request.body && typeof job.request.body === 'object' && !Array.isArray(job.request.body) ? job.request.body as Record<string, unknown> : {};
+          const response = await fetch(url, job.request.method === 'POST' ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, project: job.project.id, ...(!body.ref && !body.graphId ? { graphId: job.graphId } : {}) }) } : undefined);
+          result = await response.json();
+          if (!response.ok) throw new Error((result as { error?: string })?.error ?? `Investigation failed (${response.status})`);
+        } finally { server.close(); }
+      }
+    } else {
+      const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer && path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id);
+      if (!dataDir) throw new Error('A transfer method is required for this graph');
+      result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir,
+        scratchDir, retain, target: job.graph.name, ...(ref ? { ref } : {}) }, progress => {
+        activeProgress = progress;
+        if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); void report(progress).catch(() => {}); }
+      });
+    }
+    return result;
+  } finally {
+    if (renewal) clearInterval(renewal);
+    if (temporary) await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+
 /** Polling uses the same local graph worker as the CLI and Workbench. */
 export async function runComputer(home: string, scratchDir: string, retain: number): Promise<void> {
   const credentials = await read(home);
@@ -117,7 +196,6 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
     }
     if (!job) { await new Promise(resolve => setTimeout(resolve, 5000)); continue; }
     const update = (data: Record<string, unknown>) => send({ action: 'computer-update-build', jobId: job.id, update: { ...data, claimId: job.claimId } });
-    let temporary: string | null = null;
     let renewal: ReturnType<typeof setInterval> | undefined;
     try {
       if (job.kind === 'browse') {
@@ -141,72 +219,12 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
         continue;
       }
-      let root = job.graph.source.location;
-      let ref = job.graph.source.revision;
-      if (job.graph.source.kind === 'git' && job.kind !== 'question' && job.kind !== 'investigation') {
-        const source = trustedUrl(root);
-        await fs.mkdir(scratchDir, { recursive: true });
-        temporary = await fs.mkdtemp(path.join(scratchDir, 'di-linked-'));
-        root = path.join(temporary, 'repository');
-        const token = source.hostname === 'github.com' ? (await send({ action: 'computer-github-token', jobId: job.id, claimId: job.claimId })).token as string | null : null;
-        const auth = await gitAuth({ repository: source.href, defaultRef: 'HEAD' }, token ? { token, username: 'x-access-token', kind: 'token-env' } : undefined);
-        try { await runChecked('git', ['clone', '--', source.href, root], { env: { GIT_TERMINAL_PROMPT: '0', ...auth.env } }); }
-        finally { await auth.cleanup(); }
-        ref ||= 'HEAD';
-      }
-      let activeProgress: unknown = { stage: job.kind === 'question' || job.kind === 'investigation' ? 'querying-snapshot' : 'building' };
-      renewal = setInterval(() => { void update({ progress: activeProgress }).catch(() => {}); }, 60_000);
-      let lastProgress = 0;
-      let result: unknown;
-      if (job.kind === 'question' || job.kind === 'investigation') {
-        if (!job.graphId) throw new Error('Investigation has no retained graph');
-        const graphDirectory = path.resolve(job.graph.query?.location ?? job.graph.storage.location);
-        process.env.DEVINT_LOCAL_GRAPH_DIR = graphDirectory;
-        const { localSourceGraphHistory } = await import('../intelligence/localGraphStore.js');
-        const catalog = await localSourceGraphHistory(graphDirectory, job.project.id);
-        if (!catalog?.entries.some(entry => entry.graphId === job.graphId)) throw new Error('The selected graph is not available at the query service location');
-        activeProgress = { stage: 'querying-snapshot', graphId: job.graphId, location: graphDirectory };
-        await update({ progress: activeProgress });
-        const repository = job.graph.source.kind === 'git' ? trustedUrl(root).href : pathToFileURL(path.resolve(root)).href;
-        process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [job.project.id]: { repository, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
-        if (job.kind === 'question') {
-          if (!job.question) throw new Error('Missing question');
-          const { queryWorkbenchRequest } = await import('../intelligence/workbench.js');
-          result = await queryWorkbenchRequest({ project: job.project.id, graphId: job.graphId, text: job.question });
-        } else {
-          if (!job.request) throw new Error('Missing investigation');
-          const { createDevelopmentIntelligenceServer } = await import('../http.js');
-          process.env.DEVINT_AUTH_MODE = 'none'; process.env.DEVINT_ALLOW_UNAUTHENTICATED = '1';
-          const server = createDevelopmentIntelligenceServer();
-          await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-          try {
-            const address = server.address();
-            if (!address || typeof address === 'string') throw new Error('Local investigation service is unavailable');
-            const url = new URL(job.request.path, `http://127.0.0.1:${address.port}`);
-            const query = new URLSearchParams(job.request.query ?? '');
-            query.set('project', job.project.id);
-            if (!query.has('ref') && !query.has('graphId')) query.set('graphId', job.graphId);
-            url.search = query.toString();
-            const body = job.request.body && typeof job.request.body === 'object' && !Array.isArray(job.request.body) ? job.request.body as Record<string, unknown> : {};
-            const response = await fetch(url, job.request.method === 'POST' ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, project: job.project.id, ...(!body.ref && !body.graphId ? { graphId: job.graphId } : {}) }) } : undefined);
-            result = await response.json();
-            if (!response.ok) throw new Error((result as { error?: string })?.error ?? `Investigation failed (${response.status})`);
-          } finally { server.close(); }
-        }
-      } else {
-        const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer && path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id);
-        if (!dataDir) throw new Error('A transfer method is required for this graph');
-        result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir,
-          scratchDir, retain, target: job.graph.name, ...(ref ? { ref } : {}) }, progress => {
-          activeProgress = progress;
-          if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); void update({ progress }).catch(() => {}); }
-        });
-      }
+      const result = await executeAccountGraphJob(job, scratchDir, retain, async () => (await send({ action: 'computer-github-token', jobId: job.id, claimId: job.claimId })).token as string | null, progress => update({ progress }));
       if (renewal) clearInterval(renewal);
       await update({ state: 'complete', result });
     } catch (error) {
       if (renewal) clearInterval(renewal);
       await update({ state: 'failed', error: error instanceof Error ? error.message : String(error) });
-    } finally { if (temporary) await fs.rm(temporary, { recursive: true, force: true }); }
+    }
   }
 }

@@ -22,6 +22,7 @@ import type { TechnicalSourceCapability } from './types.js';
 import { withVercelRequestContext } from './vercelRequestContext.js';
 import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
 import { WorkspaceStore } from './accounts/workspace.js';
+import { advanceHostedJob } from './accounts/hostedQueue.js';
 import { renderAccountWorkbench } from './accounts/view.js';
 import { accountGithubBranches, accountGithubRepositories, accountGithubToken } from './accounts/github.js';
 
@@ -234,6 +235,17 @@ export function createDevelopmentIntelligenceServer() {
         res.writeHead(200, htmlHeaders()); res.end(page); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
+    if (requestUrl.pathname === '/account/hosted-finish' && req.method === 'POST') {
+      try {
+        const body = await readJson(req);
+        if (typeof body.userId !== 'string' || !body.userId || typeof body.claimId !== 'string') { json(res, 403, { error: 'Invalid hosted job claim' }); return; }
+        const store = new WorkspaceStore(body.userId), job = await store.build(body.jobId);
+        if (!job || job.kind === 'browse' || job.assignedComputer !== 'hosted' || job.claimId !== body.claimId || !job.hosted) { json(res, 403, { error: 'Invalid hosted job claim' }); return; }
+        if (job.state === 'complete' || job.state === 'failed') { json(res, 200, { complete: true }); return; }
+        const updated = await advanceHostedJob(store, body.userId, job);
+        json(res, updated?.state === 'complete' || updated?.state === 'failed' ? 200 : 409, { complete: updated?.state === 'complete' || updated?.state === 'failed' }); return;
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
     if (requestUrl.pathname === '/account/workspace') {
       try {
         const identity = await authenticateAccount(req, res);
@@ -242,9 +254,10 @@ export function createDevelopmentIntelligenceServer() {
         if (req.method === 'GET') {
           if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
           const jobId = requestUrl.searchParams.get('job');
-          if (jobId) { json(res, 200, await store.build(jobId)); return; }
+          if (jobId) { json(res, 200, await advanceHostedJob(store, identity.userId, await store.build(jobId), accountOrigin(req))); return; }
           const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds()]);
-          json(res, 200, { projects, graphs, computers, layout, builds }); return;
+          const updated = await Promise.all(builds.map(job => advanceHostedJob(store, identity.userId, job, accountOrigin(req))));
+          json(res, 200, { projects, graphs, computers, layout, builds: updated.filter(Boolean) }); return;
         }
         if (req.method !== 'POST') { json(res, 405, { error: 'Use GET or POST' }); return; }
         if (identity.tokenType === 'session_token' && req.headers.origin !== accountOrigin(req)) {
@@ -254,9 +267,9 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'save-project' && identity.tokenType === 'session_token') { json(res, 200, await store.saveProject(body.project)); return; }
         if (body.action === 'save-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.saveGraph(body.graph)); return; }
         if (body.action === 'save-layout' && identity.tokenType === 'session_token') { await store.saveLayout(body.layout); json(res, 200, { saved: true }); return; }
-        if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBuild(body.graphId)); return; }
-        if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueQuestion(body.graphId, body.question)); return; }
-        if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.queueInvestigation(body.graphId, body.request)); return; }
+        if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueBuild(body.graphId), accountOrigin(req))); return; }
+        if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueQuestion(body.graphId, body.question), accountOrigin(req))); return; }
+        if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueInvestigation(body.graphId, body.request), accountOrigin(req))); return; }
         if (body.action === 'browse-folders' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBrowse(body.computerId, body.path)); return; }
         if (body.action === 'begin-computer-link' && identity.tokenType === 'session_token') { json(res, 200, { code: await store.beginComputerLink() }); return; }
         if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer, body.pairingCode)); return; }

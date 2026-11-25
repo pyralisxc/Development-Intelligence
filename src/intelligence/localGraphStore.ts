@@ -34,7 +34,8 @@ async function writeCatalog(directory: string, catalog: Catalog): Promise<void> 
 }
 
 /** Serialize publication and reads so terminal, Workbench and MCP cannot race retention. */
-async function withCatalogLock<T>(directory: string, fn: () => Promise<T>): Promise<T> {
+async function withCatalogLock<T>(directory: string, fn: () => Promise<T>, immutableSnapshot = false): Promise<T> {
+  if (immutableSnapshot) return await fn();
   const lock = path.join(directory, '.catalog-lock');
   for (;;) {
     try {
@@ -262,7 +263,7 @@ export async function readLocalSourceGraph(root: string, project: string, graphI
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     return manifest.graph;
-  });
+  }, process.env.DEVINT_GRAPH_READ_ONLY_SNAPSHOT === '1');
 }
 
 /** Open the identity and coverage envelope for generation-bound record access.
@@ -288,5 +289,5 @@ export async function withLocalSourceGraphEnvelope<T>(root: string, project: str
     if (manifest.graph.nodes.length || manifest.graph.edges.length || manifest.graph.evidence.length) throw new Error('Invalid local graph envelope');
     if (!bindLocalGraphIndex(manifest.graph, entry.generation, target)) throw new Error('This retained graph needs a current retrieval index');
     return await use(manifest.graph);
-  });
+  }, process.env.DEVINT_GRAPH_READ_ONLY_SNAPSHOT === '1');
 }
