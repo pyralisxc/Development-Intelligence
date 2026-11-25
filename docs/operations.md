@@ -251,6 +251,8 @@ Account records are isolated from the existing single-owner registry. A graph na
 
 The account project list identifies each graph's configured source, manual snapshot policy, storage computer and last successful build's captured source when available. The shown time is the build request time, not a claimed completion time. A Git commit remains pinned on rebuild; a branch or default reference is resolved when a new snapshot is requested. Changing source settings does not change a retained snapshot. Activity identifies both project and graph and keeps failed jobs separate from a retained successful snapshot. A source's currentness relative to a branch or working folder is not automatically established by these labels.
 
+Active builds show the reported stage and, when supplied by the worker, file or transfer progress; these are stage counts rather than an estimated whole-build percentage. The assigned computer is shown as online or offline when its account heartbeat is available. After a failed build, the last successful snapshot remains recorded, but opening it still requires its query service and stored graph to be available. A new build uses the graph's current settings. For a failed direct-to-hosted transfer, the explicit staged retry instead uses the original job settings and can reuse a staged generation. The interface does not cancel or automatically retry a running build.
+
 The HTTP entry points are:
 
 - `/` — account landing page when enabled, otherwise the single-owner project chooser;
