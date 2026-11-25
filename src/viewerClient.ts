@@ -861,28 +861,36 @@ if (document.getElementById('question-dock')) {
   const inspector = document.querySelector<HTMLElement>('.inspector')!;
   const dock = document.getElementById('question-dock')!, shell = document.querySelector<HTMLElement>('.shell')!;
   let layoutReady = false, lastLayout = '', layoutTimer: number | undefined;
+  let inspectorSide = 'right', questionPosition = 'bottom';
+  const applyLayout = () => {
+    const width = Math.round(inspector.getBoundingClientRect().width) || 320;
+    inspector.style.order = inspectorSide === 'left' ? '-1' : '1';
+    shell.style.gridTemplateColumns = inspectorSide === 'left' ? width + 'px minmax(0,1fr)' : 'minmax(0,1fr) ' + width + 'px';
+    dock.style.order = questionPosition === 'top' ? '-1' : '1';
+    window.dispatchEvent(new Event('resize'));
+  };
+  const saveLayout = () => {
+    if (!layoutReady) return;
+    const layout = { inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height), inspectorSide, questionPosition };
+    const next = JSON.stringify(layout); if (next === lastLayout) return; lastLayout = next;
+    applyLayout(); parent.postMessage({ type: 'di-layout', layout }, location.origin);
+  };
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
     const saved = event.data.layout ?? {};
-    if (Number.isFinite(saved.inspectorWidth) && saved.inspectorWidth >= 180) { inspector.style.width = saved.inspectorWidth + 'px'; shell.style.gridTemplateColumns = 'minmax(0,1fr) ' + saved.inspectorWidth + 'px'; }
+    inspectorSide = saved.inspectorSide === 'left' ? 'left' : 'right'; questionPosition = saved.questionPosition === 'top' ? 'top' : 'bottom';
+    if (Number.isFinite(saved.inspectorWidth) && saved.inspectorWidth >= 180) inspector.style.width = saved.inspectorWidth + 'px';
     if (Number.isFinite(saved.questionHeight) && saved.questionHeight >= 100) dock.style.height = saved.questionHeight + 'px';
-    requestAnimationFrame(() => { layoutReady = true; });
+    applyLayout(); requestAnimationFrame(() => { layoutReady = true; });
   });
-  new ResizeObserver(() => {
-    if (!layoutReady) return;
-    window.clearTimeout(layoutTimer);
-    layoutTimer = window.setTimeout(() => {
-      const layout = { inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height) };
-      const next = JSON.stringify(layout); if (next === lastLayout) return; lastLayout = next;
-      shell.style.gridTemplateColumns = 'minmax(0,1fr) ' + layout.inspectorWidth + 'px';
-      parent.postMessage({ type: 'di-layout', layout }, location.origin);
-    }, 700);
-  }).observe(inspector);
-  new ResizeObserver(() => { if (layoutReady) { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(() => { const layout = { inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height) }; const next = JSON.stringify(layout); if (next !== lastLayout) { lastLayout = next; parent.postMessage({ type: 'di-layout', layout }, location.origin); } }, 700); } }).observe(dock);
+  const observer = new ResizeObserver(() => { if (layoutReady) { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700); } });
+  observer.observe(inspector); observer.observe(dock);
+  const moveInspector = document.createElement('button'); moveInspector.type = 'button'; moveInspector.textContent = 'Move panel'; moveInspector.onclick = () => { inspectorSide = inspectorSide === 'left' ? 'right' : 'left'; saveLayout(); };
+  const moveQuestions = document.createElement('button'); moveQuestions.type = 'button'; moveQuestions.textContent = 'Move questions'; moveQuestions.onclick = () => { questionPosition = questionPosition === 'top' ? 'bottom' : 'top'; saveLayout(); }; dock.prepend(moveQuestions);
   const tabs = document.createElement('div'); tabs.className = 'inspector-tabs';
   tabs.innerHTML = '<button type="button" data-pane="inspection">Inspector</button><button type="button" data-pane="files">Files</button>';
   const filesPane = document.createElement('div'); filesPane.className = 'inspector-body'; filesPane.hidden = true;
-  inspector.prepend(tabs); inspector.append(filesPane);
+  tabs.append(moveInspector); inspector.prepend(tabs); inspector.append(filesPane);
   const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorBody];
   const fileTabs = document.createElement('div'); fileTabs.className = 'inspector-tabs';
   const fileBody = document.createElement('pre'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;white-space:pre;';
@@ -899,7 +907,7 @@ if (document.getElementById('question-dock')) {
     catch (error) { fileBody.textContent = error instanceof Error ? error.message : String(error); }
   };
   let loaded = false;
-  tabs.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.onclick = async () => {
+  tabs.querySelectorAll<HTMLButtonElement>('[data-pane]').forEach(button => button.onclick = async () => {
     const files = button.dataset.pane === 'files'; original.forEach(item => { item.hidden = files; }); filesPane.hidden = !files;
     if (!files || loaded) return;
     filesPane.textContent = 'Loading files…';

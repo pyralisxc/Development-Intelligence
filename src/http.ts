@@ -229,7 +229,9 @@ export function createDevelopmentIntelligenceServer() {
         const store = new WorkspaceStore(identity.userId), graphId = requestUrl.searchParams.get('id');
         const graph = (await store.graphs()).find(item => item.id === graphId);
         if (!graph) { json(res, 404, { error: 'Graph not found' }); return; }
-        const job = (await store.builds()).filter(item => item.graph.id === graph.id && item.kind === 'build' && item.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        const newest = (await store.builds(false)).filter(item => item.graph.id === graph.id && item.kind === 'build' && item.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        const job = newest ? await store.build(newest.id) : null;
+        if (job?.kind === 'browse') throw new Error('Invalid graph build');
         const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
         if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
         const embedded = requestUrl.searchParams.get('embedded') === '1';

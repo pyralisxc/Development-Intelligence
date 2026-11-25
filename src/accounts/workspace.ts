@@ -173,7 +173,8 @@ export class WorkspaceStore {
     if (!graph) invalid('Graph does not exist');
     const project = await this.redis.hget<Project>(this.key('projects'), graph.projectId);
     if (!project) invalid('Project does not exist');
-    const latest = (await this.builds()).filter(job => job.graph.id === graph.id && job.kind === 'build' && job.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const newest = (await this.builds(false)).filter(job => job.graph.id === graph.id && job.kind === 'build' && job.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const latest = newest ? await this.build(newest.id) as BuildJob | null : null;
     const built = latest?.result as { graphId?: unknown } | undefined;
     if (typeof built?.graphId !== 'string') invalid('Build a snapshot of this graph first');
     const query = graph.query ?? { computer: latest!.graph.storage.computer, location: latest!.graph.storage.location };
@@ -190,7 +191,8 @@ export class WorkspaceStore {
     if (!graph) invalid('Graph does not exist');
     const project = await this.redis.hget<Project>(this.key('projects'), graph.projectId);
     if (!project) invalid('Project does not exist');
-    const latest = (await this.builds()).filter(job => job.graph.id === graph.id && job.kind === 'build' && job.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const newest = (await this.builds(false)).filter(job => job.graph.id === graph.id && job.kind === 'build' && job.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const latest = newest ? await this.build(newest.id) as BuildJob | null : null;
     const built = latest?.result as { graphId?: unknown } | undefined;
     if (typeof built?.graphId !== 'string') invalid('Build a snapshot of this graph first');
     const query = graph.query ?? { computer: latest!.graph.storage.computer, location: latest!.graph.storage.location };
