@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { IntelligenceGraph } from '../types.js';
@@ -33,7 +34,8 @@ async function writeCatalog(directory: string, catalog: Catalog): Promise<void> 
 }
 
 /** Serialize publication and reads so terminal, Workbench and MCP cannot race retention. */
-async function withCatalogLock<T>(directory: string, fn: () => Promise<T>): Promise<T> {
+async function withCatalogLock<T>(directory: string, fn: () => Promise<T>, immutableSnapshot = false): Promise<T> {
+  if (immutableSnapshot) return await fn();
   const lock = path.join(directory, '.catalog-lock');
   for (;;) {
     try {
@@ -62,9 +64,9 @@ async function withCatalogLock<T>(directory: string, fn: () => Promise<T>): Prom
 }
 
 /** Source graph generations are rebuildable; this directory never owns accepted semantic state. */
-export async function saveLocalSourceGraph(root: string, graph: IntelligenceGraph, retain = 3, targetName = 'working'): Promise<Entry> {
+export async function saveLocalSourceGraph(root: string, graph: IntelligenceGraph, retain = 3, targetName = 'working', activate = true): Promise<Entry> {
   if (!Number.isSafeInteger(retain) || retain < 1) throw new Error('Graph retention must be a positive integer');
-  if (!/^[A-Za-z0-9._-]+$/u.test(targetName)) throw new Error('Graph target must use letters, numbers, dot, underscore or dash');
+  if (!targetName.trim() || targetName !== targetName.trim() || /[\u0000-\u001f\u007f]/u.test(targetName)) throw new Error('Graph name must be non-empty and cannot contain control characters');
   const directory = projectDirectory(root, graph.project);
   await fs.mkdir(directory, { recursive: true });
   const generation = randomBytes(16).toString('hex');
@@ -100,7 +102,7 @@ export async function saveLocalSourceGraph(root: string, graph: IntelligenceGrap
       if (previous && previous.project !== graph.project) throw new Error('Local graph project mismatch');
       const entry: Entry = { generation, graphId: graph.graphId, createdAt: graph.createdAt, sourceFingerprint: graph.sourceFingerprint };
       const entries = [entry, ...(previous?.entries ?? [])];
-      const active = targetName === 'working' ? generation : previous?.active ?? generation;
+      const active = activate ? generation : previous?.active ?? generation;
       const targets = { ...(previous?.targets ?? (previous ? { working: previous.active } : {})), [targetName]: generation };
       const protectedGenerations = new Set([active, ...Object.values(targets)]);
       for (const item of entries) {
@@ -125,6 +127,62 @@ export async function saveLocalSourceGraph(root: string, graph: IntelligenceGrap
 
 export async function localSourceGraphHistory(root: string, project: string): Promise<Catalog | null> {
   return await catalogAt(projectDirectory(root, project));
+}
+
+/** Publish one already-built generation into another local store. */
+export async function importLocalSourceGraph(source: string, destination: string, project: string, graphId: string, targetName: string, retain = 3): Promise<void> {
+  if (path.resolve(source) === path.resolve(destination)) throw new Error('Transfer staging and graph storage must be different folders');
+  if (!Number.isSafeInteger(retain) || retain < 1 || !targetName.trim()) throw new Error('Invalid graph retention or name');
+  const sourceDirectory = projectDirectory(source, project), sourceCatalog = await catalogAt(sourceDirectory);
+  const entry = sourceCatalog?.entries.find(item => item.graphId === graphId);
+  if (!entry || !/^[a-f0-9]{32}$/u.test(entry.generation)) throw new Error('The transferred graph generation is unavailable');
+  const generation = path.join(sourceDirectory, entry.generation);
+  const destinationPath = path.resolve(destination);
+  if (destinationPath === generation || destinationPath.startsWith(`${generation}${path.sep}`)) throw new Error('Graph storage cannot be inside the transferred generation');
+  const manifest = JSON.parse(await fs.readFile(path.join(generation, 'manifest.json'), 'utf8')) as Manifest;
+  if (manifest.version !== 1 || manifest.graph.project !== project || manifest.graph.graphId !== graphId || !Array.isArray(manifest.parts)) throw new Error('Invalid transferred graph manifest');
+  await fs.access(path.join(generation, 'retrieval-index.sqlite'));
+  const digest = async (file: string) => {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
+    return hash.digest('hex');
+  };
+  for (const part of manifest.parts) {
+    if (!['nodes', 'edges', 'evidence'].includes(part.field) || !new RegExp(`^${part.field}-[0-9]+\\.json$`, 'u').test(part.file)) throw new Error('Invalid transferred graph part');
+    if (await digest(path.join(generation, part.file)) !== part.sha256) throw new Error(`Transferred graph part changed: ${part.file}`);
+  }
+  const directory = projectDirectory(destination, project), temporary = path.join(directory, `.transfer-${randomBytes(16).toString('hex')}`);
+  await fs.mkdir(directory, { recursive: true });
+  try {
+    await fs.cp(generation, temporary, { recursive: true, force: false, errorOnExist: true });
+    for (const item of await fs.readdir(temporary, { withFileTypes: true })) {
+      if (!item.isFile()) throw new Error('Unexpected item in transferred graph');
+      if (await digest(path.join(generation, item.name)) !== await digest(path.join(temporary, item.name))) throw new Error(`Transferred graph file changed: ${item.name}`);
+    }
+    await withCatalogLock(directory, async () => {
+      const previous = await catalogAt(directory);
+      if (previous && previous.project !== project) throw new Error('Local graph project mismatch');
+      const generationPath = path.join(directory, entry.generation);
+      try { await fs.rename(temporary, generationPath); }
+      catch (error) {
+        if (!['EEXIST', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        for (const item of await fs.readdir(temporary, { withFileTypes: true })) {
+          if (!item.isFile() || await digest(path.join(temporary, item.name)) !== await digest(path.join(generationPath, item.name))) throw new Error('An existing graph generation differs from the transferred generation');
+        }
+        await fs.rm(temporary, { recursive: true, force: true });
+      }
+      const entries = [entry, ...(previous?.entries ?? []).filter(item => item.generation !== entry.generation)];
+      const targets = { ...(previous?.targets ?? (previous ? { working: previous.active } : {})), [targetName]: entry.generation };
+      const active = manifest.graph.sourceState ? entry.generation : previous?.active ?? entry.generation;
+      const keep = new Set([active, ...Object.values(targets)]);
+      for (const item of entries) { if (keep.size >= retain) break; keep.add(item.generation); }
+      const kept = entries.filter(item => keep.has(item.generation));
+      await writeCatalog(directory, { version: 1, project, active, entries: kept, targets });
+      for (const item of entries.filter(item => !keep.has(item.generation))) {
+        if (/^[a-f0-9]{32}$/u.test(item.generation)) await fs.rm(path.join(directory, item.generation), { recursive: true, force: true });
+      }
+    });
+  } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
 /** Copy only catalog-referenced generations while each project is stable. */
@@ -168,11 +226,10 @@ export async function activateLocalSourceGraph(root: string, project: string, gr
 }
 
 export async function removeLocalGraphTarget(root: string, project: string, name: string): Promise<void> {
-  if (name === 'working') throw new Error('The working target is updated by rebuilding the current files');
   const directory = projectDirectory(root, project);
   await withCatalogLock(directory, async () => {
     const catalog = await catalogAt(directory);
-    if (!catalog || catalog.project !== project || !catalog.targets?.[name]) throw new Error(`Unknown local graph target: ${name}`);
+    if (!catalog || catalog.project !== project || !catalog.targets || !Object.hasOwn(catalog.targets, name)) throw new Error(`Unknown local graph target: ${name}`);
     const targets = { ...catalog.targets };
     delete targets[name];
     await writeCatalog(directory, { ...catalog, targets });
@@ -206,7 +263,7 @@ export async function readLocalSourceGraph(root: string, project: string, graphI
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     return manifest.graph;
-  });
+  }, process.env.DEVINT_GRAPH_READ_ONLY_SNAPSHOT === '1');
 }
 
 /** Open the identity and coverage envelope for generation-bound record access.
@@ -232,5 +289,5 @@ export async function withLocalSourceGraphEnvelope<T>(root: string, project: str
     if (manifest.graph.nodes.length || manifest.graph.edges.length || manifest.graph.evidence.length) throw new Error('Invalid local graph envelope');
     if (!bindLocalGraphIndex(manifest.graph, entry.generation, target)) throw new Error('This retained graph needs a current retrieval index');
     return await use(manifest.graph);
-  });
+  }, process.env.DEVINT_GRAPH_READ_ONLY_SNAPSHOT === '1');
 }

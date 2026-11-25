@@ -231,3 +231,25 @@ export async function getCodeSnippet(input: {
   }
   return await withResolvedProjectCheckout(context.revision, readSnippet);
 }
+
+/** Browse files at the selected graph's source state, retaining its revision binding. */
+export async function browseGraphSource(input: { project: string; graphId: string; file?: string }): Promise<Record<string, unknown>> {
+  const selected = await graphContext(input.project, { graphId: input.graphId });
+  const working = Boolean(selected.graph.sourceState);
+  const expected = selected.graph.sourceFingerprint;
+  const read = async (checkout: { root: string; ref: string; sha: string | null }) => {
+    if (working && (!expected || await sourceFingerprint(checkout.root, true) !== expected)) throw new Error('Working source no longer matches the selected graph. Build a new snapshot to inspect current files.');
+    const files = await trackedTextFiles(checkout.root, working);
+    if (!input.file) return { graphId: input.graphId, revision: checkout.sha, files };
+    if (!files.includes(input.file)) throw new Error('File is not present in the selected source state');
+    const absolute = path.resolve(checkout.root, input.file);
+    const realRoot = await fs.realpath(checkout.root), real = await fs.realpath(absolute);
+    if (!real.startsWith(realRoot + path.sep) || !(await fs.lstat(absolute)).isFile()) throw new Error('File is unavailable in the selected source state');
+    const bytes = await fs.readFile(real);
+    if (bytes.includes(0)) throw new Error('Binary files cannot be displayed as source text');
+    if (working && await sourceFingerprint(checkout.root, true) !== expected) throw new Error('Working source changed while reading the file');
+    return { graphId: input.graphId, revision: checkout.sha, file: input.file, content: bytes.toString('utf8') };
+  };
+  if (working) return await read({ root: fileURLToPath(selected.revision.repository), ref: 'working-tree', sha: null });
+  return await withResolvedProjectCheckout(selected.revision, read);
+}

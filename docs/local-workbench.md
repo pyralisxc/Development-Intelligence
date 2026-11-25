@@ -14,6 +14,7 @@ Use `--install-dir`, `--data-dir`, `--scratch-dir`, `--desktop-dir`, `--retain`,
 
 ```text
 di-local build
+di-local build --target "My graph"
 di-local build-revision --ref main --target main
 di-local build-revision --ref preview --target preview
 di-local history
@@ -31,7 +32,11 @@ Terminal questions use the same question route as the Workbench and MCP. The def
 
 Committed references resolve using the local Git repository. `main` or `preview` selects the local branch when it exists; after fetching, use `--ref origin/preview --target preview` or `--ref origin/main --target main` to select the updated remote-tracking branch explicitly. Revision builds use a disposable checkout and do not change your files. `compare` without `--base` compares main, preview and working pairwise. Use `--offset` and `--limit` to page each category. The shared comparison reports source changes, moved occurrences, unmatched producer output, analysis differences for unchanged source, and provenance separately. An ambiguous occurrence retains its source identity; graph changes do not by themselves imply a runtime behavioral change. Parity contracts also support evaluating one selected graph against supplied expectations.
 
+Graph names are labels for retained targets and can include spaces. `working` remains the default name for a current-file build for compatibility, but no name requires a particular source: the same name can be used for a committed revision or current files. `working-tree` as a revision selector identifies the most recently retained current-file graph rather than requiring a graph named `working`. A named build publishes its replacement only after graph and index construction succeed.
+
 The `open` command starts the local Workbench and opens the browser. `serve` runs the loopback service in the foreground. `mcp` serves the same local graph through standard input/output to a compatible local agent. Connecting ChatGPT to a local process requires a supported connection or tunnel configured separately.
+
+To link this installation, choose **Link a computer** in the account Workbench and run its displayed command on the computer. Clerk presents a device approval, and DI starts the linked process and arranges for it to start when the user signs in to the computer. Add `--no-autostart` to the link command to skip startup registration; use `di-local account-autostart on` or `di-local account-autostart off` to change it later. `di-local account-status` checks the connection; `di-local account-run` runs the process in the foreground. An unlinked or offline computer remains visible in the account but cannot execute graph operations.
 
 The Workbench Semantics view derives its understanding from the selected graph. It does not provide separate editing, approval or verification of semantic meanings. Legacy review, promotion-gate and portfolio-bootstrap interfaces are retired; existing stored review data is not deleted. Source-graph backup does not include that old data.
 

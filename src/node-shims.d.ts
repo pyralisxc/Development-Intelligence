@@ -12,12 +12,12 @@ declare module 'node:crypto' {
   export const sign: any;
   export const timingSafeEqual: any;
 }
-declare module 'node:fs' { export const promises: any; }
+declare module 'node:fs' { export const promises: any; export const createReadStream: any; }
 declare module 'node:path' { const value: any; export default value; }
 declare module 'node:os' { const value: any; export default value; }
 declare module 'node:v8' { export function getHeapStatistics(): { heap_size_limit: number }; }
 declare module 'node:module' { export const createRequire: any; }
-declare module 'node:child_process' { export const spawn: any; }
+declare module 'node:child_process' { export const spawn: any; export const spawnSync: any; }
 declare module 'node:worker_threads' {
   export const isMainThread: boolean;
   export const parentPort: { postMessage(value: unknown): void; on(event: 'message', listener: (value: any) => void): void; removeAllListeners(event: 'message'): void; close(): void } | null;

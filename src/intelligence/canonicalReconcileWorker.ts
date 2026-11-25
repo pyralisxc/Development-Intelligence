@@ -196,9 +196,9 @@ async function workerMain(input: WorkerInput | LocalGraphWorkerInput | PreviewGr
       ? await buildLocalRevisionGraph(input.root, input.ref, input.project, input.joern, progress)
       : await buildLocalWorkingGraph(input.root, input.project, input.joern, progress);
     progress({ stage: 'publishing-graph-and-index' });
-    const retained = await saveLocalSourceGraph(input.dataDir, graph, input.retain, input.target ?? 'working');
+    const retained = await saveLocalSourceGraph(input.dataDir, graph, input.retain, input.target ?? 'working', !input.ref);
     const { files: _files, ...coverage } = graph.coverage ?? {};
-    parentPort?.postMessage({ ok: true, result: { project: graph.project, ...(input.ref ? { target: input.target ?? input.ref } : {}), graphId: graph.graphId,
+    parentPort?.postMessage({ ok: true, result: { project: graph.project, target: input.target ?? (input.ref ?? 'working'), graphId: graph.graphId,
       revision: graph.repositoryRevision, sourceState: graph.sourceState, sourceFingerprint: graph.sourceFingerprint,
       nodes: graph.nodes.length, edges: graph.edges.length, coverage, producerCoverage: graph.producerCoverage, retained } } satisfies LocalWorkerEnvelope);
     return;

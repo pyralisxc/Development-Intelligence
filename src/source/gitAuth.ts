@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ProjectConfig } from '../types.js';
-import { resolveRepositoryCredential } from './repositoryCredential.js';
+import { resolveRepositoryCredential, type ResolvedRepositoryCredential } from './repositoryCredential.js';
 import { hasProjectAccess, projectAccessScratchPrefix } from '../config/projectAccess.js';
 
 export interface GitAuthContext {
@@ -10,8 +10,8 @@ export interface GitAuthContext {
   cleanup: () => Promise<void>;
 }
 
-export async function gitAuth(config: ProjectConfig): Promise<GitAuthContext> {
-  const resolved = await resolveRepositoryCredential(config);
+export async function gitAuth(config: ProjectConfig, credential?: ResolvedRepositoryCredential): Promise<GitAuthContext> {
+  const resolved = credential ?? await resolveRepositoryCredential(config);
   if (!resolved) return { env: {}, cleanup: async () => {} };
 
   const scratch = hasProjectAccess() ? path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir()) : os.tmpdir();

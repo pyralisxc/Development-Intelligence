@@ -1,3 +1,4 @@
+import { browseGraphSource } from './intelligence/code.js';
 import { compareInteractionRevisions } from './intelligence/interactionParity.js';
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
@@ -20,6 +21,11 @@ import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.j
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import type { TechnicalSourceCapability } from './types.js';
 import { withVercelRequestContext } from './vercelRequestContext.js';
+import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
+import { WorkspaceStore } from './accounts/workspace.js';
+import { advanceHostedJob } from './accounts/hostedQueue.js';
+import { renderAccountWorkbench } from './accounts/view.js';
+import { accountGithubBranches, accountGithubRepositories, accountGithubToken } from './accounts/github.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSION = '2025-11-25';
@@ -193,6 +199,98 @@ export function createDevelopmentIntelligenceServer() {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;
     }
+    if ((requestUrl.pathname === '/account' || (requestUrl.pathname === '/' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1')) && req.method === 'GET') {
+      try { const branchHost = process.env.VERCEL_BRANCH_URL?.trim(); const origin = branchHost ? `https://${branchHost}` : accountOrigin(req); const page = renderAccountWorkbench(process.env.CLERK_PUBLISHABLE_KEY?.trim() ?? '', origin); res.writeHead(200, htmlHeaders()); res.end(page); }
+      catch { json(res, 503, { error: 'Account sign-in is not configured' }); }
+      return;
+    }
+    if (requestUrl.pathname === '/account/client-config' && req.method === 'GET') {
+      const key = process.env.CLERK_PUBLISHABLE_KEY?.trim();
+      const clientId = process.env.CLERK_DEVICE_CLIENT_ID?.trim();
+      if (!key || !clientId) { json(res, 503, { error: 'Computer linking is not configured' }); return; }
+      const encoded = key.split('_')[2];
+      if (!encoded) { json(res, 503, { error: 'Account identity is not configured' }); return; }
+      const host = Buffer.from(encoded, 'base64').toString('utf8').replace(/\$$/u, '');
+      if (!/^[a-zA-Z0-9.-]+$/u.test(host)) { json(res, 503, { error: 'Invalid account identity configuration' }); return; }
+      json(res, 200, { issuer: `https://${host}`, clientId }); return;
+    }
+    if (requestUrl.pathname === '/account/github/repositories' && req.method === 'GET') {
+      try {
+        const identity = await authenticateAccount(req, res); if (!identity) return;
+        if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
+        const repository = requestUrl.searchParams.get('branches');
+        json(res, 200, repository ? { branches: await accountGithubBranches(identity.userId, repository) } : await accountGithubRepositories(identity.userId)); return;
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
+    if (requestUrl.pathname === '/account/graph' && req.method === 'GET') {
+      try {
+        const identity = await authenticateAccount(req, res); if (!identity) return;
+        if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
+        const store = new WorkspaceStore(identity.userId), graphId = requestUrl.searchParams.get('id');
+        const graph = (await store.graphs()).find(item => item.id === graphId);
+        if (!graph) { json(res, 404, { error: 'Graph not found' }); return; }
+        const newest = (await store.builds(false)).filter(item => item.graph.id === graph.id && item.kind === 'build' && item.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        const job = newest ? await store.build(newest.id) : null;
+        if (job?.kind === 'browse') throw new Error('Invalid graph build');
+        const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
+        if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
+        const embedded = requestUrl.searchParams.get('embedded') === '1';
+        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded);
+        res.writeHead(200, embedded ? { ...htmlHeaders(), 'x-frame-options': 'SAMEORIGIN' } : htmlHeaders()); res.end(page); return;
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
+    if (requestUrl.pathname === '/account/hosted-finish' && req.method === 'POST') {
+      try {
+        const body = await readJson(req);
+        if (typeof body.userId !== 'string' || !body.userId || typeof body.claimId !== 'string') { json(res, 403, { error: 'Invalid hosted job claim' }); return; }
+        const store = new WorkspaceStore(body.userId), job = await store.build(body.jobId);
+        if (!job || job.kind === 'browse' || job.assignedComputer !== 'hosted' || job.claimId !== body.claimId || !job.hosted) { json(res, 403, { error: 'Invalid hosted job claim' }); return; }
+        if (job.state === 'complete' || job.state === 'failed') { json(res, 200, { complete: true }); return; }
+        const updated = await advanceHostedJob(store, body.userId, job);
+        json(res, updated?.state === 'complete' || updated?.state === 'failed' ? 200 : 409, { complete: updated?.state === 'complete' || updated?.state === 'failed' }); return;
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
+    if (requestUrl.pathname === '/account/workspace') {
+      try {
+        const identity = await authenticateAccount(req, res);
+        if (!identity) return;
+        const store = new WorkspaceStore(identity.userId);
+        if (req.method === 'GET') {
+          if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
+          const jobId = requestUrl.searchParams.get('job');
+          if (jobId) { json(res, 200, await advanceHostedJob(store, identity.userId, await store.build(jobId), accountOrigin(req))); return; }
+          const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds(false)]);
+          const updated = await Promise.all(builds.map(job => advanceHostedJob(store, identity.userId, job, accountOrigin(req))));
+          json(res, 200, { projects, graphs, computers, layout, builds: updated.filter(Boolean) }); return;
+        }
+        if (req.method !== 'POST') { json(res, 405, { error: 'Use GET or POST' }); return; }
+        if (identity.tokenType === 'session_token' && req.headers.origin !== accountOrigin(req)) {
+          json(res, 403, { error: 'Account changes require the Workbench origin' }); return;
+        }
+        const body = await readJson(req);
+        if (body.action === 'save-project' && identity.tokenType === 'session_token') { json(res, 200, await store.saveProject(body.project)); return; }
+        if (body.action === 'save-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.saveGraph(body.graph)); return; }
+        if (body.action === 'save-layout' && identity.tokenType === 'session_token') { await store.saveLayout(body.layout); json(res, 200, { saved: true }); return; }
+        if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueBuild(body.graphId), accountOrigin(req))); return; }
+        if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueQuestion(body.graphId, body.question), accountOrigin(req))); return; }
+        if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueInvestigation(body.graphId, body.request), accountOrigin(req))); return; }
+        if (body.action === 'browse-folders' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBrowse(body.computerId, body.path)); return; }
+        if (body.action === 'begin-computer-link' && identity.tokenType === 'session_token') { json(res, 200, { code: await store.beginComputerLink() }); return; }
+        if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer, body.pairingCode)); return; }
+        if (body.action === 'computer-heartbeat' && identity.tokenType === 'oauth_token') { json(res, 200, await store.heartbeat(body.computerId, body.secret)); return; }
+        if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret)); return; }
+        if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
+        if (body.action === 'computer-github-token' && identity.tokenType === 'oauth_token') {
+          const computer = await store.verifyComputer(body.computerId, body.secret), job = await store.build(body.jobId);
+          if (!job || job.kind === 'browse' || job.state !== 'running' || job.claimId !== body.claimId || (job.assignedComputer ?? job.graph.buildComputer) !== computer.id || job.graph.source.kind !== 'git') { json(res, 403, { error: 'Build is not assigned to this computer' }); return; }
+          const source = new URL(job.graph.source.location);
+          if (source.protocol !== 'https:' || source.hostname !== 'github.com' || source.username || source.password) { json(res, 403, { error: 'GitHub credentials require a GitHub source' }); return; }
+          json(res, 200, { token: await accountGithubToken(identity.userId) }); return;
+        }
+        if (body.action === 'revoke-computer' && identity.tokenType === 'session_token') { await store.revokeComputer(body.computerId); json(res, 200, { revoked: true }); return; }
+        json(res, 400, { error: 'Unsupported account operation' }); return;
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
     if (requestUrl.pathname === '/workbench/graph-build') {
       if (!authorize(req, res)) return;
       try {
@@ -354,6 +452,14 @@ export function createDevelopmentIntelligenceServer() {
       }
       return;
     }
+    if (requestUrl.pathname === '/workbench/source' && req.method === 'GET') {
+      if (!authorize(req, res)) return;
+      const project = requestUrl.searchParams.get('project'), graphId = requestUrl.searchParams.get('graphId');
+      if (!project || !graphId) { json(res, 400, { error: 'Choose a graph first' }); return; }
+      try { json(res, 200, await browseGraphSource({ project, graphId, ...(requestUrl.searchParams.has('file') ? { file: requestUrl.searchParams.get('file')! } : {}) })); }
+      catch (error) { json(res, 400, { error: error instanceof Error ? error.message : String(error) }); }
+      return;
+    }
     if (requestUrl.pathname === '/workbench/data' && req.method === 'GET') {
       if (!authorize(req, res)) return;
       const project = requestUrl.searchParams.get('project');
@@ -375,6 +481,11 @@ export function createDevelopmentIntelligenceServer() {
           result = await exploreWorkbench({ project, query: requestUrl.searchParams.get('query') ?? undefined, limit: numberParam(requestUrl, 'limit', 250), ...context });
         } else if (action === 'audit') result = await repositoryAudit({ project, ...context, offset: numberParam(requestUrl, 'offset', 0), limit: numberParam(requestUrl, 'limit', 20) });
         else if (action === 'sources') result = await workbenchSources(project, context.ref, context.graphId);
+        else if (action === 'graph-targets') {
+          const root = process.env.DEVINT_LOCAL_GRAPH_DIR?.trim();
+          const catalog = root ? await localSourceGraphHistory(root, project) : null;
+          result = { targets: Object.entries(catalog?.targets ?? {}).map(([name, generation]) => ({ name, graphId: catalog?.entries.find(entry => entry.generation === generation)?.graphId ?? null })).filter(item => item.graphId) };
+        }
         else if (action === 'interaction-parity') {
           const baseRef = requestUrl.searchParams.get('baseRef') ?? 'main';
           const ref = requestUrl.searchParams.get('headRef') ?? 'preview';

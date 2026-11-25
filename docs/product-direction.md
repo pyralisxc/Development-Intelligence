@@ -6,7 +6,7 @@
 
 Development Intelligence is the **evidence layer for software development**.
 
-It turns exact Git revisions and bounded technical observations into one inspectable model of what a software project contains, how its parts connect, what changed, what remains uncertain, and whether important representations agree. Integrated owner products consume that intelligence through stable service contracts; agents use MCP directly; the Workbench remains a direct specialist surface for inspection, diagnostics, and independent verification.
+It turns exact Git revisions and bounded technical observations into one inspectable model of what a software project contains, how its parts connect, what changed, what remains uncertain, and whether important representations agree. People use the account-centered Workbench, local CLI and installed computers; agents and integrated products use service and MCP contracts over that same intelligence.
 
 The graph is the internal model, not the product identity. The product outcome is faster, more trustworthy understanding before a person or agent decides or changes anything.
 
@@ -19,6 +19,12 @@ The roadmap's 0.1.0 experience direction describes a configurable graph-led work
 Development Intelligence is built first for a solo software owner working with coding agents across many repositories, languages, revisions, providers, and long-running product histories.
 
 Its quality bar is enterprise-grade evidence discipline—exact revision identity for committed states, explicit content identity for local working files, coverage, bounded credentials, deterministic accepted history, inspectable uncertainty, and reproducible release proof—without making teams, organizational administration, or process governance a prerequisite. Team capability may be added later when it directly improves the solo-owner repository experience; it is not a current product promise.
+
+## Account and graph journey
+
+A DI account retains projects, integration connections, graph definitions and Workbench layout preferences even when a linked computer is offline. The hosted Workbench and installed Linux and Windows clients share this account. Graph name, source, build location, storage location, query service and update policy are separate choices; snapshots are the default and `working` has no special policy meaning. A query service accesses a selected saved graph through an available connection to its store; changing that service does not itself rebuild the graph. The user may select local folders or connected repository revisions, and inspect availability before opening a stored graph.
+
+Workbench panels can be rearranged and resized, with layouts restored on later sign-ins. A panel may contain multiple tabs, and its active tab occupies that panel. Graph exploration, questions, audit, changes and parity are views and operations over the same selected intelligence. GitHub sign-in should carry the user's GitHub identity forward to repository selection; additional repository authorization is requested only where required.
 
 ## The job it owns
 
@@ -39,10 +45,10 @@ It is most valuable when an agent or owner must reason across a repository witho
 Development Intelligence is a standalone evidence service with one canonical intelligence model and multiple clients:
 
 - **MCP / service contracts** — the canonical programmatic integration surface for project, revision, graph, code, architecture, coverage, evidence, change, parity, and assessment intelligence.
-- **Workbench** — the direct specialist human surface for engine development, diagnostics, deep inspection, debugging, and independent verification.
-- **AI Systems Control** — the canonical integrated owner-facing product for routine use of Development Intelligence alongside other specialist development systems. ASC is a separate product and deployment; it consumes DI capabilities without owning DI graph/evidence semantics.
+- **Workbench** — the account-centered home for projects, connected computers, graph configuration, investigation and visual exploration.
+- **AI Systems Control and other integrations** — separate products may consume DI capabilities without owning DI graph/evidence semantics or replacing the DI Workbench.
 
-These surfaces must not create separate truth. Capabilities that ASC or another client presents should come from Development Intelligence contracts rather than reimplementing intelligence logic outside DI. The Workbench remains supported until integrated clients demonstrate equivalent or intentionally improved access to the relevant capability.
+These surfaces must not create separate truth. Capabilities that ASC or another client presents should come from Development Intelligence contracts rather than reimplementing intelligence logic outside DI. The Workbench is a first-class DI experience alongside CLI and MCP.
 
 Each inspected project remains autonomous:
 
