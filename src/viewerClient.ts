@@ -173,7 +173,8 @@ function wireNodeButtons(root: ParentNode = content, graphId?: string): void {
           graphSelected = id; selectedGraphNodes.clear(); selectedGraphNodes.add(id);
           graph.forEachNode(node => graph.setNodeAttribute(node, 'color', node === id || (investigationVisible && activeInvestigation?.focusNodeIds?.includes(node)) ? '#f6c95f' : graphColor(graph.getNodeAttribute(node, 'node'))));
           const scope = document.getElementById('graph-scope') as HTMLButtonElement | null;
-          if (scope) scope.disabled = false;
+          if (scope) { scope.disabled = false; scope.hidden = false; }
+          const compare = document.getElementById('graph-compare-selection'); if (compare) compare.hidden = false;
           const label = document.getElementById('graph-selected-label');
           if (label) label.textContent = `Selected: ${graph.getNodeAttribute(id, 'label')}`;
         }
@@ -401,7 +402,7 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const sequence = ++graphRenderSequence;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}<details class="graph-display"><summary>Display</summary><label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button></details><button id="graph-scope" type="button" disabled>Use selected subject for question</button><button id="graph-compare-selection" type="button">Use selected nodes for comparison</button><span id="graph-selected-label" class="muted"></span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}<details class="graph-display"><summary>Display</summary><label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button></details><button id="graph-scope" type="button" disabled hidden>Use selected subject for question</button><button id="graph-compare-selection" type="button" hidden>Use selected nodes for comparison</button><span id="graph-selected-label" class="muted"></span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
     const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
@@ -444,7 +445,8 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects selected', selected ? 'This result has no graph records to display. Its findings or missing expectations remain in the result.' : 'Try another search or choose a different view.'); graphStatus.textContent = '0 nodes'; return; }
   if (graphSelected && projection.nodes.some(node => node.id === graphSelected)) {
     const button = root.querySelector<HTMLButtonElement>('#graph-scope');
-    if (button) button.disabled = false;
+    if (button) { button.disabled = false; button.hidden = false; }
+    const compare = root.querySelector<HTMLElement>('#graph-compare-selection'); if (compare) compare.hidden = false;
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
     if (label) label.textContent = `Selected: ${projection.nodes.find(node => node.id === graphSelected)?.name ?? graphSelected}`;
   }
@@ -461,7 +463,8 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     else { selectedGraphNodes.clear(); selectedGraphNodes.add(event.node); }
     graph.forEachNode(id => graph.setNodeAttribute(id, 'color', selectedGraphNodes.has(id) ? '#f6c95f' : selected?.focusNodeIds?.includes(id) ? '#f6c95f' : graphColor(graph.getNodeAttribute(id, 'node'))));
     const button = root.querySelector<HTMLButtonElement>('#graph-scope');
-    if (button) button.disabled = false;
+    if (button) { button.disabled = false; button.hidden = false; }
+    const compare = root.querySelector<HTMLElement>('#graph-compare-selection'); if (compare) compare.hidden = false;
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
     if (label) label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}${selectedGraphNodes.size > 1 ? ` · ${selectedGraphNodes.size} selected` : ''}`;
     void openInspector(event.node);
