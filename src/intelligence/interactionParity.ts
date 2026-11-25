@@ -193,7 +193,9 @@ function interactionKeysInScope(indexed: Indexed, needle: string): Set<string> {
   return matched;
 }
 
-export function compareInteractionGraphs(base: IntelligenceGraph, head: IntelligenceGraph, offset = 0, limit = 20, scope?: string) {
+export function compareInteractionGraphs(base: IntelligenceGraph, head: IntelligenceGraph, offset = 0, limit = 20, scope?: string, detail: 'full' | 'summary' | 'facts' | 'base' | 'head' = 'full') {
+  const includeFacts = detail === 'full' || detail === 'facts';
+  const includeBase = detail === 'full' || detail === 'base', includeHead = detail === 'full' || detail === 'head';
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1) throw new Error('Parity offset and limit must be non-negative and positive integers');
   const left = index(base), right = index(head);
   const affected = affectedInteractionKeys(left, right);
@@ -205,31 +207,31 @@ export function compareInteractionGraphs(base: IntelligenceGraph, head: Intellig
   const items = keys.slice(offset, offset + limit).map(key => {
     const before = left.interactions.get(key) ?? [], after = right.interactions.get(key) ?? [];
     if (before.length > 1 || after.length > 1) return { status: 'ambiguous', before, after,
-      investigations: [before.length ? investigationSelection(base, 'parity-base', { nodeIds: before.map(node => node.id) }) : null,
-        after.length ? investigationSelection(head, 'parity-head', { nodeIds: after.map(node => node.id) }) : null],
+      ...(includeBase || includeHead ? { investigations: [includeBase && before.length ? investigationSelection(base, 'parity-base', { nodeIds: before.map(node => node.id) }) : null,
+        includeHead && after.length ? investigationSelection(head, 'parity-head', { nodeIds: after.map(node => node.id) }) : null] } : {}),
       reason: 'Multiple interaction occurrences have the same source identity; correspondence is not established.' };
     if (!before.length || !after.length) {
       const present = before[0] ?? after[0]!;
       const graph = before.length ? base : head, indexed = before.length ? left : right;
       const path = pathOf(indexed, present);
-      const selected = investigationSelection(graph, before.length ? 'parity-base' : 'parity-head', { nodeIds: path.nodeIds, edgeIds: path.edgeIds });
+      const selected = (before.length ? includeBase : includeHead) ? investigationSelection(graph, before.length ? 'parity-base' : 'parity-head', { nodeIds: path.nodeIds, edgeIds: path.edgeIds }) : null;
       return { status: before.length ? 'removed' : 'added', before: before[0] ?? null, after: after[0] ?? null,
-        investigations: before.length ? [selected, null] : [null, selected],
+        ...(includeBase || includeHead ? { investigations: before.length ? [selected, null] : [null, selected] } : {}),
         reason: 'This interaction was found on one side; coverage and source identity affect absence.' };
     }
     const previous = pathOf(left, before[0]!), current = pathOf(right, after[0]!);
     const removed = difference(previous.facts, current.facts), added = difference(current.facts, previous.facts);
     return { status: previous.nodeIds.length > 1 && current.nodeIds.length === 1 ? 'captured-connection-lost' : added.length || removed.length ? 'changed' : previous.unresolved.length || current.unresolved.length || previous.nodeIds.length === 1 || current.nodeIds.length === 1 ? 'incomplete-path' : 'same-captured-path', before: before[0], after: after[0],
       path: { beforeNodes: previous.nodeIds.length, afterNodes: current.nodeIds.length, addedFacts: added.length, removedFacts: removed.length, beforeUnresolved: previous.unresolved.length, afterUnresolved: current.unresolved.length },
-      changes: { added: added.map(item => ({ occurrences: item.occurrences, detail: current.descriptions.get(item.fact) })), removed: removed.map(item => ({ occurrences: item.occurrences, detail: previous.descriptions.get(item.fact) })) },
-      investigations: [investigationSelection(base, 'parity-base', { nodeIds: previous.nodeIds, edgeIds: previous.edgeIds }), investigationSelection(head, 'parity-head', { nodeIds: current.nodeIds, edgeIds: current.edgeIds })] };
+      ...(includeFacts ? { changes: { added: added.map(item => ({ occurrences: item.occurrences, detail: current.descriptions.get(item.fact) })), removed: removed.map(item => ({ occurrences: item.occurrences, detail: previous.descriptions.get(item.fact) })) } } : {}),
+      ...(includeBase || includeHead ? { investigations: [includeBase ? investigationSelection(base, 'parity-base', { nodeIds: previous.nodeIds, edgeIds: previous.edgeIds }) : null, includeHead ? investigationSelection(head, 'parity-head', { nodeIds: current.nodeIds, edgeIds: current.edgeIds }) : null] } : {}) };
   });
   return { project: head.project, base: { graphId: base.graphId, revision: base.repositoryRevision, sourceState: base.sourceState ?? null, sourceFingerprint: base.sourceFingerprint, coverage: base.coverage }, head: { graphId: head.graphId, revision: head.repositoryRevision, sourceState: head.sourceState ?? null, sourceFingerprint: head.sourceFingerprint, coverage: head.coverage },
     analyzerChanged: base.analyzerVersion !== head.analyzerVersion, scope: scope?.trim() || null, relationshipKinds: [...PATH_RELATIONS], potentiallyAffected: keys.filter(key => affected.has(key)).length, items, page: { offset, limit, total: keys.length, nextOffset: offset + limit < keys.length ? offset + limit : null },
     note: 'Compares captured source relationships and conditions. An unchanged captured path does not establish complete behavior; missing or ambiguous graph coverage remains visible.' };
 }
-export async function compareInteractionRevisions(input: { project: string; baseRef: string; ref: string; offset?: number | undefined; limit?: number | undefined; scope?: string | undefined }) {
+export async function compareInteractionRevisions(input: { project: string; baseRef: string; ref: string; offset?: number | undefined; limit?: number | undefined; scope?: string | undefined; detail?: 'full' | 'summary' | 'facts' | 'base' | 'head'; baseGraphId?: string; headGraphId?: string }) {
   if (input.baseRef === input.ref) throw new Error('Choose two different revision targets');
-  const [base, head] = await Promise.all([currentGraph(input.project, input.baseRef), currentGraph(input.project, input.ref)]);
-  return compareInteractionGraphs(base, head, input.offset, input.limit, input.scope);
+  const [base, head] = await Promise.all([currentGraph(input.project, input.baseGraphId ? undefined : input.baseRef, input.baseGraphId), currentGraph(input.project, input.headGraphId ? undefined : input.ref, input.headGraphId)]);
+  return compareInteractionGraphs(base, head, input.offset, input.limit, input.scope, input.detail);
 }

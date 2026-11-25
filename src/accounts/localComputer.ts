@@ -42,7 +42,9 @@ async function postForm(url: string, form: Record<string, string>): Promise<any>
 }
 async function workspace(origin: string, token: string, data: unknown): Promise<any> {
   const response = await fetch(new URL('/account/workspace', trustedUrl(origin, true)), { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(data), redirect: 'error' });
-  const result = await response.json() as any;
+  const text = await response.text();
+  let result: any;
+  try { result = JSON.parse(text); } catch { throw new Error(`Workbench returned ${response.status}: ${text.slice(0, 200)}`); }
   if (!response.ok) throw new Error(result.error || `Workbench returned ${response.status}`);
   return result;
 }
@@ -232,7 +234,14 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
       }
       const result = await executeAccountGraphJob(job, scratchDir, retain, async () => (await send({ action: 'computer-github-token', jobId: job.id, claimId: job.claimId })).token as string | null, progress => update({ progress }));
       if (renewal) clearInterval(renewal);
-      await update({ state: 'complete', result });
+      if (job.kind === 'investigation') {
+        const bytes = Buffer.from(JSON.stringify(result), 'utf8'), size = 192 * 1024;
+        const parts = Math.ceil(bytes.length / size);
+        renewal = setInterval(() => { void update({ progress: { stage: 'transferring-investigation' } }).catch(() => {}); }, 60_000);
+        for (let index = 0; index < parts; index++) await send({ action: 'computer-investigation-part', jobId: job.id, claimId: job.claimId, index, part: bytes.subarray(index * size, (index + 1) * size).toString('base64') });
+        if (renewal) clearInterval(renewal);
+        await update({ state: 'complete', resultParts: parts });
+      } else await update({ state: 'complete', result });
     } catch (error) {
       if (renewal) clearInterval(renewal);
       await update({ state: 'failed', error: error instanceof Error ? error.message : String(error) });

@@ -258,6 +258,7 @@ export function createDevelopmentIntelligenceServer() {
         if (req.method === 'GET') {
           if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
           const jobId = requestUrl.searchParams.get('job');
+          if (jobId && requestUrl.searchParams.has('part')) { json(res, 200, { part: await store.investigationPart(jobId, Number(requestUrl.searchParams.get('part'))) }); return; }
           if (jobId) { json(res, 200, await advanceHostedJob(store, identity.userId, await store.build(jobId), accountOrigin(req))); return; }
           const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds(false)]);
           const updated = await Promise.all(builds.map(job => advanceHostedJob(store, identity.userId, job, accountOrigin(req))));
@@ -279,6 +280,7 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer, body.pairingCode)); return; }
         if (body.action === 'computer-heartbeat' && identity.tokenType === 'oauth_token') { json(res, 200, await store.heartbeat(body.computerId, body.secret)); return; }
         if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret)); return; }
+        if (body.action === 'computer-investigation-part' && identity.tokenType === 'oauth_token') { await store.putInvestigationPart(body.computerId, body.secret, body.jobId, body.claimId, body.index, body.part); json(res, 200, { saved: true }); return; }
         if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
         if (body.action === 'computer-github-token' && identity.tokenType === 'oauth_token') {
           const computer = await store.verifyComputer(body.computerId, body.secret), job = await store.build(body.jobId);
@@ -489,7 +491,7 @@ export function createDevelopmentIntelligenceServer() {
         else if (action === 'interaction-parity') {
           const baseRef = requestUrl.searchParams.get('baseRef') ?? 'main';
           const ref = requestUrl.searchParams.get('headRef') ?? 'preview';
-          result = await compareInteractionRevisions({ project, baseRef, ref, scope: requestUrl.searchParams.get('scope') ?? undefined, offset: numberParam(requestUrl, 'offset', 0), limit: numberParam(requestUrl, 'limit', 20) });
+          result = await compareInteractionRevisions({ project, baseRef, ref, scope: requestUrl.searchParams.get('scope') ?? undefined, offset: numberParam(requestUrl, 'offset', 0), limit: numberParam(requestUrl, 'limit', 20), detail: (['summary', 'facts', 'base', 'head'].includes(requestUrl.searchParams.get('detail') ?? '') ? requestUrl.searchParams.get('detail') : 'full') as 'full' | 'summary' | 'facts' | 'base' | 'head', ...(requestUrl.searchParams.get('baseGraphId') ? { baseGraphId: requestUrl.searchParams.get('baseGraphId')! } : {}), ...(requestUrl.searchParams.get('headGraphId') ? { headGraphId: requestUrl.searchParams.get('headGraphId')! } : {}) });
         } else if (action === 'compare-graphs') {
           const refs = requestUrl.searchParams.getAll('refs');
           const offset = Number(requestUrl.searchParams.get('offset') ?? 0), limit = Number(requestUrl.searchParams.get('limit') ?? 50);
