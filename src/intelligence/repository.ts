@@ -24,7 +24,7 @@ import { withPreparedProducerInputs, type GraphBuildProgress } from './producerI
 import { positiveIntegerSetting } from './capacity.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.43.0-producer-inputs';
+export const ANALYZER_VERSION = '2.44.0-expression-conditions';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 

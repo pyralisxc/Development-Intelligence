@@ -114,11 +114,64 @@ export function analyzeSourceConditionStatements(
       requiredConditions: [...requires], controlContext: [...context], requirementsComplete: complete && context.length === 0,
       runtimeObserved: false });
   };
+  // Conditions can occur inside an expression, including an argument to an
+  // otherwise unconditional outer call. Preserve the branch on the nested
+  // call occurrence instead of attributing the outer call's path to it.
+  const scanExpression = (root: ts.Node | undefined, requirements: SourceRequirement[], context: SourceControlContext[], complete: boolean): void => {
+    if (!root) return;
+    const visit = (node: ts.Node, active: SourceRequirement[], controls: SourceControlContext[], known: boolean, guarded: boolean): void => {
+      if (ts.isFunctionLike(node)) return;
+      if (ts.isConditionalExpression(node)) {
+        visit(node.condition, active, controls, known, guarded);
+        const predicate = node.condition;
+        // The question mark distinguishes this guard from an enclosing if
+        // whose entire predicate can start at the same offset.
+        const offset = node.questionToken.getStart(parsed);
+        const id = sourcePath + ':condition:' + offset;
+        branches.push({ id, sourceLine: lineOf(node.questionToken), sourceOffset: offset,
+          predicate: expression(predicate, parsed), predicateStructure: structure(predicate, parsed),
+          predicateSha256: digest(predicate.getText(parsed)), priorRequirements: [...active],
+          controlContext: [...controls], requirementsComplete: known && controls.length === 0,
+          trueBranchTerminates: false, falseBranchTerminates: false, conditionsAreSourceSyntaxOnly: true });
+        visit(node.whenTrue, [...active, { conditionId: id, expectedTruth: true }], controls, known, true);
+        visit(node.whenFalse, [...active, { conditionId: id, expectedTruth: false }], controls, known, true);
+        return;
+      }
+      // Short-circuit and optional evaluation have additional premises that
+      // this interpreter does not yet derive. Retain their context honestly.
+      const shortCircuit = ts.isBinaryExpression(node) && [ts.SyntaxKind.AmpersandAmpersandToken,
+        ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+        ts.SyntaxKind.BarBarEqualsToken, ts.SyntaxKind.QuestionQuestionEqualsToken].includes(node.operatorToken.kind);
+      if (shortCircuit && ts.isBinaryExpression(node)) {
+        visit(node.left, active, controls, known, guarded);
+        const part = { kind: 'short-circuit-expression', sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), expression: expression(node.left, parsed) };
+        visit(node.right, active, [...controls, part], false, guarded);
+        return;
+      }
+      if (ts.isCallExpression(node) && ts.isCallChain(node)) {
+        const part = { kind: 'optional-call', sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), expression: expression(node.expression, parsed) };
+        if (guarded) recordEffect('call', node, node, active, [...controls, part], false);
+        visit(node.expression, active, controls, known, guarded);
+        node.arguments.forEach(argument => visit(argument, active, [...controls, part], false, guarded));
+        return;
+      }
+      if (ts.isElementAccessExpression(node) && ts.isElementAccessChain(node)) {
+        visit(node.expression, active, controls, known, guarded);
+        const part = { kind: 'optional-element-access', sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), expression: expression(node.expression, parsed) };
+        if (node.argumentExpression) visit(node.argumentExpression, active, [...controls, part], false, guarded);
+        return;
+      }
+      if (guarded && ts.isCallExpression(node)) recordEffect('call', node, node, active, controls, known);
+      ts.forEachChild(node, child => visit(child, active, controls, known, guarded));
+    };
+    visit(root, requirements, context, complete, false);
+  };
   const scan = (list: readonly ts.Statement[], requirements: SourceRequirement[], depth: number, context: SourceControlContext[] = [], inheritedComplete = true): void => {
     const active = [...requirements];
     let complete = inheritedComplete;
     for (const stmt of list) {
       if (ts.isIfStatement(stmt)) {
+        scanExpression(stmt.expression, active, context, complete);
         const previousUnknown = unknownConstructs.length;
         const id = sourcePath + ':condition:' + stmt.expression.getStart(parsed);
         const branch: SourceCondition = {
@@ -142,10 +195,12 @@ export function analyzeSourceConditionStatements(
         else if (branch.falseBranchTerminates) active.push({ conditionId: id, expectedTruth: true });
         if (unknownConstructs.length > previousUnknown) complete = false;
       } else if (ts.isReturnStatement(stmt)) {
+        scanExpression(stmt.expression, active, context, complete);
         recordEffect(returnCall(stmt.expression) ? 'return-call' : 'return',
           stmt, stmt.expression, active, context, complete);
         return;
       } else if (ts.isThrowStatement(stmt)) {
+        scanExpression(stmt.expression, active, context, complete);
         recordEffect('throw', stmt, stmt.expression, active, context, complete);
         return;
       } else if (ts.isBlock(stmt)) {
@@ -155,6 +210,7 @@ export function analyzeSourceConditionStatements(
       }
       else if (ts.isExpressionStatement(stmt)) {
         const e = stmt.expression;
+        scanExpression(e, active, context, complete);
         if (ts.isCallExpression(e) || (ts.isAwaitExpression(e) && ts.isCallExpression(e.expression))) {
           recordEffect('call', stmt, e, active, context, complete);
         } else if (ts.isBinaryExpression(e) &&
@@ -163,6 +219,7 @@ export function analyzeSourceConditionStatements(
         }
       } else if (ts.isVariableStatement(stmt)) {
         for (const decl of stmt.declarationList.declarations) {
+          scanExpression(decl.initializer, active, context, complete);
           if (decl.initializer && (ts.isCallExpression(decl.initializer)
             || (ts.isAwaitExpression(decl.initializer) && ts.isCallExpression(decl.initializer.expression)))) {
             recordEffect('initializer-call', decl, decl.initializer, active, context, complete);
