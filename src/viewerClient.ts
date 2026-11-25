@@ -959,7 +959,9 @@ if (document.getElementById('question-dock')) {
   };
   const graphPane = document.querySelector<HTMLElement>('.workspace')!;
   const navigation = shell.querySelector<HTMLElement>('.nav')!;
-  const sourcePane = document.createElement('section'); sourcePane.className = 'di-source-pane'; sourcePane.append(fileTabs, fileBody);
+  const sourcePane = document.createElement('section'); sourcePane.className = 'di-source-pane';
+  const sourceEmpty = document.createElement('p'); sourceEmpty.className = 'muted'; sourceEmpty.textContent = 'Choose a file from Inspector & files.'; sourceEmpty.style.margin = '12px';
+  sourcePane.append(fileTabs, sourceEmpty, fileBody);
   const host = document.createElement('div'); host.className = 'dockview-theme-dark di-dockview';
   const style = document.createElement('style'); style.textContent = dockviewCss + `
     .shell{display:flex;flex-direction:column;min-width:0;min-height:0}.di-dockview{flex:1;min-height:0;width:100%}
@@ -969,7 +971,11 @@ if (document.getElementById('question-dock')) {
     .di-dockview #question-dock .query-box{grid-template-columns:minmax(0,1fr) minmax(90px,140px) auto;margin:0}
     .di-dockview #question-dock .query-box:has(#query-source[hidden]){grid-template-columns:minmax(0,1fr) auto}
     .di-dockview #question-dock button{background:#14243a;color:#dbe7f6;border:1px solid #334963;border-radius:5px;padding:5px 8px;cursor:pointer}
-    .di-dockview .inspector{resize:none}.di-dockview .graph-shell{height:calc(100% - 45px);min-height:240px}
+    .di-dockview .inspector{resize:none}
+    .di-dockview .workspace #content:has(.graph-shell){display:flex;flex-direction:column}
+    .di-dockview .investigation-layout:has(.graph-shell){flex:1;min-height:0;align-items:stretch}
+    .di-dockview #explore-result:has(.graph-shell){display:flex;flex-direction:column;min-height:0}
+    .di-dockview .graph-shell{flex:1;height:auto;min-height:240px}
     .di-layout-toolbar{display:flex;gap:6px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid #26364d;background:#0c131e}
     .di-layout-toolbar button,.di-source-pane .inspector-tabs button{font-size:12px;color:#dbe7f6;background:#14243a;border:1px solid #334963;border-radius:5px;padding:6px 9px;cursor:pointer}
     .di-source-pane button[aria-current="true"]{border-color:#75d6f5;background:#1b3850}
@@ -981,11 +987,17 @@ if (document.getElementById('question-dock')) {
     const element = panes[name]; if (!element) throw new Error('Unknown workspace panel');
     return { element, init: () => {} };
   } });
-  const addPanel = (id: string) => {
+  const addPanel = (id: string, placement?: 'left' | 'right' | 'above' | 'below' | 'within', size?: number) => {
     const existing = dockApi.getPanel(id); if (existing) { existing.api.setActive(); return; }
     const titles: Record<string, string> = { graph: 'Graph', questions: 'Questions', inspector: 'Inspector & files', source: 'Source' };
-    const direction = id === 'questions' ? 'below' : compact && (id === 'inspector' || id === 'source') ? 'within' : 'right';
-    dockApi.addPanel({ id, component: id, title: titles[id] ?? id, ...(id === 'questions' ? { initialHeight: 220 } : id === 'inspector' ? { initialWidth: 280 } : id === 'source' ? { initialWidth: 460 } : {}), ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
+    const direction = compact && (id === 'inspector' || id === 'source') ? 'within' : placement ?? (id === 'questions' ? 'below' : 'right');
+    const savedSize = Number.isFinite(size) && size! >= 100 ? size! : undefined;
+    const panel = dockApi.addPanel({ id, component: id, title: titles[id] ?? id, renderer: 'always', ...(id === 'questions' ? { initialHeight: savedSize ?? 220 } : id === 'inspector' ? { initialWidth: savedSize ?? 280 } : id === 'source' ? { initialWidth: 460 } : {}), ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
+    if (direction !== 'within' && id !== 'graph') requestAnimationFrame(() => {
+      if (dockApi.getPanel(id) !== panel) return;
+      if (id === 'questions') panel.group.api.setSize({ height: savedSize ?? 220 });
+      else panel.group.api.setSize({ width: savedSize ?? (id === 'source' ? 460 : 280) });
+    });
   };
   const resetLayout = () => { dockApi.clear(); addPanel('graph'); addPanel('questions'); addPanel('inspector'); dockApi.getPanel('graph')?.api.setActive(); };
   resetLayout();
@@ -994,18 +1006,28 @@ if (document.getElementById('question-dock')) {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = action; layoutControls.append(button);
   }
   shell.prepend(layoutControls);
-  dockApi.onDidLayoutChange(() => { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700); });
+  dockApi.onDidLayoutChange(() => {
+    if (layoutReady && compactMedia.matches === compact) layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700);
+  });
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
     const savedLayouts = event.data.layout?.layouts;
     if (savedLayouts && typeof savedLayouts === 'object') { layouts.compact = savedLayouts.compact; layouts.wide = savedLayouts.wide; }
     const saved = layouts[compact ? 'compact' : 'wide'];
     if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } }
+    else if (!savedLayouts && event.data.layout && typeof event.data.layout === 'object' && ('inspectorSide' in event.data.layout || 'questionPosition' in event.data.layout)) {
+      const legacy = event.data.layout;
+      dockApi.clear(); addPanel('graph');
+      addPanel('questions', legacy.questionPosition === 'top' ? 'above' : 'below', legacy.questionHeight);
+      if (legacy.inspectorOpen !== false) addPanel('inspector', legacy.inspectorSide === 'left' ? 'left' : 'right', legacy.inspectorWidth);
+      dockApi.getPanel('graph')?.api.setActive();
+    }
     if (!dockApi.getPanel('graph')) addPanel('graph');
-    requestAnimationFrame(() => { layoutReady = true; });
+    requestAnimationFrame(() => { layoutReady = true; layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON(); });
   });
   compactMedia.addEventListener('change', event => {
-    layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    if (!layouts[compact ? 'compact' : 'wide']) layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
     compact = event.matches; layoutReady = false;
     const saved = layouts[compact ? 'compact' : 'wide'];
     if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } } else resetLayout();
@@ -1014,8 +1036,20 @@ if (document.getElementById('question-dock')) {
   });
   const graphTab = document.createElement('button'); graphTab.textContent = 'Return to graph'; fileTabs.append(graphTab);
   let activeFile = '', fileSequence = 0;
+  let sourcePriorSizes: { compact: boolean; inspectorWidth: number; questionHeight: number } | null = null;
   const openFiles: string[] = [];
-  dockApi.onDidRemovePanel(panel => { queueMicrotask(() => { if (!dockApi.getPanel(panel.id) && panes[panel.id]) parkedPanels.append(panes[panel.id]!); }); });
+  dockApi.onDidRemovePanel(panel => { queueMicrotask(() => {
+    if (dockApi.getPanel(panel.id) || !panes[panel.id]) return;
+    parkedPanels.append(panes[panel.id]!);
+    if (panel.id !== 'source') return;
+    const previous = sourcePriorSizes; sourcePriorSizes = null;
+    if (!previous || !layoutReady || previous.compact !== compact) return;
+    requestAnimationFrame(() => {
+      if (dockApi.getPanel('source')) return;
+      if (!compact && previous.inspectorWidth >= 100) dockApi.getPanel('inspector')?.group.api.setSize({ width: previous.inspectorWidth });
+      if (previous.questionHeight >= 100) dockApi.getPanel('questions')?.group.api.setSize({ height: previous.questionHeight });
+    });
+  }); });
   const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; dockApi.getPanel('source')?.api.close(); addPanel('graph'); window.dispatchEvent(new Event('resize')); };
   graphTab.onclick = showGraph;
   for (const button of navButtons) button.addEventListener('click', showGraph);
@@ -1034,7 +1068,8 @@ if (document.getElementById('question-dock')) {
     const existing = openFiles.indexOf(file); if (existing >= 0) openFiles.splice(existing, 1); openFiles.push(file);
     activeFile = file; const sequence = ++fileSequence;
     fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', item.dataset.file === file ? 'true' : 'false'));
-    addPanel('source'); fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
+    if (!dockApi.getPanel('source')) sourcePriorSizes = { compact, inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height) };
+    addPanel('source'); sourceEmpty.hidden = true; fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
     try {
       const result = await getJson('/workbench/source', new URLSearchParams({ file }));
       if (sequence !== fileSequence || activeFile !== file) return;
