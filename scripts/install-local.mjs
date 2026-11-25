@@ -78,7 +78,17 @@ for (const script of ['run-oss-understanding.mjs', 'node-test-events-reporter.mj
 }
 await fs.mkdir(path.join(installDir, 'runtime'), { recursive: true });
 const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
-await fs.copyFile(process.execPath, path.join(installDir, 'runtime', nodeName));
+const installedRuntime = path.join(installDir, 'runtime', nodeName);
+let sameRuntime = false;
+try { sameRuntime = (await fs.readFile(process.execPath)).equals(await fs.readFile(installedRuntime)); }
+catch (error) { if (error.code !== 'ENOENT') throw error; }
+if (!sameRuntime) {
+  const stagedRuntime = path.join(installDir, 'runtime', `.node-${randomUUID()}${process.platform === 'win32' ? '.exe' : ''}`);
+  try {
+    await fs.copyFile(process.execPath, stagedRuntime);
+    await fs.rename(stagedRuntime, installedRuntime);
+  } finally { await fs.rm(stagedRuntime, { force: true }); }
+}
 await fs.writeFile(path.join(installDir, 'local-settings.json'), JSON.stringify({ ...prior, installDir, dataDir, scratchDir, desktopDir, repoPath, project, retain, cacheSize, port, graphWorkerHeapMB, scipHeapMB }, null, 2));
 await fs.mkdir(desktopDir, { recursive: true });
 let desktop;

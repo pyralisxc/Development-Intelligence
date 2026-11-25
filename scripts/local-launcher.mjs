@@ -63,9 +63,9 @@ if (command === 'link' || command === 'account-status' || command === 'account-r
   }
   process.exit(0);
 }
-const commands = { capacity: 'working-capacity', build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', parity: 'working-parity', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve', 'oss-evidence': 'oss-evidence', 'joern-build': 'joern-build' };
+const commands = { capacity: 'working-capacity', build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', storage: 'working-storage', reindex: 'working-reindex', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', parity: 'working-parity', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve', 'oss-evidence': 'oss-evidence', 'joern-build': 'joern-build' };
 if (!commands[command]) {
-  console.log('DI local: link --workbench URL --pair-code CODE [--no-autostart] | account-status | account-run | account-autostart on|off | capacity | build [--target NAME] | build-revision --ref REF [--target NAME] | history | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open [--local] | mcp');
+  console.log('DI local: link --workbench URL --pair-code CODE [--no-autostart] | account-status | account-run | account-autostart on|off | capacity | build [--target NAME] | build-revision --ref REF [--target NAME] | history | storage | reindex [--target NAME] | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open [--local] | mcp');
   console.log('Options: --repo-path PATH --project NAME --data-dir PATH --retain COUNT --port PORT');
   process.exit(command === 'help' ? 0 : 2);
 }

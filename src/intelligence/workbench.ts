@@ -1828,9 +1828,23 @@ export async function queryWorkbenchRequest(input: {
           for (const item of group.links) if (!links.has(item.id)) { links.add(item.id); existing.links.push(item); }
         }
       }
+      // Connect selected callable subjects through their bound source call sites.
+      // Preserve source order within each callable; control flow may choose a
+      // subset, so these are not presented as an observed execution trace.
+      const selectedSubjects = new Map<string, any>();
+      for (const group of result.connectedGroups ?? []) for (const member of group.subjects ?? []) selectedSubjects.set(member.id, member);
+      const connectedCalls = result.sourceFamilies.flatMap((family: any) => {
+        const owner = selectedSubjects.get(family.subjectId);
+        if (!owner) return [];
+        const calls = (family.sourceCalls ?? []).filter((call: any) => selectedSubjects.has(call.targetId));
+        if (!calls.length) return [];
+        return [`• ${owner.name ?? owner.id} (${owner.locator}): ${calls.map((call: any) => `${call.name}${call.targetName !== call.name ? ` → ${call.targetName}` : ''} (${call.locator})${call.occurrenceStatus === 'candidate' || call.bindingStatus === 'candidate' ? ' [candidate]' : ''}`).join(' → ')}`];
+      });
+      const connectedCallSummary = connectedCalls.length
+        ? `Connected call sites in source order (branches and loops can change which calls apply):\n${connectedCalls.join('\n')}\n\n` : '';
       const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
         ? (Array.isArray(result.connectedGroups)
-          ? `Connected source paths (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
+          ? `${connectedCallSummary}Connected source paths (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
             + displayGroups.map((group: any) => {
               const members: any[] = [...group.subjects, ...(group.linkNodes ?? [])];
               const names = new Map(members.map((item: any) => [item.id, item.name ?? item.id]));

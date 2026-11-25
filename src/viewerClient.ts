@@ -836,7 +836,7 @@ async function renderLocal(epoch: number): Promise<void> {
   if (!sectionIsCurrent(epoch, 'local')) return;
   const settings = state.settings;
   const field = (label: string, id: string, value: unknown) => `<label style="display:block;margin:10px 0"><span class="muted">${esc(label)}</span><input id="${id}" value="${esc(value)}" style="display:block;width:100%;border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:9px;padding:9px"></label>`;
-  content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Graphs cached in memory (0 disables cache)', 'local-cache', settings.cacheSize ?? 3)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Choose a graph name and build it from current files or a committed revision.</p>${field('Graph name', 'local-target', 'working')}<button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}<button data-local-action="build-revision">Build revision</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
+  content.innerHTML = `<div class="card"><h3>Installation</h3><h2>Local files and storage</h2><p>Port changes apply on the next launch. Changing the data location selects that location; it does not move existing graphs.</p>${field('Repository checkout', 'local-repo', settings.repoPath)}${field('Graph data directory', 'local-data', settings.dataDir)}${field('Scratch directory', 'local-scratch', settings.scratchDir)}${field('Backup directory', 'local-backup', settings.backupDir ?? '')}${field('Retained generations', 'local-retain', settings.retain)}${field('Graphs cached in memory (0 disables cache)', 'local-cache', settings.cacheSize ?? 3)}${field('Workbench port', 'local-port', settings.port)}<button class="primary" id="local-save">Save settings</button></div><div class="card" style="margin-top:13px"><h3>Graphs</h3><p>Choose a graph name and build it from current files or a committed revision.</p>${field('Graph name', 'local-target', 'working')}<button class="primary" data-local-action="build">Build current files</button>${field('Committed revision', 'local-ref', 'preview')}<button data-local-action="build-revision">Build revision</button> <button data-local-action="unpin">Unpin target</button><div id="local-history" class="muted"></div></div><div class="card" style="margin-top:13px"><h3>Recovery</h3><p>Backup and restore preserve retained graphs, not repository files or accepted semantic records. Restore uses an empty graph location.</p><button data-local-action="backup">Back up graphs</button> <button data-local-action="restore">Restore graphs</button> <button data-local-action="reindex">Rebuild index for named graph</button></div><div class="card" style="margin-top:13px"><h3>Operation</h3><div id="local-job" class="muted"></div></div>`;
   const installation = content.querySelector('.card');
   if (installation) {
     const heapSettings = document.createElement('div');
@@ -871,6 +871,18 @@ async function renderLocal(epoch: number): Promise<void> {
           window.location.assign(`/workbench?${params.toString()}`);
         });
         label.append(select); history.append(label, open);
+      }
+      const storage = data.storage;
+      if (storage?.generations?.length) {
+        const formatBytes = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+        const details = document.createElement('div');
+        details.textContent = `Stored graph generations: ${formatBytes(storage.totalBytes)}. Named and active graphs are protected; other history is pruned after a successful build.`;
+        history.append(details);
+        for (const entry of storage.generations) {
+          const row = document.createElement('div');
+          row.textContent = `${entry.names?.join(', ') || 'History'}${entry.active ? ' · active' : ''}: graph ${formatBytes(entry.graphBytes)}, index ${entry.indexPresent ? formatBytes(entry.indexBytes) : 'missing'}`;
+          history.append(row);
+        }
       }
     }
     const target = document.getElementById('local-job');

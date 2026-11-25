@@ -3,7 +3,7 @@ import { analyzeLocalGraph, checkLocalGraph, generateLocalTestClaimCatalog, read
 import { promises as fs } from 'node:fs';
 import { readTestClaimReportPage } from './intelligence/testClaimReport.js';
 import { buildLocalGraph, buildLocalWorkingGraph } from './intelligence/local.js';
-import { activateLocalSourceGraph, backupLocalSourceGraphs, localSourceGraphHistory, readLocalSourceGraph, removeLocalGraphTarget } from './intelligence/localGraphStore.js';
+import { activateLocalSourceGraph, backupLocalSourceGraphs, localSourceGraphHistory, localSourceGraphStorage, rebuildLocalGraphIndex, readLocalSourceGraph, removeLocalGraphTarget } from './intelligence/localGraphStore.js';
 import { compareRevisionSet, diffGraphs, pageGraphDiff } from './intelligence/query.js';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -113,6 +113,14 @@ async function main(): Promise<void> {
     const dataDir = arg('--data-dir');
     if (!dataDir || !project) throw new Error('working-history requires --data-dir and --project');
     console.log(JSON.stringify(await localSourceGraphHistory(dataDir, project), null, 2));
+  } else if (command === 'working-storage') {
+    const dataDir = arg('--data-dir');
+    if (!dataDir || !project) throw new Error('working-storage requires --data-dir and --project');
+    console.log(JSON.stringify(await localSourceGraphStorage(dataDir, project), null, 2));
+  } else if (command === 'working-reindex') {
+    const dataDir = arg('--data-dir');
+    if (!dataDir || !project) throw new Error('working-reindex requires --data-dir and --project');
+    console.log(JSON.stringify(await rebuildLocalGraphIndex(dataDir, project, arg('--target')), null, 2));
   } else if (command === 'working-activate') {
     const dataDir = arg('--data-dir');
     const graphId = arg('--graph-id');
@@ -315,7 +323,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     if (result.current !== true) process.exitCode = 1;
   } else {
-    console.error('Usage: graphCli.js <analyze|catalog|seal|check|test-claims|scip-evidence|joern-evidence|node-test-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32] [--joern-slice-json FILE] [--joern-version VERSION] [--joern-project-prefix PATH] [--node-test-events-jsonl FILE] [--node-version VERSION] [--node-run-id RUN_ID]');
+    console.error('Usage: graphCli.js <analyze|catalog|seal|check|working-build|working-history|working-storage|working-reindex|working-activate|working-unpin|working-query|working-backup|working-restore|test-claims|scip-evidence|joern-evidence|node-test-evidence> [--repo-path PATH] [--project NAME] [--source-prefix PATH] [--source-suffix SUFFIX] [--output PATH] [--parity-contract PATH] [--test-claim-catalog PATH] [--test-claim-report-path PATH] [--scip-index FILE.scip] [--scip-project-prefix PATH] [--scip-legacy-position-encoding utf8|utf16|utf32] [--joern-slice-json FILE] [--joern-version VERSION] [--joern-project-prefix PATH] [--node-test-events-jsonl FILE] [--node-version VERSION] [--node-run-id RUN_ID]');
     process.exitCode = 2;
   }
 }

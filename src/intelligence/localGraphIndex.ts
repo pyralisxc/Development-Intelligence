@@ -45,7 +45,7 @@ function selectionBody(node: IntelligenceGraph['nodes'][number]): string {
 }
 
 /** Called before catalog publication. Any failure leaves the old target active. */
-export function buildLocalGraphIndex(directory: string, generation: string, graph: IntelligenceGraph, families: Map<string, GraphFamilyMembership[]>): Record<string, unknown> {
+export function buildLocalGraphIndex(directory: string, generation: string, graph: IntelligenceGraph, families: Map<string, GraphFamilyMembership[]>, lengths: Record<'nodes' | 'edges' | 'evidence', Float64Array>): Record<string, unknown> {
   const started = Date.now();
   const Database = sqlite();
   const file = `${directory}/${filename}`;
@@ -71,9 +71,9 @@ export function buildLocalGraphIndex(directory: string, generation: string, grap
     const aliasLengths = new Set<number>();
     const tagsByKind = new Map<string, Set<string>>();
     const position = (field: 'nodes' | 'edges' | 'evidence') => {
-      let part = 0, size = 2, offset = 1;
-      return (value: unknown): [string, number, number] => {
-        const body = JSON.stringify(value), length = Buffer.byteLength(body), bytes = length + 1;
+      let part = 0, size = 2, offset = 1, ordinal = 0;
+      return (): [string, number, number] => {
+        const length = lengths[field][ordinal++]!, bytes = length + 1;
         if (offset > 1 && size + bytes > 8 * 1024 * 1024) { part += 1; size = 2; offset = 1; }
         const result: [string, number, number] = [`${field}-${part}.json`, offset, length];
         size += bytes; offset += bytes; return result;
@@ -82,7 +82,7 @@ export function buildLocalGraphIndex(directory: string, generation: string, grap
     const nodePosition = position('nodes'), edgePosition = position('edges'), evidencePosition = position('evidence');
     graph.nodes.forEach((node, ordinal) => {
       const value = node.value && typeof node.value === 'object' && !Array.isArray(node.value) ? node.value as { functionId?: unknown } : null;
-      nodeInsert.run(node.id, ordinal, node.name ?? null, node.name?.toLowerCase() ?? null, node.name ? normalizeName(node.name) : null, node.sourceId, node.kind, node.locator, typeof value?.functionId === 'string' ? value.functionId : null, selectionBody(node), ...nodePosition(node));
+      nodeInsert.run(node.id, ordinal, node.name ?? null, node.name?.toLowerCase() ?? null, node.name ? normalizeName(node.name) : null, node.sourceId, node.kind, node.locator, typeof value?.functionId === 'string' ? value.functionId : null, selectionBody(node), ...nodePosition());
       if (node.name) {
         const qualified = node.value && typeof node.value === 'object' && !Array.isArray(node.value)
           ? (node.value as { qualifiedName?: unknown }).qualifiedName : null;
@@ -102,10 +102,10 @@ export function buildLocalGraphIndex(directory: string, generation: string, grap
       for (const id of node.evidenceIds ?? []) linkInsert.run(node.id, id);
     });
     graph.edges.forEach((edge, ordinal) => {
-      edgeInsert.run(edge.id, ordinal, edge.from, edge.to, edge.kind, edge.status, ...edgePosition(edge));
+      edgeInsert.run(edge.id, ordinal, edge.from, edge.to, edge.kind, edge.status, ...edgePosition());
       for (const id of edge.evidenceIds ?? []) linkInsert.run(edge.id, id);
     });
-    graph.evidence.forEach((item, ordinal) => evidenceInsert.run(item.id, ordinal, item.sourceId, item.locator, ...evidencePosition(item)));
+    graph.evidence.forEach((item, ordinal) => evidenceInsert.run(item.id, ordinal, item.sourceId, item.locator, ...evidencePosition()));
     let familyCount = 0;
     for (const [nodeId, memberships] of families) for (const member of memberships) {
       familyInsert.run(nodeId, member.id, JSON.stringify(member.roles), JSON.stringify(member.via)); familyCount += 1;
