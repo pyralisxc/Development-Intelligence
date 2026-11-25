@@ -16,7 +16,7 @@ export interface PreparedProducerInputs {
     reason?: string;
   } | null;
 }
-export type GraphBuildProgress = { stage: string; completed?: number; total?: number };
+export type GraphBuildProgress = { stage: string; completed?: number; total?: number; reused?: number };
 
 /** Build producers from a disposable snapshot rather than an ambient checkout.
  * Both local working files and immutable revisions use this sequence. */

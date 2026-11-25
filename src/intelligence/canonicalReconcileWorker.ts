@@ -190,17 +190,24 @@ async function workerMain(input: WorkerInput | LocalGraphWorkerInput | PreviewGr
   if (input.kind === 'local') {
     const { buildLocalRevisionGraph, buildLocalWorkingGraph } = await import('./local.js');
     const { saveLocalSourceGraph } = await import('./localGraphStore.js');
-    const progress = (value: GraphBuildProgress) => parentPort?.postMessage({ type: 'progress', progress: value });
+    let sourceStage: { reused: number; total: number } | undefined;
+    const progress = (value: GraphBuildProgress) => {
+      if (value.stage === 'analyzing-source' && value.completed === value.total && value.reused !== undefined && value.total !== undefined) {
+        sourceStage = { reused: value.reused, total: value.total };
+      }
+      parentPort?.postMessage({ type: 'progress', progress: value });
+    };
     progress({ stage: 'resolving-revision' });
     const graph = input.ref
-      ? await buildLocalRevisionGraph(input.root, input.ref, input.project, input.joern, progress)
-      : await buildLocalWorkingGraph(input.root, input.project, input.joern, progress);
+      ? await buildLocalRevisionGraph(input.root, input.ref, input.project, input.joern, progress, input.dataDir)
+      : await buildLocalWorkingGraph(input.root, input.project, input.joern, progress, input.dataDir);
     progress({ stage: 'publishing-graph-and-index' });
     const retained = await saveLocalSourceGraph(input.dataDir, graph, input.retain, input.target ?? 'working', !input.ref);
     const { files: _files, ...coverage } = graph.coverage ?? {};
     parentPort?.postMessage({ ok: true, result: { project: graph.project, target: input.target ?? (input.ref ?? 'working'), graphId: graph.graphId,
       revision: graph.repositoryRevision, sourceState: graph.sourceState, sourceFingerprint: graph.sourceFingerprint,
-      nodes: graph.nodes.length, edges: graph.edges.length, coverage, producerCoverage: graph.producerCoverage, retained } } satisfies LocalWorkerEnvelope);
+      nodes: graph.nodes.length, edges: graph.edges.length, coverage, producerCoverage: graph.producerCoverage, retained,
+      ...(sourceStage ? { sourceStage } : {}) } } satisfies LocalWorkerEnvelope);
     return;
   }
   if (input.kind === 'preview') {
@@ -231,7 +238,7 @@ async function workerMain(input: WorkerInput | LocalGraphWorkerInput | PreviewGr
           progress({ stage: 'checking-out-source' });
           const observed = await withResolvedProjectCheckoutObserved(revision, async checkout => {
             const graph = await buildRepositoryGraph({ project: input.project, repository: checkout.repository,
-              revision: checkout.sha, root: checkout.root, role: 'W', disposableCheckout: true, progress });
+              revision: checkout.sha, root: checkout.root, role: 'W', disposableCheckout: true, progress, sourceStageCacheRoot: machineRoot });
             assertGraphIntegrity(graph);
             await assertProjectAccessCurrent(input.project);
             const retain = positiveSetting(process.env.DEVINT_MACHINE_GRAPH_RETAIN, 3, 1);
