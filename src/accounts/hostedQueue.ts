@@ -29,7 +29,7 @@ export async function advanceHostedJob(store: WorkspaceStore, userId: string, in
   if (job.state === 'running' && job.hosted && job.claimId && job.leaseUntil && Date.now() >= job.leaseUntil) {
     try { await store.updateHosted(job.id, job.claimId, { state: 'failed', error: 'Hosted worker exceeded its configured session duration' }); }
     catch (error) {
-      const current = await store.build(job.id);
+      const current = await store.build(job.id).catch(() => null);
       if (current?.claimId === job.claimId && (current.state === 'complete' || current.state === 'failed')) return current;
       throw error;
     }
@@ -44,7 +44,7 @@ export async function advanceHostedJob(store: WorkspaceStore, userId: string, in
       await store.updateHosted(job.id, job.claimId, status);
     }
     catch (error) {
-      const current = await store.build(job.id);
+      const current = await store.build(job.id).catch(() => null);
       if (current?.claimId === job.claimId && (current.state === 'complete' || current.state === 'failed')) return current;
       throw error;
     }
