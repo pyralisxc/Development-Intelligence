@@ -40,6 +40,8 @@ Git/source owns implementation truth. DI produces rebuildable technical and sema
 
 The graph is the published knowledge for a selected source state. Each stage passes its facts, identities, evidence and coverage forward; it does not treat the previous finished graph as if it were the original output of an earlier producer.
 
+SCIP index generation starts after the checkout and dependencies are prepared, before source analysis, to avoid keeping the producer and full native graph at peak size together. Its facts are joined later, after native resolution; generation and reconciliation are distinct handoffs.
+
 | Stage | Receives | Contributes and dependency on advancement |
 | --- | --- | --- |
 | Source and dependencies | Selected working snapshot or commit, tracked paths and applicable lockfile | One consistent checkout and dependency-producer coverage. A changed source, lockfile, checkout policy or producer environment can affect downstream results. |
