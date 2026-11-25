@@ -249,8 +249,11 @@ export class WorkspaceStore {
     if (status.state === 'complete' && current?.kind === 'investigation') {
       const bytes = Buffer.from(JSON.stringify(status.result ?? null), 'utf8'), size = 192 * 1024;
       resultParts = Math.ceil(bytes.length / size);
-      for (let index = 0; index < resultParts; index++) await this.redis.hset(key, { [String(index)]: `b:${bytes.subarray(index * size, (index + 1) * size).toString('base64')}` });
-      await this.redis.expire(key, 86400);
+      for (let index = 0; index < resultParts; index++) {
+        const part = `b:${bytes.subarray(index * size, (index + 1) * size).toString('base64')}`;
+        const saved = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.assignedComputer~='hosted' or job.claimId~=ARGV[2] then return 0 end; redis.call('HSET',KEYS[2],ARGV[3],ARGV[4]); redis.call('EXPIRE',KEYS[2],86400); return 1`, [this.key('builds'), key], [jobId, claimId, String(index), part]);
+        if (saved !== 1) invalid('Hosted job claim is no longer active');
+      }
     } else if (status.state === 'complete') await this.redis.set(key, status.result ?? null);
     const { result: _result, ...rest } = status;
     const small = { ...rest, ...(resultParts ? { resultParts } : {}) };
