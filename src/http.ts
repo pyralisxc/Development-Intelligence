@@ -3,6 +3,7 @@ import { compareInteractionRevisions } from './intelligence/interactionParity.js
 import { comparisonSelection } from './intelligence/investigation.js';
 import { repositoryAudit } from './intelligence/repositoryAudit.js';
 import http from 'node:http';
+import { Sandbox } from '@vercel/sandbox';
 import { computeOnly, previewRuntime } from './config/runtimeRole.js';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -20,7 +21,7 @@ import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import type { TechnicalSourceCapability } from './types.js';
-import { withVercelRequestContext } from './vercelRequestContext.js';
+import { currentVercelOidcToken, vercelOidcProjectIdentity, withVercelRequestContext } from './vercelRequestContext.js';
 import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
 import { WorkspaceStore } from './accounts/workspace.js';
 import { advanceHostedJob } from './accounts/hostedQueue.js';
@@ -248,6 +249,18 @@ export function createDevelopmentIntelligenceServer() {
         if (!await store.verifyHostedTransferLease(body.jobId, body.claimId, body.graphId, body.token)) { json(res, 403, { error: 'Graph transfer claim expired' }); return; }
         json(res, 200, { active: true }); return;
       } catch { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
+    }
+    // Temporary Preview evidence for the account execution owner's scheduler.
+    if (requestUrl.pathname === '/internal/account-dispatch-readiness' && req.method === 'POST') {
+      if (!canonicalReconcileCronAuthorized(req.headers ?? {})) { json(res, 401, { error: 'Unauthorized' }); return; }
+      const token = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim();
+      const identity = token && vercelOidcProjectIdentity(token);
+      let sandboxRead = false;
+      if (token && identity) {
+        try { await Sandbox.list({ token, ...identity, limit: 1 }); sandboxRead = true; } catch { /* Provider access remains unavailable. */ }
+      }
+      console.info(JSON.stringify({ event: 'account-dispatch-readiness', credentialAvailable: Boolean(identity), sandboxRead }));
+      json(res, 200, { credentialAvailable: Boolean(identity), sandboxRead }); return;
     }
     if (requestUrl.pathname === '/account/hosted-finish' && req.method === 'POST') {
       try {

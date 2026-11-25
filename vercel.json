@@ -6,6 +6,13 @@
       "work/**": false
     }
   },
+  "schedules": {
+    "account-dispatch-readiness": {
+      "schedule": "* * * * *",
+      "path": "/internal/account-dispatch-readiness",
+      "requestMethod": "POST"
+    }
+  },
   "crons": [
     {
       "path": "/internal/reconcile-canonical",
