@@ -272,7 +272,19 @@ export function createDevelopmentIntelligenceServer() {
           if (jobId) { json(res, 200, await advanceHostedJob(store, identity.userId, await store.build(jobId), accountOrigin(req))); return; }
           const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds(false)]);
           const updated = await Promise.all(builds.map(job => advanceHostedJob(store, identity.userId, job, accountOrigin(req))));
-          json(res, 200, { projects, graphs, computers, layout, builds: updated.filter(Boolean) }); return;
+          const snapshots = await Promise.all(graphs.map(async graph => {
+            const latest = builds.filter(job => job.kind === 'build' && job.graph.id === graph.id && job.state === 'complete')
+              .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+            if (!latest) return { graphId: graph.id, snapshot: null };
+            const saved = await store.build(latest.id);
+            const result = saved && saved.kind !== 'browse' ? saved.result as { graphId?: unknown; revision?: unknown; sourceState?: unknown; sourceFingerprint?: unknown } | undefined : undefined;
+            return { graphId: graph.id, snapshot: { graphId: typeof result?.graphId === 'string' ? result.graphId : null,
+              revision: typeof result?.revision === 'string' ? result.revision : null,
+              sourceFingerprint: typeof result?.sourceFingerprint === 'string' ? result.sourceFingerprint : null,
+              sourceState: result?.sourceState ?? null, requestedAt: latest.createdAt,
+              source: latest.graph.source, storage: latest.graph.storage } };
+          }));
+          json(res, 200, { projects, graphs, computers, layout, builds: updated.filter(Boolean), snapshots }); return;
         }
         if (req.method !== 'POST') { json(res, 405, { error: 'Use GET or POST' }); return; }
         if (identity.tokenType === 'session_token' && req.headers.origin !== accountOrigin(req)) {
