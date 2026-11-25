@@ -31,6 +31,8 @@
     "@scip-code/scip": "^0.10.0",
     "@sourcegraph/scip-typescript": "0.6.2",
     "@upstash/redis": "1.38.4",
+    "@vercel/drives": "^1.0.0",
+    "@vercel/sandbox": "^4.1.0",
     "graphology": "0.26.0",
     "npm": "10.9.2",
     "sigma": "3.0.3",
