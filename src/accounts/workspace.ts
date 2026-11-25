@@ -12,7 +12,7 @@ export type GraphDefinition = {
   updatePolicy: 'snapshot';
 };
 export type Computer = { id: string; name: string; platform: string; lastSeen: string; state: 'linked' | 'revoked' };
-export type BuildJob = { id: string; kind?: 'build' | 'question' | 'investigation'; question?: string; graphId?: string; request?: { path: string; method: 'GET' | 'POST'; query?: string; body?: unknown }; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; result?: unknown; resultKey?: string; error?: string; assignedComputer?: string; stage?: 'build' | 'transfer'; hosted?: { sandbox: string; command: string; statusFile: string } };
+export type BuildJob = { id: string; kind?: 'build' | 'question' | 'investigation'; question?: string; graphId?: string; request?: { path: string; method: 'GET' | 'POST'; query?: string; body?: unknown }; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; result?: unknown; resultKey?: string; resultParts?: number; error?: string; assignedComputer?: string; stage?: 'build' | 'transfer'; hosted?: { sandbox: string; command: string; statusFile: string } };
 export type BrowseJob = { id: string; kind: 'browse'; computerId: string; path?: string; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; result?: unknown; resultKey?: string; error?: string };
 type ComputerJob = BuildJob | BrowseJob;
 
@@ -63,7 +63,24 @@ export class WorkspaceStore {
   }
   async build(jobId: unknown): Promise<ComputerJob | null> {
     const job = await this.redis.hget<ComputerJob>(this.key('builds'), id(jobId));
-    return job?.resultKey ? { ...job, result: await this.redis.get(job.resultKey) } : job;
+    return job?.resultKey && !(job.kind === 'investigation' && job.resultParts) ? { ...job, result: await this.redis.get(job.resultKey) } : job;
+  }
+  /** Read an account-owned investigation one transport part at a time. */
+  async investigationPart(jobId: unknown, index: number): Promise<string> {
+    const job = await this.redis.hget<ComputerJob>(this.key('builds'), id(jobId));
+    if (!job || job.kind !== 'investigation' || job.state !== 'complete' || !job.resultKey || !job.resultParts || !Number.isSafeInteger(index) || index < 0 || index >= job.resultParts) invalid('Investigation result part is unavailable');
+    const part = await this.redis.hget<string>(job.resultKey, String(index));
+    if (typeof part !== 'string' || !part.startsWith('b:')) throw new Error('Investigation result is incomplete');
+    return part.slice(2);
+  }
+  /** Accept a bounded part only from the computer holding the active job claim. */
+  async putInvestigationPart(computerId: unknown, secret: unknown, jobId: unknown, claim: unknown, index: unknown, part: unknown): Promise<void> {
+    const computer = await this.verifyComputer(computerId, secret), jobKey = id(jobId), claimKey = id(claim);
+    if (!Number.isSafeInteger(index) || Number(index) < 0 || typeof part !== 'string' || part.length > 300_000 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(part)) invalid('Invalid investigation result part');
+    const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
+    const key = this.key(`result:${jobKey}:${claimKey}`);
+    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[2],ARGV[2])~=ARGV[3] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.kind~='investigation' or job.state~='running' or job.assignedComputer~=ARGV[2] or job.claimId~=ARGV[4] then return 0 end; redis.call('HSET',KEYS[3],ARGV[5],ARGV[6]); redis.call('EXPIRE',KEYS[3],86400); return 1`, [this.key('builds'), this.key('computer-secrets'), key], [jobKey, computer.id, digest, claimKey, String(index), `b:${part}`]);
+    if (changed !== 1) invalid('Investigation claim is no longer active');
   }
   private async enqueue(job: ComputerJob): Promise<void> {
     await this.ensureIndexed();
@@ -227,12 +244,24 @@ export class WorkspaceStore {
   }
   async updateHosted(jobId: string, claimId: string, status: { state: 'running' | 'complete' | 'failed'; progress?: unknown; result?: unknown; error?: string }): Promise<void> {
     const key = this.key(`result:${id(jobId)}:${id(claimId)}`);
-    if (status.state === 'complete') await this.redis.set(key, status.result ?? null);
-    const { result: _result, ...small } = status;
-    const changed = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.assignedComputer~='hosted' or job.claimId~=ARGV[2] then return 0 end; local update=cjson.decode(ARGV[3]); if update.state=='running' then job.progress=update.progress else job.state=update.state; job.leaseUntil=nil; if update.state=='complete' then job.resultKey=ARGV[4] else job.error=update.error end; redis.call('ZREM',KEYS[2],ARGV[1]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key('queue:hosted'), this.key('hosted-build-lock')], [jobId, claimId, JSON.stringify(small), key]);
+    const current = status.state === 'complete' ? await this.redis.hget<BuildJob>(this.key('builds'), id(jobId)) : null;
+    let resultParts: number | undefined;
+    if (status.state === 'complete' && current?.kind === 'investigation') {
+      const bytes = Buffer.from(JSON.stringify(status.result ?? null), 'utf8'), size = 192 * 1024;
+      resultParts = Math.ceil(bytes.length / size);
+      for (let index = 0; index < resultParts; index++) {
+        const part = `b:${bytes.subarray(index * size, (index + 1) * size).toString('base64')}`;
+        const saved = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.assignedComputer~='hosted' or job.claimId~=ARGV[2] then return 0 end; redis.call('HSET',KEYS[2],ARGV[3],ARGV[4]); redis.call('EXPIRE',KEYS[2],86400); return 1`, [this.key('builds'), key], [jobId, claimId, String(index), part]);
+        if (saved !== 1) invalid('Hosted job claim is no longer active');
+      }
+    } else if (status.state === 'complete') await this.redis.set(key, status.result ?? null);
+    const { result: _result, ...rest } = status;
+    const small = { ...rest, ...(resultParts ? { resultParts } : {}) };
+    const changed = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.assignedComputer~='hosted' or job.claimId~=ARGV[2] then return 0 end; local update=cjson.decode(ARGV[3]); if update.state=='running' then job.progress=update.progress else job.state=update.state; job.leaseUntil=nil; if update.state=='complete' then if update.resultParts then if redis.call('HLEN',KEYS[4])~=update.resultParts then return 0 end; job.resultParts=update.resultParts; redis.call('PERSIST',KEYS[4]) end; job.resultKey=ARGV[4] else job.error=update.error end; redis.call('ZREM',KEYS[2],ARGV[1]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key('queue:hosted'), this.key('hosted-build-lock'), key], [jobId, claimId, JSON.stringify(small), key]);
     if (changed !== 1 && status.state === 'complete') {
-      const current = await this.redis.hget<BuildJob>(this.key('builds'), jobId);
-      if (current?.resultKey !== key) await this.redis.del(key);
+      const completed = await this.redis.hget<BuildJob>(this.key('builds'), jobId);
+      if (completed?.resultKey !== key) await this.redis.del(key);
+      else if (completed.resultParts) await this.redis.persist(key);
     }
     if (changed !== 1) invalid('Hosted job claim is no longer active');
   }
@@ -243,9 +272,11 @@ export class WorkspaceStore {
     const computer = await this.heartbeat(computerId, secret), data = object(update), buildId = id(jobId), claimId = id(data.claimId);
     const { result, ...small } = data;
     const resultKey = this.key(`result:${buildId}:${claimId}`);
-    if (data.state === 'complete') await this.redis.set(resultKey, result ?? null);
+    const resultParts = data.resultParts;
+    if (resultParts !== undefined && (!Number.isSafeInteger(resultParts) || Number(resultParts) < 1)) invalid('Invalid investigation result manifest');
+    if (data.state === 'complete' && resultParts === undefined) await this.redis.set(resultKey, result ?? null);
     const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
-    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[3],ARGV[2])~=ARGV[7] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or (job.assignedComputer or job.graph.buildComputer); if job.state~='running' or owner~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; local update=cjson.decode(ARGV[4]); if update.state=='complete' then job.resultKey=ARGV[6]; job.result=nil; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]); if job.kind=='build' and job.stage=='build' and job.graph.buildComputer~=job.graph.storage.computer then job.state='queued'; job.stage='transfer'; job.assignedComputer=job.graph.storage.computer; job.progress={stage='waiting-for-storage-computer'}; job.claimId=nil; redis.call('ZADD',ARGV[8]..job.assignedComputer,ARGV[9],ARGV[1]) else job.state='complete' end elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]); redis.call('ZADD',KEYS[2],ARGV[5],ARGV[1]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets')], [buildId, computer.id, claimId, JSON.stringify(small), Date.now() + 900_000, resultKey, digest, `${this.root}:queue:`, Date.now()]);
+    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[3],ARGV[2])~=ARGV[7] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or (job.assignedComputer or job.graph.buildComputer); if job.state~='running' or owner~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; local update=cjson.decode(ARGV[4]); if update.state=='complete' then if update.resultParts then if job.kind~='investigation' or redis.call('HLEN',KEYS[4])~=update.resultParts then return 0 end; job.resultParts=update.resultParts; redis.call('PERSIST',KEYS[4]) end; job.resultKey=ARGV[6]; job.result=nil; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]); if job.kind=='build' and job.stage=='build' and job.graph.buildComputer~=job.graph.storage.computer then job.state='queued'; job.stage='transfer'; job.assignedComputer=job.graph.storage.computer; job.progress={stage='waiting-for-storage-computer'}; job.claimId=nil; redis.call('ZADD',ARGV[8]..job.assignedComputer,ARGV[9],ARGV[1]) else job.state='complete' end elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]); redis.call('ZADD',KEYS[2],ARGV[5],ARGV[1]) end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets'), resultKey], [buildId, computer.id, claimId, JSON.stringify(small), Date.now() + 900_000, resultKey, digest, `${this.root}:queue:`, Date.now()]);
     if (changed !== 1 && data.state === 'complete') {
       const current = await this.redis.hget<ComputerJob>(this.key('builds'), buildId);
       if (current?.resultKey !== resultKey) await this.redis.del(resultKey);

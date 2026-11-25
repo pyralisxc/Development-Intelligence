@@ -140,7 +140,20 @@ async function accountInvestigation(request: Record<string, unknown>): Promise<a
     if (response.status === 401) { window.location.assign('/account'); throw new Error('Sign in to continue'); }
     const current = await response.json();
     if (!response.ok || !current) throw new Error(current?.error ?? 'Investigation unavailable');
-    if (current.state === 'complete') return current.result;
+    if (current.state === 'complete') {
+      if (!current.resultParts) return current.result;
+      const chunks: Uint8Array[] = [];
+      for (let index = 0; index < current.resultParts; index++) {
+        const partResponse = await fetch(`/account/workspace?job=${encodeURIComponent(job.id)}&part=${index}`);
+        if (!partResponse.ok) throw new Error('Could not retrieve investigation result');
+        const { part } = await partResponse.json();
+        const binary = atob(part);
+        chunks.push(Uint8Array.from(binary, character => character.charCodeAt(0)));
+      }
+      const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0), bytes = new Uint8Array(length);
+      let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+      return JSON.parse(new TextDecoder().decode(bytes));
+    }
     if (current.state === 'failed') throw new Error(current.error ?? 'Investigation failed');
   }
 }
@@ -633,10 +646,29 @@ async function renderParity(epoch: number): Promise<void> {
       const headRef = (document.getElementById('parity-head') as HTMLInputElement).value;
       const scope = (document.getElementById('parity-scope') as HTMLInputElement).value.trim();
       if (viewerConfig.accountGraphId && (!baseRef || !headRef)) throw new Error('Choose two saved graphs');
-      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'interaction-parity', baseRef, headRef, ...(viewerConfig.accountGraphId ? { ref: headRef } : {}), ...(scope ? { scope } : {}), offset: String(parityOffset), limit: '10' }));
+      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'interaction-parity', baseRef, headRef, ...(viewerConfig.accountGraphId ? { ref: headRef } : {}), ...(scope ? { scope } : {}), offset: String(parityOffset), limit: '10', detail: 'summary' }));
       if (!sectionIsCurrent(epoch, 'parity')) return;
-      target.innerHTML = `<p>${esc(result.note)}</p><p class="muted">${esc(result.potentiallyAffected)} with potentially affected paths · ${esc(result.page.total)} interaction identities · showing ${esc(result.page.total ? result.page.offset + 1 : 0)}–${esc(Math.min(result.page.offset + result.page.limit, result.page.total))}</p><div class="list">${result.items.map((item: any, index: number) => `<div class="row"><span class="badge">${esc(item.status)}</span><div class="row-main"><strong>${esc(item.after?.name ?? item.before?.name ?? item.after?.[0]?.name ?? item.before?.[0]?.name ?? 'Ambiguous interaction')}</strong><small>${esc(item.after?.locator ?? item.before?.locator ?? item.after?.[0]?.locator ?? item.before?.[0]?.locator ?? item.reason ?? '')}${item.path ? ` · ${esc(item.path.addedFacts)} added and ${esc(item.path.removedFacts)} removed path facts · ${esc(item.path.afterUnresolved)} unresolved` : ''}</small>${parityChangeDetails(item)}</div>${item.investigations?.[0] ? `<button type="button" data-parity-item="${index}" data-parity-side="0">Base graph</button>` : ''}${item.investigations?.[1] ? `<button type="button" data-parity-item="${index}" data-parity-side="1">Compared graph</button>` : ''}</div>`).join('')}</div><div><button type="button" id="parity-previous" ${result.page.offset === 0 ? 'disabled' : ''}>Previous</button><button type="button" id="parity-next" ${result.page.nextOffset == null ? 'disabled' : ''}>Next</button></div>`;
-      target.querySelectorAll<HTMLButtonElement>('[data-parity-item]').forEach(button => button.addEventListener('click', () => followInvestigation(result.items[Number(button.dataset.parityItem)].investigations[Number(button.dataset.paritySide)])));
+      target.innerHTML = `<p>${esc(result.note)}</p><p class="muted">${esc(result.potentiallyAffected)} with potentially affected paths · ${esc(result.page.total)} interaction identities · showing ${esc(result.page.total ? result.page.offset + 1 : 0)}–${esc(Math.min(result.page.offset + result.page.limit, result.page.total))}</p><div class="list">${result.items.map((item: any, index: number) => `<div class="row"><span class="badge">${esc(item.status)}</span><div class="row-main"><strong>${esc(item.after?.name ?? item.before?.name ?? item.after?.[0]?.name ?? item.before?.[0]?.name ?? 'Ambiguous interaction')}</strong><small>${esc(item.after?.locator ?? item.before?.locator ?? item.after?.[0]?.locator ?? item.before?.[0]?.locator ?? item.reason ?? '')}${item.path ? ` · ${esc(item.path.addedFacts)} added and ${esc(item.path.removedFacts)} removed path facts · ${esc(item.path.afterUnresolved)} unresolved` : ''}</small>${item.path && (item.path.addedFacts || item.path.removedFacts) ? `<button type="button" data-parity-facts="${index}">View changed graph facts</button><div data-parity-detail="${index}"></div>` : ''}</div>${(Array.isArray(item.before) ? item.before.length : item.before) ? `<button type="button" data-parity-item="${index}" data-parity-side="0">Base graph</button>` : ''}${(Array.isArray(item.after) ? item.after.length : item.after) ? `<button type="button" data-parity-item="${index}" data-parity-side="1">Compared graph</button>` : ''}</div>`).join('')}</div><div><button type="button" id="parity-previous" ${result.page.offset === 0 ? 'disabled' : ''}>Previous</button><button type="button" id="parity-next" ${result.page.nextOffset == null ? 'disabled' : ''}>Next</button></div>`;
+      const details = new Map<string, Promise<any>>();
+      const loadDetail = (index: number, detail: 'facts' | 'base' | 'head') => {
+        const key = `${index}:${detail}`;
+        let pending = details.get(key);
+        if (!pending) {
+          pending = getJson('/workbench/data', new URLSearchParams({ action: 'interaction-parity', baseRef, headRef, ...(viewerConfig.accountGraphId ? { ref: headRef } : {}), ...(scope ? { scope } : {}), baseGraphId: result.base.graphId, headGraphId: result.head.graphId, offset: String(result.page.offset + index), limit: '1', detail })).then(data => data.items[0]);
+          details.set(key, pending); pending.catch(() => details.delete(key));
+        }
+        return pending;
+      };
+      target.querySelectorAll<HTMLButtonElement>('[data-parity-item]').forEach(button => button.addEventListener('click', () => {
+        button.disabled = true;
+        void loadDetail(Number(button.dataset.parityItem), button.dataset.paritySide === '0' ? 'base' : 'head').then(item => followInvestigation(item.investigations[Number(button.dataset.paritySide)]))
+          .catch(error => { button.title = error instanceof Error ? error.message : String(error); button.textContent = 'Could not load graph'; }).finally(() => { button.disabled = false; });
+      }));
+      target.querySelectorAll<HTMLButtonElement>('[data-parity-facts]').forEach(button => button.addEventListener('click', () => {
+        button.disabled = true;
+        void loadDetail(Number(button.dataset.parityFacts), 'facts').then(item => { const panel = target.querySelector<HTMLElement>(`[data-parity-detail="${button.dataset.parityFacts}"]`); if (panel) { panel.innerHTML = parityChangeDetails(item); panel.querySelector('details')?.setAttribute('open', ''); } button.hidden = true; })
+          .catch(error => { button.title = error instanceof Error ? error.message : String(error); button.textContent = 'Could not load facts; retry'; }).finally(() => { button.disabled = false; });
+      }));
       target.querySelector<HTMLButtonElement>('#parity-previous')?.addEventListener('click', () => { parityOffset = Math.max(0, parityOffset - 10); void compare(); });
       target.querySelector<HTMLButtonElement>('#parity-next')?.addEventListener('click', () => { parityOffset = result.page.nextOffset; void compare(); });
     } catch (error) { target.innerHTML = `<p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p>`; }
