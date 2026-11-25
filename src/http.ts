@@ -20,7 +20,7 @@ import { renderCanonicalPortfolioResult, renderGraphViewer, renderProjectChooser
 import { reconcileCanonicalPortfolio } from './intelligence/canonicalPortfolio.js';
 import { reconcileCanonicalPortfolioIsolated } from './intelligence/canonicalReconcileWorker.js';
 import type { TechnicalSourceCapability } from './types.js';
-import { withVercelRequestContext } from './vercelRequestContext.js';
+import { currentVercelOidcToken, vercelOidcProjectIdentity, withVercelRequestContext } from './vercelRequestContext.js';
 import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
 import { WorkspaceStore } from './accounts/workspace.js';
 import { advanceHostedJob } from './accounts/hostedQueue.js';
@@ -248,6 +248,14 @@ export function createDevelopmentIntelligenceServer() {
         if (!await store.verifyHostedTransferLease(body.jobId, body.claimId, body.graphId, body.token)) { json(res, 403, { error: 'Graph transfer claim expired' }); return; }
         json(res, 200, { active: true }); return;
       } catch { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
+    }
+    // Temporary Preview evidence for the account execution owner's scheduler.
+    if (requestUrl.pathname === '/internal/account-dispatch-readiness' && req.method === 'POST') {
+      if (!canonicalReconcileCronAuthorized(req.headers ?? {})) { json(res, 401, { error: 'Unauthorized' }); return; }
+      const token = currentVercelOidcToken() ?? process.env.VERCEL_OIDC_TOKEN?.trim();
+      const ready = Boolean(token && vercelOidcProjectIdentity(token));
+      console.info(JSON.stringify({ event: 'account-dispatch-readiness', credentialAvailable: ready }));
+      json(res, 200, { credentialAvailable: ready }); return;
     }
     if (requestUrl.pathname === '/account/hosted-finish' && req.method === 'POST') {
       try {
