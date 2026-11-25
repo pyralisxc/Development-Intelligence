@@ -1,5 +1,14 @@
 import { MultiGraph } from 'graphology';
 import Sigma from 'sigma';
+import { basicSetup, EditorView } from 'codemirror';
+import { EditorState } from '@codemirror/state';
+import { javascript } from '@codemirror/lang-javascript';
+import { python } from '@codemirror/lang-python';
+import { html } from '@codemirror/lang-html';
+import { css } from '@codemirror/lang-css';
+import { oneDark } from '@codemirror/theme-one-dark';
+import { createDockview, type DockviewApi } from 'dockview';
+import dockviewCss from 'dockview/dist/styles/dockview.css';
 
 declare global {
   interface Window {
@@ -470,7 +479,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
-  renderer = new Sigma(graph, container, { enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
+  renderer = new Sigma(graph, container, { allowInvalidContainer: true, enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
   renderer.on('clickNode', event => {
     graphSelected = event.node;
     if (event.event.original.shiftKey) { if (selectedGraphNodes.has(event.node)) selectedGraphNodes.delete(event.node); else selectedGraphNodes.add(event.node); }
@@ -646,7 +655,7 @@ function parityChangeDetails(item: any): string {
 
 async function renderParity(epoch: number): Promise<void> {
   setHead();
-  content.innerHTML = `<div class="card"><h3>Interaction parity</h3><h2>Compare connected behavior</h2><p>Compare interaction points and their captured graph paths across two revisions.</p><div class="query-box"><label>Base revision <input id="parity-base" value="${viewerConfig.local ? 'preview' : 'main'}"></label><label>Compare revision <input id="parity-head" value="${viewerConfig.local ? 'working-tree' : 'preview'}"></label><label>Filter by interaction or connected source or name <input id="parity-scope" placeholder="All interactions"></label><button id="compare-interactions" type="button">Compare</button></div><div id="interaction-parity-result" class="query-result"></div></div><details style="margin-top:13px"><summary>Optional expectation overlay</summary><div class="card"><h3>Expectation overlay E</h3><h2>Define what must be true</h2><p>Use stable graph IDs to describe required or forbidden entities and relationships. Development Intelligence evaluates this contract against the selected working graph without storing it or promoting it into A.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) auto;margin-top:13px"><textarea id="parity-contract" aria-label="Parity contract JSON" style="min-height:260px">${esc(parityContractText)}</textarea><button class="primary" id="evaluate-parity" type="button" style="align-self:start">Evaluate</button></div><p class="muted">Supported requirements: required and forbidden. Missing negative evidence becomes unproven when graph coverage is incomplete.</p></div><div id="parity-result" class="query-result"></div></details>`;
+  content.innerHTML = `<div class="card"><h3>Interaction parity</h3><h2>Compare connected behavior</h2><p>Compare interaction points and their captured graph paths across two revisions.</p><div class="query-box"><label>Base revision <input id="parity-base" value="${viewerConfig.local ? 'preview' : 'main'}"></label><label>Compare revision <input id="parity-head" value="${viewerConfig.local ? 'working-tree' : 'preview'}"></label><label>Filter by interaction or connected source or name <input id="parity-scope" placeholder="All interactions"></label><button id="compare-interactions" type="button">Compare</button></div><div id="interaction-parity-result" class="query-result"></div></div><details style="margin-top:13px"><summary>Optional expectation overlay</summary><div class="card"><h3>Expectation overlay E</h3><h2>Define what must be true</h2><p>Use stable graph IDs to describe required or forbidden entities and relationships. Development Intelligence evaluates this contract against the selected working graph without storing it or changing the selected graph.</p><div class="query-box" style="grid-template-columns:minmax(0,1fr) auto;margin-top:13px"><textarea id="parity-contract" aria-label="Parity contract JSON" style="min-height:260px">${esc(parityContractText)}</textarea><button class="primary" id="evaluate-parity" type="button" style="align-self:start">Evaluate</button></div><p class="muted">Supported requirements: required and forbidden. Missing negative evidence becomes unproven when graph coverage is incomplete.</p></div><div id="parity-result" class="query-result"></div></details>`;
   let parityOffset = 0;
   const compare = async () => {
     const target = document.getElementById('interaction-parity-result') as HTMLElement;
@@ -919,47 +928,142 @@ if (document.getElementById('question-dock')) {
   const inspector = document.querySelector<HTMLElement>('.inspector')!;
   const dock = document.getElementById('question-dock')!, shell = document.querySelector<HTMLElement>('.shell')!;
   let layoutReady = false, lastLayout = '', layoutTimer: number | undefined;
-  let inspectorSide = 'right', questionPosition = 'bottom', inspectorOpen = window.innerWidth >= 850, panelWidth = 320;
-  const applyLayout = () => {
-    const width = Math.min(panelWidth, Math.max(180, Math.round(shell.getBoundingClientRect().width * .45)));
-    inspector.hidden = !inspectorOpen; inspector.style.width = width + 'px';
-    inspector.style.order = inspectorSide === 'left' ? '-1' : '1';
-    shell.style.gridTemplateColumns = !inspectorOpen ? 'minmax(0,1fr)' : inspectorSide === 'left' ? width + 'px minmax(0,1fr)' : 'minmax(0,1fr) ' + width + 'px';
-    dock.style.order = questionPosition === 'top' ? '-1' : '1';
-    window.dispatchEvent(new Event('resize'));
-  };
+  let dockApi: DockviewApi;
+  const compactMedia = window.matchMedia('(max-width: 720px)');
+  let compact = compactMedia.matches;
+  const layouts: { compact?: ReturnType<DockviewApi['toJSON']>; wide?: ReturnType<DockviewApi['toJSON']> } = {};
   const saveLayout = () => {
-    if (!layoutReady) return;
-    if (inspectorOpen) panelWidth = Math.round(inspector.getBoundingClientRect().width) || panelWidth;
-    const layout = { inspectorWidth: panelWidth, questionHeight: Math.round(dock.getBoundingClientRect().height), inspectorSide, questionPosition, inspectorOpen };
+    if (!layoutReady || !dockApi) return;
+    layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    const layout = { layouts };
     const next = JSON.stringify(layout); if (next === lastLayout) return; lastLayout = next;
-    applyLayout(); parent.postMessage({ type: 'di-layout', layout }, location.origin);
+    parent.postMessage({ type: 'di-layout', layout }, location.origin);
   };
-  window.addEventListener('message', event => {
-    if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
-    const saved = event.data.layout ?? {};
-    inspectorSide = saved.inspectorSide === 'left' ? 'left' : 'right'; questionPosition = saved.questionPosition === 'top' ? 'top' : 'bottom'; if (typeof saved.inspectorOpen === 'boolean') inspectorOpen = saved.inspectorOpen;
-    if (Number.isFinite(saved.inspectorWidth) && saved.inspectorWidth >= 180) panelWidth = saved.inspectorWidth;
-    if (Number.isFinite(saved.questionHeight) && saved.questionHeight >= 100) dock.style.height = saved.questionHeight + 'px';
-    applyLayout(); requestAnimationFrame(() => { layoutReady = true; });
-  });
-  const observer = new ResizeObserver(() => { if (layoutReady) { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700); } });
-  observer.observe(inspector); observer.observe(dock);
-  const moveInspector = document.createElement('button'); moveInspector.type = 'button'; moveInspector.title = 'Move inspector'; moveInspector.setAttribute('aria-label', 'Move inspector'); moveInspector.textContent = '⇄'; moveInspector.onclick = () => { inspectorSide = inspectorSide === 'left' ? 'right' : 'left'; saveLayout(); };
-  const moveQuestions = document.createElement('button'); moveQuestions.type = 'button'; moveQuestions.title = 'Move questions'; moveQuestions.setAttribute('aria-label', 'Move questions'); moveQuestions.textContent = '⇅'; moveQuestions.onclick = () => { questionPosition = questionPosition === 'top' ? 'bottom' : 'top'; saveLayout(); }; dock.prepend(moveQuestions);
   const tabs = document.createElement('div'); tabs.className = 'inspector-tabs';
   tabs.innerHTML = '<button type="button" data-pane="inspection">Inspector</button><button type="button" data-pane="files">Files</button>';
   const filesPane = document.createElement('div'); filesPane.className = 'inspector-body'; filesPane.hidden = true;
-  tabs.append(moveInspector); inspector.prepend(tabs); inspector.append(filesPane);
+  inspector.prepend(tabs); inspector.append(filesPane);
   const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorBody];
   const fileTabs = document.createElement('div'); fileTabs.className = 'inspector-tabs';
-  const fileBody = document.createElement('pre'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;white-space:pre;';
-  sectionHead.before(fileTabs); content.after(fileBody);
-  const graphTab = document.createElement('button'); graphTab.textContent = 'Graph'; fileTabs.append(graphTab);
-  const panelToggle = document.createElement('button'); panelToggle.type = 'button'; panelToggle.textContent = 'Inspector & files'; panelToggle.onclick = () => { inspectorOpen = !inspectorOpen; applyLayout(); saveLayout(); }; fileTabs.append(panelToggle);
+  const fileBody = document.createElement('div'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;';
+  const fileStatus = document.createElement('div'); fileStatus.setAttribute('role', 'status');
+  const fileEditor = document.createElement('div');
+  fileBody.append(fileStatus, fileEditor);
+  let editor: EditorView | undefined;
+  const fileLanguage = (file: string) => {
+    if (/\.(tsx?|jsx?)$/i.test(file)) return javascript({ typescript: /\.tsx?$/i.test(file), jsx: /\.[jt]sx$/i.test(file) });
+    if (/\.py$/i.test(file)) return python();
+    if (/\.html?$/i.test(file)) return html();
+    if (/\.css$/i.test(file)) return css();
+    return [];
+  };
+  const graphPane = document.querySelector<HTMLElement>('.workspace')!;
+  const navigation = shell.querySelector<HTMLElement>('.nav')!;
+  const sourcePane = document.createElement('section'); sourcePane.className = 'di-source-pane';
+  const sourceEmpty = document.createElement('p'); sourceEmpty.className = 'muted'; sourceEmpty.textContent = 'Choose a file from Inspector & files.'; sourceEmpty.style.margin = '12px';
+  sourcePane.append(fileTabs, sourceEmpty, fileBody);
+  const host = document.createElement('div'); host.className = 'dockview-theme-dark di-dockview';
+  const style = document.createElement('style'); style.textContent = dockviewCss + `
+    .shell{display:flex;flex-direction:column;min-width:0;min-height:0}.di-dockview{flex:1;min-height:0;width:100%}
+    .di-dockview .workspace,.di-dockview .inspector,.di-source-pane{height:100%;width:100%;min-width:0;min-height:0;overflow:auto}
+    .di-source-pane{display:flex;flex-direction:column;background:#090f18}
+    .di-dockview #question-dock{height:100%;max-height:none;resize:none;overflow:auto;padding:8px;background:#0b1420}
+    .di-dockview #question-dock .query-box{grid-template-columns:minmax(0,1fr) minmax(90px,140px) auto;margin:0}
+    .di-dockview #question-dock .query-box:has(#query-source[hidden]){grid-template-columns:minmax(0,1fr) auto}
+    .di-dockview #question-dock button{background:#14243a;color:#dbe7f6;border:1px solid #334963;border-radius:5px;padding:5px 8px;cursor:pointer}
+    .di-dockview .inspector{resize:none}
+    .di-dockview .workspace #content:has(.graph-shell){display:flex;flex-direction:column}
+    .di-dockview .investigation-layout:has(.graph-shell){flex:1;min-height:0;align-items:stretch}
+    .di-dockview #explore-result:has(.graph-shell){display:flex;flex-direction:column;min-height:0}
+    .di-dockview .graph-shell{flex:1;height:auto;min-height:240px}
+    .di-layout-toolbar{display:flex;gap:6px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid #26364d;background:#0c131e}
+    .di-layout-toolbar button,.di-source-pane .inspector-tabs button{font-size:12px;color:#dbe7f6;background:#14243a;border:1px solid #334963;border-radius:5px;padding:6px 9px;cursor:pointer}
+    .di-layout-toolbar details{position:relative;color:#dbe7f6;font-size:12px}.di-layout-toolbar summary{cursor:pointer;padding:6px 9px;border:1px solid #334963;border-radius:5px;background:#14243a}
+    .di-move-controls{position:absolute;z-index:20;right:0;min-width:220px;display:grid;gap:8px;padding:12px;background:#101b29;border:1px solid #334963;border-radius:6px;box-shadow:0 8px 24px #0008}
+    .di-move-controls label{display:grid;gap:4px}.di-move-controls select{background:#0d1624;color:#edf4ff;border:1px solid #334963;border-radius:5px;padding:6px}
+    .di-source-pane button[aria-current="true"]{border-color:#75d6f5;background:#1b3850}
+  `; document.head.append(style);
+  const parkedPanels = document.createElement('div'); parkedPanels.hidden = true;
+  shell.replaceChildren(navigation, host, parkedPanels);
+  const panes: Record<string, HTMLElement> = { graph: graphPane, questions: dock, inspector, source: sourcePane };
+  dockApi = createDockview(host, { createComponent: ({ name }) => {
+    const element = panes[name]; if (!element) throw new Error('Unknown workspace panel');
+    return { element, init: () => {} };
+  } });
+  const addPanel = (id: string, placement?: 'left' | 'right' | 'above' | 'below' | 'within', size?: number) => {
+    const existing = dockApi.getPanel(id); if (existing) { existing.api.setActive(); return; }
+    const titles: Record<string, string> = { graph: 'Graph', questions: 'Questions', inspector: 'Inspector & files', source: 'Source' };
+    const direction = compact && (id === 'inspector' || id === 'source') ? 'within' : placement ?? (id === 'questions' ? 'below' : 'right');
+    const savedSize = Number.isFinite(size) && size! >= 100 ? size! : undefined;
+    const panel = dockApi.addPanel({ id, component: id, title: titles[id] ?? id, renderer: 'always', ...(id === 'questions' ? { initialHeight: savedSize ?? 220 } : id === 'inspector' ? { initialWidth: savedSize ?? 280 } : id === 'source' ? { initialWidth: 460 } : {}), ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
+    if (direction !== 'within' && id !== 'graph') requestAnimationFrame(() => {
+      if (dockApi.getPanel(id) !== panel) return;
+      if (id === 'questions') panel.group.api.setSize({ height: savedSize ?? 220 });
+      else panel.group.api.setSize({ width: savedSize ?? (id === 'source' ? 460 : 280) });
+    });
+  };
+  const resetLayout = () => { dockApi.clear(); addPanel('graph'); addPanel('questions'); addPanel('inspector'); dockApi.getPanel('graph')?.api.setActive(); };
+  resetLayout();
+  const layoutControls = document.createElement('div'); layoutControls.className = 'di-layout-toolbar';
+  for (const [label, action] of [['Graph', () => addPanel('graph')], ['Questions', () => addPanel('questions')], ['Inspector & files', () => addPanel('inspector')], ['Reset layout', resetLayout]] as const) {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = action; layoutControls.append(button);
+  }
+  const moveMenu = document.createElement('details');
+  moveMenu.innerHTML = '<summary>Move panel</summary><div class="di-move-controls"><label>Panel<select aria-label="Panel to move"><option value="questions">Questions</option><option value="inspector">Inspector & files</option><option value="source">Source</option></select></label><label>Position relative to graph<select aria-label="Position relative to graph"><option value="left">Left</option><option value="right">Right</option><option value="top">Above</option><option value="bottom">Below</option><option value="center">As a tab</option></select></label><button type="button">Move</button><span role="status"></span></div>';
+  moveMenu.querySelector('button')!.onclick = () => {
+    const panelId = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Panel to move"]')!.value;
+    const position = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Position relative to graph"]')!.value as 'left' | 'right' | 'top' | 'bottom' | 'center';
+    addPanel('graph'); addPanel(panelId);
+    const panel = dockApi.getPanel(panelId), graph = dockApi.getPanel('graph');
+    if (panel && graph) { panel.api.moveTo({ group: graph.group, position }); panel.api.setActive(); moveMenu.querySelector('[role="status"]')!.textContent = 'Panel moved.'; }
+  };
+  layoutControls.append(moveMenu);
+  shell.prepend(layoutControls);
+  dockApi.onDidLayoutChange(() => {
+    if (layoutReady && compactMedia.matches === compact) layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700);
+  });
+  window.addEventListener('message', event => {
+    if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
+    const savedLayouts = event.data.layout?.layouts;
+    if (savedLayouts && typeof savedLayouts === 'object') { layouts.compact = savedLayouts.compact; layouts.wide = savedLayouts.wide; }
+    const saved = layouts[compact ? 'compact' : 'wide'];
+    if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } }
+    else if (!savedLayouts && event.data.layout && typeof event.data.layout === 'object' && ('inspectorSide' in event.data.layout || 'questionPosition' in event.data.layout)) {
+      const legacy = event.data.layout;
+      dockApi.clear(); addPanel('graph');
+      addPanel('questions', legacy.questionPosition === 'top' ? 'above' : 'below', legacy.questionHeight);
+      if (legacy.inspectorOpen !== false) addPanel('inspector', legacy.inspectorSide === 'left' ? 'left' : 'right', legacy.inspectorWidth);
+      dockApi.getPanel('graph')?.api.setActive();
+    }
+    if (!dockApi.getPanel('graph')) addPanel('graph');
+    requestAnimationFrame(() => { layoutReady = true; layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON(); });
+  });
+  compactMedia.addEventListener('change', event => {
+    if (!layouts[compact ? 'compact' : 'wide']) layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    compact = event.matches; layoutReady = false;
+    const saved = layouts[compact ? 'compact' : 'wide'];
+    if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } } else resetLayout();
+    if (!dockApi.getPanel('graph')) addPanel('graph');
+    requestAnimationFrame(() => { layoutReady = true; saveLayout(); });
+  });
+  const graphTab = document.createElement('button'); graphTab.textContent = 'Return to graph'; fileTabs.append(graphTab);
   let activeFile = '', fileSequence = 0;
+  let sourcePriorSizes: { compact: boolean; inspectorWidth: number; questionHeight: number } | null = null;
   const openFiles: string[] = [];
-  const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; sectionHead.hidden = false; content.hidden = false; window.dispatchEvent(new Event('resize')); };
+  dockApi.onDidRemovePanel(panel => { queueMicrotask(() => {
+    if (dockApi.getPanel(panel.id) || !panes[panel.id]) return;
+    parkedPanels.append(panes[panel.id]!);
+    if (panel.id !== 'source') return;
+    const previous = sourcePriorSizes; sourcePriorSizes = null;
+    if (!previous || !layoutReady || previous.compact !== compact) return;
+    requestAnimationFrame(() => {
+      if (dockApi.getPanel('source')) return;
+      if (!compact && previous.inspectorWidth >= 100) dockApi.getPanel('inspector')?.group.api.setSize({ width: previous.inspectorWidth });
+      if (previous.questionHeight >= 100) dockApi.getPanel('questions')?.group.api.setSize({ height: previous.questionHeight });
+    });
+  }); });
+  const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; dockApi.getPanel('source')?.api.close(); addPanel('graph'); window.dispatchEvent(new Event('resize')); };
   graphTab.onclick = showGraph;
   for (const button of navButtons) button.addEventListener('click', showGraph);
   const openFile = async (file: string) => {
@@ -977,16 +1081,18 @@ if (document.getElementById('question-dock')) {
     const existing = openFiles.indexOf(file); if (existing >= 0) openFiles.splice(existing, 1); openFiles.push(file);
     activeFile = file; const sequence = ++fileSequence;
     fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', item.dataset.file === file ? 'true' : 'false'));
-    sectionHead.hidden = true; content.hidden = true; fileBody.hidden = false; fileBody.textContent = 'Loading ' + file + '…';
+    if (!dockApi.getPanel('source')) sourcePriorSizes = { compact, inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height) };
+    addPanel('source'); sourceEmpty.hidden = true; fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
     try {
       const result = await getJson('/workbench/source', new URLSearchParams({ file }));
       if (sequence !== fileSequence || activeFile !== file) return;
       if (result.file !== file || (viewerConfig.graphId && result.graphId !== viewerConfig.graphId) || (viewerConfig.revision && result.revision !== viewerConfig.revision)) throw new Error('Source identity does not match the selected file and graph. Reopen the graph and try again.');
-      fileBody.textContent = `${result.file} · ${result.revision ? 'revision ' + result.revision : 'working source snapshot'}\n\n${result.content}`;
+      fileStatus.textContent = `${result.file} · ${result.revision ? 'revision ' + result.revision : 'working source snapshot'} · Read only`;
+      editor = new EditorView({ parent: fileEditor, state: EditorState.create({ doc: result.content, extensions: [basicSetup, oneDark, fileLanguage(file), EditorState.readOnly.of(true), EditorView.editable.of(false)] }) });
     } catch (error) {
       if (sequence !== fileSequence || activeFile !== file) return;
-      fileBody.textContent = error instanceof Error ? error.message : String(error);
-      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => void openFile(file); fileBody.append('\n', retry);
+      fileStatus.textContent = error instanceof Error ? error.message : String(error);
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => void openFile(file); fileStatus.append(' ', retry);
     }
   };
   let loaded = false;
@@ -1007,7 +1113,10 @@ if (document.getElementById('question-dock')) {
         const link = document.createElement('button'); link.type = 'button'; link.textContent = parts.at(-1) ?? file; link.title = file; link.className = 'nav-button'; link.onclick = () => void openFile(file); container.append(link);
       }
       loaded = true;
-    } catch (error) { filesPane.textContent = error instanceof Error ? error.message : String(error); }
+    } catch (error) {
+      filesPane.textContent = `Could not load files: ${error instanceof Error ? error.message : String(error)} `;
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => button.click(); filesPane.append(retry);
+    }
   });
 }
 
@@ -1015,7 +1124,7 @@ for (const button of navButtons) button.addEventListener('click', () => void act
 projectSelect.addEventListener('change', () => { window.location.assign(`/workbench?project=${encodeURIComponent(projectSelect.value)}`); });
 revisionForm.addEventListener('submit', event => { event.preventDefault(); const ref = revisionInput.value.trim(); if (!ref) return; window.location.assign(`/workbench?project=${encodeURIComponent(viewerConfig.project)}&ref=${encodeURIComponent(ref)}`); });
 globalForm.addEventListener('submit', event => { event.preventDefault(); const value = globalInput.value.trim(); if (!value) return; void activateSection('query', value); });
-document.addEventListener('keydown', event => { if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') { event.preventDefault(); globalInput.focus(); } });
+document.addEventListener('keydown', event => { if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA' && !(event.target instanceof Element && event.target.closest('.cm-editor'))) { event.preventDefault(); globalInput.focus(); } });
 
 if (viewerConfig.machineBuild) {
   const status = document.getElementById('machine-build-status');
