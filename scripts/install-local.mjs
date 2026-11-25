@@ -68,6 +68,9 @@ try {
   await fs.rm(dependencyStage, { recursive: true, force: true });
 }
 await fs.copyFile(path.join(source, 'package.json'), path.join(installDir, 'package.json'));
+// Source-stage reuse verifies its parser dependencies against this installation's
+// lockfile as well as the installed engine and grammar files.
+await fs.copyFile(path.join(source, 'package-lock.json'), path.join(installDir, 'package-lock.json'));
 await fs.copyFile(path.join(source, 'scripts', 'local-launcher.mjs'), path.join(installDir, 'local-launcher.mjs'));
 await fs.mkdir(path.join(installDir, 'scripts'), { recursive: true });
 for (const script of ['run-oss-understanding.mjs', 'node-test-events-reporter.mjs']) {

@@ -22,6 +22,7 @@ import { isCanonicalSourceFact, reconcileCanonicalSourceFact } from './graphKnow
 import { prepareGraphSubjects } from './graphFamilies.js';
 import { withPreparedProducerInputs, type GraphBuildProgress } from './producerInputs.js';
 import { positiveIntegerSetting } from './capacity.js';
+import { SourceStageCache } from './sourceStageCache.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
 export const ANALYZER_VERSION = '2.44.0-expression-conditions';
@@ -2671,6 +2672,7 @@ export async function buildRepositoryGraph(input: {
   role?: 'A' | 'W' | 'B';
   workingTree?: boolean;
   disposableCheckout?: boolean;
+  sourceStageCacheRoot?: string;
   progress?: (value: GraphBuildProgress) => void;
   joern?: { bytes: Uint8Array; version: string; projectPrefix?: string };
 }): Promise<IntelligenceGraph> {
@@ -2692,6 +2694,7 @@ async function buildPreparedRepositoryGraph(input: {
   root: string;
   role?: 'A' | 'W' | 'B';
   workingTree?: boolean;
+  sourceStageCacheRoot?: string;
   progress?: (value: GraphBuildProgress) => void;
   joern?: { bytes: Uint8Array; version: string; projectPrefix?: string };
 }): Promise<IntelligenceGraph> {
@@ -2729,9 +2732,11 @@ async function buildPreparedRepositoryGraph(input: {
   const trackedPaths = new Set(tracked.map(file => file.path));
   input.progress?.({ stage: 'analyzing-source', completed: 0, total: selected.length });
   let analyzedProgress = 0;
+  let reusedSourceFiles = 0;
+  const sourceStageCache = await SourceStageCache.open(input.sourceStageCacheRoot, input.project, input.repository);
 
   for (const trackedFile of selected) {
-    if (analyzedProgress && analyzedProgress % 32 === 0) input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length });
+    if (analyzedProgress && analyzedProgress % 32 === 0) input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length, reused: reusedSourceFiles });
     analyzedProgress++;
     const root = path.resolve(input.root);
     const absolute = path.resolve(root, trackedFile.path);
@@ -2780,11 +2785,14 @@ async function buildPreparedRepositoryGraph(input: {
     }
     if (CODE_EXTENSIONS.has(path.extname(trackedFile.path).toLowerCase())) sourceTexts.set(trackedFile.path, text);
     const contentSha256 = createHash('sha256').update(text).digest('hex');
-    const result = analyzeByTechnology({ source: fileSource, text, locatorBase: trackedFile.path });
+    const cachedSource = await sourceStageCache?.read(trackedFile.path, contentSha256);
+    if (cachedSource) reusedSourceFiles++;
+    const result = cachedSource ?? analyzeByTechnology({ source: fileSource, text, locatorBase: trackedFile.path });
+    const analyzerFailure = result.resolutions.find(edge => edge.kind === 'analysis' && edge.status === 'unresolved' && !edge.from && !edge.to);
+    if (!cachedSource && !analyzerFailure) await sourceStageCache?.write(trackedFile.path, contentSha256, result);
     nodes.push(file, ...result.observations);
     edges.push(...result.resolutions, ...result.observations.filter(node => node.layer !== 'semantic').map(node => containsEdge(file, node, trackedFile.path)));
     evidence.push(...(result.evidence ?? []));
-    const analyzerFailure = result.resolutions.find(edge => edge.kind === 'analysis' && edge.status === 'unresolved' && !edge.from && !edge.to);
     if (analyzerFailure) {
       failedFiles += 1;
       coverageFiles.push({ path: trackedFile.path, status: 'failed', reason: analyzerFailure.evidence.join('; ') || 'analyzer failure', contentSha256 });
@@ -2797,7 +2805,7 @@ async function buildPreparedRepositoryGraph(input: {
     }
   }
 
-  input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length });
+  input.progress?.({ stage: 'analyzing-source', completed: analyzedProgress, total: selected.length, reused: reusedSourceFiles });
   if (skippedOversizedFiles > 0) warnings.push(`Skipped ${skippedOversizedFiles} tracked files larger than ${MAX_FILE_BYTES} bytes.`);
   if (failedFiles > 0) warnings.push(`${failedFiles} eligible tracked files failed analysis; negative/exhaustive claims must be qualified.`);
   const repositorySource: SourceDescriptor = {
@@ -2907,5 +2915,7 @@ async function buildPreparedRepositoryGraph(input: {
   produced.namingDivergences = deriveNamingDivergences(produced.nodes, produced.edges);
   produced.unmatchedNodeIds = deriveUnmatched(produced.nodes, produced.edges);
   input.progress?.({ stage: 'preparing-families' });
-  return prepareGraphSubjects(produced);
+  const prepared = prepareGraphSubjects(produced);
+  await sourceStageCache?.prune(trackedPaths);
+  return prepared;
 }

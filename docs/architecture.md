@@ -36,6 +36,24 @@ Development Intelligence owns one graph model. Code inspection, Architecture, Pa
 
 Git/source owns implementation truth. DI produces rebuildable technical and semantic projections of exact Git revisions or of a fingerprinted local working state. Local working graphs include current non-ignored files and record HEAD as context, not as a claim that those files equal the commit. Historical evidence remains bound to its own exact Git revision.
 
+### Build-stage handoffs and advancement
+
+The graph is the published knowledge for a selected source state. Each stage passes its facts, identities, evidence and coverage forward; it does not treat the previous finished graph as if it were the original output of an earlier producer.
+
+| Stage | Receives | Contributes and dependency on advancement |
+| --- | --- | --- |
+| Source and dependencies | Selected working snapshot or commit, tracked paths and applicable lockfile | One consistent checkout and dependency-producer coverage. A changed source, lockfile, checkout policy or producer environment can affect downstream results. |
+| Source analyzers | File path, bytes and the installed language analyzers | Located observations, relationships, evidence and per-file coverage. A matching source-stage handoff may be reused; a changed path, content or analyzer engine requires a fresh result. Failed analyses are not cached. |
+| Repository resolution | All selected file observations and paths | Cross-file, module, Unity and language-specific connections. These are recalculated across the complete inputs: an unchanged file can gain or lose a relationship when another file changes. |
+| TypeScript compiler and framework analysis | Source texts, compiler configuration, dependencies and the complete native observations | Bound references, calls, callback and framework connections with their source locations. It runs against the original native handoff, not a reconstructed subset of the finished graph. |
+| SCIP and optional Joern | The selected checkout and producer configuration or supplied slice, plus the resolved graph | Located producer contributions, relationship evidence and explicit producer coverage. SCIP currently runs for the full checkout; Joern remains a supplied bounded slice. A reference is not automatically a call. |
+| Graph preparation | Reconciled nodes, relationships, evidence and coverage | Graph subjects and derived navigation context. Producer contributions remain attached to their facts; indexes and family views are derived from this generation. |
+| Publication and retrieval index | Completed graph and its selected source identity | A generation-bound graph and retrieval index, published through the existing graph-store lifecycle. A cached source handoff is never a published graph or proof of a completed build. |
+
+Local and persistent-machine workers can keep a disposable source-stage cache alongside their graph storage. A cache entry is scoped to the project and repository and identified by path, source-content digest, installed engine files, dependency lock, Node version and platform. It contains the analyzer's original observations, resolutions, evidence and coverage, before later stages modify or reconcile them. Missing, incompatible or damaged entries fall back to analysis; cache write failures do not prevent the graph build. The last cached result for each path is replaceable, and after a completed build entries for paths absent from that source state are pruned. Deleting the cache does not delete the graph. Ephemeral execution or transfer locations may not retain it between builds.
+
+This is reuse of file-local analysis followed by complete repository-wide reconciliation, not incremental reuse of the finished graph, SCIP, compiler results or retrieval indexes. More selective advancement needs dependencies and producer evidence that can invalidate all affected facts, including facts owned by unchanged files. Existing graph fingerprints are not sufficient to establish that every source location and piece of relationship evidence is unchanged.
+
 External tools may contribute evidence. They do not own DI identity, graph semantics, lifecycle, storage, query contracts, or product intent. No production analyzer may branch on project identity.
 
 Development methodologies and skills may consume DI output, but DI neither requires nor implements Developer OS, Founder-to-Feature, Jarvis, or any other reasoning workflow.

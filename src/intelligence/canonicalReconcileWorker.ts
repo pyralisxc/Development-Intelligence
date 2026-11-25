@@ -193,8 +193,8 @@ async function workerMain(input: WorkerInput | LocalGraphWorkerInput | PreviewGr
     const progress = (value: GraphBuildProgress) => parentPort?.postMessage({ type: 'progress', progress: value });
     progress({ stage: 'resolving-revision' });
     const graph = input.ref
-      ? await buildLocalRevisionGraph(input.root, input.ref, input.project, input.joern, progress)
-      : await buildLocalWorkingGraph(input.root, input.project, input.joern, progress);
+      ? await buildLocalRevisionGraph(input.root, input.ref, input.project, input.joern, progress, input.dataDir)
+      : await buildLocalWorkingGraph(input.root, input.project, input.joern, progress, input.dataDir);
     progress({ stage: 'publishing-graph-and-index' });
     const retained = await saveLocalSourceGraph(input.dataDir, graph, input.retain, input.target ?? 'working', !input.ref);
     const { files: _files, ...coverage } = graph.coverage ?? {};
@@ -231,7 +231,7 @@ async function workerMain(input: WorkerInput | LocalGraphWorkerInput | PreviewGr
           progress({ stage: 'checking-out-source' });
           const observed = await withResolvedProjectCheckoutObserved(revision, async checkout => {
             const graph = await buildRepositoryGraph({ project: input.project, repository: checkout.repository,
-              revision: checkout.sha, root: checkout.root, role: 'W', disposableCheckout: true, progress });
+              revision: checkout.sha, root: checkout.root, role: 'W', disposableCheckout: true, progress, sourceStageCacheRoot: machineRoot });
             assertGraphIntegrity(graph);
             await assertProjectAccessCurrent(input.project);
             const retain = positiveSetting(process.env.DEVINT_MACHINE_GRAPH_RETAIN, 3, 1);
