@@ -27,7 +27,12 @@ export async function advanceHostedJob(store: WorkspaceStore, userId: string, in
     }
   }
   if (job.state === 'running' && job.hosted && job.claimId && job.leaseUntil && Date.now() >= job.leaseUntil) {
-    await store.updateHosted(job.id, job.claimId, { state: 'failed', error: 'Hosted worker exceeded its configured session duration' });
+    try { await store.updateHosted(job.id, job.claimId, { state: 'failed', error: 'Hosted worker exceeded its configured session duration' }); }
+    catch (error) {
+      const current = await store.build(job.id);
+      if (current?.claimId === job.claimId && (current.state === 'complete' || current.state === 'failed')) return current;
+      throw error;
+    }
     await stopHostedGraphJob(job.hosted).catch(() => {});
     await store.releaseHostedBuild(job.id);
     return await store.build(job.id);
