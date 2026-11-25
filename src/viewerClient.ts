@@ -929,9 +929,13 @@ if (document.getElementById('question-dock')) {
   const dock = document.getElementById('question-dock')!, shell = document.querySelector<HTMLElement>('.shell')!;
   let layoutReady = false, lastLayout = '', layoutTimer: number | undefined;
   let dockApi: DockviewApi;
+  const compactMedia = window.matchMedia('(max-width: 720px)');
+  let compact = compactMedia.matches;
+  const layouts: { compact?: ReturnType<DockviewApi['toJSON']>; wide?: ReturnType<DockviewApi['toJSON']> } = {};
   const saveLayout = () => {
     if (!layoutReady || !dockApi) return;
-    const layout = { dockview: dockApi.toJSON() };
+    layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    const layout = { layouts };
     const next = JSON.stringify(layout); if (next === lastLayout) return; lastLayout = next;
     parent.postMessage({ type: 'di-layout', layout }, location.origin);
   };
@@ -980,7 +984,7 @@ if (document.getElementById('question-dock')) {
   const addPanel = (id: string) => {
     const existing = dockApi.getPanel(id); if (existing) { existing.api.setActive(); return; }
     const titles: Record<string, string> = { graph: 'Graph', questions: 'Questions', inspector: 'Inspector & files', source: 'Source' };
-    const direction = id === 'questions' ? 'below' : 'right';
+    const direction = id === 'questions' ? 'below' : compact && (id === 'inspector' || id === 'source') ? 'within' : 'right';
     dockApi.addPanel({ id, component: id, title: titles[id] ?? id, ...(id === 'questions' ? { initialHeight: 220 } : id === 'inspector' ? { initialWidth: 280 } : id === 'source' ? { initialWidth: 460 } : {}), ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
   };
   const resetLayout = () => { dockApi.clear(); addPanel('graph'); addPanel('questions'); addPanel('inspector'); dockApi.getPanel('graph')?.api.setActive(); };
@@ -993,10 +997,20 @@ if (document.getElementById('question-dock')) {
   dockApi.onDidLayoutChange(() => { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700); });
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
-    const saved = event.data.layout?.dockview;
+    const savedLayouts = event.data.layout?.layouts;
+    if (savedLayouts && typeof savedLayouts === 'object') { layouts.compact = savedLayouts.compact; layouts.wide = savedLayouts.wide; }
+    const saved = layouts[compact ? 'compact' : 'wide'];
     if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } }
     if (!dockApi.getPanel('graph')) addPanel('graph');
     requestAnimationFrame(() => { layoutReady = true; });
+  });
+  compactMedia.addEventListener('change', event => {
+    layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    compact = event.matches; layoutReady = false;
+    const saved = layouts[compact ? 'compact' : 'wide'];
+    if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } } else resetLayout();
+    if (!dockApi.getPanel('graph')) addPanel('graph');
+    requestAnimationFrame(() => { layoutReady = true; saveLayout(); });
   });
   const graphTab = document.createElement('button'); graphTab.textContent = 'Return to graph'; fileTabs.append(graphTab);
   let activeFile = '', fileSequence = 0;
