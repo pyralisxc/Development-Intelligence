@@ -700,19 +700,21 @@ async function renderSources(epoch: number): Promise<void> {
 async function renderChanges(epoch: number): Promise<void> {
   setHead();
   const defaultHead = viewerConfig.accountGraphId ? '' : viewerConfig.ref || (viewerConfig.local ? 'working-tree' : 'HEAD');
-  content.innerHTML = `<div class="card"><h3>Graph comparison</h3><h2>Compare repository states</h2><p>${viewerConfig.local ? 'Compare the retained main, preview and working graphs, or choose two targets below.' : 'Leave the base empty to compare the default source revision with the selected revision. Historical comparisons replay both exact revisions through the same current analyzer.'}</p>${viewerConfig.local ? '<button class="primary" id="compare-three" type="button">Compare main, preview and working</button>' : ''}<div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare two</button></div><p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p></div><div id="change-result" class="query-result"></div>`;
+  content.innerHTML = `<div class="card"><h3>Graph comparison</h3><h2>Compare repository states</h2><p>${viewerConfig.accountGraphId ? 'Choose two saved graphs available to this query service.' : viewerConfig.local ? 'Compare the retained main, preview and working graphs, or choose two targets below.' : 'Leave the base empty to compare the default source revision with the selected revision. Historical comparisons replay both exact revisions through the same current analyzer.'}</p>${viewerConfig.local ? '<button class="primary" id="compare-three" type="button">Compare main, preview and working</button>' : ''}<div class="query-box" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;margin-top:13px"><input id="change-base" aria-label="Base revision selector" placeholder="Base: commit:&lt;sha&gt; or pr:75/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><input id="change-head" aria-label="Head revision selector" value="${esc(defaultHead)}" placeholder="Head: HEAD or pr:243/head" style="border:1px solid #30435e;background:#0d1624;color:#fff;border-radius:10px;padding:9px 11px"><button class="primary" id="compare-revisions" type="button">Compare two</button></div>${viewerConfig.local || viewerConfig.accountGraphId ? '<label>Results per page <input id="change-limit" type="number" min="1" max="500" value="10"></label>' : ''}${viewerConfig.accountGraphId ? '' : '<p class="muted">Selectors: commit:&lt;full-sha&gt;, branch:&lt;name&gt;, tag:&lt;name&gt;, pr:&lt;number&gt;/head, /base, or /result.</p>'}</div><div id="change-result" class="query-result"></div>`;
   let offset = 0;
-  const detailPageSize = 10;
+  let detailPageSize = 10;
   let requestNumber = 0;
   const run = async () => {
     const request = ++requestNumber;
     const baseRef = (document.getElementById('change-base') as HTMLInputElement).value.trim();
     const headRef = (document.getElementById('change-head') as HTMLInputElement).value.trim();
+    const pageSetting = document.getElementById('change-limit') as HTMLInputElement | null;
+    if (pageSetting) { const n = Number(pageSetting.value); if (!Number.isSafeInteger(n) || n < 1 || n > 500) { pageSetting.setCustomValidity('Choose 1 to 500 results per page'); pageSetting.reportValidity(); return; } pageSetting.setCustomValidity(''); detailPageSize = n; }
     const target = document.getElementById('change-result') as HTMLElement;
-    target.innerHTML = empty('Loading change intelligence', viewerConfig.local ? 'Comparing the selected graph targets…' : baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing the default and selected source states…');
+    target.innerHTML = empty('Loading change intelligence', viewerConfig.accountGraphId || viewerConfig.local ? 'Comparing the selected saved graphs…' : baseRef ? 'Resolving and comparing immutable historical revisions…' : 'Comparing the default and selected source states…');
     try {
       if (viewerConfig.accountGraphId && (!baseRef || !headRef)) throw new Error('Choose two saved graphs');
-      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef, ...(viewerConfig.accountGraphId ? { ref: headRef } : {}) } : {}), ...(viewerConfig.local ? { offset: String(offset), limit: String(detailPageSize) } : {}) }));
+      const data = await getJson('/workbench/data', new URLSearchParams({ action: 'changes', ...(baseRef ? { baseRef } : {}), ...(headRef ? { headRef, ...(viewerConfig.accountGraphId ? { ref: headRef } : {}) } : {}), ...(viewerConfig.local || viewerConfig.accountGraphId ? { offset: String(offset), limit: String(detailPageSize) } : {}) }));
       if (!sectionIsCurrent(epoch, 'changes') || request !== requestNumber) return;
       const counts = data.counts ?? {};
       const baseIdentity = data.detail?.base?.identity;
@@ -757,7 +759,7 @@ async function renderChanges(epoch: number): Promise<void> {
   if (viewerConfig.accountGraphId) {
     const targets = await getJson('/workbench/data', new URLSearchParams({ action: 'graph-targets' }));
     if (!sectionIsCurrent(epoch, 'changes')) return;
-    for (const id of ['change-base', 'change-head']) { const input = document.getElementById(id) as HTMLInputElement; const select = document.createElement('select'); select.id = id; select.setAttribute('aria-label', input.getAttribute('aria-label') ?? id); select.add(new Option('Choose a saved graph', '')); for (const target of targets.targets ?? []) select.add(new Option(target.name, target.name)); input.replaceWith(select); }
+    for (const id of ['change-base', 'change-head']) { const input = document.getElementById(id) as HTMLInputElement; const select = document.createElement('select'); select.id = id; select.setAttribute('aria-label', id === 'change-base' ? 'Base graph' : 'Compared graph'); select.add(new Option('Choose a saved graph', '')); for (const target of targets.targets ?? []) select.add(new Option(target.name, target.name)); input.replaceWith(select); }
     const target = document.getElementById('change-result'); if (target) target.textContent = 'Choose two saved graphs available to this query service.';
   } else if (viewerConfig.local) await runAll(); else await run();
 }
