@@ -216,7 +216,7 @@ export class WorkspaceStore {
     const job: BuildJob = { id: recordId(), kind: 'question', question: value(question, 'Question'), graphId: built.graphId, graph: { ...latest!.graph, query, ...(graph.hostedResources ? { hostedResources: graph.hostedResources } : {}) }, project, assignedComputer: query.computer, state: 'queued', createdAt: new Date().toISOString() };
     await this.enqueue(job); return job;
   }
-  async queueInvestigation(graphId: unknown, input: unknown): Promise<BuildJob> {
+  async queueInvestigation(graphId: unknown, input: unknown, snapshotGraphId?: unknown): Promise<BuildJob> {
     const request = object(input), path = value(request.path, 'Investigation path');
     if (!['/workbench/data', '/workbench/source', '/workbench/query', '/workbench/parity', '/graph/data'].includes(path)) invalid('Unsupported investigation');
     const method = request.method === 'POST' ? 'POST' : 'GET';
@@ -229,6 +229,7 @@ export class WorkspaceStore {
     const latest = newest ? await this.build(newest.id) as BuildJob | null : null;
     const built = latest?.result as { graphId?: unknown } | undefined;
     if (typeof built?.graphId !== 'string') invalid('Build a snapshot of this graph first');
+    if (snapshotGraphId && snapshotGraphId !== built.graphId) invalid('The selected graph snapshot has changed. Reopen the graph to inspect its current snapshot.');
     const query = graph.query ?? { computer: latest!.graph.storage.computer, location: latest!.graph.storage.location };
     if (query.computer === 'hosted' && latest!.graph.storage.computer !== 'hosted') invalid('Transfer this snapshot to hosted storage before querying it with the hosted service');
     const job: BuildJob = { id: recordId(), kind: 'investigation', graphId: built.graphId, graph: { ...latest!.graph, query, ...(graph.hostedResources ? { hostedResources: graph.hostedResources } : {}) }, project, assignedComputer: query.computer, state: 'queued', createdAt: new Date().toISOString(), request: { path, method,

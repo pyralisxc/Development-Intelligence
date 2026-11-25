@@ -3,7 +3,7 @@ import Sigma from 'sigma';
 
 declare global {
   interface Window {
-    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; accountGraphId?: string; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string };
+    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; accountGraphId?: string; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string; revision?: string | null };
   }
 }
 
@@ -130,7 +130,7 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<an
 }
 
 async function accountInvestigation(request: Record<string, unknown>): Promise<any> {
-  const created = await fetch('/account/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'investigate-graph', graphId: viewerConfig.accountGraphId, request }) });
+  const created = await fetch('/account/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'investigate-graph', graphId: viewerConfig.accountGraphId, snapshotGraphId: viewerConfig.graphId, request }) });
   if (created.status === 401) { window.location.assign('/account'); throw new Error('Sign in to continue'); }
   const job = await created.json();
   if (!created.ok) throw new Error(job.error ?? 'Could not start investigation');
@@ -352,7 +352,7 @@ function exploreActions(): string {
 async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   exploreQuery = query;
   setHead(exploreActions());
-  for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; void renderExploreResult(epoch); });
+  for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; if (exploreMode !== 'graph' && !lastExplore?.nodes) void fetchExplore(epoch); else void renderExploreResult(epoch); });
   content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto auto"><input id="explore-input" aria-label="Search the graph" placeholder="Search the graph" value="${esc(exploreQuery)}"><button class="primary" type="submit">Search</button><button type="button" id="explore-audit">Audit</button></form><div class="investigation-layout"><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
   form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLInputElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
@@ -370,7 +370,8 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   };
   document.getElementById('explore-audit')?.addEventListener('click', () => { auditOffset = 0; void showAudit(); });
   const queryHost = (document.getElementById('question-dock') ?? document.getElementById('investigation-query')) as HTMLElement;
-  await Promise.all([fetchExplore(epoch), renderQuery(epoch, '', queryHost)]);
+  if (exploreMode === 'graph') { lastExplore = {}; await Promise.all([renderExploreResult(epoch), renderQuery(epoch, '', queryHost)]); }
+  else await Promise.all([fetchExplore(epoch), renderQuery(epoch, '', queryHost)]);
 }
 
 async function fetchExplore(epoch: number): Promise<void> {
@@ -511,14 +512,20 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
     if (prefill) queryPanel.querySelector<HTMLTextAreaElement>('#query-text')!.value = prefill;
     return;
   }
-  queryPanel.innerHTML = empty('Loading sources', 'Preparing Development Intelligence and configured read-only technical sources…');
-  const sourceData = await getJson('/workbench/data', new URLSearchParams({ action: 'sources' }));
-  if (sectionEpoch !== epoch || !queryPanel.isConnected) return;
-  const queryable = (sourceData.sources ?? []).filter((source: any) => source.type === 'read-only-http');
   if (prefill) queryDraft = prefill;
   prefill = queryDraft;
-  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" ${queryable.length ? '' : 'hidden'}><option value="">Development Intelligence</option>${queryable.map((source: any) => `<option value="${esc(source.id)}"${preferredQuerySource === source.id ? ' selected' : ''}>${esc(source.label)} · ${esc((source.capabilities ?? []).join('/'))}</option>`).join('')}</select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-result" class="query-result"></div>`;
+  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden><option value="">Development Intelligence</option></select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted">Questions and filters navigate the same source graph.</p></div><div id="query-source-status" role="status" class="muted"></div><div id="query-result" class="query-result"></div>`;
   queryPanelReady = true;
+  void getJson('/workbench/data', new URLSearchParams({ action: 'sources' })).then(sourceData => {
+    const select = queryPanel.querySelector<HTMLSelectElement>('#query-source');
+    if (!select) return;
+    for (const source of (sourceData.sources ?? []).filter((item: any) => item.type === 'read-only-http')) {
+      const option = new Option(`${source.label} · ${(source.capabilities ?? []).join('/')}`, source.id);
+      select.add(option);
+    }
+    select.hidden = select.options.length === 1;
+    if (preferredQuerySource) select.value = preferredQuerySource;
+  }).catch(() => { const status = queryPanel.querySelector<HTMLElement>('#query-source-status'); if (status) status.textContent = 'Other configured sources are unavailable; DI questions remain available.'; });
   queryPanel.querySelector<HTMLInputElement>('#query-limit')?.addEventListener('change', event => {
     const value = Number((event.target as HTMLInputElement).value);
     if (Number.isSafeInteger(value) && value > 0) { queryPageSize = value; savePositiveSetting('queryPageSize', value); }
@@ -947,15 +954,36 @@ if (document.getElementById('question-dock')) {
   sectionHead.before(fileTabs); content.after(fileBody);
   const graphTab = document.createElement('button'); graphTab.textContent = 'Graph'; fileTabs.append(graphTab);
   const panelToggle = document.createElement('button'); panelToggle.type = 'button'; panelToggle.textContent = 'Inspector & files'; panelToggle.onclick = () => { inspectorOpen = !inspectorOpen; applyLayout(); saveLayout(); }; fileTabs.append(panelToggle);
-  const showGraph = () => { fileBody.hidden = true; sectionHead.hidden = false; content.hidden = false; window.dispatchEvent(new Event('resize')); };
+  let activeFile = '', fileSequence = 0;
+  const openFiles: string[] = [];
+  const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; sectionHead.hidden = false; content.hidden = false; window.dispatchEvent(new Event('resize')); };
   graphTab.onclick = showGraph;
   const openFile = async (file: string) => {
     let b = Array.from(fileTabs.querySelectorAll<HTMLButtonElement>('button')).find(item => item.dataset.file === file);
-    if (!b) { const group = document.createElement('span'); b = document.createElement('button'); b.dataset.file = file; b.textContent = file.split('/').pop() ?? file; const close = document.createElement('button'); close.type = 'button'; close.textContent = '×'; close.setAttribute('aria-label', 'Close ' + file); close.onclick = () => { group.remove(); showGraph(); }; group.append(b, close); fileTabs.append(group); }
+    if (!b) {
+      const group = document.createElement('span'); b = document.createElement('button'); b.dataset.file = file; b.textContent = file.split('/').pop() ?? file; b.title = file;
+      const close = document.createElement('button'); close.type = 'button'; close.textContent = '×'; close.setAttribute('aria-label', 'Close ' + file);
+      close.onclick = () => {
+        const wasActive = activeFile === file; const index = openFiles.indexOf(file); if (index >= 0) openFiles.splice(index, 1); group.remove();
+        if (wasActive) { ++fileSequence; const previous = openFiles.at(-1); if (previous) void openFile(previous); else showGraph(); }
+      };
+      group.append(b, close); fileTabs.append(group);
+    }
     b.onclick = () => void openFile(file);
+    const existing = openFiles.indexOf(file); if (existing >= 0) openFiles.splice(existing, 1); openFiles.push(file);
+    activeFile = file; const sequence = ++fileSequence;
+    fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', item.dataset.file === file ? 'true' : 'false'));
     sectionHead.hidden = true; content.hidden = true; fileBody.hidden = false; fileBody.textContent = 'Loading ' + file + '…';
-    try { const result = await getJson('/workbench/source', new URLSearchParams({ file })); fileBody.textContent = result.content; }
-    catch (error) { fileBody.textContent = error instanceof Error ? error.message : String(error); }
+    try {
+      const result = await getJson('/workbench/source', new URLSearchParams({ file }));
+      if (sequence !== fileSequence || activeFile !== file) return;
+      if (result.file !== file || (viewerConfig.graphId && result.graphId !== viewerConfig.graphId) || (viewerConfig.revision && result.revision !== viewerConfig.revision)) throw new Error('Source identity does not match the selected file and graph. Reopen the graph and try again.');
+      fileBody.textContent = `${result.file} · ${result.revision ? 'revision ' + result.revision : 'working source snapshot'}\n\n${result.content}`;
+    } catch (error) {
+      if (sequence !== fileSequence || activeFile !== file) return;
+      fileBody.textContent = error instanceof Error ? error.message : String(error);
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => void openFile(file); fileBody.append('\n', retry);
+    }
   };
   let loaded = false;
   tabs.querySelectorAll<HTMLButtonElement>('[data-pane]').forEach(button => button.onclick = async () => {
