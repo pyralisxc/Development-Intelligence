@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 
 const home = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(await fs.readFile(path.join(home, 'local-settings.json'), 'utf8'));
@@ -32,10 +33,29 @@ async function startAccountAgent() {
     child.unref();
   } finally { await log.close(); }
 }
-if (command === 'link' || command === 'account-status' || command === 'account-run' || command === 'account-autostart') {
+if (command === 'protocol-link' || command === 'link' || command === 'account-status' || command === 'account-run' || command === 'account-autostart') {
   const account = await import(path.join(home, 'dist', 'src', 'accounts', 'localComputer.js'));
   const stateDir = path.join(config.dataDir, 'account');
-  if (command === 'link') {
+  if (command === 'protocol-link') {
+    const link = new URL(args[0] || '');
+    const workbench = link.searchParams.get('workbench'), pair = link.searchParams.get('pair');
+    if (link.protocol !== 'devint:' || link.hostname !== 'link' || link.pathname || link.hash || [...link.searchParams.keys()].some(key => !['workbench', 'pair'].includes(key)) || link.searchParams.getAll('workbench').length !== 1 || link.searchParams.getAll('pair').length !== 1 || !workbench || !pair || !/^[a-f0-9]{32}$/.test(pair)) throw new Error('Invalid computer link. Start again in the Workbench.');
+    const destination = new URL(workbench);
+    if (destination.origin !== workbench || destination.username || destination.password || (destination.protocol !== 'https:' && !(destination.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(destination.hostname)))) throw new Error('Invalid Workbench address. Start again in the Workbench.');
+    try { await fs.access(path.join(stateDir, 'linked-account.json')); console.error('This installation already has a linked account. Direct relinking is not available while an existing connection may be running.'); process.exit(1); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    console.log(`Link this computer to ${destination.origin}? DI will start the linked service when you sign in.`);
+    const terminal = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await terminal.question('Type yes to continue: '); terminal.close();
+    if (answer.trim().toLowerCase() !== 'yes') { console.log('Computer linking cancelled.'); process.exit(0); }
+    await account.linkComputer(stateDir, workbench, pair, url => {
+      const opener = process.platform === 'win32' ? spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore', windowsHide: true }) : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+      opener.on('error', () => console.log('Open the authorization address shown above.')); opener.unref();
+    });
+    await setAccountAutostart(true);
+    await startAccountAgent();
+    console.log('The computer is linked. You can return to the Workbench.');
+  } else if (command === 'link') {
     const at = args.indexOf('--workbench');
     const pairAt = args.indexOf('--pair-code');
     if (at < 0 || !args[at + 1] || pairAt < 0 || !args[pairAt + 1]) throw new Error('Start linking in your Workbench and run the displayed command on this computer');

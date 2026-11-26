@@ -99,6 +99,12 @@ if (process.platform === 'win32') {
   const script = `$s=(New-Object -ComObject WScript.Shell).CreateShortcut(${psString(desktop)});$s.TargetPath=${psString(path.join(installDir, 'runtime', 'node.exe'))};$s.Arguments=${psString(`"${path.join(installDir, 'local-launcher.mjs')}" open`)};$s.WorkingDirectory=${psString(installDir)};$s.Save()`;
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`Could not create Start Menu shortcut: ${result.stderr || result.error?.message || result.status}`);
+  const protocolScript = path.join(installDir, 'protocol-link.ps1');
+  await fs.writeFile(protocolScript, 'param([string]$Link)\r\n& (Join-Path $PSScriptRoot "runtime\\node.exe") (Join-Path $PSScriptRoot "local-launcher.mjs") protocol-link $Link\r\nRead-Host "Press Enter to close"\r\n');
+  const command = `"${path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')}" -NoProfile -ExecutionPolicy Bypass -File "${protocolScript}" "%1"`;
+  const register = `$p='HKCU:\\Software\\Classes\\devint';New-Item -Path $p -Force | Out-Null;Set-Item -LiteralPath $p -Value 'URL:Development Intelligence';New-ItemProperty -LiteralPath $p -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null;New-Item -Path "$p\\shell\\open\\command" -Force | Out-Null;Set-Item -LiteralPath "$p\\shell\\open\\command" -Value ${psString(command)}`;
+  const registered = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(register, 'utf16le').toString('base64')], { encoding: 'utf8' });
+  if (registered.status !== 0) throw new Error(`Could not register the computer link: ${registered.stderr || registered.error?.message || registered.status}`);
 } else {
   const launcher = path.join(installDir, 'di-local');
   await fs.writeFile(launcher, '#!/bin/sh\napp_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$app_dir/runtime/node" "$app_dir/local-launcher.mjs" "$@"\n', { mode: 0o755 });
@@ -106,5 +112,15 @@ if (process.platform === 'win32') {
   desktop = path.join(desktopDir, 'development-intelligence-local.desktop');
   const desktopExec = launcher.replace(/%/g, '%%').replace(/[\\"`$]/g, '\\$&');
   await fs.writeFile(desktop, `[Desktop Entry]\nType=Application\nName=Development Intelligence Local\nExec="${desktopExec}" open\nTerminal=false\nCategories=Development;\n`);
+  const protocolScript = path.join(installDir, 'protocol-link.sh');
+  await fs.writeFile(protocolScript, '#!/bin/sh\napp_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n"$app_dir/runtime/node" "$app_dir/local-launcher.mjs" protocol-link "$1"\nprintf "Press Enter to close: "\nread -r unused\n', { mode: 0o755 });
+  await fs.chmod(protocolScript, 0o755);
+  const applications = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'applications');
+  await fs.mkdir(applications, { recursive: true });
+  const protocolExec = protocolScript.replace(/%/g, '%%').replace(/[\\"`$]/g, '\\$&');
+  const handler = path.join(applications, 'development-intelligence-link.desktop');
+  await fs.writeFile(handler, `[Desktop Entry]\nType=Application\nName=Link Development Intelligence\nExec="${protocolExec}" %u\nTerminal=true\nNoDisplay=true\nMimeType=x-scheme-handler/devint;\n`);
+  const registered = spawnSync('xdg-mime', ['default', 'development-intelligence-link.desktop', 'x-scheme-handler/devint'], { encoding: 'utf8' });
+  if (registered.status !== 0) console.warn('Direct computer linking could not be registered. The command shown in the Workbench remains available.');
 }
 console.log(JSON.stringify({ installed: installDir, launcher: path.join(installDir, process.platform === 'win32' ? 'di-local.cmd' : 'di-local'), desktop, dataDir, scratchDir, project, repoPath, retain, cacheSize, port, graphWorkerHeapMB, scipHeapMB }, null, 2));
