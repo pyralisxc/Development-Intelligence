@@ -424,6 +424,7 @@ async function renderExploreResult(epoch: number): Promise<void> {
   const root = document.getElementById('explore-result') as HTMLElement;
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.classList.toggle('active', button.dataset.mode === exploreMode);
   if (!lastExplore) return;
+  if (exploreMode !== 'graph') { graphResizeObserver?.disconnect(); graphResizeObserver = null; renderer?.kill(); renderer = null; }
   const nodes = lastExplore.nodes ?? [];
   if (exploreMode === 'summary') {
     root.innerHTML = `<div class="card"><h3>Search summary</h3><h2>${esc(lastExplore.summary)}</h2><p>${(lastExplore.topKinds ?? []).map((item: any) => `${esc(item.kind)} (${esc(item.count)})`).join(' · ') || 'No entity kinds to summarize.'}</p></div><div class="card" style="margin-top:12px"><h3>Top results</h3><div class="list">${nodes.slice(0, 30).map(nodeRow).join('') || empty('No results', 'Try a broader term or use Query for a question-shaped request.')}</div></div>`;
