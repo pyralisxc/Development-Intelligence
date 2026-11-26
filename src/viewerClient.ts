@@ -42,6 +42,11 @@ const content = document.getElementById('content') as HTMLElement;
 const inspectorContext = document.getElementById('inspector-context') as HTMLElement;
 const inspectorTabs = document.getElementById('inspector-tabs') as HTMLElement;
 const inspectorBody = document.getElementById('inspector-body') as HTMLElement;
+const inspectorProgress = document.createElement('div');
+inspectorProgress.id = 'inspector-progress';
+inspectorProgress.setAttribute('role', 'status');
+inspectorProgress.setAttribute('aria-live', 'polite');
+inspectorBody.before(inspectorProgress);
 const projectSelect = document.getElementById('project-select') as HTMLSelectElement;
 const revisionForm = document.getElementById('revision-form') as HTMLFormElement;
 const revisionInput = document.getElementById('revision-input') as HTMLInputElement;
@@ -60,6 +65,10 @@ let exploreQuery = '';
 let auditOffset = 0;
 let graphSelected = '';
 let lastExplore: any = null;
+let exploreSequence = 0;
+let explorePending: { query: string; promise: Promise<void> } | null = null;
+let querySequence = 0;
+let graphIntentSequence = 0;
 let selectedInspection: any = null;
 let inspectionSequence = 0;
 let inspectorTab = 'summary';
@@ -73,6 +82,10 @@ let queryDraft = '';
 const queryPanel = document.createElement('div');
 const graphStyles = document.createElement('style');
 graphStyles.textContent = `
+  #inspector-progress:not(:empty),#explore-progress:not(:empty),#graph-progress:not(:empty),#query-progress:not(:empty){padding:7px 9px;color:#c6d8e8;font-size:12px;line-height:1.45}
+  #inspector-progress:empty,#explore-progress:empty,#graph-progress:empty,#query-progress:empty{display:none}
+  .inspector:has(#inspector-progress:not(:empty):not([hidden])){grid-template-rows:auto auto auto minmax(0,1fr)}
+  .di-dockview .inspector:has(#inspector-progress:not(:empty):not([hidden])){grid-template-rows:auto auto auto auto minmax(0,1fr)}
   .graph-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:7px}
   .graph-toolbar button,.graph-toolbar summary,.graph-selection button{font-size:12px}
   .graph-filters{position:relative;color:#c6d8e8;font-size:12px}
@@ -106,6 +119,7 @@ let selectedGraphEdges = new Set<string>();
 
 function followInvestigation(selection: any): void {
   if (!selection?.graph?.graphId || !Array.isArray(selection.nodes) || !Array.isArray(selection.edges)) return;
+  ++graphIntentSequence;
   activeInvestigation = selection; investigationVisible = true; selectedGraphNodes.clear(); selectedGraphEdges.clear(); graphSelected = ''; graphDirectionFilter = '';
   exploreMode = 'graph';
   if (section === 'explore') void renderExploreResult(sectionEpoch);
@@ -152,35 +166,52 @@ function withContext(params: URLSearchParams): URLSearchParams {
   return params;
 }
 
-async function getJson(path: string, params: URLSearchParams): Promise<any> {
-  if (viewerConfig.accountGraphId) return await accountInvestigation({ path, method: 'GET', query: withContext(params).toString() });
+type ProgressReporter = (message: string) => void;
+
+async function getJson(path: string, params: URLSearchParams, progress?: ProgressReporter): Promise<any> {
+  if (viewerConfig.accountGraphId) return await accountInvestigation({ path, method: 'GET', query: withContext(params).toString() }, progress);
   const response = await fetch(`${path}?${withContext(params).toString()}`, { headers: { accept: 'application/json' } });
   if (response.status === 401) { window.location.assign(`/login?returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`); throw new Error('Authentication required'); }
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
 }
 
-async function postJson(path: string, body: Record<string, unknown>): Promise<any> {
-  if (viewerConfig.accountGraphId) return await accountInvestigation({ path, method: 'POST', body });
+async function postJson(path: string, body: Record<string, unknown>, progress?: ProgressReporter): Promise<any> {
+  if (viewerConfig.accountGraphId) return await accountInvestigation({ path, method: 'POST', body }, progress);
   const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ project: viewerConfig.project, ...(!body.graphId && viewerConfig.ref ? { ref: viewerConfig.ref } : {}), ...(!body.graphId && viewerConfig.graphId ? { graphId: viewerConfig.graphId } : {}), ...body }) });
   if (response.status === 401) { window.location.assign(`/login?returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`); throw new Error('Authentication required'); }
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
 }
 
-async function accountInvestigation(request: Record<string, unknown>): Promise<any> {
-  const created = await fetch('/account/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'investigate-graph', graphId: viewerConfig.accountGraphId, snapshotGraphId: viewerConfig.graphId, request }) });
+async function accountInvestigation(request: Record<string, unknown>, progress?: ProgressReporter): Promise<any> {
+  progress?.('Starting request for the saved snapshot…');
+  let created: Response;
+  try { created = await fetch('/account/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'investigate-graph', graphId: viewerConfig.accountGraphId, snapshotGraphId: viewerConfig.graphId, request }) }); }
+  catch { throw new Error('Could not confirm whether the request started. It may still be running; try again only if needed.'); }
   if (created.status === 401) { window.location.assign('/account'); throw new Error('Sign in to continue'); }
   const job = await created.json();
   if (!created.ok) throw new Error(job.error ?? 'Could not start investigation');
+  let interruptions = 0;
   for (;;) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    const response = await fetch(`/account/workspace?job=${encodeURIComponent(job.id)}`);
+    await new Promise(resolve => setTimeout(resolve, interruptions ? 3000 : 1000));
+    let response: Response;
+    try { response = await fetch(`/account/workspace?job=${encodeURIComponent(job.id)}`); }
+    catch {
+      progress?.('Connection interrupted; checking the same request again…');
+      if (++interruptions < 4) continue;
+      throw new Error('Lost the connection to this request. It may still be running; try again only if needed.');
+    }
     if (response.status === 401) { window.location.assign('/account'); throw new Error('Sign in to continue'); }
     const current = await response.json();
     if (!response.ok || !current) throw new Error(current?.error ?? 'Investigation unavailable');
+    interruptions = 0;
+    const stage = current.progress?.stage;
+    const stages: Record<string, string> = { 'starting-hosted-worker': 'Starting the hosted worker…', 'preparing-hosted-worker': 'Preparing the hosted worker…', starting: 'Starting the query service…', 'querying-snapshot': 'Reading the saved snapshot…', 'transferring-investigation': 'Transferring the result…' };
+    progress?.(current.state === 'queued' ? 'Waiting for the query service…' : stages[stage] ?? 'Working with the saved snapshot…');
     if (current.state === 'complete') {
       if (!current.resultParts) return current.result;
+      progress?.('Retrieving the result…');
       const chunks: Uint8Array[] = [];
       for (let index = 0; index < current.resultParts; index++) {
         const partResponse = await fetch(`/account/workspace?job=${encodeURIComponent(job.id)}&part=${index}`);
@@ -214,10 +245,19 @@ function nodeRow(node: any): string {
   return `<button class="row row-button" data-node="${esc(node.id)}"><span class="badge">${esc(node.kind)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.locator ?? node.layer ?? '')}</small></span><span>→</span></button>`;
 }
 
+function preserveGraphSelection(): void {
+  const progress = document.getElementById('graph-progress');
+  if (progress?.textContent) {
+    ++graphRenderSequence;
+    progress.textContent = 'Selection changed. The previous graph request will not replace it.';
+  }
+}
+
 function wireNodeButtons(root: ParentNode = content, graphId?: string): void {
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-node]'))) {
     button.addEventListener('click', () => {
       const id = button.dataset.node!;
+      ++graphIntentSequence; preserveGraphSelection();
       const explicitGraph = button.dataset.graphId || graphId;
       if (section === 'explore' && renderer && (!explicitGraph || explicitGraph === investigationGraphId())) {
         const graph = renderer.getGraph();
@@ -231,7 +271,7 @@ function wireNodeButtons(root: ParentNode = content, graphId?: string): void {
           if (label) label.textContent = `Selected: ${graph.getNodeAttribute(id, 'label')}`;
         }
       }
-      void openInspector(id, explicitGraph);
+      void openInspector(id, explicitGraph, button.querySelector('strong')?.textContent ?? undefined);
     });
   }
 }
@@ -345,28 +385,41 @@ function renderInspector(): void {
   inspectorBody.innerHTML = change ? `<div class="card"><h3>Default → selected</h3><h2 class="${change.state === 'unchanged' ? 'status-good' : 'status-warn'}">${esc(change.state)}</h2><p>${change.state === 'unchanged' ? 'No semantic topology change is currently recorded for this entity.' : 'This entity participates in the current source comparison.'}</p></div>${change.record ? `<pre class="raw">${esc(JSON.stringify(change.record, null, 2))}</pre>` : ''}` : empty('Change unavailable', 'Change inspection is unavailable for this snapshot context.');
 }
 
-async function openInspector(node: string, selectedGraphId?: string): Promise<void> {
+async function openInspector(node: string, selectedGraphId?: string, displayName?: string): Promise<void> {
   const sequence = ++inspectionSequence;
-  inspectorContext.textContent = 'Loading…';
-  inspectorBody.innerHTML = empty('Inspecting', 'Loading quick notes, connections, code, evidence and change context…');
+  const hasPrevious = Boolean(selectedInspection || inspectorContext.textContent === 'Relationship');
+  const update = (message: string) => { if (sequence === inspectionSequence) inspectorProgress.textContent = message ? `Inspecting ${displayName ?? node}: ${message}${hasPrevious ? ' Previous details remain visible.' : ''}` : ''; };
+  update('Starting…');
   const graphId = selectedGraphId ?? investigationGraphId();
-  const result = await getJson('/workbench/data', new URLSearchParams({ action: 'inspect', node, ...(graphId ? { graphId } : {}) }));
-  if (sequence !== inspectionSequence) return;
-  selectedInspection = result;
-  inspectorTab = 'summary';
-  renderInspector();
+  try {
+    const result = await getJson('/workbench/data', new URLSearchParams({ action: 'inspect', node, ...(graphId ? { graphId } : {}) }), update);
+    if (sequence !== inspectionSequence) return;
+    selectedInspection = result; inspectorTab = 'summary'; update(''); renderInspector();
+  } catch (error) {
+    if (sequence !== inspectionSequence) return;
+    inspectorProgress.textContent = `Could not inspect selection: ${error instanceof Error ? error.message : String(error)} `;
+    const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry inspection';
+    retry.onclick = () => void openInspector(node, selectedGraphId, displayName); inspectorProgress.append(retry);
+  }
 }
 
 async function openRelationship(edge: ProjectionEdge, from: string, to: string, selectedGraphId?: string): Promise<void> {
   const sequence = ++inspectionSequence;
-  inspectorContext.textContent = 'Relationship';
-  inspectorTabs.innerHTML = '';
-  inspectorBody.innerHTML = empty('Inspecting relationship', 'Loading its source and evidence…');
+  const update = (message: string) => { if (sequence === inspectionSequence) inspectorProgress.textContent = message ? `Inspecting ${from} → ${to}: ${message} Previous details remain visible.` : ''; };
+  update('Starting…');
   const graphId = selectedGraphId ?? investigationGraphId();
-  const data = await getJson('/workbench/data', new URLSearchParams({ action: 'relationship', edge: edge.id, ...(graphId ? { graphId } : {}) })) as any;
-  if (sequence !== inspectionSequence) return;
-  const record = data.edge ?? edge;
-  inspectorBody.innerHTML = `<div class="inspector-title">${esc(from)} → ${esc(to)}</div><div class="inspector-sub">${esc(record.kind)} · ${esc(record.status)}</div>${record.strategy ? `<div class="quick-note">Source: ${esc(record.strategy)}</div>` : ''}<h3>Evidence</h3>${(data.evidence ?? []).map((item: any) => `<div class="evidence-item"><strong>${esc(item.message ?? item.kind ?? 'evidence')}</strong><br><span class="muted">${esc(item.locator ?? item.sourceId ?? '')}</span></div>`).join('')}${(record.evidence ?? []).map((item: string) => `<div class="quick-note">${esc(item)}</div>`).join('') || (!(data.evidence ?? []).length ? '<p>No attached evidence records.</p>' : '')}<details><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(record, null, 2))}</pre></details>`;
+  try {
+    const data = await getJson('/workbench/data', new URLSearchParams({ action: 'relationship', edge: edge.id, ...(graphId ? { graphId } : {}) }), update) as any;
+    if (sequence !== inspectionSequence) return;
+    update(''); inspectorContext.textContent = 'Relationship'; inspectorTabs.innerHTML = '';
+    const record = data.edge ?? edge;
+    inspectorBody.innerHTML = `<div class="inspector-title">${esc(from)} → ${esc(to)}</div><div class="inspector-sub">${esc(record.kind)} · ${esc(record.status)}</div>${record.strategy ? `<div class="quick-note">Source: ${esc(record.strategy)}</div>` : ''}<h3>Evidence</h3>${(data.evidence ?? []).map((item: any) => `<div class="evidence-item"><strong>${esc(item.message ?? item.kind ?? 'evidence')}</strong><br><span class="muted">${esc(item.locator ?? item.sourceId ?? '')}</span></div>`).join('')}${(record.evidence ?? []).map((item: string) => `<div class="quick-note">${esc(item)}</div>`).join('') || (!(data.evidence ?? []).length ? '<p>No attached evidence records.</p>' : '')}<details><summary class="muted">Technical record</summary><pre class="raw">${esc(JSON.stringify(record, null, 2))}</pre></details>`;
+  } catch (error) {
+    if (sequence !== inspectionSequence) return;
+    inspectorProgress.textContent = `Could not inspect relationship: ${error instanceof Error ? error.message : String(error)} `;
+    const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry relationship';
+    retry.onclick = () => void openRelationship(edge, from, to, selectedGraphId); inspectorProgress.append(retry);
+  }
 }
 
 function sectionIsCurrent(epoch: number, expected: Section): boolean {
@@ -392,9 +445,9 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   exploreQuery = query;
   setHead(exploreActions());
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; if (exploreMode !== 'graph' && !lastExplore?.nodes) void fetchExplore(epoch); else void renderExploreResult(epoch); });
-  content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto auto"><input id="explore-input" aria-label="Search the graph" placeholder="Search the graph" value="${esc(exploreQuery)}"><button class="primary" type="submit">Search</button><button type="button" id="explore-audit">Audit</button></form><div class="investigation-layout"><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
+  content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto auto"><input id="explore-input" aria-label="Search the graph" placeholder="Search the graph" value="${esc(exploreQuery)}"><button class="primary" type="submit">Search</button><button type="button" id="explore-audit">Audit</button></form><div id="explore-progress" role="status" aria-live="polite"></div><div id="graph-progress" role="status" aria-live="polite"></div><div class="investigation-layout"><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
-  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLInputElement).value.trim(); graphSelected = ''; graphDirectionFilter = ''; void fetchExplore(epoch); });
+  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLInputElement).value.trim(); ++graphIntentSequence; graphSelected = ''; graphDirectionFilter = ''; investigationVisible = false; if (exploreMode === 'graph') { ++exploreSequence; explorePending = null; lastExplore = {}; void renderExploreResult(epoch); } else void fetchExplore(epoch); });
   const showAudit = async () => {
     try {
       const result = await getJson('/workbench/data', new URLSearchParams({ action: 'audit', offset: String(auditOffset), ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
@@ -414,10 +467,31 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
 }
 
 async function fetchExplore(epoch: number): Promise<void> {
-  const result = await getJson('/workbench/data', new URLSearchParams({ action: 'explore', ...(exploreQuery ? { query: exploreQuery } : {}) }));
-  if (!sectionIsCurrent(epoch, 'explore')) return;
-  lastExplore = result;
-  await renderExploreResult(epoch);
+  const query = exploreQuery;
+  if (explorePending?.query === query) return explorePending.promise;
+  const sequence = ++exploreSequence;
+  const status = document.getElementById('explore-progress');
+  const current = () => sequence === exploreSequence && sectionIsCurrent(epoch, 'explore');
+  const update = (message: string) => { if (current() && status?.isConnected) status.textContent = message ? `${query ? `Searching for “${query}”` : 'Loading graph list'}: ${message}` : ''; };
+  update('Starting…');
+  const promise = (async () => {
+    try {
+      const result = await getJson('/workbench/data', new URLSearchParams({ action: 'explore', ...(query ? { query } : {}) }), update);
+      if (!current()) return;
+      lastExplore = result;
+      update('');
+      await renderExploreResult(epoch);
+    } catch (error) {
+      if (!current() || !status?.isConnected) return;
+      status.textContent = `Search unavailable: ${error instanceof Error ? error.message : String(error)} `;
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry search';
+      retry.onclick = () => { explorePending = null; void fetchExplore(epoch); }; status.append(retry);
+    } finally {
+      if (sequence === exploreSequence) explorePending = null;
+    }
+  })();
+  explorePending = { query, promise };
+  return promise;
 }
 
 async function renderExploreResult(epoch: number): Promise<void> {
@@ -455,10 +529,29 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const sequence = ++graphRenderSequence;
+  const selected = investigationVisible && activeInvestigation;
+  const progress = document.getElementById('graph-progress');
+  const current = () => sectionIsCurrent(epoch, 'explore') && sequence === graphRenderSequence && exploreMode === 'graph';
+  const graphRequest = graphSelected ? 'Loading selected subject' : exploreQuery ? `Searching graph for “${exploreQuery}”` : 'Loading graph';
+  const update = (message: string) => { if (current() && progress?.isConnected) progress.textContent = message ? `${graphRequest}: ${message}` : ''; };
+  update('Starting…');
+  let allProjection: Projection;
+  try {
+    allProjection = selected ? { ...selected.graph, nodes: selected.nodes, edges: selected.edges, evidence: selected.evidence, coverage: selected.coverage } as Projection
+      : await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) }), update) as Projection;
+  } catch (error) {
+    if (!current() || !progress?.isConnected) return;
+    progress.textContent = `Graph unavailable: ${error instanceof Error ? error.message : String(error)}${renderer ? ' Previous graph remains visible.' : ''} `;
+    const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry graph';
+    retry.onclick = () => void renderGraph(root, epoch); progress.append(retry);
+    return;
+  }
+  if (!current()) return;
+  update('');
   graphResizeObserver?.disconnect(); graphResizeObserver = null;
   renderer?.kill(); renderer = null;
   root.innerHTML = `<div class="graph-toolbar"><div class="segmented" aria-label="Graph view">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button type="button" data-lens="${lens}" aria-pressed="${graphLens === lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><details class="graph-filters"><summary>Filters${graphKindFilter || graphStatusFilter || graphDirectionFilter || graphLimit !== 700 || graphDepth !== 2 ? ' • active' : ''}</summary><div class="graph-filter-menu"><label>Subject kind<select id="graph-kind" aria-label="Subject kind"><option value="">All visible kinds</option></select></label><label>Relationship status<select id="graph-edge-status" aria-label="Relationship status"><option value="">All statuses</option><option value="resolved">Resolved</option><option value="candidate">Candidate</option><option value="unresolved">Unresolved</option></select></label><label>Direction from selected subject<select id="graph-direction" aria-label="Direction from selected subject"><option value="">Both directions</option><option value="outbound">Outgoing</option><option value="inbound">Incoming</option></select></label><label>Maximum nodes<input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}"></label><label>Traversal depth<input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}"></label><button id="graph-apply" type="button">Apply</button><button id="graph-clear-filters" type="button">Clear filters</button></div></details><button id="graph-zoom-in" type="button" aria-label="Zoom in">+</button><button id="graph-zoom-out" type="button" aria-label="Zoom out">−</button><button id="graph-reset" type="button">Fit graph</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}</div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph. Use the list view for keyboard navigation."></div><div class="graph-selection"><span id="graph-selected-label" data-selection-name hidden></span><button id="graph-scope" type="button" disabled hidden>Use for question</button><button id="graph-compare-selection" type="button" hidden>Use for comparison</button></div><div id="graph-status" class="graph-status" role="status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
-  for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
+  for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { ++graphIntentSequence; graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
     const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
     const depth = Number(root.querySelector<HTMLInputElement>('#graph-depth')?.value);
@@ -469,6 +562,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     }
     const direction = root.querySelector<HTMLSelectElement>('#graph-direction')?.value ?? '';
     if (direction && !graphSelected) { const status = root.querySelector<HTMLElement>('#graph-status'); if (status) status.textContent = 'Select a subject before choosing a direction.'; return; }
+    ++graphIntentSequence;
     graphKindFilter = root.querySelector<HTMLSelectElement>('#graph-kind')?.value ?? '';
     graphStatusFilter = root.querySelector<HTMLSelectElement>('#graph-edge-status')?.value ?? '';
     graphDirectionFilter = direction;
@@ -477,15 +571,12 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     void renderGraph(root, epoch);
   });
   root.querySelector<HTMLButtonElement>('#graph-clear-filters')?.addEventListener('click', () => {
+    ++graphIntentSequence;
     graphKindFilter = ''; graphStatusFilter = ''; graphDirectionFilter = ''; graphLimit = 700; graphDepth = 2;
     savePositiveSetting('graphNodes', graphLimit); savePositiveSetting('graphDepth', graphDepth);
     void renderGraph(root, epoch);
   });
-  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { investigationVisible = !investigationVisible; graphSelected = ''; graphDirectionFilter = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
-  const selected = investigationVisible && activeInvestigation;
-  const allProjection = selected ? { ...selected.graph, nodes: selected.nodes, edges: selected.edges, evidence: selected.evidence, coverage: selected.coverage } as Projection
-    : await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) })) as Projection;
-  if (!sectionIsCurrent(epoch, 'explore') || sequence !== graphRenderSequence || exploreMode !== 'graph') return;
+  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { ++graphIntentSequence; investigationVisible = !investigationVisible; graphSelected = ''; graphDirectionFilter = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
   const kindSelect = root.querySelector<HTMLSelectElement>('#graph-kind')!;
   for (const kind of [...new Set(allProjection.nodes.map(node => node.kind))].sort()) kindSelect.add(new Option(kind, kind));
   if (graphKindFilter && !Array.from(kindSelect.options).some(option => option.value === graphKindFilter)) kindSelect.add(new Option(`${graphKindFilter} (not in this view)`, graphKindFilter));
@@ -544,6 +635,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   });
   renderer.on('leaveNode', () => graph.forEachNode(id => graph.setNodeAttribute(id, 'color', selectedGraphNodes.has(id) || selected?.focusNodeIds?.includes(id) ? '#f6c95f' : graphColor(graph.getNodeAttribute(id, 'node')))));
   renderer.on('clickNode', event => {
+    ++graphIntentSequence; preserveGraphSelection();
     const directionChangedSubject = Boolean(graphDirectionFilter && graphSelected !== event.node);
     graphSelected = event.node;
     if (event.event.original.shiftKey) { if (selectedGraphNodes.has(event.node)) selectedGraphNodes.delete(event.node); else selectedGraphNodes.add(event.node); }
@@ -554,10 +646,11 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     const compare = root.querySelector<HTMLElement>('#graph-compare-selection'); if (compare) compare.hidden = false;
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
     if (label) { label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}${selectedGraphNodes.size > 1 ? ` · ${selectedGraphNodes.size} selected` : ''}`; label.hidden = false; }
-    void openInspector(event.node);
+    void openInspector(event.node, undefined, String(graph.getNodeAttribute(event.node, 'label')));
     if (directionChangedSubject) void renderGraph(root, epoch);
   });
   renderer.on('clickEdge', event => {
+    ++graphIntentSequence; preserveGraphSelection();
     if (event.event.original.shiftKey) { if (selectedGraphEdges.has(event.edge)) selectedGraphEdges.delete(event.edge); else selectedGraphEdges.add(event.edge); }
     else { selectedGraphEdges.clear(); selectedGraphEdges.add(event.edge); }
     graph.forEachEdge(id => { const item = graph.getEdgeAttribute(id, 'edge') as ProjectionEdge; graph.setEdgeAttribute(id, 'color', selectedGraphEdges.has(id) ? '#f6c95f' : item.status === 'resolved' ? '#53667e' : item.status === 'candidate' ? '#b9823c' : '#b94f56'); });
@@ -598,7 +691,7 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
   }
   if (prefill) queryDraft = prefill;
   prefill = queryDraft;
-  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" aria-label="Question about the selected graph" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden aria-label="Question source"><option value="">Development Intelligence</option></select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted"><span id="query-active-scope" role="status">Scope: entire selected graph</span> <button type="button" id="query-clear-scope" hidden>Clear scope</button></p><p class="muted">Answers use the selected saved graph and its source state.</p></div><button type="button" id="load-query-sources">Choose a technical source</button><div id="query-source-status" role="status" class="muted"></div><div id="query-result" class="query-result" aria-live="polite"></div>`;
+  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" aria-label="Question about the selected graph" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden aria-label="Question source"><option value="">Development Intelligence</option></select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted"><span id="query-active-scope" role="status">Scope: entire selected graph</span> <button type="button" id="query-clear-scope" hidden>Clear scope</button></p><p class="muted">Answers use the selected saved graph and its source state.</p></div><button type="button" id="load-query-sources">Choose a technical source</button><div id="query-source-status" role="status" class="muted"></div><div id="query-progress" role="status" aria-live="polite" class="muted"></div><div id="query-result" class="query-result" aria-live="polite"></div>`;
   queryPanelReady = true;
   queryPanel.querySelector<HTMLInputElement>('#query-scope')?.addEventListener('input', event => { delete (event.currentTarget as HTMLInputElement).dataset.displayName; updateQuestionScope(); });
   queryPanel.querySelector<HTMLButtonElement>('#query-clear-scope')?.addEventListener('click', () => { const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope'); if (scope) { scope.value = ''; delete scope.dataset.displayName; } updateQuestionScope(); });
@@ -627,7 +720,14 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
     preferredQuerySource = sourceId;
     if (!text) return;
     const target = document.getElementById('query-result') as HTMLElement;
-    target.innerHTML = empty('Running query', 'Gathering bounded evidence…');
+    const status = document.getElementById('query-progress') as HTMLElement;
+    const sequence = ++querySequence;
+    const graphIntent = graphIntentSequence;
+    const hasPreviousAnswer = target.hasChildNodes();
+    const runButton = document.getElementById('run-query') as HTMLButtonElement;
+    runButton.disabled = true;
+    const update = (message: string) => { if (sequence === querySequence) status.textContent = message ? `Question “${text}”: ${message}${hasPreviousAnswer ? ' Previous answer remains visible.' : ''}` : ''; };
+    update('Running question…');
     try {
       const scope = (document.getElementById('query-scope') as HTMLInputElement).value.trim();
       const splitKinds = (id: string) => (document.getElementById(id) as HTMLInputElement).value.split(',').map(value => value.trim()).filter(Boolean);
@@ -646,10 +746,15 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
       queryPageSize = limit; savePositiveSetting('queryPageSize', limit);
       const result = await postJson('/workbench/query', { text, offset, depth, limit, ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}), ...(direction ? { direction } : {}),
         ...(scope ? { scope } : {}), ...(nodeKinds.length ? { nodeKinds } : {}),
-        ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) });
+        ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) }, update);
+      if (sequence !== querySequence) return;
+      update('');
       const page = result.result?.page;
-      activeInvestigation = result.investigation ?? null; investigationVisible = true; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear();
-      if (section === 'explore' && exploreMode === 'graph') void renderExploreResult(sectionEpoch);
+      const followResult = graphIntent === graphIntentSequence;
+      if (followResult) {
+        activeInvestigation = result.investigation ?? null; investigationVisible = true; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear();
+        if (section === 'explore' && exploreMode === 'graph') void renderExploreResult(sectionEpoch);
+      }
       const answer = String(result.answer ?? '');
       const longAnswer = answer.length > 2200;
       const incomplete = /Selection is incomplete/i.test(answer);
@@ -675,7 +780,7 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
         answerView = longAnswer ? `<p class="muted">The full result is long. Expand it to read all of the source paths and limitations.</p><details><summary>Read full result</summary><div class="answer">${esc(answer)}</div></details>` : `<div class="answer">${esc(answer)}</div>`;
       }
       target.innerHTML = `<div class="card"><h3>${result.intent === 'graph-filter' ? 'Related source evidence' : esc(result.intent ?? 'Result')}</h3>${incomplete ? '<p class="status-warn">The selection is incomplete and may not answer the full question. Refine the scope or inspect the evidence below.</p>' : ''}${answerView}${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
-      if (result.investigation && section !== 'explore') {
+      if (result.investigation && (section !== 'explore' || !followResult)) {
         const follow = document.createElement('button'); follow.textContent = 'Show this result on the graph';
         follow.addEventListener('click', () => followInvestigation(result.investigation)); target.firstElementChild?.append(follow);
       }
@@ -706,8 +811,13 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
       wireNodeButtons(target);
       target.querySelector<HTMLButtonElement>('#query-previous')?.addEventListener('click', () => void run(Math.max(0, page.offset - page.limit)));
       target.querySelector<HTMLButtonElement>('#query-next')?.addEventListener('click', () => void run(page.nextOffset));
-      if (result.intent === 'inspect' && result.result?.entity) { selectedInspection = result.result; inspectorTab = 'summary'; renderInspector(); }
-    } catch (error) { target.innerHTML = `<div class="card"><h3>Query failed</h3><p class="status-bad">${esc(error instanceof Error ? error.message : String(error))}</p></div>`; }
+      if (followResult && result.intent === 'inspect' && result.result?.entity) { selectedInspection = result.result; inspectorTab = 'summary'; renderInspector(); }
+    } catch (error) {
+      if (sequence !== querySequence) return;
+      status.textContent = `Question unavailable: ${error instanceof Error ? error.message : String(error)} `;
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry question';
+      retry.onclick = () => void run(offset); status.append(retry);
+    } finally { if (sequence === querySequence) runButton.disabled = false; }
   };
   (document.getElementById('run-query') as HTMLButtonElement).addEventListener('click', () => void run());
 }
@@ -1019,6 +1129,7 @@ async function renderLocal(epoch: number): Promise<void> {
 
 async function activateSection(next: Section, queryPrefill = ''): Promise<void> {
   const epoch = ++sectionEpoch;
+  ++exploreSequence; explorePending = null;
   section = next;
   for (const button of navButtons) button.classList.toggle('active', button.dataset.section === section);
   graphResizeObserver?.disconnect(); graphResizeObserver = null;
@@ -1061,7 +1172,7 @@ if (document.getElementById('question-dock')) {
   tabs.innerHTML = '<button type="button" data-pane="inspection">Inspector</button><button type="button" data-pane="files">Files</button>';
   const filesPane = document.createElement('div'); filesPane.className = 'inspector-body'; filesPane.hidden = true;
   inspector.prepend(tabs); inspector.append(filesPane);
-  const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorBody];
+  const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorProgress, inspectorBody];
   const fileTabs = document.createElement('div'); fileTabs.className = 'inspector-tabs';
   const fileBody = document.createElement('div'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;';
   const fileStatus = document.createElement('div'); fileStatus.setAttribute('role', 'status');
@@ -1203,7 +1314,7 @@ if (document.getElementById('question-dock')) {
     if (!dockApi.getPanel('source')) sourcePriorSizes = { compact, inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height) };
     addPanel('source'); sourceEmpty.hidden = true; fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
     try {
-      const result = await getJson('/workbench/source', new URLSearchParams({ file }));
+      const result = await getJson('/workbench/source', new URLSearchParams({ file }), message => { if (sequence === fileSequence && activeFile === file) fileStatus.textContent = `${file}: ${message}`; });
       if (sequence !== fileSequence || activeFile !== file) return;
       if (result.file !== file || (viewerConfig.graphId && result.graphId !== viewerConfig.graphId) || (viewerConfig.revision && result.revision !== viewerConfig.revision)) throw new Error('Source identity does not match the selected file and graph. Reopen the graph and try again.');
       fileStatus.textContent = `${result.file} · ${result.revision ? 'revision ' + result.revision : 'working source snapshot'} · Read only`;
@@ -1214,13 +1325,15 @@ if (document.getElementById('question-dock')) {
       const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => void openFile(file); fileStatus.append(' ', retry);
     }
   };
-  let loaded = false;
+  let loaded = false, filesLoading = false;
   tabs.querySelectorAll<HTMLButtonElement>('[data-pane]').forEach(button => button.onclick = async () => {
     const files = button.dataset.pane === 'files'; original.forEach(item => { item.hidden = files; }); filesPane.hidden = !files;
-    if (!files || loaded) return;
+    if (!files || loaded || filesLoading) return;
+    filesLoading = true;
+    filesPane.setAttribute('role', 'status');
     filesPane.textContent = 'Loading files…';
     try {
-      const result = await getJson('/workbench/source', new URLSearchParams()); filesPane.replaceChildren();
+      const result = await getJson('/workbench/source', new URLSearchParams(), message => { filesPane.textContent = `Loading files: ${message}`; }); filesPane.removeAttribute('role'); filesPane.replaceChildren();
       const dirs = new Map<string, HTMLElement>(); dirs.set('', filesPane);
       for (const file of result.files as string[]) {
         const parts = file.split('/'); let parent = '', container: HTMLElement = filesPane;
@@ -1235,7 +1348,7 @@ if (document.getElementById('question-dock')) {
     } catch (error) {
       filesPane.textContent = `Could not load files: ${error instanceof Error ? error.message : String(error)} `;
       const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => button.click(); filesPane.append(retry);
-    }
+    } finally { filesLoading = false; }
   });
 }
 
