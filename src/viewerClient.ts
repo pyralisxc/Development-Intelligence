@@ -604,7 +604,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     graphStatus.textContent = `${projection.candidates?.length ?? 0} candidates${projection.candidatesTruncated ? ' shown · increase Nodes to see more' : ''}`;
     const choices = document.getElementById('graph-choices')!;
     choices.innerHTML = `<div class="card"><h3>Matching subjects</h3><div class="list">${(projection.candidates ?? []).map(node => `<button class="row row-button" data-graph-choice="${esc(node.id)}"><span class="badge">${esc(node.kind)}</span><span class="row-main"><strong>${esc(node.name ?? node.id)}</strong><small>${esc(node.locator)}</small></span><span>→</span></button>`).join('')}</div></div>`;
-    for (const button of Array.from(choices.querySelectorAll<HTMLButtonElement>('[data-graph-choice]'))) button.addEventListener('click', () => { graphSelected = button.dataset.graphChoice!; void renderGraph(root, epoch); });
+    for (const button of Array.from(choices.querySelectorAll<HTMLButtonElement>('[data-graph-choice]'))) button.addEventListener('click', () => { ++graphIntentSequence; graphSelected = button.dataset.graphChoice!; void renderGraph(root, epoch); });
     return;
   }
   if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects visible', graphKindFilter ? 'Clear the subject filter or choose another kind.' : selected ? 'This result has no graph records to display. Its findings or missing expectations remain in the result.' : 'Try another search or choose a different view.'); graphStatus.textContent = `0 shown · ${allProjection.nodes.length} in this view`; return; }
