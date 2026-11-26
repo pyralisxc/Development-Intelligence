@@ -14,7 +14,7 @@ The **source repository and running service have independent visibility**. The D
 
 The hosted service needs only:
 
-- Node.js 22.13+ (or 23.4+ on Node 23);
+- Node.js 22.23.4+ (or 23.4+ on Node 23);
 - Git;
 - temporary filesystem capacity for exact-revision checkout;
 - the project access registry and referenced credentials;

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Project-neutral intrinsic development intelligence over Git, source, runtime evidence, and technical representations.",
   "engines": {
-    "node": ">=22.13.0 <23 || >=23.4.0"
+    "node": ">=22.23.4 <23 || >=23.4.0"
   },
   "scripts": {
     "build:server": "tsc -p tsconfig.json",
