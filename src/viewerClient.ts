@@ -653,7 +653,28 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
       const answer = String(result.answer ?? '');
       const longAnswer = answer.length > 2200;
       const incomplete = /Selection is incomplete/i.test(answer);
-      target.innerHTML = `<div class="card"><h3>${result.intent === 'graph-filter' ? 'Related source evidence' : esc(result.intent ?? 'Result')}</h3>${incomplete ? '<p class="status-warn">The selection is incomplete and may not answer the full question. Refine the scope or inspect the evidence below.</p>' : ''}${longAnswer ? `<p class="muted">The full result is long. Expand it to read all of the source paths and limitations.</p><details><summary>Read full result</summary><div class="answer">${esc(answer)}</div></details>` : `<div class="answer">${esc(answer)}</div>`}${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
+      // The shared answer already contains source paths in graph order. Give
+      // each path its own expandable section so a long answer does not hide
+      // the entire investigation behind one large disclosure.
+      const pathParts = Array.isArray(result.result?.connectedGroups) ? answer.split('\n\nSource path:\n') : [];
+      let answerView: string;
+      if (pathParts.length > 1) {
+        const introduction = pathParts.shift() ?? '';
+        const last = pathParts[pathParts.length - 1]!;
+        const footerAt = last.lastIndexOf('\n\nSource analysis:');
+        const footer = footerAt < 0 ? '' : last.slice(footerAt + 2);
+        if (footerAt >= 0) pathParts[pathParts.length - 1] = last.slice(0, footerAt);
+        const paths = pathParts.map((part, index) => {
+          const newline = part.indexOf('\n');
+          const title = newline < 0 ? part : part.slice(0, newline);
+          const body = newline < 0 ? '' : part.slice(newline + 1);
+          return `<details${index === 0 ? ' open' : ''}><summary>${esc(title)}</summary><div class="answer">${esc(body)}</div></details>`;
+        }).join('');
+        answerView = `<div class="answer">${esc(introduction)}</div>${paths}${footer ? `<div class="answer">${esc(footer)}</div>` : ''}`;
+      } else {
+        answerView = longAnswer ? `<p class="muted">The full result is long. Expand it to read all of the source paths and limitations.</p><details><summary>Read full result</summary><div class="answer">${esc(answer)}</div></details>` : `<div class="answer">${esc(answer)}</div>`;
+      }
+      target.innerHTML = `<div class="card"><h3>${result.intent === 'graph-filter' ? 'Related source evidence' : esc(result.intent ?? 'Result')}</h3>${incomplete ? '<p class="status-warn">The selection is incomplete and may not answer the full question. Refine the scope or inspect the evidence below.</p>' : ''}${answerView}${renderQueryResult(result.result)}${page ? `<div class="actions">${page.offset > 0 ? '<button id="query-previous" type="button">Previous</button>' : ''}${page.nextOffset !== null ? '<button id="query-next" type="button">Next</button>' : ''}</div>` : ''}</div>`;
       if (result.investigation && section !== 'explore') {
         const follow = document.createElement('button'); follow.textContent = 'Show this result on the graph';
         follow.addEventListener('click', () => followInvestigation(result.investigation)); target.firstElementChild?.append(follow);
@@ -806,12 +827,15 @@ function renderQueryResult(result: any): string {
     return `${evidence ? `<h4>Evidence-backed areas</h4><div class="list">${evidence}</div>` : '<p class="muted">No source-backed semantic areas were selected.</p>'}<details><summary class="muted">Evidence and coverage details</summary><pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre></details>`;
   }
   if (Array.isArray(result.sourceFamilies)) {
+    const groupedPaths = Array.isArray(result.connectedGroups);
     const language = result.interpretation?.negated
       ? `<p class="muted">Negative wording: ${esc((result.interpretation.negativeTerms ?? []).join(', ') || 'not')}</p>` : '';
-    const relationships = (result.navigation?.relationships ?? []).map((item: any) => `<div class="row"><span class="badge">${esc(item.edge.kind)}</span><span class="row-main">${esc(item.from?.name ?? item.edge.from)} → ${esc(item.to?.name ?? item.edge.to)}<small>${esc(item.edge.status)}</small></span></div>`).join('');
+    // Grouped paths are already displayed above. Navigation's broad incident
+    // edge page is not the same selection and can include unrelated subjects.
+    const relationships = (groupedPaths ? [] : result.navigation?.relationships ?? []).map((item: any) => `<div class="row"><span class="badge">${esc(item.edge.kind)}</span><span class="row-main">${esc(item.from?.name ?? item.edge.from)} → ${esc(item.to?.name ?? item.edge.to)}<small>${esc(item.edge.status)}</small></span></div>`).join('');
     const comparison = (result.comparison?.items ?? []).map((item: any) => `<div class="row"><span class="badge">${esc(item.state)}</span><span class="row-main">${esc(item.node.name ?? item.node.id)}<small>${esc(item.node.locator)}</small></span></div>`).join('');
     const families = result.sourceFamilies.map((family: any) => `<details><summary>${esc(family.subjectName)} · ${family.facts.length} source facts${family.focusedFacts?.length ? ` · ${family.focusedFacts.length} match the wording` : ''}</summary><div class="list">${family.facts.map((fact: any) => `<div class="row"><span class="badge">${esc(fact.effectKind ?? fact.kind)}</span><span class="row-main"><code>${esc(fact.expression)}</code><small>${esc(fact.locator)}${fact.requirements?.length ? ` · requires ${esc(fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}${requirement.predicate ?? requirement.conditionId}`).join(' and '))}` : ''}</small></span></div>`).join('')}</div></details>`).join('');
-    return `${language}${relationships ? `<h4>Known relationships</h4><div class="list">${relationships}</div>` : ''}${comparison ? `<h4>Comparison</h4><div class="list">${comparison}</div>` : ''}${families}<div class="list">${(result.nodes ?? []).map(nodeRow).join('')}</div><details><summary class="muted">Graph details</summary><pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre></details>`;
+    return `${language}${relationships ? `<h4>Known relationships</h4><div class="list">${relationships}</div>` : ''}${comparison ? `<h4>Comparison</h4><div class="list">${comparison}</div>` : ''}${families}${groupedPaths ? '' : `<div class="list">${(result.nodes ?? []).map(nodeRow).join('')}</div>`}<details><summary class="muted">Graph details</summary><pre class="raw">${esc(JSON.stringify(result, null, 2))}</pre></details>`;
   }
   if (Array.isArray(result.claims) && result.answerStatus) return renderAssessment(result);
   if (result.entity) return `<div class="list">${nodeRow(result.entity)}</div>`;

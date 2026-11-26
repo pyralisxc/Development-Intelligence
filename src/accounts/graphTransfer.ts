@@ -103,7 +103,7 @@ export async function sendGraphTransfer(input: {
   const totalBytes = manifest.files.reduce((sum, file) => sum + file.size, 0);
   for (const file of manifest.files) {
     const stream = createReadStream(path.join(directory, file.name));
-    stream.on('data', (chunk: Buffer) => { bytes += chunk.length; if (Date.now() - lastProgress >= 3000) { lastProgress = Date.now(); input.progress?.(completed, manifest.files.length, bytes, totalBytes); } });
+    stream.on('data', chunk => { bytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length; if (Date.now() - lastProgress >= 3000) { lastProgress = Date.now(); input.progress?.(completed, manifest.files.length, bytes, totalBytes); } });
     await request(`/file/${encodeURIComponent(file.name)}`, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'content-length': String(file.size) }, body: stream, duplex: 'half' });
     input.progress?.(++completed, manifest.files.length, bytes, totalBytes);
   }

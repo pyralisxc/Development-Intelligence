@@ -47,7 +47,7 @@ async function withCatalogLock<T>(directory: string, fn: () => Promise<T>, immut
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       try {
         const owner = JSON.parse(await fs.readFile(path.join(lock, 'owner.json'), 'utf8')) as { pid?: number };
-        if (Number.isSafeInteger(owner.pid) && Number(owner.pid) > 0) {
+        if (typeof owner.pid === 'number' && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
           try { process.kill(owner.pid, 0); }
           catch (probe) { if ((probe as NodeJS.ErrnoException).code === 'ESRCH') { await fs.rm(lock, { recursive: true, force: true }); continue; } }
         }

@@ -1,4 +1,4 @@
-import { isInteractionPoint } from './graphKnowledge.js';
+import { BEHAVIOR_PATH_RELATIONS, isInteractionPoint } from './graphKnowledge.js';
 import { createHash } from 'node:crypto';
 import type { GraphEdge, GraphNode, IntelligenceGraph } from '../types.js';
 import { investigationSelection } from './investigation.js';
@@ -6,7 +6,7 @@ import { currentGraph } from './service.js';
 
 // Interaction classifications are properties of canonical graph subjects;
 // their presence does not establish runtime reachability.
-const PATH_RELATIONS = new Set(['has-interaction', 'spreads-properties', 'potential-value-from', 'registers-interaction', 'potentially-provided-by', 'handled_by', 'binds_to', 'calls', 'calls-site', 'resolves_to', 'invokes', 'dispatches', 'triggers', 'routes-to', 'links_to', 'registered-as', 'handles-method', 'implemented-by', 'has-condition', 'has-effect', 'requires-condition', 'guarded-by', 'under-condition', 'declares-state', 'writes', 'reads', 'persists']);
+const PATH_RELATIONS = BEHAVIOR_PATH_RELATIONS;
 
 type Indexed = { graph: IntelligenceGraph; nodes: Map<string, GraphNode>; outgoing: Map<string, GraphEdge[]>; interactions: Map<string, GraphNode[]> };
 // Disposable indexes follow the lifetime of their immutable graph snapshots.

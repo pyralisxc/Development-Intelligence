@@ -25,7 +25,7 @@ import { positiveIntegerSetting } from './capacity.js';
 import { SourceStageCache } from './sourceStageCache.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.44.0-expression-conditions';
+export const ANALYZER_VERSION = '2.47.0-source-path-handoffs';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 

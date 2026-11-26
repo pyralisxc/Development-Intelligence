@@ -11,7 +11,7 @@ import { indexedFamilyMemberships } from './localGraphIndex.js';
  * members of their owner, independent of whether invocation was established. */
 const SUBJECTS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type',
   'feature', 'capability', 'ui-element', 'dom-interaction', 'interaction-handler', 'route', 'api', 'mcp', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function']);
-const OWNED = new Set(['has-parameter', 'has-condition', 'has-effect', 'has-source-control', 'contains-source-span', 'has-source-occurrence',
+const OWNED = new Set(['has-parameter', 'has-condition', 'has-effect', 'has-source-binding', 'has-source-control', 'contains-source-span', 'has-source-occurrence',
   'has-argument', 'argument-for', 'spreads-properties', 'has-interaction', 'registers-interaction', 'calls-site', 'callback-argument', 'declares']);
 const DIRECT = new Set(['calls', 'invokes', 'handled_by', 'registered-as', 'implemented-by',
   'exposes', 'binds_to', 'composes', 'uses-feature', 'automated-by', 'same-routine-name', 'candidate-sql-definition']);
