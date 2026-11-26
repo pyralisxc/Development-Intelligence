@@ -436,7 +436,7 @@ export function indexedBindingGraph(graph: IntelligenceGraph, roots: Iterable<st
   if (!pending.length) return { nodes: [], edges: [] };
   const Database = sqlite(), db = new Database(index.file, { readOnly: true });
   try {
-    const lookup = db.prepare("SELECT e.id, e.dst FROM edges e INDEXED BY edge_src JOIN nodes n ON n.id=e.dst WHERE e.src=? AND e.kind='references-binding' AND e.status='resolved' AND n.kind='source-binding'");
+    const lookup = db.prepare("SELECT e.id, e.dst FROM edges e INDEXED BY edge_src JOIN nodes source ON source.id=e.src JOIN nodes n ON n.id=e.dst WHERE e.src=? AND e.status='resolved' AND ((e.kind='references-binding' AND n.kind='source-binding') OR (e.kind='has-source-occurrence' AND source.kind='source-binding' AND n.kind='source-reference') OR (e.kind='references-symbol' AND source.kind='source-reference'))");
     for (let at = 0; at < pending.length; at++) for (const row of lookup.iterate(pending[at]!)) {
       const id = String(row.dst); edgeIds.add(String(row.id)); nodeIds.add(id);
       if (!visited.has(id)) { visited.add(id); pending.push(id); }

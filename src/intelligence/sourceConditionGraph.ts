@@ -83,7 +83,8 @@ export function buildSourceConditionGraphFacts(input: {
     const proof = evidenceRecord({ sourceId, kind: 'source-binding-syntax', locator: at,
       field: 'offset:' + binding.identifierOffset,
       value: { functionId: owner.id, name: binding.name, sourceOnly: true, runtimeObserved: false },
-      message: binding.initializerStart === null ? 'A local binding is declared in the selected source.'
+      message: binding.iterationKind ? `A local ${binding.iterationKind} binding and its iteration source are present in the selected source; this does not assert a runtime value.`
+        : binding.initializerStart === null ? 'A local binding is declared in the selected source.'
         : 'A local binding and initializer are present in the selected source; this does not assert a runtime value.' });
     const { declaration, name: _name, ...bindingValue } = binding;
     const node = observation({ identity: [sourceId, owner.id, 'source-binding', binding.identifierOffset],

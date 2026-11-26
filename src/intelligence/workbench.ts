@@ -1753,15 +1753,11 @@ export async function queryWorkbenchRequest(input: {
       for (const edge of result.bindingGraph?.edges ?? []) {
         const list = bindingEdges.get(edge.from) ?? []; list.push(edge); bindingEdges.set(edge.from, list);
       }
-      const referencedBindings = (start: string): any[] => {
-        const pending = [start], seen = new Set(pending), found: any[] = [];
-        for (let at = 0; at < pending.length; at++) for (const edge of bindingEdges.get(pending[at]!) ?? []) {
-          const node = bindingNodes.get(edge.to);
-          if (!node || seen.has(node.id)) continue;
-          seen.add(node.id); pending.push(node.id); found.push(node);
-        }
-        return found.sort((a, b) => a.sourceId.localeCompare(b.sourceId)
-          || Number(a.value?.sourceOffset ?? 0) - Number(b.value?.sourceOffset ?? 0));
+      const directBindings = (start: string): any[] => (bindingEdges.get(start) ?? [])
+        .map((edge: any) => bindingNodes.get(edge.to)).filter((node: any) => node?.kind === 'source-binding');
+      const describeReferencedValues = (start: string): string => {
+        const linked = directBindings(start);
+        return linked.length ? `; referenced values: ${linked.map((node: any) => `${node.name ?? node.id} (${node.locator})`).join(', ')}` : '';
       };
       const describeFamily = (item: any, groupIds?: Set<string>, includeSource = true): string => {
         const family = result.families.find((value: any) => value.id === item.id);
@@ -1851,7 +1847,7 @@ export async function queryWorkbenchRequest(input: {
             ? fact.interpretation === 'call-or-conversion' ? 'possible invocation or conversion: ' : 'possible source call: '
             : '';
           shownFacts += 1;
-          for (const binding of referencedBindings(fact.id)) if (!presentedBindings.has(binding.id)) {
+          for (const binding of directBindings(fact.id)) if (!presentedBindings.has(binding.id)) {
             presentedBindings.add(binding.id);
             const controls = (binding.value?.controlContext ?? []).map((item: any) => `${item.kind}${item.expression ? ` (${item.expression})` : ''}`);
             const conditional = (binding.value?.requiredConditions ?? []).length ? ' (source conditions apply)' : '';
@@ -1989,13 +1985,13 @@ export async function queryWorkbenchRequest(input: {
       const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation
         && result.families.some((family: any) => family.id === subject.id && family.total)
         ? `${describeFamily(subject)}. Inspect the related subjects and source details for the complete records.` : '';
-      const ambiguousAnswer = result.interpretation.selection === 'exact-name' && result.subjectTotal > 1 && !related.length
-        ? `The name matches ${result.subjectTotal} source subjects: ${result.subjects.map((item: any) => `${item.name ?? item.id} (${item.locator})`).join('; ')}. Select a subject or scope to investigate it${result.page.nextOffset !== null ? `; more subjects at offset ${result.page.nextOffset}` : ''}.`
+      const ambiguousAnswer = result.interpretation.selection === 'exact-name' && result.subjectTotal > 1 && !relationshipAnswer
+        ? `The name matches ${result.subjectTotal} distinct source subjects:\n${result.subjects.map((item: any) => `• ${item.kind}: ${item.name ?? item.id} (${item.locator})`).join('\n')}\nChoose a subject or scope to investigate its connected evidence${result.subjectTotal > result.subjects.length ? '; additional subjects are available in the result details' : ''}.`
         : '';
       const answer = comparisonAnswer || (result.interpretation.negated
         ? 'The graph matches subjects for this question, but the requested negative conclusion is not established. Narrow the subject and relationship or supply a comparison scope.'
         : '') || relationshipAnswer || scopedAnswer || (focus.length
-        ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.locator ? ` at ${fact.locator}` : ''}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`).join('; ')}`
+        ? `${subject.name ?? subject.id}: ${focus.map((fact: any) => `${fact.expression}${fact.locator ? ` at ${fact.locator}` : ''}${fact.requirements.length ? ` when ${fact.requirements.map((requirement: any) => `${requirement.expectedTruth ? '' : 'not '}(${requirement.predicate ?? requirement.conditionId})`).join(' and ')}` : ''}${fact.controlContext.length ? ` within ${fact.controlContext.map((context: any) => `${context.kind}${context.expression ? ` (${context.expression}${context.caseValue ? `; case ${context.caseValue}` : ''})` : ''}`).join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}${describeReferencedValues(fact.id)}`).join('; ')}`
         : '') || familyAnswer || ambiguousAnswer || `Found ${result.subjectTotal} matching subjects and ${result.navigation.total} matching relationships in the ${result.navigation.direction} direction.${result.interpretation.negated ? ' The question’s negative wording is retained in the result.' : ''}`;
       const sourceAnalysis = (result.sourceAnalysis ?? []).map((item: any) => `${item.technology}: ${item.precision}`).join('; ');
       const lexicalCoverage = result.interpretation.lexicalCoverage;
@@ -2005,7 +2001,7 @@ export async function queryWorkbenchRequest(input: {
         ? `\n\n${lexicalCoverage.excludedWeakerMatches} subjects matched fewer question concepts and were excluded from this selection; refine the question or scope to inspect them.` : '';
       items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,
         ...(inheritedScope ? { inheritedSubject: inheritedScope } : {}),
-        answer: `${answer}${selectionNote}${excludedNote}${sourceAnalysis ? `\n\nSource analysis: ${sourceAnalysis}.` : ''}` ,
+        answer: `${answer}${selectionNote}${excludedNote}${sourceAnalysis ? `\n\nCurrent DI source-analysis capabilities (selected graph analyzer: ${graph.analyzerVersion}; see graph coverage for this build): ${sourceAnalysis}.` : ''}` ,
         routing: { tool: 'graph-filter', selection: result.interpretation.selection }, investigation: questionSelection(graph, result), result });
     }
     const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
