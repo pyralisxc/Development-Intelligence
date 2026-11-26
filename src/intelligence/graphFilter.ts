@@ -2,10 +2,10 @@ import { graphFamilyMemberships } from './graphFamilies.js';
 import winkNLP from 'wink-nlp';
 import model from 'wink-eng-lite-web-model';
 import type { GraphFamilyMembership, GraphNode, IntelligenceGraph } from '../types.js';
-import { availableRelationshipContracts } from './graphKnowledge.js';
+import { availableRelationshipContracts, BEHAVIOR_PATH_RELATIONS } from './graphKnowledge.js';
 import { isWrittenTestSource } from './independentSourceVerification.js';
 import { SOURCE_ANALYSIS_SUPPORT } from './analyzers/index.js';
-import { indexedIncidentEdges, indexedNodeTags, indexedTextCandidates, isIndexedSelectedView, openIndexedFamilyAccess } from './localGraphIndex.js';
+import { indexedBindingGraph, indexedIncidentEdges, indexedNodeTags, indexedRecords, indexedTextCandidates, isIndexedPlanningView, isIndexedSelectedView, openIndexedFamilyAccess } from './localGraphIndex.js';
 
 const nlp = winkNLP(model);
 const its = nlp.its;
@@ -96,6 +96,46 @@ function termMatcher(): (value: string, term: string) => boolean {
   };
 }
 
+type MatchedSourceLine = { text: string; line: number | null; groups: number; groupIndexes: number[] };
+/** Match one source fact by syntax and line, without attributing nested callables to their creator. */
+function matchedSourceLines(node: GraphNode, termGroups: string[][], includesTerm: (value: string, term: string) => boolean): { lines: MatchedSourceLine[]; nestedCallable: boolean } {
+  const value = node.value && typeof node.value === 'object' && !Array.isArray(node.value)
+    ? node.value as { nestedCallable?: boolean; sourceLine?: unknown; expressionStructure?: unknown; predicateStructure?: unknown } : null;
+  const startLine = typeof value?.sourceLine === 'number' ? value.sourceLine : Number(/:(\d+)(?::|$)/u.exec(node.locator)?.[1] ?? 0);
+  const raw = node.raw ?? '', rawLines = raw.split(/\r?\n/u), groupsByLine = new Map<number, Set<number>>();
+  const addLineTerms = (text: string, index: number) => {
+    const normalized = words(text), groups = groupsByLine.get(index) ?? new Set<number>();
+    for (const [groupIndex, group] of termGroups.entries()) if (group.some(term => includesTerm(normalized, words(term)))) groups.add(groupIndex);
+    if (groups.size) groupsByLine.set(index, groups);
+  };
+  type SyntaxPart = { kind?: unknown; start?: unknown; text?: unknown; children?: unknown };
+  const syntax = (value?.expressionStructure ?? value?.predicateStructure) as SyntaxPart | undefined;
+  let nestedCallable = value?.nestedCallable === true;
+  if (syntax && typeof syntax.start === 'number') {
+    const starts = [0];
+    for (let i = 0; i < raw.length; i++) if (raw[i] === '\n') starts.push(i + 1);
+    const lineIndex = (offset: number) => {
+      let low = 0, high = starts.length;
+      while (low < high) { const middle = (low + high) >>> 1; if (starts[middle]! <= offset) low = middle + 1; else high = middle; }
+      return Math.max(0, low - 1);
+    };
+    const stack: SyntaxPart[] = [syntax];
+    while (stack.length) {
+      const part = stack.pop()!;
+      if (typeof part.kind === 'string' && ['ArrowFunction', 'FunctionExpression', 'FunctionDeclaration', 'MethodDeclaration'].includes(part.kind)) { nestedCallable = true; continue; }
+      if (Array.isArray(part.children) && part.children.length) { stack.push(...part.children as SyntaxPart[]); continue; }
+      if (typeof part.text !== 'string' || typeof part.start !== 'number') continue;
+      const first = lineIndex(Math.max(0, part.start - syntax.start));
+      for (const [index, text] of part.text.split(/\r?\n/u).entries()) addLineTerms(text, first + index);
+    }
+  } else rawLines.forEach(addLineTerms);
+  const lines = [...groupsByLine].sort(([left], [right]) => left - right).flatMap(([index, groups]) => {
+    const text = rawLines[index];
+    return text === undefined ? [] : [{ text: text.trim(), line: startLine ? startLine + index : null, groups: groups.size, groupIndexes: [...groups] }];
+  });
+  return { lines, nestedCallable };
+}
+
 function containsName(question: string, name: string, caseSensitive = false): boolean {
   const haystack = caseSensitive ? question : question.toLowerCase();
   const needle = caseSensitive ? name : name.toLowerCase();
@@ -110,9 +150,9 @@ function containsName(question: string, name: string, caseSensitive = false): bo
   return false;
 }
 
-export const GRAPH_SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'ui-element', 'dom-interaction', 'interaction-handler', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference', 'variable-reference']);
+export const GRAPH_SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'ui-element', 'dom-interaction', 'interaction-handler', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference', 'variable-reference', 'parameter', 'argument', 'source-binding']);
 
-type SubjectSelection = { subjects: GraphNode[]; excludedWeakerMatches: number; matchedTermGroups: Map<string, number>; matchedNameGroups: Map<string, number>; fullyDescribedSubjects: Set<string>; selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' };
+type SubjectSelection = { subjects: GraphNode[]; excludedWeakerMatches: number; matchedTermGroups: Map<string, number>; matchedGroupIndexes: Map<string, number[]>; matchedNameGroups: Map<string, number>; fullyDescribedSubjects: Set<string>; selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' };
 const plannedSelections = new WeakMap<IntelligenceGraph, Map<string, SubjectSelection>>();
 
 function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, language: ReturnType<typeof interpretGraphLanguage>, byId: Map<string, GraphNode>, familyOf: (node: GraphNode) => GraphFamilyMembership[], includesTerm: (value: string, term: string) => boolean, preferTestSources: boolean, kinds: Set<string>): SubjectSelection {
@@ -141,6 +181,7 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
   let subjects: GraphNode[] = [];
   let excludedWeakerMatches = 0;
   const matchedTermGroups = new Map<string, number>();
+  const matchedGroupIndexes = new Map<string, number[]>();
   const matchedNameGroups = new Map<string, number>();
   const fullyDescribedSubjects = new Set<string>();
   let selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' = 'none';
@@ -193,22 +234,63 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
     } else if (language.terms.length) {
       const terms = language.terms.map(words);
       const factTerms = new Map<string, Set<string>>();
+      const bestFactMatch = new Map<string, number>();
       const sourceFamilies = new Set<string>();
-      for (const fact of graph.nodes) {
-        if (fact.kind !== 'source-condition' && fact.kind !== 'source-effect') continue;
+      const ownerNames = new Map<string, string>();
+      // Keep the strongest single source span for an owner. Combining words
+      // from unrelated statements or nested callback bodies can make a large
+      // function look relevant even when no connected fact carries the query.
+      const considerGroups = (owner: string, groups: number[]) => {
+        if (!groups.length) return;
+        const ownerNode = byId.get(owner);
+        let name = ownerNames.get(owner);
+        if (name === undefined) {
+          const lexicalOwners = ownerNode ? familyOf(ownerNode).filter(member => member.roles.includes('callback'))
+            .map(member => byId.get(member.id)?.name ?? '') : [];
+          name = words([ownerNode?.name ?? '', ownerNode?.kind ?? '', ...lexicalOwners].join(' '));
+          ownerNames.set(owner, name);
+        }
+        const named = new Set(language.termGroups.flatMap((group, index) =>
+          group.some(term => includesTerm(name, words(term))) ? [index] : []));
+        const score = groups.filter(index => !named.has(index)).length * (language.termGroups.length + 1) + groups.length;
+        if (score <= (bestFactMatch.get(owner) ?? -1)) return;
+        bestFactMatch.set(owner, score);
+        factTerms.set(owner, new Set(groups.flatMap(index => (language.termGroups[index] ?? []).map(words))));
+      };
+      const sourceFacts = graph.nodes.filter(fact => ['source-condition', 'source-effect', 'source-binding'].includes(fact.kind));
+      // The planning index stores compact selection fields. Read matching
+      // source records from the retained graph before inspecting their syntax;
+      // a compact index row does not contain the expression structure.
+      const matchingFactIds = isIndexedPlanningView(graph) ? sourceFacts.filter(fact => {
+        const text = words(fact.raw ?? ''); return terms.some(term => includesTerm(text, term));
+      }).map(fact => fact.id) : [];
+      const hydratedFacts = new Map((matchingFactIds.length ? indexedRecords(graph, 'nodes', matchingFactIds) ?? [] : [])
+        .map(fact => [fact.id, fact]));
+      for (const compactFact of sourceFacts) {
+        const fact = hydratedFacts.get(compactFact.id) ?? compactFact;
         const value = fact.value as { functionId?: unknown } | null;
         if (!value || typeof value.functionId !== 'string') continue;
         sourceFamilies.add(value.functionId);
-        const factText = words(fact.raw ?? '');
-        const matching = terms.filter(term => includesTerm(factText, term));
-        if (!matching.length) continue;
-        const group = factTerms.get(value.functionId) ?? new Set<string>();
-        for (const term of matching) group.add(term);
-        factTerms.set(value.functionId, group);
+        const text = words(fact.raw ?? '');
+        if (!terms.some(term => includesTerm(text, term))) continue;
+        const { lines } = matchedSourceLines(fact, language.termGroups, includesTerm);
+        for (const line of lines) considerGroups(value.functionId, line.groupIndexes);
       }
-      // Written occurrences contribute vocabulary to their lexical owner.
-      // Their presence is source syntax, not proof of a binding or execution.
+      // A written occurrence contributes the concepts on that occurrence;
+      // unrelated sites do not become one artificial match.
       for (const edge of graph.edges) {
+        if (edge.kind === 'has-declared-signature' && edge.status === 'resolved' && edge.from && edge.to) {
+          const site = byId.get(edge.from), declaration = byId.get(edge.to);
+          const owner = site?.value && typeof site.value === 'object' && !Array.isArray(site.value)
+            ? (site.value as { functionId?: unknown }).functionId : null;
+          const description = declaration?.value && typeof declaration.value === 'object' && !Array.isArray(declaration.value)
+            ? (declaration.value as { description?: unknown }).description : null;
+          if (typeof owner === 'string' && typeof description === 'string') {
+            const text = words([site?.name ?? '', description].join(' '));
+            considerGroups(owner, language.termGroups.flatMap((group, index) => group.some(term => includesTerm(text, words(term))) ? [index] : []));
+          }
+          continue;
+        }
         if (edge.status === 'unresolved' || !edge.from || !edge.to
           || (edge.kind !== 'has-source-occurrence' && edge.kind !== 'calls-site')) continue;
         const site = byId.get(edge.to);
@@ -216,24 +298,26 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
         const value = site.value && typeof site.value === 'object' && !Array.isArray(site.value)
           ? site.value as { argumentIdentifiers?: unknown } : null;
         const identifiers = Array.isArray(value?.argumentIdentifiers) ? value.argumentIdentifiers.filter((item): item is string => typeof item === 'string') : [];
-        const siteText = words([site.name, ...identifiers].join(' '));
-        const matching = terms.filter(term => includesTerm(siteText, term));
-        if (!matching.length) continue;
-        const group = factTerms.get(edge.from) ?? new Set<string>();
-        for (const term of matching) group.add(term);
-        factTerms.set(edge.from, group);
+        const text = words([site.name, ...identifiers].join(' '));
+        const groups = language.termGroups.flatMap((group, index) => group.some(term => includesTerm(text, words(term))) ? [index] : []);
+        considerGroups(edge.from, groups);
       }
       const scored: Array<{ node: GraphNode; score: number; groups: number; nameGroups: number; described: boolean }> = [];
       const questionNameWords = words(input.text).match(/[\p{L}\p{N}_]+/gu) ?? [];
       // The full graph is already in memory in this plan; rescanning the text
       // index would add a second lookup over the same subjects. A selected view
       // may use the candidates already found by its planner.
-      const lexicalCandidates = isIndexedSelectedView(graph) ? indexedTextCandidates(graph, input.text, language.terms) : null;
+      const lexicalCandidates = isIndexedSelectedView(graph) && !isIndexedPlanningView(graph) ? indexedTextCandidates(graph, input.text, language.terms) : null;
       for (const node of eligible) {
         if (lexicalCandidates && !lexicalCandidates.has(node.id)) continue;
         // Source occurrences are good exact subjects, but letting every call
         // site compete with its owner swamps broad feature searches.
         if ((node.kind === 'call-reference' || node.kind === 'variable-reference') && !kinds.size) continue;
+        // Values remain independently selectable when named or scoped. In a
+        // broad feature question, their initializer text alone should not make
+        // every local value compete with the functions that own the behavior.
+        if (!kinds.size && ['parameter', 'argument', 'source-binding'].includes(node.kind)
+          && (!node.name || !containsName(input.text, node.name))) continue;
         const name = words(node.name ?? '');
         const nameGroups = language.termGroups.filter(group => group.some(term => includesTerm(name, words(term)))).length;
         const locator = words(node.locator);
@@ -244,9 +328,12 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
         const description = typeof descriptionValue === 'string' ? words(descriptionValue) : '';
         let score = 0;
         let groups = 0;
-        for (const group of language.termGroups) {
-          if (group.some(term => includesTerm(name, words(term)) || includesTerm(locator, words(term))
-            || includesTerm(raw, words(term)) || includesTerm(classification, words(term)) || factTerms.get(node.id)?.has(words(term)))) groups += 1;
+        const groupIndexes: number[] = [];
+        for (const [groupIndex, group] of language.termGroups.entries()) {
+          // A path is useful search context, but a word in a file name does
+          // not establish that every callable in that file has that subject.
+          if (group.some(term => includesTerm(name, words(term))
+            || includesTerm(raw, words(term)) || includesTerm(classification, words(term)) || factTerms.get(node.id)?.has(words(term)))) { groups += 1; groupIndexes.push(groupIndex); }
         }
         // Inflected forms of one question word are alternatives, not
         // independent evidence. Score each group once per graph field so a
@@ -276,7 +363,7 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
         if (head.some(term => includesTerm(name, words(term)))) score += 6;
         const described = Boolean(description && language.termGroups.every(group => group.some(term => includesTerm(description, words(term)))));
         if (described) fullyDescribedSubjects.add(node.id);
-        if (score) { matchedTermGroups.set(node.id, groups); matchedNameGroups.set(node.id, nameGroups); scored.push({ node, groups, nameGroups, described, score: score
+        if (score) { matchedTermGroups.set(node.id, groups); matchedGroupIndexes.set(node.id, groupIndexes); matchedNameGroups.set(node.id, nameGroups); scored.push({ node, groups, nameGroups, described, score: score
           + (['function', 'method', 'constructor'].includes(node.kind) ? 4 : 0)
           + (sourceFamilies.has(node.id) ? 10 : 0)
           + (familyOf(node).some(family => family.id === node.id) ? 4 : 0) }); }
@@ -288,15 +375,28 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
       });
       const minimum = Math.min(2, language.termGroups.length);
       const intersected = scored.filter(item => item.groups >= minimum);
-      excludedWeakerMatches = intersected.length ? scored.length - intersected.length : 0;
-      subjects = (intersected.length ? intersected : scored).map(item => item.node);
+      // A matched callback is a real lexical part of its owner. Retain an
+      // otherwise weaker owner when the graph records that callback membership,
+      // rather than pretending the callback's source words occur on the owner.
+      const callbackOwners = new Set<string>();
+      const connectedCallbacks = new Set<string>();
+      const scoredById = new Map(scored.map(item => [item.node.id, item]));
+      for (const item of scored) for (const membership of familyOf(item.node)) {
+        if (!membership.roles.includes('callback') || membership.id === item.node.id || !scoredById.has(membership.id)) continue;
+        const concepts = new Set([...(matchedGroupIndexes.get(item.node.id) ?? []), ...(matchedGroupIndexes.get(membership.id) ?? [])]);
+        if (concepts.size >= minimum) { callbackOwners.add(membership.id); connectedCallbacks.add(item.node.id); }
+      }
+      const constrained = intersected.length > 0 || connectedCallbacks.size > 0;
+      const selected = constrained ? scored.filter(item => item.groups >= minimum || callbackOwners.has(item.node.id) || connectedCallbacks.has(item.node.id)) : scored;
+      excludedWeakerMatches = constrained ? scored.length - selected.length : 0;
+      subjects = selected.map(item => item.node);
       selection = 'terms';
     } else if (input.scope) {
       subjects = eligible;
       selection = 'scope';
     }
   }
-  return { subjects, excludedWeakerMatches, matchedTermGroups, matchedNameGroups, fullyDescribedSubjects, selection };
+  return { subjects, excludedWeakerMatches, matchedTermGroups, matchedGroupIndexes, matchedNameGroups, fullyDescribedSubjects, selection };
 }
 
 /** Use the same subject selection for planning and graph filtering. */
@@ -336,7 +436,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   let direction = input.direction ?? 'both';
   const planned = plannedSelections.get(graph)?.get(JSON.stringify(input))
     ?? selectSubjects(graph, input, language, byId, familyOf, includesTerm, preferTestSources, kinds);
-  const { subjects, excludedWeakerMatches, matchedTermGroups, matchedNameGroups, fullyDescribedSubjects, selection } = planned;
+  const { subjects, excludedWeakerMatches, matchedTermGroups, matchedGroupIndexes, matchedNameGroups, fullyDescribedSubjects, selection } = planned;
   // Bind action words to the graph's relationship vocabulary, then use their
   // position relative to the selected subject to choose traversal direction.
   // A symbol reference is never promoted to a call by language matching.
@@ -376,7 +476,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     && !input.relationshipKinds?.length && !input.statuses?.length && !input.direction;
   const ranked = new Map(subjects.map((node, index) => [node.id, index]));
   const parents = new Map(subjects.map(node => [node.id, node.id]));
-  const groupEdges: typeof graph.edges = [];
+  const groupConnections: Array<{ left: string; path: typeof graph.edges }> = [];
   const root = (id: string): string => {
     let current = id;
     while (parents.get(current) !== current) current = parents.get(current)!;
@@ -389,7 +489,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     const byEdgeId = new Map(graph.edges.filter(edge => wantedEdges.has(edge.id)).map(edge => [edge.id, edge]));
     const lexical = new Map<string, typeof graph.edges>();
     const addLink = (left: string, right: string, path: typeof graph.edges): void => {
-      groupEdges.push(...path);
+      groupConnections.push({ left, path });
       const a = root(left), b = root(right);
       if (a !== b) parents.set(b, a);
     };
@@ -408,7 +508,13 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     // Candidate component-instance links remain visibly candidate; they do
     // not become calls or proven runtime paths. Stop at each matched subject
     // so shared dependencies cannot absorb unrelated callers.
-    const handoffKinds = new Set(['contains', 'has-interaction', 'spreads-properties', 'potential-value-from', 'handled_by', 'binds_to', 'calls-site', 'resolves_to', 'potentially-provided-by', 'calls', 'invokes']);
+    // Group only handoffs that connect selected subjects. Conditions, effects
+    // and binding references remain available as path evidence; traversing all
+    // such context while forming groups can join unrelated workflows through a
+    // shared value or helper.
+    const groupingKinds = new Set(['has-interaction', 'registers-interaction', 'spreads-properties', 'potential-value-from', 'potentially-provided-by', 'handled_by', 'binds_to', 'calls', 'calls-site', 'resolves_to', 'invokes', 'dispatches', 'triggers', 'routes-to', 'links_to', 'registered-as', 'handles-method', 'implemented-by']);
+    const handoffKinds = new Set([...BEHAVIOR_PATH_RELATIONS].filter(kind => groupingKinds.has(kind)));
+    for (const kind of ['contains', 'has-argument', 'argument-for', 'has-parameter', 'has-source-binding', 'references-binding']) handoffKinds.add(kind);
     const handoffs = new Map<string, typeof graph.edges>();
     for (const edge of graph.edges) {
       if (!edge.from || !edge.to || !handoffKinds.has(edge.kind) || edge.status === 'unresolved') continue;
@@ -420,6 +526,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       const queue: Array<{ id: string; path: typeof graph.edges }> = [{ id: start.id, path: [] }];
       const seen = new Set([start.id]);
       for (let i = 0; i < queue.length; i++) for (const edge of handoffs.get(queue[i]!.id) ?? []) {
+        if (edge.kind === 'references-binding' && !['parameter', 'argument', 'source-binding'].includes(start.kind)) continue;
         const next = edge.to!;
         if (seen.has(next)) continue;
         seen.add(next);
@@ -427,8 +534,17 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
         const target = byId.get(next);
         if (!target || isWrittenTestSource(target.sourceId) !== isWrittenTestSource(start.sourceId)) continue;
         if (parents.has(next)) { addLink(start.id, next, path); continue; }
-        if (['call-reference', 'component-prop-binding', 'interaction-handler', 'jsx-prop-spread', 'ui-element'].includes(target.kind)
-            || (target.kind === 'function' && target.name === 'callback')) queue.push({ id: next, path });
+        const site = edge.from ? byId.get(edge.from) : undefined;
+        const siteOwner = site?.value && typeof site.value === 'object' && !Array.isArray(site.value)
+          ? (site.value as { functionId?: unknown }).functionId : null;
+        const interactionHandler = edge.kind === 'resolves_to' && site?.kind === 'call-reference'
+          && typeof siteOwner === 'string' && byId.get(siteOwner)?.name === 'callback'
+          && queue[i]!.path.some(item => item.kind === 'has-interaction')
+          && !queue[i]!.path.some(item => item.kind === 'resolves_to' && item.to
+            && ['function', 'method'].includes(byId.get(item.to)?.kind ?? '') && byId.get(item.to)?.name !== 'callback');
+        if (['call-reference', 'component-prop-binding', 'interaction-handler', 'jsx-prop-spread', 'ui-element', 'parameter', 'argument', 'source-binding', 'source-effect', 'dom-interaction', 'route', 'api', 'http-call', 'rpc-call'].includes(target.kind)
+            || (target.kind === 'function' && target.name === 'callback')
+            || (['function', 'method'].includes(target.kind) && (interactionHandler || ['handled_by', 'handles-method'].includes(edge.kind)))) queue.push({ id: next, path });
       }
     }
     // An inline handler/callback is a lexical component of its owner. A
@@ -453,25 +569,6 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       }
     }
   }
-  const pathParents = new Map<string, string>();
-  const pathRoot = (id: string): string => {
-    let current = id;
-    while (pathParents.get(current) !== current) current = pathParents.get(current)!;
-    while (id !== current) { const next = pathParents.get(id)!; pathParents.set(id, current); id = next; }
-    return current;
-  };
-  for (const edge of groupEdges) if (edge.from && edge.to) {
-    if (!pathParents.has(edge.from)) pathParents.set(edge.from, edge.from);
-    if (!pathParents.has(edge.to)) pathParents.set(edge.to, edge.to);
-    const a = pathRoot(edge.from), b = pathRoot(edge.to);
-    if (a !== b) pathParents.set(b, a);
-  }
-  const firstInPath = new Map<string, string>();
-  for (const node of subjects) if (pathParents.has(node.id)) {
-    const component = pathRoot(node.id), first = firstInPath.get(component);
-    if (first) { const a = root(first), b = root(node.id); if (a !== b) parents.set(b, a); }
-    else firstInPath.set(component, node.id);
-  }
   const groupsByRoot = new Map<string, GraphNode[]>();
   for (const node of subjects) {
     const id = root(node.id);
@@ -479,15 +576,15 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     group.push(node); groupsByRoot.set(id, group);
   }
   const edgesByComponent = new Map<string, Map<string, (typeof graph.edges)[number]>>();
-  for (const edge of groupEdges) if (edge.from && pathParents.has(edge.from)) {
-    const component = pathRoot(edge.from), links = edgesByComponent.get(component) ?? new Map();
-    links.set(edge.id, edge); edgesByComponent.set(component, links);
+  for (const connection of groupConnections) {
+    const component = root(connection.left), links = edgesByComponent.get(component) ?? new Map();
+    for (const edge of connection.path) links.set(edge.id, edge);
+    edgesByComponent.set(component, links);
   }
   const connectedComponents = [...groupsByRoot.values()].map(nodes => {
     nodes.sort((a, b) => ranked.get(a.id)! - ranked.get(b.id)!);
     const ids = new Set(nodes.map(node => node.id));
-    const components = new Set(nodes.filter(node => pathParents.has(node.id)).map(node => pathRoot(node.id)));
-    const links = [...components].flatMap(component => [...(edgesByComponent.get(component)?.values() ?? [])]);
+    const links = [...(edgesByComponent.get(root(nodes[0]!.id))?.values() ?? [])];
     const connected = new Set(links.flatMap(edge => [edge.from, edge.to]).filter((id): id is string => Boolean(id)));
     const linkNodes = [...connected].filter(id => !ids.has(id)).map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
     return { subjects: nodes, links, linkNodes, sourceCategory: isWrittenTestSource(nodes[0]!.sourceId) ? 'test-source' : 'other-source', rank: ranked.get(nodes[0]!.id)! };
@@ -496,6 +593,22 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   // entry point. Present the captured paths from each matched subject to its
   // next matched subjects as independently pageable investigations. Shared
   // junctions may appear in more than one path; no synthetic edge is added.
+  const lexicalMatches = (group: { anchorId: string; subjects: GraphNode[] }) => {
+    const groups = new Set(matchedGroupIndexes.get(group.anchorId) ?? []);
+    let callbacks = 0;
+    for (const node of group.subjects) if (node.id !== group.anchorId
+      && familyOf(node).some(member => member.id === group.anchorId && member.roles.includes('callback'))) {
+      callbacks += 1;
+      for (const index of matchedGroupIndexes.get(node.id) ?? []) groups.add(index);
+    }
+    return { groups: groups.size, callbacks };
+  };
+  const lexicalMatchCache = new WeakMap<object, ReturnType<typeof lexicalMatches>>();
+  const lexicalMatch = (group: { anchorId: string; subjects: GraphNode[] }) => {
+    let match = lexicalMatchCache.get(group);
+    if (!match) { match = lexicalMatches(group); lexicalMatchCache.set(group, match); }
+    return match;
+  };
   const connectedGroups = connectedComponents.flatMap(component => {
     if (!component.links.length) return [{ ...component, anchorId: component.subjects[0]!.id }];
     const members = new Map(component.subjects.map(node => [node.id, node]));
@@ -511,7 +624,10 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       for (let at = 0; at < queue.length; at++) for (const edge of outgoing.get(queue[at]!) ?? []) {
         if (!edge.to) continue;
         visitedEdges.push(edge);
-        if (members.has(edge.to)) { found.add(edge.to); continue; }
+        // A matched subject can also be an intermediate step. Keep walking
+        // its actual outgoing connections so a captured endpoint, handler and
+        // implementation do not become separate disconnected fragments.
+        if (members.has(edge.to) && edge.to !== anchor.id) found.add(edge.to);
         if (!expanded.has(edge.to)) { expanded.add(edge.to); queue.push(edge.to); }
       }
       if (!found.size) continue;
@@ -538,14 +654,15 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     return paths;
   }).sort((a, b) => {
     const sourceOrder = Number(a.sourceCategory === 'test-source') - Number(b.sourceCategory === 'test-source');
-    // For subjects with equally strong name matches, a captured path provides more
-    // connected context than an isolated match. Keep all paths pageable and
-    // retain candidate status; connectivity is not proof of relevance.
+    // Rank the number of matched concepts before name-only matches. At equal
+    // concept coverage, a captured path provides more context than an isolated
+    // name; all paths remain pageable and connectivity is not proof of relevance.
     return (preferTestSources ? -sourceOrder : sourceOrder)
       || Number(fullyDescribedSubjects.has(b.anchorId)) - Number(fullyDescribedSubjects.has(a.anchorId))
-      || (matchedNameGroups.get(b.anchorId) ?? 0) - (matchedNameGroups.get(a.anchorId) ?? 0)
+      || lexicalMatch(b).groups - lexicalMatch(a).groups
+      || Number(lexicalMatch(b).callbacks > 0) - Number(lexicalMatch(a).callbacks > 0)
       || Number(b.links.length > 0) - Number(a.links.length > 0)
-      || (matchedTermGroups.get(b.anchorId) ?? 0) - (matchedTermGroups.get(a.anchorId) ?? 0)
+      || (matchedNameGroups.get(b.anchorId) ?? 0) - (matchedNameGroups.get(a.anchorId) ?? 0)
       || a.rank - b.rank;
   });
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
@@ -618,7 +735,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   }
   for (const edge of graph.edges) {
     if (!edge.from || !edge.to || !adjacentIds.has(edge.from)) continue;
-    if (edge.kind === 'has-condition' || edge.kind === 'has-effect'
+    if (edge.kind === 'has-condition' || edge.kind === 'has-effect' || edge.kind === 'has-source-binding'
       || (edge.kind === 'calls-site' && byId.get(edge.to)?.kind === 'call-reference')) {
       const facts = factsBySubject.get(edge.from) ?? [];
       facts.push(edge.to); factsBySubject.set(edge.from, facts);
@@ -689,12 +806,30 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   // branches and loops still retain their separate source-control facts.
   const sourceCallIds = new Set(sourceOwners.flatMap(owner => factsBySubject.get(owner.id) ?? []));
   const callBindings = new Map<string, typeof graph.edges>();
+  const externalDeclarations = new Map<string, Array<{ id: string; locator: string; description: string; edgeId: string; matchedGroups: number[] }>>();
   for (const edge of graph.edges) {
+    if (edge.kind === 'has-declared-signature' && edge.status === 'resolved' && edge.from && edge.to && sourceCallIds.has(edge.from)) {
+      const declaration = byId.get(edge.to);
+      const description = declaration?.value && typeof declaration.value === 'object' && !Array.isArray(declaration.value)
+        ? (declaration.value as { description?: unknown }).description : null;
+      if (declaration && typeof description === 'string' && description) {
+        const matchedGroups = language.termGroups.flatMap((group, index) => group.some(term => includesTerm(words(description), words(term))) ? [index] : []);
+        const list = externalDeclarations.get(edge.from) ?? [];
+        list.push({ id: declaration.id, locator: declaration.locator, description, edgeId: edge.id, matchedGroups });
+        externalDeclarations.set(edge.from, list);
+      }
+      continue;
+    }
     if (edge.kind !== 'resolves_to' || edge.status === 'unresolved' || !edge.from || !edge.to || !sourceCallIds.has(edge.from)) continue;
     const target = byId.get(edge.to);
     if (!target || !['function', 'method', 'constructor'].includes(target.kind)) continue;
     const list = callBindings.get(edge.from) ?? [];
     list.push(edge); callBindings.set(edge.from, list);
+  }
+  for (const edge of graph.edges) if (edge.kind === 'contains-source-call' && edge.status === 'resolved'
+    && edge.from && edge.to && sourceCallIds.has(edge.from)) {
+    const declarations = externalDeclarations.get(edge.to);
+    if (declarations?.length) externalDeclarations.set(edge.from, declarations);
   }
   const sourceFamilies = sourceOwners.flatMap(subject => {
     const facts = (factsBySubject.get(subject.id) ?? []).map(id => byId.get(id)).filter((node): node is GraphNode => Boolean(node));
@@ -706,51 +841,13 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     const projected = facts.map(node => {
       const value = node.value as { kind?: unknown; interpretation?: unknown; nestedCallable?: boolean; sourceLine?: unknown; expressionStructure?: unknown; predicateStructure?: unknown; controlContext?: unknown[]; requirementsComplete?: boolean; requiredConditions?: Array<{ conditionId: string; expectedTruth: boolean }> } | null;
       const effectKind = typeof value?.kind === 'string' ? value.kind : null;
-      const startLine = typeof value?.sourceLine === 'number' ? value.sourceLine : Number(/:(\d+)(?::|$)/u.exec(node.locator)?.[1] ?? 0);
-      const raw = node.raw ?? '';
-      const rawLines = raw.split(/\r?\n/u);
-      const groupsByLine = new Map<number, Set<number>>();
-      const addLineTerms = (text: string, index: number) => {
-        const normalized = words(text);
-        const groups = groupsByLine.get(index) ?? new Set<number>();
-        for (const [groupIndex, group] of language.termGroups.entries()) if (group.some(term => includesTerm(normalized, words(term)))) groups.add(groupIndex);
-        if (groups.size) groupsByLine.set(index, groups);
-      };
-      type SyntaxPart = { kind?: unknown; start?: unknown; text?: unknown; children?: unknown };
-      const structure = (value?.expressionStructure ?? value?.predicateStructure) as SyntaxPart | undefined;
-      let nestedCallable = value?.nestedCallable === true;
-      if (structure && typeof structure.start === 'number') {
-        // Prefer the producer's syntax tokens over rescanning a whole returned
-        // template or callback body; comments are not syntax-token evidence.
-        const starts = [0];
-        for (let i = 0; i < raw.length; i++) if (raw[i] === '\n') starts.push(i + 1);
-        const lineIndex = (offset: number) => {
-          let low = 0, high = starts.length;
-          while (low < high) { const middle = (low + high) >>> 1; if (starts[middle]! <= offset) low = middle + 1; else high = middle; }
-          return Math.max(0, low - 1);
-        };
-        const stack: SyntaxPart[] = [structure];
-        while (stack.length) {
-          const part = stack.pop()!;
-          // Function bodies have their own graph owners. Text nested in a
-          // callback must not be attributed to creation of the callback.
-          if (typeof part.kind === 'string' && ['ArrowFunction', 'FunctionExpression', 'FunctionDeclaration', 'MethodDeclaration'].includes(part.kind)) { nestedCallable = true; continue; }
-          if (Array.isArray(part.children) && part.children.length) { stack.push(...part.children as SyntaxPart[]); continue; }
-          if (typeof part.text !== 'string' || typeof part.start !== 'number') continue;
-          const first = lineIndex(Math.max(0, part.start - structure.start));
-          for (const [index, text] of part.text.split(/\r?\n/u).entries()) addLineTerms(text, first + index);
-        }
-      } else rawLines.forEach(addLineTerms);
-      const lines = [...groupsByLine].sort(([left], [right]) => left - right).flatMap(([index, groups]) => {
-        const text = rawLines[index];
-        return text === undefined ? [] : [{ text: text.trim(), line: startLine ? startLine + index : null, groups: groups.size, groupIndexes: [...groups] }];
-      });
+      const { lines, nestedCallable } = matchedSourceLines(node, language.termGroups, includesTerm);
       const best = lines.reduce((maximum, line) => Math.max(maximum, line.groups), 0);
       return { id: node.id, kind: node.kind, effectKind,
         locator: node.locator, sourceId: node.sourceId, evidenceIds: node.evidenceIds ?? [], expression: node.raw,
         relationship: factRelations.get(node.id) ?? null,
         interpretation: typeof value?.interpretation === 'string' ? value.interpretation : null,
-        nestedCallable,
+        nestedCallable, externalDeclarations: externalDeclarations.get(node.id) ?? [],
         matchedLines: lines.filter(line => line.groups === best),
         controlContext: value?.controlContext ?? [], requirementsComplete: value?.requirementsComplete ?? true,
         matchedKind: requestedFactKinds.includes(node.kind),
@@ -793,10 +890,45 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       coverage: summaryBySubject.has(subject.id) ? byId.get(summaryBySubject.get(subject.id)!)?.value ?? null : null,
       focusedFacts, facts: selectedFacts }];
   });
+  // Keep the compiler-bound local definitions behind selected source facts as
+  // a graph path, including transitive initializer references. The links say
+  // what a source expression references, not what executed or what value it had.
+  const roots = sourceFamilies.flatMap(family => family.facts.filter(fact => (fact.matchedLines.length > 0
+    || fact.externalDeclarations.some(declaration => declaration.matchedGroups.length > 0))
+    && (fact.kind === 'source-condition' || (fact.kind === 'source-effect'
+      && ['call', 'write', 'return', 'throw'].includes(fact.effectKind ?? '')
+      && (fact.effectKind !== 'call' || fact.controlContext.length > 0)))).map(fact => fact.id));
+  let bindingGraph = indexedBindingGraph(graph, roots);
+  if (!bindingGraph) {
+    const bindingEdges = new Map<string, typeof graph.edges>();
+    for (const edge of graph.edges) if (edge.kind === 'references-binding' && edge.status === 'resolved' && edge.from && edge.to
+        && byId.get(edge.to)?.kind === 'source-binding') {
+      const list = bindingEdges.get(edge.from) ?? []; list.push(edge); bindingEdges.set(edge.from, list);
+    }
+    const pending = [...new Set(roots)], visited = new Set(pending), nodes = new Map<string, GraphNode>();
+    const selectedEdges = new Map<string, (typeof graph.edges)[number]>();
+    for (let at = 0; at < pending.length; at++) for (const edge of bindingEdges.get(pending[at]!) ?? []) {
+      const target = byId.get(edge.to!);
+      if (!target) continue;
+      selectedEdges.set(edge.id, edge); nodes.set(target.id, target);
+      if (!visited.has(target.id)) { visited.add(target.id); pending.push(target.id); }
+    }
+    bindingGraph = { nodes: [...nodes.values()], edges: [...selectedEdges.values()] };
+  }
   const directEdges = edges.filter(edge => traversed.has(edge.id));
   // Source occurrences are distinct even when they share a callee; present
   // them in source order before bound declaration relationships.
   directEdges.sort((a, b) => {
+    // Keep all callers and callees, but do not let test fixtures bury the
+    // product path when the question does not ask about tests. Apply the same
+    // source preference already used for broad subject selection before paging.
+    const endpoint = (edge: typeof a) => direction === 'inbound'
+      || (direction === 'both' && edge.to && subjectIds.has(edge.to) && (!edge.from || !subjectIds.has(edge.from)))
+      ? edge.from : edge.to;
+    const leftSource = byId.get(endpoint(a) ?? '')?.sourceId ?? '';
+    const rightSource = byId.get(endpoint(b) ?? '')?.sourceId ?? '';
+    const sourceOrder = Number(isWrittenTestSource(leftSource)) - Number(isWrittenTestSource(rightSource));
+    if (sourceOrder) return preferTestSources ? -sourceOrder : sourceOrder;
     if (a.kind === 'calls-site' && b.kind !== 'calls-site') return -1;
     if (a.kind !== 'calls-site' && b.kind === 'calls-site') return 1;
     if (a.kind !== 'calls-site') return 0;
@@ -805,12 +937,38 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     const fileOrder = (left?.sourceId ?? '').localeCompare(right?.sourceId ?? '');
     return fileOrder || Number((left?.value as any)?.sourceOffset ?? 0) - Number((right?.value as any)?.sourceOffset ?? 0);
   });
+  const relationships = directEdges.slice(offset, offset + limit).map(edge => ({ edge,
+    from: edge.from ? byId.get(edge.from) ?? null : null,
+    to: edge.to ? byId.get(edge.to) ?? null : null }));
+  // A page of relationship results is also a navigable path projection. It
+  // references the same graph records and keeps repeated nodes/cycles visible;
+  // it never substitutes source order for established relationship direction.
+  const pathSteps: Array<{ edgeId: string; parentId: string; nodeId: string; depth: number; reference: boolean }> = [];
+  if (subject && !language.negated) {
+    const pending = [{ id: subject.id, depth: 0 }], seenNodes = new Set([subject.id]), seenEdges = new Set<string>();
+    const incident = new Map<string, typeof relationships>();
+    for (const item of relationships) for (const id of [direction !== 'inbound' ? item.edge.from : null, direction !== 'outbound' ? item.edge.to : null]) if (id && item.edge.status !== 'unresolved') {
+      const list = incident.get(id) ?? []; list.push(item); incident.set(id, list);
+    }
+    for (let at = 0; at < pending.length; at++) for (const { edge } of incident.get(pending[at]!.id) ?? []) {
+      if (!edge.from || !edge.to || seenEdges.has(edge.id)) continue;
+      const current = pending[at]!;
+      const neighbor = direction !== 'inbound' && edge.from === current.id ? edge.to
+        : direction !== 'outbound' && edge.to === current.id ? edge.from : null;
+      if (!neighbor) continue;
+      seenEdges.add(edge.id);
+      const reference = seenNodes.has(neighbor);
+      pathSteps.push({ edgeId: edge.id, parentId: current.id, nodeId: neighbor, depth: current.depth + 1, reference });
+      if (!reference) { seenNodes.add(neighbor); pending.push({ id: neighbor, depth: current.depth + 1 }); }
+    }
+  }
+  const pathEdgeIds = new Set(pathSteps.map(step => step.edgeId));
   const navigation = { operation: operationToken?.lemma ?? null, direction,
     relationshipKinds: [...relationshipKinds], polarity: language.negated ? 'negative' : 'positive',
     total: directEdges.length,
-    relationships: directEdges.slice(offset, offset + limit).map(edge => ({ edge,
-      from: edge.from ? byId.get(edge.from) ?? null : null,
-      to: edge.to ? byId.get(edge.to) ?? null : null })) };
+    relationships,
+    ...(subject && !language.negated ? { path: { rootId: subject.id, steps: pathSteps,
+      remainingEdgeIds: relationships.filter(item => !pathEdgeIds.has(item.edge.id)).map(item => item.edge.id) } } : {}) };
   let comparison: Record<string, unknown> | null = null;
   let comparisonTotal = 0;
   if (language.negated && !relationshipKinds.size) {
@@ -917,10 +1075,13 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     ...(groupedSelection ? { connectedGroupTotal: connectedGroups.length, connectedGroups: groupPage.map(group => ({
       anchorId: group.anchorId, subjects: group.subjects, links: group.links, linkNodes: group.linkNodes, sourceCategory: group.sourceCategory,
       ranking: { descriptionMatchesAllTerms: fullyDescribedSubjects.has(group.anchorId), matchedNameGroups: matchedNameGroups.get(group.anchorId) ?? 0,
-        matchedTermGroups: matchedTermGroups.get(group.anchorId) ?? 0, connected: connectedAtRanking.get(group) ?? false },
+        matchedTermGroups: matchedTermGroups.get(group.anchorId) ?? 0,
+        matchedLexicalTermGroups: lexicalMatch(group).groups,
+        matchedConnectedTermGroups: group.subjects.reduce((max, node) => Math.max(max, matchedTermGroups.get(node.id) ?? 0), 0),
+        connected: connectedAtRanking.get(group) ?? false },
     })) } : {}),
     families,
-    sourceFamilies,
+    sourceFamilies, bindingGraph,
     sourceFamilyTotal: familyOwners.filter(subject => factsBySubject.has(subject.id)).length,
     nodeTotal: allNodes.length,
     nodes: allNodes.slice(offset, offset + limit),

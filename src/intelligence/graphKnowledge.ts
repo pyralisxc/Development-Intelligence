@@ -18,6 +18,10 @@ export type NodeTrait = 'container' | 'callable' | 'symbol' | 'source-site'
 export type RealizationFacet = 'human' | 'agent' | 'transport'
   | 'implementation' | 'persistence' | 'provider';
 
+/** Relationships already used to follow captured interaction behavior.
+ * Individual investigations choose their own roots, direction and evidence. */
+export const BEHAVIOR_PATH_RELATIONS: ReadonlySet<string> = new Set(['has-interaction', 'spreads-properties', 'potential-value-from', 'registers-interaction', 'potentially-provided-by', 'handled_by', 'binds_to', 'calls', 'calls-site', 'resolves_to', 'invokes', 'dispatches', 'triggers', 'routes-to', 'links_to', 'registered-as', 'handles-method', 'implemented-by', 'has-condition', 'has-effect', 'requires-condition', 'guarded-by', 'under-condition', 'declares-state', 'writes', 'reads', 'persists']);
+
 /** Shared role vocabulary; an interaction retains its concrete graph kind. */
 const INTERACTION_POINT_KINDS = new Set(['ui-element', 'dom-interaction', 'route', 'api', 'mcp-tool', 'tool-registration']);
 const ENDPOINT_KINDS = new Set(['route', 'api', 'mcp-tool']);
@@ -60,6 +64,7 @@ const NODE_TRAITS: Record<string, NodeTrait[]> = {
   'source-catch-return': ['source-site', 'effect', 'source-control'],
   'source-control-summary': ['source-site', 'source-control'],
   'source-condition': ['source-site', 'predicate', 'source-control'],
+  'source-binding': ['source-site', 'symbol'],
   'source-effect': ['source-site', 'effect', 'source-control'],
   'source-located-dataflow-node': ['source-site'],
   'state-write': ['source-site', 'effect'], 'state-binding': ['resource'],
@@ -101,6 +106,7 @@ function define(kinds: readonly string[], family: KnowledgeFamily,
 define(['contains', 'declares',
   'reexports', 'member-of', 'part-of'], 'composition', 'composition-context', false, 'syntax');
 define(['contains-source-span'], 'composition', 'composition-context', false, 'syntax', ['source-site'], ['source-site']);
+define(['contains-source-call'], 'composition', 'composition-context', false, 'syntax');
 define(['has-source-occurrence'], 'reference', 'dependency', false, 'syntax', [], ['source-site']);
 define(['dataflow-reported'], 'reference', 'dependency', false, 'not-established', ['source-site'], ['source-site']);
 // An established state declaration is a positive technical realization fact,
@@ -136,7 +142,9 @@ define(['callback-argument'], 'reference', 'dependency', false, 'syntax',
 define(['calls'], 'invocation', 'execution', true, 'bound-source', ['callable'], ['callable']);
 // A call occurrence is established by syntax even when its target cannot be bound.
 define(['calls-site'], 'invocation', 'execution', false, 'syntax', ['callable'], ['source-site']);
-define(['has-parameter', 'has-argument', 'argument-for'], 'composition', 'composition-context', false, 'syntax');
+define(['has-parameter', 'has-argument', 'argument-for', 'has-source-binding'], 'composition', 'composition-context', false, 'syntax');
+define(['references-binding'], 'composition', 'composition-context', false, 'bound-source');
+define(['has-declared-signature'], 'reference', 'dependency', false, 'bound-source');
 define(['invokes', 'handled_by', 'dispatches', 'triggers', 'routes-to',
   'automated-by', 'constructs'], 'invocation', 'execution', true, 'bound-source');
 define(['has-source-control'], 'condition', 'composition-context', false, 'source-conditional',

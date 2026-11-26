@@ -16,6 +16,8 @@ export interface SourceControlContext {
   sourceLine: number;
   sourceOffset: number;
   expression?: string;
+  expressionStart?: number;
+  expressionEnd?: number;
   caseValue?: string;
 }
 export interface SourceEffect {
@@ -32,6 +34,21 @@ export interface SourceEffect {
   requirementsComplete?: boolean;
   /** Syntax presence is established; runtime execution is not. */
   runtimeObserved: false;
+}
+/** A local declaration and initializer as written; this does not assert a runtime value. */
+export interface SourceBinding {
+  name: string;
+  sourceLine: number;
+  sourceOffset: number;
+  identifierOffset: number;
+  sourceEnd: number;
+  declaration: string;
+  expressionStructure: SourceExpression;
+  initializerStart: number | null;
+  initializerEnd: number | null;
+  requiredConditions: SourceRequirement[];
+  controlContext: SourceControlContext[];
+  requirementsComplete: boolean;
 }
 export interface SourceCondition {
   id: string;
@@ -64,13 +81,16 @@ function digest(value: string): string {
 function expression(node: ts.Node | undefined, parsed: ts.SourceFile): string {
   return node ? node.getText(parsed) : '';
 }
-function structure(node: ts.Node, parsed: ts.SourceFile): SourceExpression {
-  const children: SourceExpression[] = [];
-  ts.forEachChild(node, child => { children.push(structure(child, parsed)); });
+function structure(node: ts.Node, parsed: ts.SourceFile, excludeNestedCallables = false): SourceExpression {
   const fact: SourceExpression = {
     kind: ts.SyntaxKind[node.kind] ?? String(node.kind),
     start: node.getStart(parsed), end: node.getEnd(),
   };
+  // A callable nested in an initializer owns its body separately. Retain its
+  // exact source span without copying that entire body into the binding.
+  if (excludeNestedCallables && ts.isFunctionLike(node)) return fact;
+  const children: SourceExpression[] = [];
+  ts.forEachChild(node, child => { children.push(structure(child, parsed, excludeNestedCallables)); });
   if (children.length) fact.children = children;
   else fact.text = node.getText(parsed);
   return fact;
@@ -95,6 +115,7 @@ function definitelyTerminates(node: ts.Statement): boolean {
 export interface SourceConditionStatementFacts {
   branches: SourceCondition[];
   effects: SourceEffect[];
+  bindings: SourceBinding[];
   unknownConstructs: Array<{line: number; kind: string}>;
   boundedOut: boolean;
   completeForSupportedStatements: boolean;
@@ -104,6 +125,7 @@ export function analyzeSourceConditionStatements(
 ): SourceConditionStatementFacts {
   const branches: SourceCondition[] = [];
   const effects: SourceEffect[] = [];
+  const bindings: SourceBinding[] = [];
   const unknownConstructs: Array<{ line: number; kind: string }> = [];
   const boundedOut = false;
   const lineOf = (node: ts.Node) => parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
@@ -219,6 +241,11 @@ export function analyzeSourceConditionStatements(
         }
       } else if (ts.isVariableStatement(stmt)) {
         for (const decl of stmt.declarationList.declarations) {
+          if (ts.isIdentifier(decl.name)) bindings.push({ name: decl.name.text, sourceLine: lineOf(decl),
+            sourceOffset: decl.getStart(parsed), identifierOffset: decl.name.getStart(parsed), sourceEnd: decl.getEnd(),
+            declaration: decl.getText(parsed), expressionStructure: structure(decl, parsed, true), initializerStart: decl.initializer?.getStart(parsed) ?? null,
+            initializerEnd: decl.initializer?.getEnd() ?? null, requiredConditions: [...active], controlContext: [...context],
+            requirementsComplete: complete && context.length === 0 });
           scanExpression(decl.initializer, active, context, complete);
           if (decl.initializer && (ts.isCallExpression(decl.initializer)
             || (ts.isAwaitExpression(decl.initializer) && ts.isCallExpression(decl.initializer.expression)))) {
@@ -231,7 +258,7 @@ export function analyzeSourceConditionStatements(
         unknownConstructs.push({ line: lineOf(stmt), kind: ts.SyntaxKind[stmt.kind] ?? 'control-flow' });
         const visitBody = (body: ts.Statement, kind: string, controlExpression?: ts.Node) => {
           const part: SourceControlContext = { kind, sourceLine: lineOf(body), sourceOffset: body.getStart(parsed),
-            ...(controlExpression ? { expression: expression(controlExpression, parsed) } : {}) };
+            ...(controlExpression ? { expression: expression(controlExpression, parsed), expressionStart: controlExpression.getStart(parsed), expressionEnd: controlExpression.getEnd() } : {}) };
           scan(ts.isBlock(body) ? [...body.statements] : [body], active, depth + 1, [...context, part], false);
         };
         if (ts.isTryStatement(stmt)) {
@@ -242,7 +269,7 @@ export function analyzeSourceConditionStatements(
           for (const clause of stmt.caseBlock.clauses) {
             const part: SourceControlContext = { kind: ts.isCaseClause(clause) ? 'case' : 'default',
               sourceLine: lineOf(clause), sourceOffset: clause.getStart(parsed),
-              expression: expression(stmt.expression, parsed),
+              expression: expression(stmt.expression, parsed), expressionStart: stmt.expression.getStart(parsed), expressionEnd: stmt.expression.getEnd(),
               ...(ts.isCaseClause(clause) ? { caseValue: expression(clause.expression, parsed) } : {}) };
             scan([...clause.statements], active, depth + 1, [...context, part], false);
           }
@@ -259,7 +286,7 @@ export function analyzeSourceConditionStatements(
   scan(statements, [], 0);
 
   return {
-    branches, effects, unknownConstructs, boundedOut,
+    branches, effects, bindings, unknownConstructs, boundedOut,
     completeForSupportedStatements: !boundedOut && unknownConstructs.length === 0,
   };
 }

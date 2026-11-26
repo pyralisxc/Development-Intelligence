@@ -2,6 +2,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import type { GraphNode, GraphEdge } from '../types.js';
 import { observation, resolution } from './model.js';
+import { templateTarget } from './analyzers/typescriptBehavior.js';
 
 /**
  * Optional, bounded compiler-symbol lens over the existing graph.
@@ -130,7 +131,44 @@ export function compilerTypeScriptReferences(input: {
   const propBindings = new Map<string, GraphNode>();
   const initialBindings = new Map<string, GraphNode>();
   const jsxSpreads = new Map<string, GraphNode>();
+  const localBindings = new Map<string, GraphNode>();
+  type FactRange = { start: number; end: number; fact: GraphNode; context: boolean };
+  const factRanges = new Map<string, FactRange[]>();
+  const addRange = (file: string, fact: GraphNode, value: unknown, context: boolean) => {
+    const range = value && typeof value === 'object' ? value as { start?: unknown; end?: unknown } : null;
+    if (!range || typeof range.start !== 'number' || typeof range.end !== 'number' || range.end <= range.start) return;
+    const list = factRanges.get(file) ?? [];
+    list.push({ start: range.start, end: range.end, fact, context }); factRanges.set(file, list);
+  };
+  const containsCallable = (value: unknown): boolean => {
+    const pending: unknown[] = [value];
+    while (pending.length) {
+      const item = pending.pop();
+      if (!item || typeof item !== 'object') continue;
+      const part = item as { kind?: unknown; children?: unknown };
+      if (typeof part.kind === 'string' && ['ArrowFunction', 'FunctionExpression', 'FunctionDeclaration', 'MethodDeclaration'].includes(part.kind)) return true;
+      if (Array.isArray(part.children)) pending.push(...part.children);
+    }
+    return false;
+  };
   for (const node of input.nodes) {
+    if (node.sourceId.startsWith('repo:') && node.value && typeof node.value === 'object' && !Array.isArray(node.value)) {
+      const file = node.sourceId.slice(5);
+      const value = node.value as { identifierOffset?: unknown; sourceOffset?: unknown; sourceEnd?: unknown; expressionStructure?: unknown; predicateStructure?: unknown; controlContext?: unknown };
+      if (node.kind === 'source-binding' && typeof value.identifierOffset === 'number') {
+        localBindings.set([file, value.identifierOffset].join('\0'), node);
+        addRange(file, node, { start: value.sourceOffset, end: value.sourceEnd }, false);
+      } else if (node.kind === 'source-effect' || node.kind === 'source-condition') {
+        const expression = node.kind === 'source-effect' ? value.expressionStructure : value.predicateStructure;
+        if (node.kind !== 'source-effect' || !containsCallable(expression)) addRange(file, node, expression, false);
+        if (Array.isArray(value.controlContext)) for (const context of value.controlContext) {
+          if (context && typeof context === 'object') {
+            const item = context as { expressionStart?: unknown; expressionEnd?: unknown };
+            addRange(file, node, { start: item.expressionStart, end: item.expressionEnd }, true);
+          }
+        }
+      }
+    }
     if (node.kind === 'jsx-prop-spread' && node.sourceId.startsWith('repo:') && node.value && typeof node.value === 'object') {
       const offset = (node.value as { sourceOffset?: unknown }).sourceOffset;
       if (typeof offset === 'number') jsxSpreads.set([node.sourceId.slice(5), offset].join('\0'), node);
@@ -160,12 +198,34 @@ export function compilerTypeScriptReferences(input: {
 
   try {
     const tracked = new Set(relatives);
-    const program = ts.createProgram(relatives.map(relative => path.join(input.root, relative)), {
-      ...input.options, noEmit: true,
-    });
+    const options = { ...input.options, noEmit: true };
+    // TypeScript resolves implicit @types directories from the compiler host's
+    // current directory. DI may be launched from a different checkout or by a
+    // worker, so use the repository being analyzed rather than the process cwd.
+    const host = ts.createCompilerHost(options);
+    host.getCurrentDirectory = () => path.resolve(input.root);
+    const program = ts.createProgram(relatives.map(relative => path.join(input.root, relative)), options, host);
     const checker = program.getTypeChecker();
     const resultNodes = new Map<string, GraphNode>();
     const resultEdges: GraphEdge[] = [];
+    // Join the call occurrence to its enclosing source effect by exact AST
+    // span and owner. This keeps the occurrence's signature attached to the
+    // same conditional effect, rather than treating them as unrelated facts.
+    for (const effect of input.nodes) {
+      if (effect.kind !== 'source-effect' || !effect.sourceId.startsWith('repo:') || !effect.value || typeof effect.value !== 'object') continue;
+      const value = effect.value as { kind?: unknown; functionId?: unknown; expressionStructure?: unknown };
+      if (value.kind !== 'call' || typeof value.functionId !== 'string') continue;
+      const root = value.expressionStructure as { kind?: unknown; start?: unknown; end?: unknown; children?: Array<{ kind?: unknown; start?: unknown; end?: unknown }> } | undefined;
+      const call = root?.kind === 'CallExpression' ? root : root?.kind === 'AwaitExpression'
+        ? root.children?.find(child => child.kind === 'CallExpression') : undefined;
+      if (typeof call?.start !== 'number' || typeof call.end !== 'number') continue;
+      const site = callSites.get([effect.sourceId.slice(5), call.start, call.end].join('\0'));
+      if (!site || (site.value as { functionId?: unknown } | undefined)?.functionId !== value.functionId) continue;
+      resultEdges.push(resolution({ from: effect.id, to: site.id, kind: 'contains-source-call',
+        strategy: 'exact-source-call-span.v1', status: 'resolved', confidence: 1,
+        evidence: [effect.locator, site.locator], evidenceIds: [...(effect.evidenceIds ?? []), ...(site.evidenceIds ?? [])],
+        layer: 'structural', checkpoint: false }));
+    }
     const formalParameter = (parameter: ts.ParameterDeclaration, index: number, callable: GraphNode): GraphNode | null => {
       const source = parameter.getSourceFile();
       const file = relativeFile(input.root, source.fileName);
@@ -206,11 +266,54 @@ export function compilerTypeScriptReferences(input: {
       const source = program.getSourceFile(path.join(input.root, file));
       const owner = input.fileNodes.get(file);
       if (!source || !owner || program.getSyntacticDiagnostics(source).length > 0) continue;
+      const identifiers: ts.Identifier[] = [];
       const visit = (node: ts.Node): void => {
         if (resolvedBindings >= budget.maxBindings) return;
+        if (ts.isIdentifier(node)) identifiers.push(node);
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           if (ts.isIdentifier(node.expression) || ts.isPropertyAccessExpression(node.expression)) {
             const site = ts.isCallExpression(node) ? callSites.get([file, node.getStart(source), node.getEnd()].join('\0')) : undefined;
+            // Resolve an immutable local target through the compiler's actual
+            // binding, so fetch(urlVariable) receives the same graph treatment
+            // as an inline literal or template without guessing by name.
+            if (site && ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'fetch'
+              && node.arguments[0] && ts.isIdentifier(node.arguments[0])) {
+              const fetchSymbol = checker.getSymbolAtLocation(node.expression);
+              const locallyDefinedFetch = fetchSymbol?.declarations?.some(declaration => {
+                const location = relativeFile(input.root, declaration.getSourceFile().fileName);
+                return location !== null && tracked.has(location);
+              }) ?? false;
+              const binding = checker.getSymbolAtLocation(node.arguments[0])?.valueDeclaration;
+              if (!locallyDefinedFetch && binding && ts.isVariableDeclaration(binding) && ts.isVariableDeclarationList(binding.parent)
+                && (binding.parent.flags & ts.NodeFlags.Const) !== 0 && binding.getSourceFile() === source && binding.initializer) {
+                const target = templateTarget(binding.initializer, source);
+                const callerId = (site.value as { functionId?: string } | undefined)?.functionId;
+                if (target && callerId) {
+                  let method = 'GET';
+                  const init = node.arguments[1];
+                  if (init && !ts.isObjectLiteralExpression(init)) method = 'UNKNOWN';
+                  else if (init && ts.isObjectLiteralExpression(init)) {
+                    for (const property of init.properties) {
+                      if (ts.isSpreadAssignment(property) || (property.name && ts.isComputedPropertyName(property.name))) method = 'UNKNOWN';
+                      else if (property.name && property.name.getText(source).replace(/^['"]|['"]$/gu, '') === 'method') {
+                        method = ts.isPropertyAssignment(property) && ts.isStringLiteralLike(property.initializer)
+                          ? property.initializer.text.toUpperCase() : 'UNKNOWN';
+                      }
+                    }
+                  }
+                  const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+                  const declarationLine = source.getLineAndCharacterOfPosition(binding.getStart(source)).line + 1;
+                  const locator = `${file}:${line}:fetch-offset-${node.getStart(source)}`;
+                  const call = observation({ sourceId: `repo:${file}`, kind: 'http-call', locator, name: `${method} ${target.text}`,
+                    field: 'http', value: { method, url: target.text, dynamic: target.dynamic, targetBinding: `${file}:${declarationLine}`,
+                      producer: TYPESCRIPT_COMPILER_LENS }, layer: 'representation', checkpoint: false });
+                  resultNodes.set(call.id, call);
+                  resultEdges.push(resolution({ from: callerId, to: call.id, kind: 'invokes', strategy: 'typescript-checker-fetch-binding.v1',
+                    status: 'resolved', confidence: 1, evidence: [site.locator, `${file}:${declarationLine}`, locator], layer: 'representation', checkpoint: false }));
+                  resolvedBindings += 1;
+                }
+              }
+            }
             const referenced = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node.expression)
               ? node.expression.name : node.expression);
             const calleeSymbol = referenced && (referenced.flags & ts.SymbolFlags.Alias)
@@ -246,6 +349,40 @@ export function compilerTypeScriptReferences(input: {
             const signature = checker.getResolvedSignature(node);
             const declaration = signature?.declaration;
             const found = declaration ? declarationLocation(input.root, declaration, tracked) : null;
+            // Preserve the installed dependency's declared signature and its
+            // documentation as external evidence, not as tracked source or
+            // proof of a runtime implementation. The declaration is shared
+            // by every call site that the checker binds to that signature.
+            if (site && declaration && !found && !ts.isJSDocSignature(declaration)) {
+              const declaredSource = declaration.getSourceFile();
+              const normalized = declaredSource.fileName.split(path.sep).join('/');
+              const marker = '/node_modules/';
+              const at = normalized.indexOf(marker);
+              if (at >= 0 && declaredSource.isDeclarationFile) {
+                // Preserve nested package/version paths so two installed
+                // copies of the same dependency cannot collapse to one node.
+                const relative = relativeFile(input.root, declaredSource.fileName);
+                const dependencyPath = relative?.includes('node_modules/') ? relative : normalized.slice(at + 1);
+                const position = declaration.getStart(declaredSource);
+                const line = declaredSource.getLineAndCharacterOfPosition(position).line + 1;
+                const locator = `dependency:${dependencyPath}:${line}`;
+                const description = ts.displayPartsToString(signature?.getDocumentationComment(checker) ?? []);
+                const declaredName = 'name' in declaration && declaration.name ? declaration.name.getText(declaredSource) : null;
+                const external = observation({ identity: ['dependency-signature', dependencyPath, position],
+                  sourceId: 'repository', kind: 'external-signature', locator,
+                  name: declaredName ?? calleeSymbol?.getName() ?? node.expression.getText(source), field: 'declaration',
+                  raw: declaration.getText(declaredSource),
+                  value: { declarationPath: dependencyPath, declarationOffset: position, description,
+                    producer: TYPESCRIPT_COMPILER_LENS, sourceOnly: true, runtimeTargetEstablished: false },
+                  layer: 'structural', checkpoint: false });
+                resultNodes.set(external.id, external);
+                resultEdges.push(resolution({ from: site.id, to: external.id, kind: 'has-declared-signature',
+                  strategy: TYPESCRIPT_COMPILER_LENS, status: 'resolved', confidence: 1,
+                  evidence: [site.locator, locator, 'TypeScript resolved the declared signature; the runtime target is not established'],
+                  layer: 'structural', checkpoint: false }));
+                resolvedBindings += 1;
+              }
+            }
             if (found) {
               const targets = native.get([found.file, found.name, found.line].join('\0')) ?? [];
               if (targets.length === 1) {
@@ -370,6 +507,41 @@ export function compilerTypeScriptReferences(input: {
         ts.forEachChild(node, visit);
       };
       visit(source);
+      // Bind syntactic identifier occurrences through the compiler's own
+      // symbol resolution. Control-expression references retain their exact
+      // occurrence locations; they are not assertions of runtime execution.
+      const ranges = (factRanges.get(file) ?? []).sort((a, b) => a.start - b.start || a.end - b.end);
+      const active: FactRange[] = [];
+      const links = new Map<string, { from: GraphNode; to: GraphNode; context: boolean; locations: Set<string> }>();
+      let nextRange = 0;
+      for (const identifier of identifiers.sort((a, b) => a.getStart(source) - b.getStart(source))) {
+        const position = identifier.getStart(source);
+        while (nextRange < ranges.length && ranges[nextRange]!.start <= position) active.push(ranges[nextRange++]!);
+        for (let i = active.length - 1; i >= 0; i--) if (active[i]!.end <= position) active.splice(i, 1);
+        if (!active.length || (ts.isVariableDeclaration(identifier.parent) && identifier.parent.name === identifier)) continue;
+        const symbol = checker.getSymbolAtLocation(identifier);
+        const declaration = symbol?.valueDeclaration;
+        if (!declaration || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) continue;
+        const declarationSource = declaration.getSourceFile();
+        const declarationFile = relativeFile(input.root, declarationSource.fileName);
+        const target = declarationFile ? localBindings.get([declarationFile, declaration.name.getStart(declarationSource)].join('\0')) : undefined;
+        if (!target) continue;
+        const location = source.getLineAndCharacterOfPosition(position);
+        for (const range of active) {
+          if (range.fact.id === target.id) continue;
+          const key = [range.fact.id, target.id, range.context ? 'control' : 'expression'].join('\0');
+          const link = links.get(key) ?? { from: range.fact, to: target, context: range.context, locations: new Set<string>() };
+          link.locations.add(`${file}:${location.line + 1}:${location.character + 1}`); links.set(key, link);
+        }
+      }
+      for (const link of links.values()) {
+        if (resolvedBindings >= budget.maxBindings) break;
+        resultEdges.push(resolution({ from: link.from.id, to: link.to.id,
+          kind: 'references-binding', strategy: link.context ? 'typescript-checker-control-binding' : 'typescript-checker-expression-binding',
+          confidence: 1, status: 'resolved', evidence: [...link.locations, link.to.locator],
+          evidenceIds: [...(link.from.evidenceIds ?? []), ...(link.to.evidenceIds ?? [])], layer: 'structural', checkpoint: false }));
+        resolvedBindings += 1;
+      }
     }
     for (const [key, sites] of componentCalls) for (const site of sites) for (const binding of componentBindings.get(key) ?? []) {
       resultEdges.push(resolution({ from: site.id, to: binding.id, kind: 'potentially-provided-by',

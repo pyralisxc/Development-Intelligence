@@ -39,7 +39,7 @@ export class QuerySourceSearchFilters {
       return filter.bits;
     });
     const add = (bit: number): boolean => {
-      for (const bits of targets) bits[bit >>> 3] |= 1 << (bit & 7);
+      for (const bits of targets) bits[bit >>> 3] = (bits[bit >>> 3] ?? 0) | (1 << (bit & 7));
       return true;
     };
     for (const text of texts(record, field)) {

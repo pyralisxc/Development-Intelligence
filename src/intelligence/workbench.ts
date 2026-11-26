@@ -1688,6 +1688,10 @@ export async function queryWorkbenchRequest(input: {
           .filter((fact: any) => fact.matchedKind || (fact.effectKind && result.interpretation.requestedEffects.some((effect: string) => fact.effectKind.split('-').includes(effect))))
         : [];
       const related = result.navigation.relationships.filter((item: any) => item.edge.status === 'resolved' || item.edge.status === 'candidate');
+      const effectsByCall = new Map<string, Set<string>>();
+      for (const edge of graph.edges) if (edge.kind === 'contains-source-call' && edge.status === 'resolved' && edge.to && edge.from) {
+        const effects = effectsByCall.get(edge.to) ?? new Set<string>(); effects.add(edge.from); effectsByCall.set(edge.to, effects);
+      }
       // A call occurrence and a source effect are distinct graph facts. Join
       // only the same callable, file and exact syntax offset; a declaration
       // edge may represent several sites with different guards.
@@ -1696,9 +1700,10 @@ export async function queryWorkbenchRequest(input: {
         const offset = /:call-offset-(\d+)-\d+$/u.exec(item.to?.locator ?? '')?.[1];
         if (!offset) return '';
         const family = result.sourceFamilies.find((entry: any) => entry.subjectId === item.edge.from);
+        const effects = effectsByCall.get(item.to?.id) ?? new Set<string>();
         const matches = (family?.facts ?? []).filter((fact: any) => fact.kind === 'source-effect'
           && fact.effectKind === 'call' && fact.sourceId === item.to?.sourceId
-          && fact.locator.endsWith(`:effect-offset-${offset}`));
+          && (effects.has(fact.id) || fact.locator.endsWith(`:effect-offset-${offset}`)));
         if (matches.length !== 1) return '';
         const fact = matches[0];
         const conditions = (fact.requirements ?? []).map((requirement: any) =>
@@ -1707,10 +1712,30 @@ export async function queryWorkbenchRequest(input: {
           `${context.kind}${context.expression ? ` (${context.expression})` : ''}`);
         return `${conditions.length ? ` when ${conditions.join(' and ')}` : ''}${contexts.length ? ` within ${contexts.join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}`;
       };
-      const relationshipAnswer = !result.interpretation.negated && result.interpretation.selection !== 'terms' && result.navigation.relationshipKinds.length && related.length
-        ? related.map((item: any) => item.edge.kind === 'calls-site'
+      const describeRelationship = (item: any) => item.edge.kind === 'calls-site'
           ? `${item.from?.name ?? item.edge.from} has ${item.edge.status === 'candidate' ? 'possible source call' : 'source call'} ${item.to?.name ?? item.edge.to} at ${item.to?.locator ?? item.edge.evidence?.[0] ?? 'source'}${item.to?.value?.interpretation === 'call-or-conversion' ? ' (may be a type conversion)' : ''}${callConditions(item)}`
-          : `${item.from?.name ?? item.edge.from}${item.from?.locator ? ` (${item.from.locator})` : ''} ${item.edge.kind}${item.edge.status === 'candidate' ? ' (candidate)' : ''} ${item.to?.name ?? item.edge.to}${item.to?.locator ? ` (${item.to.locator})` : ''}`).join('; ')
+          : `${item.from?.name ?? item.edge.from}${item.from?.locator ? ` (${item.from.locator})` : ''} ${item.edge.kind}${item.edge.status === 'candidate' ? ' (candidate)' : ''} ${item.to?.name ?? item.edge.to}${item.to?.locator ? ` (${item.to.locator})` : ''}`;
+      const relationshipPath = result.navigation.path;
+      const relatedById = new Map<string, any>(related.map((item: any) => [item.edge.id, item]));
+      const children = new Map<string, any[]>();
+      for (const step of relationshipPath?.steps ?? []) {
+        const list = children.get(step.parentId) ?? []; list.push(step); children.set(step.parentId, list);
+      }
+      const stack = [...(children.get(relationshipPath?.rootId) ?? [])].reverse(), orderedPath: string[] = [];
+      while (stack.length) {
+        const step = stack.pop()!, item = relatedById.get(step.edgeId);
+        if (!item) continue;
+        orderedPath.push(`${'  '.repeat(Math.max(0, step.depth - 1))}• ${describeRelationship(item)}${step.reference ? ' (shared or revisited node)' : ''}`);
+        if (!step.reference) {
+          const next = children.get(step.nodeId) ?? [];
+          for (let i = next.length - 1; i >= 0; i--) stack.push(next[i]);
+        }
+      }
+      const remainingPath = (relationshipPath?.remainingEdgeIds ?? []).flatMap((id: string) => {
+        const item = relatedById.get(id); return item ? [`• ${describeRelationship(item)}`] : [];
+      });
+      const relationshipAnswer = !result.interpretation.negated && result.interpretation.selection !== 'terms' && result.navigation.relationshipKinds.length && related.length
+        ? (orderedPath.length ? `Paths ${result.navigation.direction} from ${subject?.name ?? 'the selected subject'}:\n${orderedPath.join('\n')}${remainingPath.length ? `\nOther relationships on this page:\n${remainingPath.join('\n')}` : ''}` : related.map(describeRelationship).join('; '))
           + (related.some((item: any) => item.edge.kind === 'calls-site') ? '. Source call occurrences do not by themselves bind target declarations.' : '')
           + ((result.page.offset + result.navigation.relationships.length < result.navigation.total)
             ? `; showing ${result.page.offset + 1}–${result.page.offset + result.navigation.relationships.length} of ${result.navigation.total} matching relationships (continue at offset ${result.page.offset + result.page.limit})` : '')
@@ -1718,6 +1743,26 @@ export async function queryWorkbenchRequest(input: {
       const comparisonAnswer = result.comparison?.state === 'evaluated'
           ? `Compared ${result.comparison.total} subjects: ${result.comparison.counts.related} related, ${result.comparison.counts.candidate} candidate, ${result.comparison.counts.notRelated} established not related, and ${result.comparison.counts.unknown} unknown.`
           : result.comparison?.reason ?? '';
+      // A source fact can be reached through several connected subjects.
+      // Present a given qualified source line once while keeping every graph
+      // record and path available in the result details.
+      const presentedLines = new Set<string>();
+      const presentedBindings = new Set<string>();
+      const bindingNodes = new Map<string, any>((result.bindingGraph?.nodes ?? []).map((node: any) => [node.id, node]));
+      const bindingEdges = new Map<string, any[]>();
+      for (const edge of result.bindingGraph?.edges ?? []) {
+        const list = bindingEdges.get(edge.from) ?? []; list.push(edge); bindingEdges.set(edge.from, list);
+      }
+      const referencedBindings = (start: string): any[] => {
+        const pending = [start], seen = new Set(pending), found: any[] = [];
+        for (let at = 0; at < pending.length; at++) for (const edge of bindingEdges.get(pending[at]!) ?? []) {
+          const node = bindingNodes.get(edge.to);
+          if (!node || seen.has(node.id)) continue;
+          seen.add(node.id); pending.push(node.id); found.push(node);
+        }
+        return found.sort((a, b) => a.sourceId.localeCompare(b.sourceId)
+          || Number(a.value?.sourceOffset ?? 0) - Number(b.value?.sourceOffset ?? 0));
+      };
       const describeFamily = (item: any, groupIds?: Set<string>, includeSource = true): string => {
         const family = result.families.find((value: any) => value.id === item.id);
         const linked = (family?.members ?? []).filter((member: any) =>
@@ -1740,40 +1785,60 @@ export async function queryWorkbenchRequest(input: {
         const available = families.flatMap((value: any) => value.facts ?? [])
           .filter((fact: any) => typeof fact.expression === 'string');
         const subjectGroups = new Set<number>(result.sourceFamilies.find((value: any) => value.subjectId === item.id)?.subjectMatchedGroups ?? []);
+        // A connected source path can bind the subject in one callable and the
+        // action in a linked callback. Preserve each fact's actual owner while
+        // matching its context against its lexical owner and callbacks, not
+        // unrelated terms from every dependency on the same broader path.
+        const contextGroups = new Set(subjectGroups);
+        if (groupIds) for (const family of result.sourceFamilies) if (familyIds.has(family.subjectId)) {
+          for (const group of family.subjectMatchedGroups ?? []) contextGroups.add(group);
+        }
         const minimumGroups = Math.min(2, result.interpretation.termGroups.length);
         const matchingFacts = (includeSource ? available : []).flatMap((fact: any) => {
           // Calls, conditions and direct effects have distinct graph identities.
           // Do not summarize nested callable bodies as effects of their creator.
           if (fact.nestedCallable || !(fact.kind === 'call-reference' || fact.kind === 'source-condition'
-            || (fact.kind === 'source-effect' && ['write', 'return', 'throw'].includes(fact.effectKind)))) return [];
-          const matches = (fact.matchedLines ?? []).filter((line: any) => {
+            || (fact.kind === 'source-effect' && ['call', 'write', 'return', 'throw'].includes(fact.effectKind)))) return [];
+          const contextualCall = fact.kind === 'source-effect' && fact.effectKind === 'call';
+          if (contextualCall && !(fact.controlContext ?? []).length) return [];
+          let matches = (fact.matchedLines ?? []).filter((line: any) => {
             const groups: number[] = line.groupIndexes ?? [];
-            const combined = new Set([...subjectGroups, ...groups]);
+            const combined = new Set([...(contextualCall ? contextGroups : subjectGroups), ...groups]);
             return combined.size >= minimumGroups
               && (groups.some(group => !subjectGroups.has(group)) || subjectGroups.size >= result.interpretation.termGroups.length);
           });
+          const declarationGroups = [...new Set<number>((fact.externalDeclarations ?? []).flatMap((declaration: any) => declaration.matchedGroups ?? []))];
+          if (!matches.length && declarationGroups.length && new Set([...(contextualCall ? contextGroups : subjectGroups), ...declarationGroups]).size >= minimumGroups) {
+            matches = [{ text: fact.expression, line: Number(/:(\d+)(?::|$)/u.exec(fact.locator)?.[1] ?? 0) || null,
+              groupIndexes: declarationGroups, groups: declarationGroups.length }];
+          }
           return matches.length ? [{ ...fact, matchedLines: matches }] : [];
         });
         // Prefer expressions that directly mention more distinct concepts in
         // the question. Keep every tied fact and all graph records in details;
         // the owner's name alone must not promote every incidental expression.
+        const contextualCalls = matchingFacts.filter((fact: any) => fact.kind === 'source-effect' && fact.effectKind === 'call');
+        const distinctFacts = matchingFacts.filter((fact: any) => fact.kind !== 'call-reference' || !contextualCalls.some((effect: any) =>
+          effect.sourceId === fact.sourceId && typeof fact.expression === 'string' && typeof effect.expression === 'string'
+          && effect.expression.includes(fact.expression) && effect.matchedLines.some((line: any) => fact.matchedLines.some((other: any) => other.line === line.line))));
         const directGroups = (fact: any): number => fact.matchedLines.reduce((best: number, line: any) => Math.max(best, (line.groupIndexes ?? []).length), 0);
-        const strongestDirectMatch = matchingFacts.reduce((best: number, fact: any) => Math.max(best, directGroups(fact)), 0);
-        const facts = groupIds ? matchingFacts.filter((fact: any) => fact.kind !== 'call-reference'
-          || directGroups(fact) === strongestDirectMatch) : matchingFacts;
+        const strongestDirectMatch = distinctFacts.reduce((best: number, fact: any) => Math.max(best, directGroups(fact)), 0);
+        const facts = groupIds ? distinctFacts.filter((fact: any) => fact.kind !== 'call-reference'
+          || directGroups(fact) === strongestDirectMatch) : distinctFacts;
         // Name each distinct condition once so a sequence of guarded effects
         // remains readable without discarding which condition governs which fact.
         const conditions = new Map<string, number>();
         const shownLines = new Set<string>();
         let shownFacts = 0;
+        const bindingDetails: string[] = [];
         const details = facts.flatMap((fact: any) => {
           const matches = Array.isArray(fact.matchedLines) ? fact.matchedLines : [];
           const qualification = JSON.stringify([(fact.requirements ?? []).map((requirement: any) => [requirement.predicate ?? requirement.conditionId, requirement.expectedTruth]),
             fact.requirementsComplete, fact.kind === 'call-reference' && fact.relationship?.status === 'candidate']);
           const unique = matches.filter((line: any) => {
             const key = JSON.stringify([fact.sourceId, line.line, line.text, qualification]);
-            if (shownLines.has(key)) return false;
-            shownLines.add(key); return true;
+            if (shownLines.has(key) || presentedLines.has(key)) return false;
+            shownLines.add(key); presentedLines.add(key); return true;
           });
           if (matches.length && !unique.length) return [];
           const expression = matches.length ? unique.map((line: any) => `${line.text}${line.line ? ` (line ${line.line})` : ''}`).join(' / ') : fact.expression;
@@ -1786,7 +1851,16 @@ export async function queryWorkbenchRequest(input: {
             ? fact.interpretation === 'call-or-conversion' ? 'possible invocation or conversion: ' : 'possible source call: '
             : '';
           shownFacts += 1;
-          return [`${prefix}expression at ${fact.locator}${requires.length ? ` when ${requires.join(' and ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}: ${expression}`];
+          for (const binding of referencedBindings(fact.id)) if (!presentedBindings.has(binding.id)) {
+            presentedBindings.add(binding.id);
+            const controls = (binding.value?.controlContext ?? []).map((item: any) => `${item.kind}${item.expression ? ` (${item.expression})` : ''}`);
+            const conditional = (binding.value?.requiredConditions ?? []).length ? ' (source conditions apply)' : '';
+            bindingDetails.push(`${binding.name ?? binding.id} at ${binding.locator}${conditional}${controls.length ? ` within ${controls.join(' > ')}` : ''}: ${binding.raw ?? ''}`);
+          }
+          const context = (fact.controlContext ?? []).map((item: any) => `${item.kind}${item.expression ? ` (${item.expression})` : ''}`);
+          const declarations = (fact.externalDeclarations ?? []).filter((declaration: any) => declaration.matchedGroups?.length)
+            .map((declaration: any) => `declared API at ${declaration.locator}: ${declaration.description.split(/\n\s*\n/u)[0]}`).join('; ');
+          return [`${prefix}expression at ${fact.locator}${requires.length ? ` when ${requires.join(' and ')}` : ''}${context.length ? ` within ${context.join(' > ')}` : ''}${fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}: ${expression}${declarations ? `; ${declarations}` : ''}`];
         }).join('; ');
         const remainingFacts = available.length - shownFacts;
         const otherMatchingFacts = matchingFacts.length - facts.length;
@@ -1800,7 +1874,7 @@ export async function queryWorkbenchRequest(input: {
           const status = call.occurrenceStatus === 'candidate' || call.bindingStatus === 'candidate' ? ' [candidate]' : '';
           return `${call.name}${line ? ` (line ${line})` : ''}${target}${status}`;
         }).join('; ');
-        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${interaction ? `; handler expression: ${interaction}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${callSequence ? `; bound call sites in source order (branches and loops may apply): ${callSequence}` : ''}${details ? `; matching lines from source expressions: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details${otherMatchingFacts ? ` (${otherMatchingFacts} additional matching expressions)` : ''}` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
+        return `${item.name ?? item.id} (${item.locator})${description ? `: ${description}` : ''}${interaction ? `; handler expression: ${interaction}` : ''}${connections ? `; connected: ${connections}${groupIds ? ' (locations in connection details)' : ''}` : ''}${callSequence ? `; bound call sites in source order (branches and loops may apply): ${callSequence}` : ''}${details ? `; matching lines from source expressions: ${details}` : ''}${conditionDetails ? `; conditions: ${conditionDetails}` : ''}${bindingDetails.length ? `; referenced source bindings: ${bindingDetails.join('; ')}` : ''}${remainingFacts ? `; ${remainingFacts} other source facts in details${otherMatchingFacts ? ` (${otherMatchingFacts} additional matching expressions)` : ''}` : ''}${family?.nextOffset !== null && family?.nextOffset !== undefined ? `; more related subjects at offset ${family.nextOffset}` : ''}`;
       };
       // Broad term matches are a ranked source scope, not one bound subject.
       // Compose visible source facts for that scope instead of asserting that
@@ -1842,45 +1916,72 @@ export async function queryWorkbenchRequest(input: {
       });
       const connectedCallSummary = connectedCalls.length
         ? `Connected call sites in source order (branches and loops can change which calls apply):\n${connectedCalls.join('\n')}\n\n` : '';
+      const presentedPathEdges = new Set<string>();
       const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
         ? (Array.isArray(result.connectedGroups)
           ? `${connectedCallSummary}Connected source paths (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
             + displayGroups.map((group: any) => {
               const members: any[] = [...group.subjects, ...(group.linkNodes ?? [])];
-              const names = new Map(members.map((item: any) => [item.id, item.name ?? item.id]));
+              const byMember = new Map<string, any>(members.map((item: any) => [item.id, item]));
               const groupIds = new Set<string>(members.map((item: any) => item.id));
               const outgoing = new Map<string, any[]>();
               const incoming = new Set<string>();
+              const incomingEdges = new Map<string, any[]>();
               for (const edge of group.links) {
                 const rows = outgoing.get(edge.from) ?? [];
                 rows.push(edge); outgoing.set(edge.from, rows); incoming.add(edge.to);
+                const reverse = incomingEdges.get(edge.to) ?? []; reverse.push(edge); incomingEdges.set(edge.to, reverse);
               }
-              // Order graph connections from entry subjects through their
-              // neighbors. This is navigational order, not execution order.
-              const queue: string[] = members.filter(item => !incoming.has(item.id)).map(item => item.id);
-              const visitedNodes = new Set<string>(), visitedEdges = new Set<string>(), ordered: any[] = [];
-              let nextIndex = 0;
-              const walk = (): void => {
-                while (nextIndex < queue.length) {
-                  const id = queue[nextIndex++]!;
-                  if (visitedNodes.has(id)) continue;
-                  visitedNodes.add(id);
-                  for (const edge of outgoing.get(id) ?? []) {
-                    if (!visitedEdges.has(edge.id)) { ordered.push(edge); visitedEdges.add(edge.id); }
-                    if (!visitedNodes.has(edge.to)) queue.push(edge.to);
-                  }
+              // Preserve a shared prefix when a later path adds a branch, but
+              // do not print an already displayed subtree again in full.
+              const leadsToNew = new Set<string>();
+              const reverseQueue: string[] = [];
+              for (const edge of group.links) if (!presentedPathEdges.has(edge.id) && !leadsToNew.has(edge.from)) {
+                leadsToNew.add(edge.from); reverseQueue.push(edge.from);
+              }
+              for (let at = 0; at < reverseQueue.length; at++) for (const edge of incomingEdges.get(reverseQueue[at]!) ?? []) {
+                if (!leadsToNew.has(edge.from)) { leadsToNew.add(edge.from); reverseQueue.push(edge.from); }
+              }
+              // Display the captured directed graph as branches. A shared or
+              // cyclic node is named again without recursively duplicating its
+              // subtree; every original edge remains in the investigation.
+              const visitedNodes = new Set<string>(), visitedEdges = new Set<string>(), lines: string[] = [];
+              const describeNode = (id: string) => {
+                const node = byMember.get(id);
+                return `${node?.name ?? id}${node?.locator ? ` (${node.locator})` : ''}`;
+              };
+              const walk = (root: string): void => {
+                if (visitedNodes.has(root)) return;
+                visitedNodes.add(root);
+                lines.push(describeNode(root));
+                const stack: Array<{ edge: any; depth: number }> = [];
+                const initial = outgoing.get(root) ?? [];
+                for (let i = initial.length - 1; i >= 0; i--) stack.push({ edge: initial[i], depth: 1 });
+                while (stack.length) {
+                  const { edge, depth } = stack.pop()!;
+                  if (visitedEdges.has(edge.id)) continue;
+                  visitedEdges.add(edge.id);
+                  const sharedEdge = presentedPathEdges.has(edge.id);
+                  presentedPathEdges.add(edge.id);
+                  const seen = visitedNodes.has(edge.to);
+                  lines.push(`${'  '.repeat(depth)}↳ ${edge.kind}${edge.status === 'candidate' ? ' (candidate)' : ''} ${sharedEdge ? (byMember.get(edge.to)?.name ?? edge.to) : describeNode(edge.to)}${seen || sharedEdge ? ' (shared or revisited)' : ''}`);
+                  if (seen || (sharedEdge && !leadsToNew.has(edge.to))) continue;
+                  visitedNodes.add(edge.to);
+                  const next = outgoing.get(edge.to) ?? [];
+                  for (let i = next.length - 1; i >= 0; i--) stack.push({ edge: next[i], depth: depth + 1 });
                 }
               };
-              walk();
-              for (const item of members) if (!visitedNodes.has(item.id)) { queue.push(item.id); walk(); }
-              const links = ordered.map((edge: any) => `${names.get(edge.from) ?? edge.from} ${edge.kind}${edge.status === 'candidate' ? ' (candidate)' : ''} ${names.get(edge.to) ?? edge.to}`).join('; ');
-              return `${group.sourceCategory === 'test-source' ? 'Test source' : 'Source'}${links ? ` — relationships: ${links}` : ''}\n${group.subjects.map((item: any) => {
+              walk(group.anchorId);
+              for (const item of members.filter(item => !incoming.has(item.id))) walk(item.id);
+              for (const item of members) if ((outgoing.get(item.id) ?? []).some((edge: any) => !visitedEdges.has(edge.id) && !presentedPathEdges.has(edge.id))) walk(item.id);
+              const anchor = group.subjects.find((item: any) => item.id === group.anchorId) ?? group.subjects[0];
+              return `${group.sourceCategory === 'test-source' ? 'Test source' : 'Source'} path:\n${lines.join('\n')}\n${anchor ? [anchor].map((item: any) => {
                 const includeSource = true;
                 const previous = describedSubjects.get(item.id);
                 if (previous === true || (previous === false && !includeSource)) return `• ${item.name ?? item.id} (${item.locator}; described above)`;
                 describedSubjects.set(item.id, includeSource);
                 return `• ${describeFamily(item, groupIds, includeSource)}`;
-              }).join('\n')}`;
+              }).join('\n') : ''}`;
             }).join('\n\n')
           : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map((item: any) => describeFamily(item)).join(' | ')}`)
           + '. Paths follow source relationships; a subject can appear in multiple paths, and candidate links identify possible handoffs. Inspect source and connection details for full records.'

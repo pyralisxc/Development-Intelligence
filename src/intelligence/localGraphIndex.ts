@@ -8,10 +8,12 @@ import { normalizeName } from './model.js';
 // Graph records and coverage remain owned by the retained graph itself.
 const require = createRequire(import.meta.url);
 const filename = 'retrieval-index.sqlite';
-const version = 9;
+const version = 11;
 const bound = new WeakMap<IntelligenceGraph, { file: string; generation: string }>();
 const textCandidates = new WeakMap<IntelligenceGraph, Map<string, Set<string>>>();
 const selectedViews = new WeakSet<IntelligenceGraph>();
+const planningViews = new WeakSet<IntelligenceGraph>();
+export function isIndexedPlanningView(graph: IntelligenceGraph): boolean { return planningViews.has(graph); }
 export function hasLocalGraphIndex(graph: IntelligenceGraph): boolean { return bound.has(graph); }
 
 
@@ -26,9 +28,10 @@ function identity(graph: IntelligenceGraph, generation: string, indexVersion = v
 }
 function searchText(node: IntelligenceGraph['nodes'][number]): string {
   const value = node.value && typeof node.value === 'object' && !Array.isArray(node.value)
-    ? node.value as { qualifiedName?: unknown; argumentIdentifiers?: unknown } : {};
+    ? node.value as { qualifiedName?: unknown; description?: unknown; argumentIdentifiers?: unknown } : {};
   return [node.name, node.locator, node.raw, node.kind, node.field, ...(node.tags ?? []),
     typeof value.qualifiedName === 'string' ? value.qualifiedName : '',
+    typeof value.description === 'string' ? value.description : '',
     ...(Array.isArray(value.argumentIdentifiers) ? value.argumentIdentifiers.filter((v): v is string => typeof v === 'string') : [])]
     .filter(Boolean).join(' ').replace(/([a-z0-9])([A-Z])/gu, '$1 $2').replace(/[_./:#-]+/gu, ' ').toLowerCase();
 }
@@ -153,7 +156,7 @@ export function readIndexedQuestionEnvelope(directory: string, project: string, 
     const recorded = db.prepare("SELECT value FROM metadata WHERE key='identity'").get()?.value;
     if (typeof recorded !== 'string') throw new Error('Local retrieval index identity is missing');
     const indexVersion = JSON.parse(recorded)?.version;
-    if (indexVersion !== 8 && indexVersion !== version) return null;
+    if (indexVersion !== 8 && indexVersion !== 9 && indexVersion !== 10 && indexVersion !== version) return null;
     const body = db.prepare("SELECT value FROM metadata WHERE key='questionEnvelope'").get()?.value;
     if (typeof body !== 'string') throw new Error('Local retrieval index envelope is missing');
     if (typeof db.prepare("SELECT value FROM metadata WHERE key='nodeTags'").get()?.value !== 'string') return null;
@@ -233,6 +236,9 @@ export function indexedTextCandidates(graph: IntelligenceGraph, question: string
       result.add(row.id); if (row.owner) result.add(row.owner);
     }
     for (const row of db.prepare("SELECT e.src FROM matched_nodes m CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=m.id WHERE e.status <> 'unresolved' AND e.kind IN ('has-source-occurrence','calls-site') AND e.src IS NOT NULL").iterate()) result.add(row.src);
+    for (const row of db.prepare("SELECT n.id,n.owner FROM matched_nodes m CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=m.id JOIN nodes n ON n.id=e.src WHERE e.status='resolved' AND e.kind='has-declared-signature'").iterate()) {
+      result.add(row.id); if (row.owner) result.add(row.owner);
+    }
     // Distinctive exact names and qualified aliases can be stop words for the
     // language model. Match every valid question boundary against the index so
     // those subjects remain available even when no FTS term selects them.
@@ -318,7 +324,7 @@ export function bindLocalGraphIndex(graph: IntelligenceGraph, generation: string
     const parsed = JSON.parse(recorded) as { version?: unknown };
     // A retained graph from an earlier software version is still usable; its
     // derived index can be regenerated on a later build of that generation.
-    if (parsed.version !== 8 && parsed.version !== version) return false;
+    if (parsed.version !== 8 && parsed.version !== 9 && parsed.version !== 10 && parsed.version !== version) return false;
     if (recorded !== identity(graph, generation, parsed.version)) throw new Error('Local retrieval index identity mismatch');
     bound.set(graph, { file, generation });
     return true;
@@ -420,6 +426,24 @@ export function indexedRecords<K extends 'nodes' | 'edges' | 'evidence'>(graph: 
       return record;
     }) as IntelligenceGraph[K];
   } finally { for (const handle of handles.values()) fs.closeSync(handle); db.close(); }
+}
+
+/** Follow compiler-bound source references from selected facts without loading the whole graph. */
+export function indexedBindingGraph(graph: IntelligenceGraph, roots: Iterable<string>): { nodes: IntelligenceGraph['nodes']; edges: IntelligenceGraph['edges'] } | null {
+  const index = bound.get(graph);
+  if (!index) return null;
+  const pending = [...new Set(roots)], visited = new Set(pending), nodeIds = new Set<string>(), edgeIds = new Set<string>();
+  if (!pending.length) return { nodes: [], edges: [] };
+  const Database = sqlite(), db = new Database(index.file, { readOnly: true });
+  try {
+    const lookup = db.prepare("SELECT e.id, e.dst FROM edges e INDEXED BY edge_src JOIN nodes n ON n.id=e.dst WHERE e.src=? AND e.kind='references-binding' AND e.status='resolved' AND n.kind='source-binding'");
+    for (let at = 0; at < pending.length; at++) for (const row of lookup.iterate(pending[at]!)) {
+      const id = String(row.dst); edgeIds.add(String(row.id)); nodeIds.add(id);
+      if (!visited.has(id)) { visited.add(id); pending.push(id); }
+    }
+  } finally { db.close(); }
+  const nodes = indexedRecords(graph, 'nodes', nodeIds), edges = indexedRecords(graph, 'edges', edgeIds);
+  return nodes && edges ? { nodes, edges } : null;
 }
 
 /** In graph order, return every relationship touching the requested endpoints. */
@@ -524,7 +548,7 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
   const Database = sqlite(), db = new Database(index.file, { readOnly: true });
   let nodeIds: string[], edgeIds: string[];
   try {
-    db.exec('CREATE TEMP TABLE selected(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE expansion(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE comparison_nodes(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE subjects(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE visited(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE frontier(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE next_frontier(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE selected_edges(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE edge_delta(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE callbacks(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE callback_delta(id TEXT PRIMARY KEY) WITHOUT ROWID;');
+    db.exec('CREATE TEMP TABLE selected(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE expansion(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE comparison_nodes(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE subjects(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE visited(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE frontier(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE next_frontier(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE selected_edges(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE edge_delta(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE callbacks(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE callback_delta(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE handlers(id TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE handler_delta(id TEXT PRIMARY KEY) WITHOUT ROWID;');
     const add = db.prepare('INSERT OR IGNORE INTO frontier SELECT id FROM nodes WHERE id=?');
     for (const id of initial) add.run(id);
     const addComparison = db.prepare('INSERT OR IGNORE INTO comparison_nodes SELECT id FROM nodes WHERE id=?');
@@ -540,8 +564,10 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
     // Subject scoring needs source facts owned by candidates even when those
     // particular facts do not contain a question term, plus lexical occurrence
     // links for matched call and variable sites.
-    db.exec(`INSERT OR IGNORE INTO selected SELECT n.id FROM frontier f CROSS JOIN nodes n INDEXED BY node_owner ON n.owner=f.id WHERE n.kind IN ('source-condition','source-effect');
-      INSERT OR IGNORE INTO selected_edges SELECT e.id FROM frontier f CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=f.id WHERE e.status <> 'unresolved' AND e.kind IN ('has-source-occurrence','calls-site');
+    db.exec(`INSERT OR IGNORE INTO selected SELECT n.owner FROM frontier f JOIN nodes n ON n.id=f.id WHERE n.kind IN ('source-condition','source-effect','source-binding') AND n.owner IS NOT NULL;
+      INSERT OR IGNORE INTO selected SELECT m.family_id FROM selected s CROSS JOIN families m ON m.node_id=s.id WHERE EXISTS (SELECT 1 FROM json_each(m.roles) WHERE value='callback');
+      INSERT OR IGNORE INTO selected SELECT n.id FROM selected s CROSS JOIN nodes n INDEXED BY node_owner ON n.owner=s.id WHERE n.kind IN ('source-condition','source-effect','source-binding');
+      INSERT OR IGNORE INTO selected_edges SELECT e.id FROM frontier f CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=f.id WHERE e.status <> 'unresolved' AND e.kind IN ('has-source-occurrence','calls-site','has-declared-signature');
       INSERT OR IGNORE INTO selected SELECT e.src FROM selected_edges x CROSS JOIN edges e ON e.id=x.id JOIN nodes n ON n.id=e.src WHERE e.src IS NOT NULL;`);
     let chosen = exactSubjects;
     if (!chosen) {
@@ -549,6 +575,7 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
       const candidateEdges = db.prepare('SELECT e.id,e.src,e.dst,e.kind,e.status FROM selected_edges s CROSS JOIN edges e ON e.id=s.id ORDER BY e.ordinal').all().map((row: any) => ({ id: row.id, from: row.src, to: row.dst, kind: row.kind, status: row.status, strategy: '', confidence: null, evidence: [] }));
       const candidate = { ...graph, nodes: candidateNodes, edges: candidateEdges, evidence: [] };
       bindLocalGraphIndex(candidate, index.generation, path.dirname(index.file));
+      selectedViews.add(candidate); planningViews.add(candidate);
       const candidateCache = textCandidates.get(graph); if (candidateCache) textCandidates.set(candidate, candidateCache);
       chosen = options.selectSubjects(candidate).ids;
     }
@@ -581,10 +608,20 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
         DELETE FROM callback_delta WHERE id IN (SELECT id FROM callbacks);
         INSERT OR IGNORE INTO callbacks SELECT id FROM callback_delta;
         INSERT OR IGNORE INTO frontier SELECT id FROM callback_delta;
+        INSERT OR IGNORE INTO handler_delta SELECT e.dst FROM edge_delta x CROSS JOIN edges e ON e.id=x.id JOIN nodes n ON n.id=e.src JOIN nodes t ON t.id=e.dst
+          WHERE e.status <> 'unresolved' AND t.kind IN ('function','method') AND
+          ((e.kind='resolves_to' AND n.kind='call-reference' AND EXISTS(SELECT 1 FROM callbacks c WHERE c.id=n.owner))
+            OR (e.kind IN ('handled_by','handles-method') AND n.kind IN ('http-call','route','api','interaction-handler')));
+        DELETE FROM handler_delta WHERE id IN (SELECT id FROM handlers);
+        INSERT OR IGNORE INTO handlers SELECT id FROM handler_delta;
+        INSERT OR IGNORE INTO frontier SELECT id FROM handler_delta;
+        DELETE FROM handler_delta;
         DELETE FROM callback_delta; DELETE FROM edge_delta;
         INSERT OR IGNORE INTO edge_delta SELECT e.id FROM frontier s JOIN nodes n ON n.id=s.id CROSS JOIN edges e INDEXED BY edge_src ON e.src=s.id
-        WHERE e.kind IN ('has-parameter','has-condition','has-effect','has-source-control','contains-source-span','has-source-occurrence','has-argument','argument-for','spreads-properties','has-interaction','registers-interaction','calls-site','callback-argument','declares','handled_by','requires-condition')
+        WHERE e.kind IN ('has-parameter','has-condition','has-effect','has-source-binding','has-source-control','contains-source-span','contains-source-call','has-source-occurrence','has-argument','argument-for','spreads-properties','has-interaction','registers-interaction','calls-site','callback-argument','declares','handled_by','requires-condition','has-declared-signature','references-binding')
+        OR (e.kind IN ('dispatches','triggers','routes-to','links_to','registered-as','handles-method','implemented-by') AND n.kind IN ('route','api','ui-element','dom-interaction','interaction-handler','http-call','rpc-call','mcp-tool','tool-registration'))
         OR (e.kind='contains' AND n.kind IN ('function','method','constructor') AND EXISTS(SELECT 1 FROM nodes t WHERE t.id=e.dst AND t.kind='ui-element'))
+        OR (e.kind IN ('calls','invokes') AND EXISTS(SELECT 1 FROM handlers h WHERE h.id=n.id))
         OR (e.kind IN ('binds_to','resolves_to','potential-value-from','potentially-provided-by','calls','invokes') AND (n.kind IN ('call-reference','interaction-handler','component-prop-binding','jsx-prop-spread','ui-element') OR (n.kind='function' AND n.name='callback') OR EXISTS(SELECT 1 FROM callbacks c WHERE c.id=n.id)));
         DELETE FROM edge_delta WHERE id IN (SELECT id FROM selected_edges);
         INSERT OR IGNORE INTO selected_edges SELECT id FROM edge_delta;

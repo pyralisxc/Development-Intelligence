@@ -54,14 +54,25 @@ export function questionSelection(graph: IntelligenceGraph, result: any) {
     nodeIds: [...subjects.map((node: any) => node.id), ...comparison.map((item: any) => item.node?.id)].filter((id: unknown): id is string => typeof id === 'string'),
     edgeIds: [...links.map((edge: any) => edge?.id), ...comparison.flatMap((item: any) => item.relationshipIds ?? []), ...callEdgeIds].filter((id: unknown): id is string => typeof id === 'string'),
   };
-  const contextNodeIds: string[] = (result.sourceFamilies ?? []).flatMap((family: any) => [family.subjectId,
-    ...(family.facts ?? []).flatMap((fact: any) => [fact.id, ...(fact.requirements ?? []).map((requirement: any) => requirement.conditionNodeId)])])
+  // The graph follows the displayed paths and their relevant source context.
+  // Other family facts remain available in result.sourceFamilies; adding all
+  // of them to the visual selection can obscure the path with unrelated code.
+  const contextNodeIds: string[] = (result.sourceFamilies ?? []).flatMap((family: any) => {
+    const focused = new Set((family.focusedFacts ?? []).map((fact: any) => fact.id));
+    const facts = (family.facts ?? []).filter((fact: any) => focused.has(fact.id)
+      || fact.matchedKind || (fact.matchedLines ?? []).length
+      || (fact.externalDeclarations ?? []).some((declaration: any) => (declaration.matchedGroups ?? []).length));
+    return [family.subjectId, ...facts.flatMap((fact: any) => [fact.id,
+      ...(fact.requirements ?? []).map((requirement: any) => requirement.conditionNodeId),
+      ...(fact.externalDeclarations ?? []).map((declaration: any) => declaration.id)])];
+  })
     .filter((id: unknown): id is string => typeof id === 'string');
+  for (const node of result.bindingGraph?.nodes ?? []) if (typeof node.id === 'string') contextNodeIds.push(node.id);
   const selectedNodes = new Set([...focus.nodeIds, ...contextNodeIds]);
   const factEdges = (indexedIncidentEdges(graph, selectedNodes, 'outbound') ?? graph.edges).filter(edge => edge.from && edge.to && selectedNodes.has(edge.from) && selectedNodes.has(edge.to)
-    && ['has-condition', 'has-effect', 'has-source-control', 'requires-condition', 'calls-site'].includes(edge.kind));
+    && ['has-condition', 'has-effect', 'has-source-binding', 'references-binding', 'contains-source-call', 'has-declared-signature', 'has-source-control', 'requires-condition', 'calls-site'].includes(edge.kind));
   return investigationSelection(graph, 'question', { ...focus, contextNodeIds,
-    contextEdgeIds: factEdges.map(edge => edge.id), page: result.page, scope: result.scope });
+    contextEdgeIds: [...factEdges.map(edge => edge.id), ...(result.bindingGraph?.edges ?? []).map((edge: any) => edge.id)], page: result.page, scope: result.scope });
 }
 
 /** Select only the records on the requested page and on the appropriate side. */

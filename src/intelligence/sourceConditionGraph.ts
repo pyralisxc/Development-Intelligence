@@ -28,7 +28,7 @@ export function buildSourceConditionGraphFacts(input: {
     raw: 'source control summary for ' + (owner.name ?? owner.id),
     value: {
       functionId: owner.id, sourceSha256,
-      branchTotal: lens.branches.length, effectTotal: lens.effects.length,
+      branchTotal: lens.branches.length, effectTotal: lens.effects.length, bindingTotal: lens.bindings.length,
       unknownConstructs: lens.unknownConstructs,
       boundedOut: lens.boundedOut,
       completeForSupportedStatements: lens.completeForSupportedStatements,
@@ -77,6 +77,28 @@ export function buildSourceConditionGraphFacts(input: {
       evidence: [at], evidenceIds: [proof.id],
       layer: 'structural', checkpoint: false,
     }));
+  }
+  for (const binding of lens.bindings) {
+    const at = sourcePath + ':' + binding.sourceLine + ':binding-offset-' + binding.identifierOffset;
+    const proof = evidenceRecord({ sourceId, kind: 'source-binding-syntax', locator: at,
+      field: 'offset:' + binding.identifierOffset,
+      value: { functionId: owner.id, name: binding.name, sourceOnly: true, runtimeObserved: false },
+      message: binding.initializerStart === null ? 'A local binding is declared in the selected source.'
+        : 'A local binding and initializer are present in the selected source; this does not assert a runtime value.' });
+    const { declaration, name: _name, ...bindingValue } = binding;
+    const node = observation({ identity: [sourceId, owner.id, 'source-binding', binding.identifierOffset],
+      sourceId, kind: 'source-binding', locator: at, name: binding.name, field: 'binding', raw: declaration,
+      value: { ...bindingValue, functionId: owner.id, sourceOnly: true, runtimeObserved: false, proofRule, sourceSha256 },
+      layer: 'structural', checkpoint: false, evidenceIds: [proof.id] });
+    evidence.push(proof); observations.push(node);
+    resolutions.push(resolution({ from: owner.id, to: node.id, kind: 'has-source-binding', strategy: proofRule,
+      status: 'resolved', confidence: 1, evidence: [at], evidenceIds: [proof.id], layer: 'structural', checkpoint: false }));
+    for (const requirement of binding.requiredConditions) {
+      const predicate = byCondition.get(requirement.conditionId);
+      if (predicate) resolutions.push(resolution({ from: node.id, to: predicate.id, kind: 'requires-condition',
+        strategy: requirement.expectedTruth ? 'source-condition-true' : 'source-condition-false', status: 'resolved', confidence: 1,
+        evidence: [at, predicate.locator], evidenceIds: [proof.id, ...(predicate.evidenceIds ?? [])], layer: 'structural', checkpoint: false }));
+    }
   }
   for (const effect of lens.effects) {
     const offset = effect.sourceOffset;

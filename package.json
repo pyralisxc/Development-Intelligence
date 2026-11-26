@@ -52,6 +52,7 @@
     "wink-nlp": "2.4.0"
   },
   "devDependencies": {
+    "@types/node": "22.20.3",
     "esbuild": "0.28.2"
   }
 }
