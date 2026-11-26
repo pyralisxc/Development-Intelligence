@@ -77,6 +77,9 @@ let graphResizeObserver: ResizeObserver | null = null;
 let graphKindFilter = '';
 let graphStatusFilter = '';
 let graphDirectionFilter = '';
+let graphRelationshipFilter = '';
+type GraphContext = { subject: string; query: string; investigation: boolean; direction: string; lens: GraphLens; kind: string; relationship: string; status: string; limit: number; depth: number; camera?: { x: number; y: number; ratio: number; angle: number } };
+const graphHistory: GraphContext[] = [];
 let preferredQuerySource = '';
 let queryDraft = '';
 const queryPanel = document.createElement('div');
@@ -98,6 +101,8 @@ graphStyles.textContent = `
   .graph-shell canvas{outline-offset:-3px}.graph-status{max-width:calc(100% - 24px);line-height:1.4}
   .graph-toolbar button:focus-visible,.graph-filters summary:focus-visible,.graph-selection button:focus-visible{outline:2px solid #82dcff;outline-offset:2px}
   .graph-toolbar .active{border-color:#75d6f5;background:#1b3850;color:#fff}
+  .graph-filter-summary{font-size:11px;color:#a9bed2;padding:0 0 5px;overflow-wrap:anywhere}
+  .graph-selection [data-selection-name]{max-width:min(45%,320px)}
   @media(prefers-reduced-motion:reduce){.graph-shell *{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 `;
 document.head.append(graphStyles);
@@ -120,6 +125,7 @@ let selectedGraphEdges = new Set<string>();
 function followInvestigation(selection: any): void {
   if (!selection?.graph?.graphId || !Array.isArray(selection.nodes) || !Array.isArray(selection.edges)) return;
   ++graphIntentSequence;
+  graphHistory.length = 0;
   activeInvestigation = selection; investigationVisible = true; selectedGraphNodes.clear(); selectedGraphEdges.clear(); graphSelected = ''; graphDirectionFilter = '';
   exploreMode = 'graph';
   if (section === 'explore') void renderExploreResult(sectionEpoch);
@@ -263,12 +269,14 @@ function wireNodeButtons(root: ParentNode = content, graphId?: string): void {
         const graph = renderer.getGraph();
         if (graph.hasNode(id)) {
           graphSelected = id; selectedGraphNodes.clear(); selectedGraphNodes.add(id);
-          graph.forEachNode(node => graph.setNodeAttribute(node, 'color', node === id || (investigationVisible && activeInvestigation?.focusNodeIds?.includes(node)) ? '#f6c95f' : graphColor(graph.getNodeAttribute(node, 'node'))));
+          renderer.refresh();
           const scope = document.getElementById('graph-scope') as HTMLButtonElement | null;
           if (scope) { scope.disabled = false; scope.hidden = false; }
           const compare = document.getElementById('graph-compare-selection'); if (compare) compare.hidden = false;
           const label = document.getElementById('graph-selected-label');
-          if (label) label.textContent = `Selected: ${graph.getNodeAttribute(id, 'label')}`;
+          if (label) { label.textContent = `Selected: ${graph.getNodeAttribute(id, 'label')}`; label.hidden = false; }
+          for (const id of ['graph-neighborhood', 'graph-clear-selection']) { const control = document.getElementById(id); if (control) control.hidden = false; }
+          const neighborhood = document.getElementById('graph-neighborhood') as HTMLButtonElement | null; if (neighborhood) neighborhood.disabled = false;
         }
       }
       void openInspector(id, explicitGraph, button.querySelector('strong')?.textContent ?? undefined);
@@ -447,7 +455,7 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; if (exploreMode !== 'graph' && !lastExplore?.nodes) void fetchExplore(epoch); else void renderExploreResult(epoch); });
   content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto auto"><input id="explore-input" aria-label="Search the graph" placeholder="Search the graph" value="${esc(exploreQuery)}"><button class="primary" type="submit">Search</button><button type="button" id="explore-audit">Audit</button></form><div id="explore-progress" role="status" aria-live="polite"></div><div id="graph-progress" role="status" aria-live="polite"></div><div class="investigation-layout"><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
-  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLInputElement).value.trim(); ++graphIntentSequence; graphSelected = ''; graphDirectionFilter = ''; investigationVisible = false; if (exploreMode === 'graph') { ++exploreSequence; explorePending = null; lastExplore = {}; void renderExploreResult(epoch); } else void fetchExplore(epoch); });
+  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLInputElement).value.trim(); ++graphIntentSequence; graphHistory.length = 0; selectedGraphNodes.clear(); selectedGraphEdges.clear(); graphSelected = ''; graphDirectionFilter = ''; investigationVisible = false; if (exploreMode === 'graph') { ++exploreSequence; explorePending = null; lastExplore = {}; void renderExploreResult(epoch); } else void fetchExplore(epoch); });
   const showAudit = async () => {
     try {
       const result = await getJson('/workbench/data', new URLSearchParams({ action: 'audit', offset: String(auditOffset), ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
@@ -527,9 +535,10 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
   return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
 }
 
-async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
+async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: GraphContext['camera']): Promise<void> {
   const sequence = ++graphRenderSequence;
   const selected = investigationVisible && activeInvestigation;
+  const displayedContext: GraphContext = { subject: graphSelected, query: exploreQuery, investigation: Boolean(selected), direction: graphDirectionFilter, lens: graphLens, kind: graphKindFilter, relationship: graphRelationshipFilter, status: graphStatusFilter, limit: graphLimit, depth: graphDepth };
   const progress = document.getElementById('graph-progress');
   const current = () => sectionIsCurrent(epoch, 'explore') && sequence === graphRenderSequence && exploreMode === 'graph';
   const graphRequest = graphSelected ? 'Loading selected subject' : exploreQuery ? `Searching graph for “${exploreQuery}”` : 'Loading graph';
@@ -550,7 +559,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   update('');
   graphResizeObserver?.disconnect(); graphResizeObserver = null;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div class="graph-toolbar"><div class="segmented" aria-label="Graph view">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button type="button" data-lens="${lens}" aria-pressed="${graphLens === lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><details class="graph-filters"><summary>Filters${graphKindFilter || graphStatusFilter || graphDirectionFilter || graphLimit !== 700 || graphDepth !== 2 ? ' • active' : ''}</summary><div class="graph-filter-menu"><label>Subject kind<select id="graph-kind" aria-label="Subject kind"><option value="">All visible kinds</option></select></label><label>Relationship status<select id="graph-edge-status" aria-label="Relationship status"><option value="">All statuses</option><option value="resolved">Resolved</option><option value="candidate">Candidate</option><option value="unresolved">Unresolved</option></select></label><label>Direction from selected subject<select id="graph-direction" aria-label="Direction from selected subject"><option value="">Both directions</option><option value="outbound">Outgoing</option><option value="inbound">Incoming</option></select></label><label>Maximum nodes<input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}"></label><label>Traversal depth<input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}"></label><button id="graph-apply" type="button">Apply</button><button id="graph-clear-filters" type="button">Clear filters</button></div></details><button id="graph-zoom-in" type="button" aria-label="Zoom in">+</button><button id="graph-zoom-out" type="button" aria-label="Zoom out">−</button><button id="graph-reset" type="button">Fit graph</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}</div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph. Use the list view for keyboard navigation."></div><div class="graph-selection"><span id="graph-selected-label" data-selection-name hidden></span><button id="graph-scope" type="button" disabled hidden>Use for question</button><button id="graph-compare-selection" type="button" hidden>Use for comparison</button></div><div id="graph-status" class="graph-status" role="status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div class="graph-toolbar"><div class="segmented" aria-label="Graph view">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button type="button" data-lens="${lens}" aria-pressed="${graphLens === lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><details class="graph-filters"><summary>Filters${graphKindFilter || graphStatusFilter || graphRelationshipFilter || graphDirectionFilter || graphLimit !== 700 || graphDepth !== 2 ? ' • active' : ''}</summary><div class="graph-filter-menu"><label>Subject kind<select id="graph-kind" aria-label="Subject kind"><option value="">All visible kinds</option></select></label><label>Relationship kind<select id="graph-edge-kind" aria-label="Relationship kind"><option value="">All visible relationships</option></select></label><label>Relationship status<select id="graph-edge-status" aria-label="Relationship status"><option value="">All statuses</option><option value="resolved">Resolved</option><option value="candidate">Candidate</option><option value="unresolved">Unresolved</option></select></label><label>Direction from selected subject<select id="graph-direction" aria-label="Direction from selected subject"><option value="">Both directions</option><option value="outbound">Outgoing</option><option value="inbound">Incoming</option></select></label><label>Maximum nodes<input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}"></label><label>Traversal depth<input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}"></label><button id="graph-apply" type="button">Apply</button><button id="graph-clear-filters" type="button">Clear filters</button></div></details><button id="graph-back" type="button" ${graphHistory.length ? '' : 'disabled'}>Back</button><button id="graph-zoom-in" type="button" aria-label="Zoom in">+</button><button id="graph-zoom-out" type="button" aria-label="Zoom out">−</button><button id="graph-reset" type="button">Fit graph</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}</div><div class="graph-filter-summary" id="graph-filter-summary"></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph. Use the list view for keyboard navigation."></div><div class="graph-selection"><span id="graph-selected-label" data-selection-name hidden></span><button id="graph-neighborhood" type="button" hidden>Explore neighborhood</button><button id="graph-clear-selection" type="button" hidden>Clear selection</button><button id="graph-scope" type="button" disabled hidden>Use for question</button><button id="graph-compare-selection" type="button" hidden>Use for comparison</button></div><div id="graph-status" class="graph-status" role="status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { ++graphIntentSequence; graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
     const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
@@ -565,6 +574,7 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     ++graphIntentSequence;
     graphKindFilter = root.querySelector<HTMLSelectElement>('#graph-kind')?.value ?? '';
     graphStatusFilter = root.querySelector<HTMLSelectElement>('#graph-edge-status')?.value ?? '';
+    graphRelationshipFilter = root.querySelector<HTMLSelectElement>('#graph-edge-kind')?.value ?? '';
     graphDirectionFilter = direction;
     graphLimit = size; graphDepth = depth;
     savePositiveSetting('graphNodes', size); savePositiveSetting('graphDepth', depth);
@@ -572,20 +582,35 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   });
   root.querySelector<HTMLButtonElement>('#graph-clear-filters')?.addEventListener('click', () => {
     ++graphIntentSequence;
-    graphKindFilter = ''; graphStatusFilter = ''; graphDirectionFilter = ''; graphLimit = 700; graphDepth = 2;
+    graphKindFilter = ''; graphStatusFilter = ''; graphRelationshipFilter = ''; graphDirectionFilter = ''; graphLimit = 700; graphDepth = 2;
     savePositiveSetting('graphNodes', graphLimit); savePositiveSetting('graphDepth', graphDepth);
     void renderGraph(root, epoch);
   });
-  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { ++graphIntentSequence; investigationVisible = !investigationVisible; graphSelected = ''; graphDirectionFilter = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
+  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { ++graphIntentSequence; graphHistory.length = 0; investigationVisible = !investigationVisible; graphSelected = ''; graphDirectionFilter = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
+  root.querySelector<HTMLButtonElement>('#graph-back')?.addEventListener('click', () => {
+    const previous = graphHistory.pop(); if (!previous) return;
+    ++graphIntentSequence; graphSelected = previous.subject; exploreQuery = previous.query; investigationVisible = previous.investigation; graphDirectionFilter = previous.direction;
+    graphLens = previous.lens; graphKindFilter = previous.kind; graphRelationshipFilter = previous.relationship; graphStatusFilter = previous.status; graphLimit = previous.limit; graphDepth = previous.depth;
+    selectedGraphNodes.clear(); selectedGraphEdges.clear();
+    const input = document.getElementById('explore-input') as HTMLInputElement | null; if (input) input.value = exploreQuery;
+    void renderGraph(root, epoch, previous.camera);
+  });
   const kindSelect = root.querySelector<HTMLSelectElement>('#graph-kind')!;
   for (const kind of [...new Set(allProjection.nodes.map(node => node.kind))].sort()) kindSelect.add(new Option(kind, kind));
   if (graphKindFilter && !Array.from(kindSelect.options).some(option => option.value === graphKindFilter)) kindSelect.add(new Option(`${graphKindFilter} (not in this view)`, graphKindFilter));
   kindSelect.value = graphKindFilter;
+  const edgeKind = root.querySelector<HTMLSelectElement>('#graph-edge-kind')!;
+  for (const kind of [...new Set(allProjection.edges.map(edge => edge.kind))].sort()) edgeKind.add(new Option(kind, kind));
+  if (graphRelationshipFilter && !Array.from(edgeKind.options).some(option => option.value === graphRelationshipFilter)) edgeKind.add(new Option(`${graphRelationshipFilter} (not in this view)`, graphRelationshipFilter));
+  edgeKind.value = graphRelationshipFilter;
   root.querySelector<HTMLSelectElement>('#graph-edge-status')!.value = graphStatusFilter;
+  const filterSummary = root.querySelector<HTMLElement>('#graph-filter-summary')!;
+  const activeFilters = [graphKindFilter && `subjects: ${graphKindFilter}`, graphRelationshipFilter && `relationships: ${graphRelationshipFilter}`, graphStatusFilter && `status: ${graphStatusFilter}`, graphDirectionFilter && `direction: ${graphDirectionFilter}`, graphLimit !== 700 && `limit: ${graphLimit}`, graphDepth !== 2 && `depth: ${graphDepth}`].filter(Boolean);
+  filterSummary.textContent = activeFilters.length ? `Active filters: ${activeFilters.join(' · ')}` : '';
   root.querySelector<HTMLSelectElement>('#graph-direction')!.value = graphDirectionFilter;
   const visibleNodes = allProjection.nodes.filter(node => !graphKindFilter || node.kind === graphKindFilter || (!!graphDirectionFilter && node.id === graphSelected));
   const visibleIds = new Set(visibleNodes.map(node => node.id));
-  const projection: Projection = { ...allProjection, nodes: visibleNodes, edges: allProjection.edges.filter(edge => (!graphStatusFilter || edge.status === graphStatusFilter) && (!graphDirectionFilter || (graphDirectionFilter === 'outbound' ? edge.from === graphSelected : edge.to === graphSelected)) && !!edge.from && !!edge.to && visibleIds.has(edge.from) && visibleIds.has(edge.to)) };
+  const projection: Projection = { ...allProjection, nodes: visibleNodes, edges: allProjection.edges.filter(edge => (!graphStatusFilter || edge.status === graphStatusFilter) && (!graphRelationshipFilter || edge.kind === graphRelationshipFilter) && (!graphDirectionFilter || (graphDirectionFilter === 'outbound' ? edge.from === graphSelected : edge.to === graphSelected)) && !!edge.from && !!edge.to && visibleIds.has(edge.from) && visibleIds.has(edge.to)) };
   if (!selected && !allProjection.nodes.length && !projection.ambiguous && graphLens === 'architecture') {
     graphLens = 'code';
     await renderGraph(root, epoch);
@@ -609,11 +634,15 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   }
   if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects visible', graphKindFilter ? 'Clear the subject filter or choose another kind.' : selected ? 'This result has no graph records to display. Its findings or missing expectations remain in the result.' : 'Try another search or choose a different view.'); graphStatus.textContent = `0 shown · ${allProjection.nodes.length} in this view`; return; }
   if (graphSelected && projection.nodes.some(node => node.id === graphSelected)) {
+    selectedGraphNodes.add(graphSelected);
     const button = root.querySelector<HTMLButtonElement>('#graph-scope');
     if (button) { button.disabled = false; button.hidden = false; }
     const compare = root.querySelector<HTMLElement>('#graph-compare-selection'); if (compare) compare.hidden = false;
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
     if (label) { label.textContent = `Selected: ${projection.nodes.find(node => node.id === graphSelected)?.name ?? graphSelected}`; label.hidden = false; }
+    const neighborhood = root.querySelector<HTMLButtonElement>('#graph-neighborhood')!;
+    neighborhood.hidden = false; neighborhood.disabled = displayedContext.subject === graphSelected && !displayedContext.investigation;
+    root.querySelector<HTMLButtonElement>('#graph-clear-selection')!.hidden = false;
   }
   const graph = new MultiGraph({ allowSelfLoops: false });
   projection.nodes.forEach((node, index) => { const point = graphPoint(node, index, projection.nodes.length); graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4, color: selected?.focusNodeIds?.includes(node.id) ? '#f6c95f' : graphColor(node), node }); });
@@ -621,7 +650,23 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
+  let hoveredNode = '';
+  const focusedNodes = () => hoveredNode ? new Set([hoveredNode]) : new Set([...selectedGraphNodes].filter(id => graph.hasNode(id)));
   renderer = new Sigma(graph, container, { allowInvalidContainer: true, enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true,
+    nodeReducer: (id, data) => {
+      const focus = focusedNodes();
+      if (!focus.size) return { ...data, color: selected?.focusNodeIds?.includes(id) ? '#f6c95f' : data.color };
+      const relevant = focus.has(id) || [...focus].some(node => graph.areNeighbors(node, id));
+      return { ...data, color: focus.has(id) ? '#f6c95f' : relevant ? data.color : '#34414f', zIndex: focus.has(id) ? 2 : 0 };
+    },
+    edgeReducer: (id, data) => {
+      const focus = focusedNodes();
+      const explicit = selectedGraphEdges.has(id);
+      if (!focus.size && !explicit) return data;
+      const related = focus.has(graph.source(id)) || focus.has(graph.target(id));
+      const edge = data.edge as ProjectionEdge;
+      return { ...data, color: explicit ? '#f6c95f' : related ? (edge.status === 'resolved' ? '#a7ddf1' : edge.status === 'candidate' ? '#ffbd63' : '#ff858b') : '#293441', size: explicit || related ? 2.2 : .55, zIndex: explicit || related ? 1 : 0 };
+    },
     defaultDrawNodeHover: (ctx, data) => {
       const label = String(data.label ?? ''); ctx.save(); ctx.font = '600 12px sans-serif';
       const x = data.x + data.size + 5, y = data.y - 12, width = ctx.measureText(label).width + 14;
@@ -629,23 +674,24 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
       ctx.fillStyle = '#f2fbff'; ctx.textBaseline = 'middle'; ctx.fillText(label, x + 7, data.y); ctx.restore();
     },
   });
-  renderer.on('enterNode', ({ node }) => {
-    const neighbors = new Set([node, ...graph.neighbors(node)]);
-    graph.forEachNode(id => graph.setNodeAttribute(id, 'color', selectedGraphNodes.has(id) || selected?.focusNodeIds?.includes(id) ? '#f6c95f' : neighbors.has(id) ? graphColor(graph.getNodeAttribute(id, 'node')) : '#34495a'));
-  });
-  renderer.on('leaveNode', () => graph.forEachNode(id => graph.setNodeAttribute(id, 'color', selectedGraphNodes.has(id) || selected?.focusNodeIds?.includes(id) ? '#f6c95f' : graphColor(graph.getNodeAttribute(id, 'node')))));
+  if (restoreCamera) renderer.getCamera().setState(restoreCamera);
+  renderer.on('enterNode', ({ node }) => { hoveredNode = node; renderer?.refresh(); });
+  renderer.on('leaveNode', () => { hoveredNode = ''; renderer?.refresh(); });
   renderer.on('clickNode', event => {
     ++graphIntentSequence; preserveGraphSelection();
     const directionChangedSubject = Boolean(graphDirectionFilter && graphSelected !== event.node);
     graphSelected = event.node;
     if (event.event.original.shiftKey) { if (selectedGraphNodes.has(event.node)) selectedGraphNodes.delete(event.node); else selectedGraphNodes.add(event.node); }
     else { selectedGraphNodes.clear(); selectedGraphNodes.add(event.node); }
-    graph.forEachNode(id => graph.setNodeAttribute(id, 'color', selectedGraphNodes.has(id) ? '#f6c95f' : selected?.focusNodeIds?.includes(id) ? '#f6c95f' : graphColor(graph.getNodeAttribute(id, 'node'))));
+    renderer?.refresh();
     const button = root.querySelector<HTMLButtonElement>('#graph-scope');
     if (button) { button.disabled = false; button.hidden = false; }
     const compare = root.querySelector<HTMLElement>('#graph-compare-selection'); if (compare) compare.hidden = false;
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
     if (label) { label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}${selectedGraphNodes.size > 1 ? ` · ${selectedGraphNodes.size} selected` : ''}`; label.hidden = false; }
+    const neighborhood = root.querySelector<HTMLButtonElement>('#graph-neighborhood')!;
+    neighborhood.hidden = false; neighborhood.disabled = displayedContext.subject === graphSelected && !displayedContext.investigation;
+    root.querySelector<HTMLButtonElement>('#graph-clear-selection')!.hidden = false;
     void openInspector(event.node, undefined, String(graph.getNodeAttribute(event.node, 'label')));
     if (directionChangedSubject) void renderGraph(root, epoch);
   });
@@ -653,11 +699,25 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     ++graphIntentSequence; preserveGraphSelection();
     if (event.event.original.shiftKey) { if (selectedGraphEdges.has(event.edge)) selectedGraphEdges.delete(event.edge); else selectedGraphEdges.add(event.edge); }
     else { selectedGraphEdges.clear(); selectedGraphEdges.add(event.edge); }
-    graph.forEachEdge(id => { const item = graph.getEdgeAttribute(id, 'edge') as ProjectionEdge; graph.setEdgeAttribute(id, 'color', selectedGraphEdges.has(id) ? '#f6c95f' : item.status === 'resolved' ? '#53667e' : item.status === 'candidate' ? '#b9823c' : '#b94f56'); });
+    renderer?.refresh();
     const edge = graph.getEdgeAttribute(event.edge, 'edge') as ProjectionEdge;
     const from = graph.getNodeAttribute(graph.source(event.edge), 'label') as string;
     const to = graph.getNodeAttribute(graph.target(event.edge), 'label') as string;
     void openRelationship(edge, from, to);
+  });
+  root.querySelector<HTMLButtonElement>('#graph-neighborhood')?.addEventListener('click', () => {
+    if (!graphSelected || !graph.hasNode(graphSelected)) return;
+    const camera = renderer?.getCamera().getState();
+    ++graphIntentSequence; graphHistory.push({ ...displayedContext, ...(camera ? { camera } : {}) }); investigationVisible = false; graphDirectionFilter = '';
+    selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch);
+  });
+  root.querySelector<HTMLButtonElement>('#graph-clear-selection')?.addEventListener('click', () => {
+    const directionWasActive = Boolean(graphDirectionFilter);
+    ++graphIntentSequence; graphSelected = ''; graphDirectionFilter = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); hoveredNode = '';
+    if (directionWasActive) { void renderGraph(root, epoch); return; }
+    root.querySelector<HTMLElement>('#graph-selected-label')!.hidden = true;
+    for (const id of ['graph-neighborhood', 'graph-clear-selection', 'graph-scope', 'graph-compare-selection']) root.querySelector<HTMLButtonElement>(`#${id}`)!.hidden = true;
+    renderer?.refresh();
   });
   root.querySelector<HTMLButtonElement>('#graph-scope')?.addEventListener('click', () => {
     const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope');
@@ -752,7 +812,7 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
       const page = result.result?.page;
       const followResult = graphIntent === graphIntentSequence;
       if (followResult) {
-        activeInvestigation = result.investigation ?? null; investigationVisible = true; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear();
+        graphHistory.length = 0; activeInvestigation = result.investigation ?? null; investigationVisible = true; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear();
         if (section === 'explore' && exploreMode === 'graph') void renderExploreResult(sectionEpoch);
       }
       const answer = String(result.answer ?? '');
@@ -1222,13 +1282,19 @@ if (document.getElementById('question-dock')) {
   const addPanel = (id: string, placement?: 'left' | 'right' | 'above' | 'below' | 'within', size?: number) => {
     const existing = dockApi.getPanel(id); if (existing) { existing.api.setActive(); return; }
     const titles: Record<string, string> = { graph: 'Graph', questions: 'Questions', inspector: 'Inspector & files', source: 'Source' };
-    const direction = compact && (id === 'inspector' || id === 'source') ? 'within' : placement ?? (id === 'questions' ? 'below' : 'right');
+    const graphWidth = dockApi.getPanel('graph')?.group.api.width ?? host.clientWidth;
+    // Dockview may take space from neighboring groups as well as the reference
+    // group. Keep Source in the graph group unless the whole row has room for
+    // Graph, Source and Inspector together.
+    const sourceAsTab = id === 'source' && (host.clientWidth < 1600 || graphWidth < 1000);
+    const direction = placement ?? ((compact && (id === 'inspector' || id === 'source')) || sourceAsTab ? 'within' : (id === 'questions' ? 'below' : 'right'));
     const savedSize = Number.isFinite(size) && size! >= 100 ? size! : undefined;
-    const panel = dockApi.addPanel({ id, component: id, title: titles[id] ?? id, renderer: 'always', ...(id === 'questions' ? { initialHeight: savedSize ?? 220 } : id === 'inspector' ? { initialWidth: savedSize ?? 280 } : id === 'source' ? { initialWidth: 460 } : {}), ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
+    const sourceWidth = Math.min(460, Math.max(300, Math.floor(graphWidth * .48)));
+    const panel = dockApi.addPanel({ id, component: id, title: titles[id] ?? id, renderer: 'always', ...(direction === 'within' ? {} : id === 'questions' ? { initialHeight: savedSize ?? 220 } : id === 'inspector' ? { initialWidth: savedSize ?? 280 } : id === 'source' ? { initialWidth: sourceWidth } : {}), ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
     if (direction !== 'within' && id !== 'graph') requestAnimationFrame(() => {
       if (dockApi.getPanel(id) !== panel) return;
       if (id === 'questions') panel.group.api.setSize({ height: savedSize ?? 220 });
-      else panel.group.api.setSize({ width: savedSize ?? (id === 'source' ? 460 : 280) });
+      else panel.group.api.setSize({ width: savedSize ?? (id === 'source' ? sourceWidth : 280) });
     });
   };
   const resetLayout = () => { dockApi.clear(); addPanel('graph'); addPanel('questions'); addPanel('inspector'); dockApi.getPanel('graph')?.api.setActive(); };
@@ -1279,19 +1345,10 @@ if (document.getElementById('question-dock')) {
   });
   const graphTab = document.createElement('button'); graphTab.textContent = 'Return to graph'; fileTabs.append(graphTab);
   let activeFile = '', fileSequence = 0;
-  let sourcePriorSizes: { compact: boolean; inspectorWidth: number; questionHeight: number } | null = null;
   const openFiles: string[] = [];
   dockApi.onDidRemovePanel(panel => { queueMicrotask(() => {
     if (dockApi.getPanel(panel.id) || !panes[panel.id]) return;
     parkedPanels.append(panes[panel.id]!);
-    if (panel.id !== 'source') return;
-    const previous = sourcePriorSizes; sourcePriorSizes = null;
-    if (!previous || !layoutReady || previous.compact !== compact) return;
-    requestAnimationFrame(() => {
-      if (dockApi.getPanel('source')) return;
-      if (!compact && previous.inspectorWidth >= 100) dockApi.getPanel('inspector')?.group.api.setSize({ width: previous.inspectorWidth });
-      if (previous.questionHeight >= 100) dockApi.getPanel('questions')?.group.api.setSize({ height: previous.questionHeight });
-    });
   }); });
   const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; dockApi.getPanel('source')?.api.close(); addPanel('graph'); window.dispatchEvent(new Event('resize')); };
   graphTab.onclick = showGraph;
@@ -1311,7 +1368,6 @@ if (document.getElementById('question-dock')) {
     const existing = openFiles.indexOf(file); if (existing >= 0) openFiles.splice(existing, 1); openFiles.push(file);
     activeFile = file; const sequence = ++fileSequence;
     fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', item.dataset.file === file ? 'true' : 'false'));
-    if (!dockApi.getPanel('source')) sourcePriorSizes = { compact, inspectorWidth: Math.round(inspector.getBoundingClientRect().width), questionHeight: Math.round(dock.getBoundingClientRect().height) };
     addPanel('source'); sourceEmpty.hidden = true; fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
     try {
       const result = await getJson('/workbench/source', new URLSearchParams({ file }), message => { if (sequence === fileSequence && activeFile === file) fileStatus.textContent = `${file}: ${message}`; });
