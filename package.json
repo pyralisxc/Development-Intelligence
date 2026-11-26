@@ -42,6 +42,7 @@
     "codemirror": "^6.0.2",
     "dockview": "^8.9.1",
     "graphology": "0.26.0",
+    "graphology-layout-forceatlas2": "0.10.1",
     "npm": "10.9.2",
     "sigma": "3.0.3",
     "tree-sitter": "0.25.1",
