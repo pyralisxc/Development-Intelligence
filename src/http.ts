@@ -26,6 +26,7 @@ import { WorkspaceStore } from './accounts/workspace.js';
 import { advanceHostedJob, dispatchHostedAccounts } from './accounts/hostedQueue.js';
 import { hostedTransferStatus, startHostedTransfer, stopHostedTransfer } from './accounts/hosted.js';
 import { renderAccountWorkbench } from './accounts/view.js';
+import { renderLanding, renderRoadmap } from './landing/view.js';
 import { accountGithubBranches, accountGithubRepositories, accountGithubToken } from './accounts/github.js';
 
 const MODERN_VERSION = '2026-07-28';
@@ -200,7 +201,13 @@ export function createDevelopmentIntelligenceServer() {
       json(res, 200, { service: 'Development Intelligence', version: SERVER_INFO.version, status: 'ok', protocolVersions: SUPPORTED_MODERN, ...runtimeIdentity() });
       return;
     }
-    if ((requestUrl.pathname === '/account' || (requestUrl.pathname === '/' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1')) && req.method === 'GET') {
+    if (requestUrl.pathname === '/' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1' && req.method === 'GET') {
+      res.writeHead(200, htmlHeaders()); res.end(renderLanding(process.env.DEVINT_ACCESS_REQUEST_URL)); return;
+    }
+    if (requestUrl.pathname === '/roadmap' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1' && req.method === 'GET') {
+      res.writeHead(200, htmlHeaders()); res.end(renderRoadmap(process.env.DEVINT_ACCESS_REQUEST_URL)); return;
+    }
+    if (requestUrl.pathname === '/account' && req.method === 'GET') {
       try { const branchHost = process.env.VERCEL_BRANCH_URL?.trim(); const origin = branchHost ? `https://${branchHost}` : accountOrigin(req); const page = renderAccountWorkbench(process.env.CLERK_PUBLISHABLE_KEY?.trim() ?? '', origin); res.writeHead(200, htmlHeaders()); res.end(page); }
       catch { json(res, 503, { error: 'Account sign-in is not configured' }); }
       return;
