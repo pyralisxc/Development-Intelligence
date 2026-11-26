@@ -64,10 +64,40 @@ let selectedInspection: any = null;
 let inspectionSequence = 0;
 let inspectorTab = 'summary';
 let renderer: Sigma | null = null;
+let graphResizeObserver: ResizeObserver | null = null;
+let graphKindFilter = '';
+let graphStatusFilter = '';
+let graphDirectionFilter = '';
 let preferredQuerySource = '';
 let queryDraft = '';
 const queryPanel = document.createElement('div');
+const graphStyles = document.createElement('style');
+graphStyles.textContent = `
+  .graph-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:7px}
+  .graph-toolbar button,.graph-toolbar summary,.graph-selection button{font-size:12px}
+  .graph-filters{position:relative;color:#c6d8e8;font-size:12px}
+  .graph-filters summary{cursor:pointer;list-style:none;border:1px solid #38516e;border-radius:6px;background:#14243a;padding:6px 9px}
+  .graph-filter-menu{position:absolute;top:calc(100% + 5px);left:0;z-index:12;width:260px;max-height:min(260px,35vh);overflow:auto;padding:10px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px;background:#101c2b;border:1px solid #38516e;border-radius:8px;box-shadow:0 10px 30px #000a}
+  .graph-filter-menu label{display:grid;gap:3px;min-width:0}.graph-filter-menu label:nth-child(-n+3){grid-column:1/-1}.graph-filter-menu select,.graph-filter-menu input{width:100%;min-width:0;background:#0d1624;color:#edf4ff;border:1px solid #38516e;border-radius:5px;padding:5px}
+  .graph-selection{position:absolute;z-index:3;left:10px;top:10px;right:10px;display:flex;align-items:center;gap:5px;flex-wrap:wrap;pointer-events:none}
+  .graph-selection>*{pointer-events:auto}.graph-selection [data-selection-name]{padding:6px 8px;border-radius:5px;background:#152a3b;color:#e8f7ff;font-size:12px;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .graph-shell{background:radial-gradient(ellipse at 50% 35%,#12283a 0%,#0a1523 55%,#070d15 100%)}
+  .graph-shell canvas{outline-offset:-3px}.graph-status{max-width:calc(100% - 24px);line-height:1.4}
+  .graph-toolbar button:focus-visible,.graph-filters summary:focus-visible,.graph-selection button:focus-visible{outline:2px solid #82dcff;outline-offset:2px}
+  .graph-toolbar .active{border-color:#75d6f5;background:#1b3850;color:#fff}
+  @media(prefers-reduced-motion:reduce){.graph-shell *{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+`;
+document.head.append(graphStyles);
 let queryPanelReady = false;
+function updateQuestionScope(): void {
+  const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope');
+  const label = queryPanel.querySelector<HTMLElement>('#query-active-scope');
+  const clear = queryPanel.querySelector<HTMLButtonElement>('#query-clear-scope');
+  if (!scope || !label || !clear) return;
+  const value = scope.value.trim();
+  label.textContent = value ? `Scoped to: ${scope.dataset.displayName || value}` : 'Scope: entire selected graph';
+  clear.hidden = !value;
+}
 let graphRenderSequence = 0;
 let activeInvestigation: any = null;
 let investigationVisible = true;
@@ -76,7 +106,7 @@ let selectedGraphEdges = new Set<string>();
 
 function followInvestigation(selection: any): void {
   if (!selection?.graph?.graphId || !Array.isArray(selection.nodes) || !Array.isArray(selection.edges)) return;
-  activeInvestigation = selection; investigationVisible = true; selectedGraphNodes.clear(); selectedGraphEdges.clear(); graphSelected = '';
+  activeInvestigation = selection; investigationVisible = true; selectedGraphNodes.clear(); selectedGraphEdges.clear(); graphSelected = ''; graphDirectionFilter = '';
   exploreMode = 'graph';
   if (section === 'explore') void renderExploreResult(sectionEpoch);
   else void activateSection('explore');
@@ -364,7 +394,7 @@ async function loadExplore(epoch: number, query = exploreQuery): Promise<void> {
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.addEventListener('click', () => { exploreMode = button.dataset.mode as ExploreMode; if (exploreMode !== 'graph' && !lastExplore?.nodes) void fetchExplore(epoch); else void renderExploreResult(epoch); });
   content.innerHTML = `<form id="explore-search" class="query-box" style="grid-template-columns:minmax(0,1fr) auto auto"><input id="explore-input" aria-label="Search the graph" placeholder="Search the graph" value="${esc(exploreQuery)}"><button class="primary" type="submit">Search</button><button type="button" id="explore-audit">Audit</button></form><div class="investigation-layout"><div id="explore-result">${empty('Loading intelligence', 'Searching the selected graph context…')}</div><aside id="investigation-query" aria-label="Questions and answers"></aside></div>`;
   const form = document.getElementById('explore-search') as HTMLFormElement;
-  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLInputElement).value.trim(); graphSelected = ''; void fetchExplore(epoch); });
+  form.addEventListener('submit', event => { event.preventDefault(); exploreQuery = (document.getElementById('explore-input') as HTMLInputElement).value.trim(); graphSelected = ''; graphDirectionFilter = ''; void fetchExplore(epoch); });
   const showAudit = async () => {
     try {
       const result = await getJson('/workbench/data', new URLSearchParams({ action: 'audit', offset: String(auditOffset), ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}) }));
@@ -395,6 +425,7 @@ async function renderExploreResult(epoch: number): Promise<void> {
   const root = document.getElementById('explore-result') as HTMLElement;
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.classList.toggle('active', button.dataset.mode === exploreMode);
   if (!lastExplore) return;
+  if (exploreMode !== 'graph') { graphResizeObserver?.disconnect(); graphResizeObserver = null; renderer?.kill(); renderer = null; }
   const nodes = lastExplore.nodes ?? [];
   if (exploreMode === 'summary') {
     root.innerHTML = `<div class="card"><h3>Search summary</h3><h2>${esc(lastExplore.summary)}</h2><p>${(lastExplore.topKinds ?? []).map((item: any) => `${esc(item.kind)} (${esc(item.count)})`).join(' · ') || 'No entity kinds to summarize.'}</p></div><div class="card" style="margin-top:12px"><h3>Top results</h3><div class="list">${nodes.slice(0, 30).map(nodeRow).join('') || empty('No results', 'Try a broader term or use Query for a question-shaped request.')}</div></div>`;
@@ -424,8 +455,9 @@ function graphPoint(node: ProjectionNode, index: number, total: number): { x: nu
 
 async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   const sequence = ++graphRenderSequence;
+  graphResizeObserver?.disconnect(); graphResizeObserver = null;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="segmented">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button data-lens="${lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><button id="graph-reset" type="button">Reset view</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}<details class="graph-display"><summary>Display</summary><label class="muted">Nodes <input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}" style="width:85px"></label><label class="muted">Depth <input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}" style="width:65px"></label><button id="graph-apply" type="button">Apply</button></details><button id="graph-scope" type="button" disabled hidden>Use selected subject for question</button><button id="graph-compare-selection" type="button" hidden>Use selected nodes for comparison</button><span id="graph-selected-label" class="muted"></span></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph"></div><div id="graph-status" class="graph-status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div class="graph-toolbar"><div class="segmented" aria-label="Graph view">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button type="button" data-lens="${lens}" aria-pressed="${graphLens === lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><details class="graph-filters"><summary>Filters${graphKindFilter || graphStatusFilter || graphDirectionFilter || graphLimit !== 700 || graphDepth !== 2 ? ' • active' : ''}</summary><div class="graph-filter-menu"><label>Subject kind<select id="graph-kind" aria-label="Subject kind"><option value="">All visible kinds</option></select></label><label>Relationship status<select id="graph-edge-status" aria-label="Relationship status"><option value="">All statuses</option><option value="resolved">Resolved</option><option value="candidate">Candidate</option><option value="unresolved">Unresolved</option></select></label><label>Direction from selected subject<select id="graph-direction" aria-label="Direction from selected subject"><option value="">Both directions</option><option value="outbound">Outgoing</option><option value="inbound">Incoming</option></select></label><label>Maximum nodes<input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}"></label><label>Traversal depth<input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}"></label><button id="graph-apply" type="button">Apply</button><button id="graph-clear-filters" type="button">Clear filters</button></div></details><button id="graph-zoom-in" type="button" aria-label="Zoom in">+</button><button id="graph-zoom-out" type="button" aria-label="Zoom out">−</button><button id="graph-reset" type="button">Fit graph</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}</div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph. Use the list view for keyboard navigation."></div><div class="graph-selection"><span id="graph-selected-label" data-selection-name hidden></span><button id="graph-scope" type="button" disabled hidden>Use for question</button><button id="graph-compare-selection" type="button" hidden>Use for comparison</button></div><div id="graph-status" class="graph-status" role="status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
     const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
@@ -435,16 +467,35 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
       if (status) status.textContent = 'Enter positive whole numbers for nodes and depth.';
       return;
     }
+    const direction = root.querySelector<HTMLSelectElement>('#graph-direction')?.value ?? '';
+    if (direction && !graphSelected) { const status = root.querySelector<HTMLElement>('#graph-status'); if (status) status.textContent = 'Select a subject before choosing a direction.'; return; }
+    graphKindFilter = root.querySelector<HTMLSelectElement>('#graph-kind')?.value ?? '';
+    graphStatusFilter = root.querySelector<HTMLSelectElement>('#graph-edge-status')?.value ?? '';
+    graphDirectionFilter = direction;
     graphLimit = size; graphDepth = depth;
     savePositiveSetting('graphNodes', size); savePositiveSetting('graphDepth', depth);
     void renderGraph(root, epoch);
   });
-  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { investigationVisible = !investigationVisible; graphSelected = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
+  root.querySelector<HTMLButtonElement>('#graph-clear-filters')?.addEventListener('click', () => {
+    graphKindFilter = ''; graphStatusFilter = ''; graphDirectionFilter = ''; graphLimit = 700; graphDepth = 2;
+    savePositiveSetting('graphNodes', graphLimit); savePositiveSetting('graphDepth', graphDepth);
+    void renderGraph(root, epoch);
+  });
+  root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { investigationVisible = !investigationVisible; graphSelected = ''; graphDirectionFilter = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
   const selected = investigationVisible && activeInvestigation;
-  const projection = selected ? { ...selected.graph, nodes: selected.nodes, edges: selected.edges, evidence: selected.evidence, coverage: selected.coverage } as Projection
+  const allProjection = selected ? { ...selected.graph, nodes: selected.nodes, edges: selected.edges, evidence: selected.evidence, coverage: selected.coverage } as Projection
     : await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) })) as Projection;
   if (!sectionIsCurrent(epoch, 'explore') || sequence !== graphRenderSequence || exploreMode !== 'graph') return;
-  if (!selected && !projection.nodes.length && !projection.ambiguous && graphLens === 'architecture') {
+  const kindSelect = root.querySelector<HTMLSelectElement>('#graph-kind')!;
+  for (const kind of [...new Set(allProjection.nodes.map(node => node.kind))].sort()) kindSelect.add(new Option(kind, kind));
+  if (graphKindFilter && !Array.from(kindSelect.options).some(option => option.value === graphKindFilter)) kindSelect.add(new Option(`${graphKindFilter} (not in this view)`, graphKindFilter));
+  kindSelect.value = graphKindFilter;
+  root.querySelector<HTMLSelectElement>('#graph-edge-status')!.value = graphStatusFilter;
+  root.querySelector<HTMLSelectElement>('#graph-direction')!.value = graphDirectionFilter;
+  const visibleNodes = allProjection.nodes.filter(node => !graphKindFilter || node.kind === graphKindFilter || (!!graphDirectionFilter && node.id === graphSelected));
+  const visibleIds = new Set(visibleNodes.map(node => node.id));
+  const projection: Projection = { ...allProjection, nodes: visibleNodes, edges: allProjection.edges.filter(edge => (!graphStatusFilter || edge.status === graphStatusFilter) && (!graphDirectionFilter || (graphDirectionFilter === 'outbound' ? edge.from === graphSelected : edge.to === graphSelected)) && !!edge.from && !!edge.to && visibleIds.has(edge.from) && visibleIds.has(edge.to)) };
+  if (!selected && !allProjection.nodes.length && !projection.ambiguous && graphLens === 'architecture') {
     graphLens = 'code';
     await renderGraph(root, epoch);
     return;
@@ -465,13 +516,13 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     for (const button of Array.from(choices.querySelectorAll<HTMLButtonElement>('[data-graph-choice]'))) button.addEventListener('click', () => { graphSelected = button.dataset.graphChoice!; void renderGraph(root, epoch); });
     return;
   }
-  if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects selected', selected ? 'This result has no graph records to display. Its findings or missing expectations remain in the result.' : 'Try another search or choose a different view.'); graphStatus.textContent = '0 nodes'; return; }
+  if (!projection.nodes.length) { container.innerHTML = empty('No graph subjects visible', graphKindFilter ? 'Clear the subject filter or choose another kind.' : selected ? 'This result has no graph records to display. Its findings or missing expectations remain in the result.' : 'Try another search or choose a different view.'); graphStatus.textContent = `0 shown · ${allProjection.nodes.length} in this view`; return; }
   if (graphSelected && projection.nodes.some(node => node.id === graphSelected)) {
     const button = root.querySelector<HTMLButtonElement>('#graph-scope');
     if (button) { button.disabled = false; button.hidden = false; }
     const compare = root.querySelector<HTMLElement>('#graph-compare-selection'); if (compare) compare.hidden = false;
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
-    if (label) label.textContent = `Selected: ${projection.nodes.find(node => node.id === graphSelected)?.name ?? graphSelected}`;
+    if (label) { label.textContent = `Selected: ${projection.nodes.find(node => node.id === graphSelected)?.name ?? graphSelected}`; label.hidden = false; }
   }
   const graph = new MultiGraph({ allowSelfLoops: false });
   projection.nodes.forEach((node, index) => { const point = graphPoint(node, index, projection.nodes.length); graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4, color: selected?.focusNodeIds?.includes(node.id) ? '#f6c95f' : graphColor(node), node }); });
@@ -479,8 +530,21 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
     try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
-  renderer = new Sigma(graph, container, { allowInvalidContainer: true, enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true });
+  renderer = new Sigma(graph, container, { allowInvalidContainer: true, enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true,
+    defaultDrawNodeHover: (ctx, data) => {
+      const label = String(data.label ?? ''); ctx.save(); ctx.font = '600 12px sans-serif';
+      const x = data.x + data.size + 5, y = data.y - 12, width = ctx.measureText(label).width + 14;
+      ctx.fillStyle = '#132a3c'; ctx.beginPath(); ctx.roundRect(x, y, width, 24, 5); ctx.fill();
+      ctx.fillStyle = '#f2fbff'; ctx.textBaseline = 'middle'; ctx.fillText(label, x + 7, data.y); ctx.restore();
+    },
+  });
+  renderer.on('enterNode', ({ node }) => {
+    const neighbors = new Set([node, ...graph.neighbors(node)]);
+    graph.forEachNode(id => graph.setNodeAttribute(id, 'color', selectedGraphNodes.has(id) || selected?.focusNodeIds?.includes(id) ? '#f6c95f' : neighbors.has(id) ? graphColor(graph.getNodeAttribute(id, 'node')) : '#34495a'));
+  });
+  renderer.on('leaveNode', () => graph.forEachNode(id => graph.setNodeAttribute(id, 'color', selectedGraphNodes.has(id) || selected?.focusNodeIds?.includes(id) ? '#f6c95f' : graphColor(graph.getNodeAttribute(id, 'node')))));
   renderer.on('clickNode', event => {
+    const directionChangedSubject = Boolean(graphDirectionFilter && graphSelected !== event.node);
     graphSelected = event.node;
     if (event.event.original.shiftKey) { if (selectedGraphNodes.has(event.node)) selectedGraphNodes.delete(event.node); else selectedGraphNodes.add(event.node); }
     else { selectedGraphNodes.clear(); selectedGraphNodes.add(event.node); }
@@ -489,8 +553,9 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
     if (button) { button.disabled = false; button.hidden = false; }
     const compare = root.querySelector<HTMLElement>('#graph-compare-selection'); if (compare) compare.hidden = false;
     const label = root.querySelector<HTMLElement>('#graph-selected-label');
-    if (label) label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}${selectedGraphNodes.size > 1 ? ` · ${selectedGraphNodes.size} selected` : ''}`;
+    if (label) { label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}${selectedGraphNodes.size > 1 ? ` · ${selectedGraphNodes.size} selected` : ''}`; label.hidden = false; }
     void openInspector(event.node);
+    if (directionChangedSubject) void renderGraph(root, epoch);
   });
   renderer.on('clickEdge', event => {
     if (event.event.original.shiftKey) { if (selectedGraphEdges.has(event.edge)) selectedGraphEdges.delete(event.edge); else selectedGraphEdges.add(event.edge); }
@@ -503,14 +568,24 @@ async function renderGraph(root: HTMLElement, epoch: number): Promise<void> {
   });
   root.querySelector<HTMLButtonElement>('#graph-scope')?.addEventListener('click', () => {
     const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope');
-    if (scope && graphSelected) { scope.value = graphSelected; scope.closest('details')!.open = true; queryPanel.querySelector<HTMLTextAreaElement>('#query-text')?.focus(); }
+    if (scope && graphSelected) { scope.value = graphSelected; scope.dataset.displayName = graph.getNodeAttribute(graphSelected, 'label'); updateQuestionScope(); document.dispatchEvent(new Event('di-show-questions')); requestAnimationFrame(() => queryPanel.querySelector<HTMLTextAreaElement>('#query-text')?.focus()); }
   });
   root.querySelector<HTMLButtonElement>('#graph-compare-selection')?.addEventListener('click', () => {
     const comparison = queryPanel.querySelector<HTMLInputElement>('#query-comparison-ids');
-    if (comparison && selectedGraphNodes.size) { comparison.value = [...selectedGraphNodes].join(', '); comparison.closest('details')!.open = true; queryPanel.querySelector<HTMLTextAreaElement>('#query-text')?.focus(); }
+    if (comparison && selectedGraphNodes.size) { comparison.value = [...selectedGraphNodes].join(', '); comparison.closest('details')!.open = true; document.dispatchEvent(new Event('di-show-questions')); requestAnimationFrame(() => queryPanel.querySelector<HTMLTextAreaElement>('#query-text')?.focus()); }
   });
-  root.querySelector<HTMLButtonElement>('#graph-reset')?.addEventListener('click', () => void renderer?.getCamera().animatedReset());
-  graphStatus.textContent = `${selected ? `Following ${selected.operation}${selected.page?.nextOffset != null ? ' · more results available' : ''} · ` : ''}${projection.nodes.length} nodes · ${graph.size} drawn relationships${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}`;
+  const moveCamera = (factor?: number) => {
+    const camera = renderer?.getCamera(); if (!camera) return;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (factor === undefined) { if (reduced) camera.setState({ x: .5, y: .5, angle: 0, ratio: 1 }); else void camera.animatedReset(); }
+    else { const ratio = camera.getState().ratio * factor; if (reduced) camera.setState({ ratio }); else void camera.animate({ ratio }, { duration: 180 }); }
+  };
+  root.querySelector<HTMLButtonElement>('#graph-reset')?.addEventListener('click', () => moveCamera());
+  root.querySelector<HTMLButtonElement>('#graph-zoom-in')?.addEventListener('click', () => moveCamera(.7));
+  root.querySelector<HTMLButtonElement>('#graph-zoom-out')?.addEventListener('click', () => moveCamera(1.4));
+  graphResizeObserver = new ResizeObserver(() => { if (renderer && container.isConnected && container.clientWidth && container.clientHeight) renderer.refresh(); });
+  graphResizeObserver.observe(container);
+  graphStatus.textContent = `${selected ? `Following ${selected.operation}${selected.page?.nextOffset != null ? ' · more results available' : ''} · ` : ''}${projection.nodes.length} of ${allProjection.nodes.length} shown · ${graph.size} relationships${graphDirectionFilter ? ` · ${graphDirectionFilter} from selected subject` : ''}${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}`;
 }
 
 async function renderQuery(epoch: number, prefill = '', host: HTMLElement = content): Promise<void> {
@@ -523,8 +598,11 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
   }
   if (prefill) queryDraft = prefill;
   prefill = queryDraft;
-  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" aria-label="Question about the selected graph" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden aria-label="Question source"><option value="">Development Intelligence</option></select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted">Answers use the selected saved graph and its source state.</p></div><button type="button" id="load-query-sources">Choose a technical source</button><div id="query-source-status" role="status" class="muted"></div><div id="query-result" class="query-result" aria-live="polite"></div>`;
+  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" aria-label="Question about the selected graph" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden aria-label="Question source"><option value="">Development Intelligence</option></select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted"><span id="query-active-scope" role="status">Scope: entire selected graph</span> <button type="button" id="query-clear-scope" hidden>Clear scope</button></p><p class="muted">Answers use the selected saved graph and its source state.</p></div><button type="button" id="load-query-sources">Choose a technical source</button><div id="query-source-status" role="status" class="muted"></div><div id="query-result" class="query-result" aria-live="polite"></div>`;
   queryPanelReady = true;
+  queryPanel.querySelector<HTMLInputElement>('#query-scope')?.addEventListener('input', event => { delete (event.currentTarget as HTMLInputElement).dataset.displayName; updateQuestionScope(); });
+  queryPanel.querySelector<HTMLButtonElement>('#query-clear-scope')?.addEventListener('click', () => { const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope'); if (scope) { scope.value = ''; delete scope.dataset.displayName; } updateQuestionScope(); });
+  updateQuestionScope();
   queryPanel.querySelector<HTMLButtonElement>('#load-query-sources')?.addEventListener('click', async event => {
     const button = event.currentTarget as HTMLButtonElement;
     const status = queryPanel.querySelector<HTMLElement>('#query-source-status')!;
@@ -919,6 +997,7 @@ async function activateSection(next: Section, queryPrefill = ''): Promise<void> 
   const epoch = ++sectionEpoch;
   section = next;
   for (const button of navButtons) button.classList.toggle('active', button.dataset.section === section);
+  graphResizeObserver?.disconnect(); graphResizeObserver = null;
   renderer?.kill(); renderer = null;
   if (!document.getElementById('question-dock')) queryPanel.remove();
   content.replaceChildren();
@@ -987,10 +1066,10 @@ if (document.getElementById('question-dock')) {
     .di-dockview #question-dock .query-box:has(#query-source[hidden]){grid-template-columns:minmax(0,1fr) auto}
     .di-dockview #question-dock button{background:#14243a;color:#dbe7f6;border:1px solid #334963;border-radius:5px;padding:5px 8px;cursor:pointer}
     .di-dockview .inspector{resize:none}
-    .di-dockview .workspace #content:has(.graph-shell){display:flex;flex-direction:column}
+    .di-dockview .workspace #content:has(.graph-shell){display:flex;flex-direction:column;overflow:hidden}
     .di-dockview .investigation-layout:has(.graph-shell){flex:1;min-height:0;align-items:stretch}
     .di-dockview #explore-result:has(.graph-shell){display:flex;flex-direction:column;min-height:0}
-    .di-dockview .graph-shell{flex:1;height:auto;min-height:240px}
+    .di-dockview .graph-shell{flex:1;height:auto;min-height:0}
     .di-layout-toolbar{display:flex;gap:6px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid #26364d;background:#0c131e}
     .di-layout-toolbar button,.di-source-pane .inspector-tabs button{font-size:12px;color:#dbe7f6;background:#14243a;border:1px solid #334963;border-radius:5px;padding:6px 9px;cursor:pointer}
     .di-layout-toolbar details{position:relative;color:#dbe7f6;font-size:12px}.di-layout-toolbar summary{cursor:pointer;padding:6px 9px;border:1px solid #334963;border-radius:5px;background:#14243a}
@@ -1018,6 +1097,7 @@ if (document.getElementById('question-dock')) {
     });
   };
   const resetLayout = () => { dockApi.clear(); addPanel('graph'); addPanel('questions'); addPanel('inspector'); dockApi.getPanel('graph')?.api.setActive(); };
+  document.addEventListener('di-show-questions', () => addPanel('questions'));
   resetLayout();
   const layoutControls = document.createElement('div'); layoutControls.className = 'di-layout-toolbar';
   for (const [label, action] of [['Graph', () => addPanel('graph')], ['Questions', () => addPanel('questions')], ['Inspector & files', () => addPanel('inspector')], ['Reset layout', resetLayout]] as const) {

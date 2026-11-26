@@ -50,7 +50,7 @@ async function workspace(origin: string, token: string, data: unknown): Promise<
 }
 
 /** Link this installation using Clerk's device grant; a secret is never embedded in the installer. */
-export async function linkComputer(home: string, workbench: string, pairingCode: string): Promise<void> {
+export async function linkComputer(home: string, workbench: string, pairingCode: string, openVerification?: (url: string) => void): Promise<void> {
   const origin = trustedUrl(workbench, true).origin;
   const configResponse = await fetch(new URL('/account/client-config', origin), { redirect: 'error' });
   if (!configResponse.ok) throw new Error('This Workbench does not yet offer computer linking');
@@ -66,6 +66,12 @@ export async function linkComputer(home: string, workbench: string, pairingCode:
   if (request.error || !request.device_code || !request.user_code || !request.verification_uri || !Number.isFinite(request.expires_in) || !Number.isFinite(request.interval)) throw new Error('Clerk did not start computer authorization');
   console.log(`Open ${request.verification_uri} and enter ${request.user_code} to link this computer.`);
   if (request.verification_uri_complete) console.log(`Or open ${request.verification_uri_complete}`);
+  if (openVerification) {
+    const verification = trustedUrl(request.verification_uri_complete || request.verification_uri);
+    // Never open a destination supplied by an unrelated authorization server.
+    if (verification.origin === issuer.origin) openVerification(verification.href);
+    else console.log('Open the authorization address above to continue.');
+  }
   const until = Date.now() + request.expires_in * 1000;
   let interval = request.interval * 1000;
   while (Date.now() < until) {
