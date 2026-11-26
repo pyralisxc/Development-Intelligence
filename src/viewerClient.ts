@@ -1,4 +1,5 @@
 import { MultiGraph } from 'graphology';
+import FA2Layout from 'graphology-layout-forceatlas2/worker.js';
 import Sigma from 'sigma';
 import { basicSetup, EditorView } from 'codemirror';
 import { EditorState } from '@codemirror/state';
@@ -78,8 +79,18 @@ let graphKindFilter = '';
 let graphStatusFilter = '';
 let graphDirectionFilter = '';
 let graphRelationshipFilter = '';
-type GraphContext = { subject: string; query: string; investigation: boolean; direction: string; lens: GraphLens; kind: string; relationship: string; status: string; limit: number; depth: number; camera?: { x: number; y: number; ratio: number; angle: number } };
+type GraphPositions = Record<string, { x: number; y: number }>;
+type GraphContext = { subject: string; query: string; investigation: boolean; direction: string; lens: GraphLens; kind: string; relationship: string; status: string; limit: number; depth: number; focus?: string; selectedNodes?: string[]; selectedEdges?: string[]; camera?: { x: number; y: number; ratio: number; angle: number }; projection?: Projection; positions?: GraphPositions; bounds?: { x: [number, number]; y: [number, number] } };
 const graphHistory: GraphContext[] = [];
+type LayoutSupervisor = { start(): void; kill(): void };
+const ForceLayout = FA2Layout as unknown as new (graph: MultiGraph, options: { settings: { barnesHutOptimize: boolean; scalingRatio: number; gravity: number; slowDown: number; linLogMode: boolean; strongGravityMode: boolean } }) => LayoutSupervisor;
+let layoutSupervisor: LayoutSupervisor | null = null;
+let layoutTimer: number | undefined;
+const expansionLimits = new Map<string, { limit: number; complete: boolean }>();
+function stopGraphLayout(): void {
+  window.clearTimeout(layoutTimer); layoutTimer = undefined;
+  layoutSupervisor?.kill(); layoutSupervisor = null;
+}
 let preferredQuerySource = '';
 let queryDraft = '';
 const queryPanel = document.createElement('div');
@@ -275,7 +286,7 @@ function wireNodeButtons(root: ParentNode = content, graphId?: string): void {
           const compare = document.getElementById('graph-compare-selection'); if (compare) compare.hidden = false;
           const label = document.getElementById('graph-selected-label');
           if (label) { label.textContent = `Selected: ${graph.getNodeAttribute(id, 'label')}`; label.hidden = false; }
-          for (const id of ['graph-neighborhood', 'graph-clear-selection']) { const control = document.getElementById(id); if (control) control.hidden = false; }
+          for (const id of ['graph-expand', 'graph-neighborhood', 'graph-clear-selection']) { const control = document.getElementById(id); if (control) control.hidden = false; }
           const neighborhood = document.getElementById('graph-neighborhood') as HTMLButtonElement | null; if (neighborhood) neighborhood.disabled = false;
         }
       }
@@ -507,7 +518,7 @@ async function renderExploreResult(epoch: number): Promise<void> {
   const root = document.getElementById('explore-result') as HTMLElement;
   for (const button of Array.from(sectionHead.querySelectorAll<HTMLButtonElement>('[data-mode]'))) button.classList.toggle('active', button.dataset.mode === exploreMode);
   if (!lastExplore) return;
-  if (exploreMode !== 'graph') { graphResizeObserver?.disconnect(); graphResizeObserver = null; renderer?.kill(); renderer = null; }
+  if (exploreMode !== 'graph') { stopGraphLayout(); graphResizeObserver?.disconnect(); graphResizeObserver = null; renderer?.kill(); renderer = null; }
   const nodes = lastExplore.nodes ?? [];
   if (exploreMode === 'summary') {
     root.innerHTML = `<div class="card"><h3>Search summary</h3><h2>${esc(lastExplore.summary)}</h2><p>${(lastExplore.topKinds ?? []).map((item: any) => `${esc(item.kind)} (${esc(item.count)})`).join(' · ') || 'No entity kinds to summarize.'}</p></div><div class="card" style="margin-top:12px"><h3>Top results</h3><div class="list">${nodes.slice(0, 30).map(nodeRow).join('') || empty('No results', 'Try a broader term or use Query for a question-shaped request.')}</div></div>`;
@@ -525,20 +536,16 @@ function hash(value: string): number { let output = 2166136261; for (let i = 0; 
 function graphColor(node: ProjectionNode): string { return node.layer === 'semantic' ? '#67d3f5' : node.layer === 'representation' ? '#ffc857' : '#aa91ff'; }
 function graphPoint(node: ProjectionNode, index: number, total: number): { x: number; y: number } {
   const h = hash(`${node.kind}:${node.id}`);
-  if (graphLens === 'architecture') {
-    const xByKind: Record<string, number> = { route: -1.25, api: -1.05, feature: -0.15, capability: -0.15, mcp: 0.65, tool: 0.7, provider: 1.25, surface: -0.65 };
-    const x = xByKind[node.kind] ?? (node.layer === 'semantic' ? 0 : node.layer === 'representation' ? 1.4 : -1.4);
-    return { x: x + (((h >>> 8) % 100) / 100 - 0.5) * .18, y: (((h % 1000) / 1000) - .5) * 2 };
-  }
-  const angle = ((h % 100000) / 100000) * Math.PI * 2 + index / Math.max(total, 1);
-  const radius = graphLens === 'parity' ? (node.layer === 'semantic' ? .7 : node.layer === 'representation' ? 1.15 : 1.45) : (node.kind === 'file' ? 1.25 : .9);
+  const angle = ((h % 100000) / 100000) * Math.PI * 2;
+  const radius = 12 + Math.sqrt((index + 1) / Math.max(total, 1)) * Math.max(25, Math.sqrt(total) * 4);
   return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
 }
 
-async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: GraphContext['camera']): Promise<void> {
+async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: GraphContext['camera'], supplied?: { projection: Projection; positions?: GraphPositions; bounds?: GraphContext['bounds']; focus?: string; settle?: boolean; notice?: string }): Promise<void> {
   const sequence = ++graphRenderSequence;
+  if (!supplied) expansionLimits.clear();
   const selected = investigationVisible && activeInvestigation;
-  const displayedContext: GraphContext = { subject: graphSelected, query: exploreQuery, investigation: Boolean(selected), direction: graphDirectionFilter, lens: graphLens, kind: graphKindFilter, relationship: graphRelationshipFilter, status: graphStatusFilter, limit: graphLimit, depth: graphDepth };
+  const displayedContext: GraphContext = { subject: supplied ? supplied.projection.selected ?? '' : graphSelected, query: exploreQuery, investigation: Boolean(selected), direction: graphDirectionFilter, lens: graphLens, kind: graphKindFilter, relationship: graphRelationshipFilter, status: graphStatusFilter, limit: graphLimit, depth: graphDepth };
   const progress = document.getElementById('graph-progress');
   const current = () => sectionIsCurrent(epoch, 'explore') && sequence === graphRenderSequence && exploreMode === 'graph';
   const graphRequest = graphSelected ? 'Loading selected subject' : exploreQuery ? `Searching graph for “${exploreQuery}”` : 'Loading graph';
@@ -546,8 +553,8 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
   update('Starting…');
   let allProjection: Projection;
   try {
-    allProjection = selected ? { ...selected.graph, nodes: selected.nodes, edges: selected.edges, evidence: selected.evidence, coverage: selected.coverage } as Projection
-      : await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) }), update) as Projection;
+    allProjection = supplied?.projection ?? (selected ? { ...selected.graph, nodes: selected.nodes, edges: selected.edges, evidence: selected.evidence, coverage: selected.coverage } as Projection
+      : await getJson('/graph/data', new URLSearchParams({ view: graphLens, ...(graphSelected ? { node: graphSelected } : exploreQuery ? { query: exploreQuery } : {}), limit: String(graphLimit), depth: String(graphDepth) }), update) as Projection);
   } catch (error) {
     if (!current() || !progress?.isConnected) return;
     progress.textContent = `Graph unavailable: ${error instanceof Error ? error.message : String(error)}${renderer ? ' Previous graph remains visible.' : ''} `;
@@ -556,10 +563,20 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
     return;
   }
   if (!current()) return;
+  if (supplied?.focus) graphSelected = supplied.focus;
   update('');
+  stopGraphLayout();
   graphResizeObserver?.disconnect(); graphResizeObserver = null;
   renderer?.kill(); renderer = null;
-  root.innerHTML = `<div class="graph-toolbar"><div class="segmented" aria-label="Graph view">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button type="button" data-lens="${lens}" aria-pressed="${graphLens === lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><details class="graph-filters"><summary>Filters${graphKindFilter || graphStatusFilter || graphRelationshipFilter || graphDirectionFilter || graphLimit !== 700 || graphDepth !== 2 ? ' • active' : ''}</summary><div class="graph-filter-menu"><label>Subject kind<select id="graph-kind" aria-label="Subject kind"><option value="">All visible kinds</option></select></label><label>Relationship kind<select id="graph-edge-kind" aria-label="Relationship kind"><option value="">All visible relationships</option></select></label><label>Relationship status<select id="graph-edge-status" aria-label="Relationship status"><option value="">All statuses</option><option value="resolved">Resolved</option><option value="candidate">Candidate</option><option value="unresolved">Unresolved</option></select></label><label>Direction from selected subject<select id="graph-direction" aria-label="Direction from selected subject"><option value="">Both directions</option><option value="outbound">Outgoing</option><option value="inbound">Incoming</option></select></label><label>Maximum nodes<input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}"></label><label>Traversal depth<input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}"></label><button id="graph-apply" type="button">Apply</button><button id="graph-clear-filters" type="button">Clear filters</button></div></details><button id="graph-back" type="button" ${graphHistory.length ? '' : 'disabled'}>Back</button><button id="graph-zoom-in" type="button" aria-label="Zoom in">+</button><button id="graph-zoom-out" type="button" aria-label="Zoom out">−</button><button id="graph-reset" type="button">Fit graph</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}</div><div class="graph-filter-summary" id="graph-filter-summary"></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph. Use the list view for keyboard navigation."></div><div class="graph-selection"><span id="graph-selected-label" data-selection-name hidden></span><button id="graph-neighborhood" type="button" hidden>Explore neighborhood</button><button id="graph-clear-selection" type="button" hidden>Clear selection</button><button id="graph-scope" type="button" disabled hidden>Use for question</button><button id="graph-compare-selection" type="button" hidden>Use for comparison</button></div><div id="graph-status" class="graph-status" role="status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
+  root.innerHTML = `<div class="graph-toolbar"><div class="segmented" aria-label="Graph view">${(['architecture', 'parity', 'code'] as GraphLens[]).map(lens => `<button type="button" data-lens="${lens}" aria-pressed="${graphLens === lens}" class="${graphLens === lens ? 'active' : ''}">${lens}</button>`).join('')}</div><details class="graph-filters"><summary>Filters${graphKindFilter || graphStatusFilter || graphRelationshipFilter || graphDirectionFilter || graphLimit !== 700 || graphDepth !== 2 ? ' • active' : ''}</summary><div class="graph-filter-menu"><label>Subject kind<select id="graph-kind" aria-label="Subject kind"><option value="">All visible kinds</option></select></label><label>Relationship kind<select id="graph-edge-kind" aria-label="Relationship kind"><option value="">All visible relationships</option></select></label><label>Relationship status<select id="graph-edge-status" aria-label="Relationship status"><option value="">All statuses</option><option value="resolved">Resolved</option><option value="candidate">Candidate</option><option value="unresolved">Unresolved</option></select></label><label>Direction from selected subject<select id="graph-direction" aria-label="Direction from selected subject"><option value="">Both directions</option><option value="outbound">Outgoing</option><option value="inbound">Incoming</option></select></label><label>Maximum nodes<input id="graph-limit" aria-label="Graph node limit" type="number" min="1" value="${graphLimit}"></label><label>Traversal depth<input id="graph-depth" aria-label="Graph traversal depth" type="number" min="1" value="${graphDepth}"></label><button id="graph-apply" type="button">Apply</button><button id="graph-clear-filters" type="button">Clear filters</button></div></details><button id="graph-back" type="button" ${graphHistory.length ? '' : 'disabled'}>Back</button><button id="graph-zoom-in" type="button" aria-label="Zoom in">+</button><button id="graph-zoom-out" type="button" aria-label="Zoom out">−</button><button id="graph-reset" type="button">Fit graph</button>${activeInvestigation ? `<button id="graph-follow" type="button">${investigationVisible ? 'Show graph context' : 'Show investigation'}</button>` : ''}</div><div class="graph-filter-summary" id="graph-filter-summary"></div><div class="graph-shell"><div id="graph" class="graph" role="img" aria-label="Development Intelligence graph. Use the list view for keyboard navigation."></div><div class="graph-selection"><span id="graph-selected-label" data-selection-name hidden></span><button id="graph-expand" type="button" hidden>Expand neighbors</button><button id="graph-neighborhood" type="button" hidden>Focus neighborhood</button><button id="graph-clear-selection" type="button" hidden>Clear selection</button><button id="graph-scope" type="button" disabled hidden>Use for question</button><button id="graph-compare-selection" type="button" hidden>Use for comparison</button></div><div id="graph-status" class="graph-status" role="status">Loading graph…</div></div><div id="graph-information"></div><div id="graph-choices"></div>`;
+  const renderFilteredProjection = () => {
+    if (!renderer) { void renderGraph(root, epoch); return; }
+    const positions: GraphPositions = { ...supplied?.positions };
+    renderer.getGraph().forEachNode((id, attributes) => { positions[id] = { x: attributes.x, y: attributes.y }; });
+    const camera = renderer.getCamera().getState();
+    const bounds = renderer.getCustomBBox() ?? renderer.getBBox();
+    void renderGraph(root, epoch, camera, { projection: allProjection, positions, bounds, ...(graphSelected ? { focus: graphSelected } : {}), ...(supplied?.notice ? { notice: supplied.notice } : {}) });
+  };
   for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('[data-lens]'))) button.addEventListener('click', () => { ++graphIntentSequence; graphLens = button.dataset.lens as GraphLens; void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-apply')?.addEventListener('click', () => {
     const size = Number(root.querySelector<HTMLInputElement>('#graph-limit')?.value);
@@ -571,6 +588,7 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
     }
     const direction = root.querySelector<HTMLSelectElement>('#graph-direction')?.value ?? '';
     if (direction && !graphSelected) { const status = root.querySelector<HTMLElement>('#graph-status'); if (status) status.textContent = 'Select a subject before choosing a direction.'; return; }
+    const requestChanged = size !== graphLimit || depth !== graphDepth;
     ++graphIntentSequence;
     graphKindFilter = root.querySelector<HTMLSelectElement>('#graph-kind')?.value ?? '';
     graphStatusFilter = root.querySelector<HTMLSelectElement>('#graph-edge-status')?.value ?? '';
@@ -578,22 +596,24 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
     graphDirectionFilter = direction;
     graphLimit = size; graphDepth = depth;
     savePositiveSetting('graphNodes', size); savePositiveSetting('graphDepth', depth);
-    void renderGraph(root, epoch);
+    if (requestChanged) void renderGraph(root, epoch); else renderFilteredProjection();
   });
   root.querySelector<HTMLButtonElement>('#graph-clear-filters')?.addEventListener('click', () => {
+    const requestChanged = graphLimit !== 700 || graphDepth !== 2;
     ++graphIntentSequence;
     graphKindFilter = ''; graphStatusFilter = ''; graphRelationshipFilter = ''; graphDirectionFilter = ''; graphLimit = 700; graphDepth = 2;
     savePositiveSetting('graphNodes', graphLimit); savePositiveSetting('graphDepth', graphDepth);
-    void renderGraph(root, epoch);
+    if (requestChanged) void renderGraph(root, epoch); else renderFilteredProjection();
   });
   root.querySelector<HTMLButtonElement>('#graph-follow')?.addEventListener('click', () => { ++graphIntentSequence; graphHistory.length = 0; investigationVisible = !investigationVisible; graphSelected = ''; graphDirectionFilter = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch); });
   root.querySelector<HTMLButtonElement>('#graph-back')?.addEventListener('click', () => {
     const previous = graphHistory.pop(); if (!previous) return;
+    expansionLimits.clear();
     ++graphIntentSequence; graphSelected = previous.subject; exploreQuery = previous.query; investigationVisible = previous.investigation; graphDirectionFilter = previous.direction;
     graphLens = previous.lens; graphKindFilter = previous.kind; graphRelationshipFilter = previous.relationship; graphStatusFilter = previous.status; graphLimit = previous.limit; graphDepth = previous.depth;
-    selectedGraphNodes.clear(); selectedGraphEdges.clear();
+    selectedGraphNodes = new Set(previous.selectedNodes ?? []); selectedGraphEdges = new Set(previous.selectedEdges ?? []);
     const input = document.getElementById('explore-input') as HTMLInputElement | null; if (input) input.value = exploreQuery;
-    void renderGraph(root, epoch, previous.camera);
+    void renderGraph(root, epoch, previous.camera, previous.projection ? { projection: previous.projection, ...(previous.positions ? { positions: previous.positions } : {}), ...(previous.bounds ? { bounds: previous.bounds } : {}), ...(previous.focus ? { focus: previous.focus } : {}) } : undefined);
   });
   const kindSelect = root.querySelector<HTMLSelectElement>('#graph-kind')!;
   for (const kind of [...new Set(allProjection.nodes.map(node => node.kind))].sort()) kindSelect.add(new Option(kind, kind));
@@ -642,22 +662,40 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
     if (label) { label.textContent = `Selected: ${projection.nodes.find(node => node.id === graphSelected)?.name ?? graphSelected}`; label.hidden = false; }
     const neighborhood = root.querySelector<HTMLButtonElement>('#graph-neighborhood')!;
     neighborhood.hidden = false; neighborhood.disabled = displayedContext.subject === graphSelected && !displayedContext.investigation;
+    root.querySelector<HTMLButtonElement>('#graph-expand')!.hidden = false;
     root.querySelector<HTMLButtonElement>('#graph-clear-selection')!.hidden = false;
   }
   const graph = new MultiGraph({ allowSelfLoops: false });
-  projection.nodes.forEach((node, index) => { const point = graphPoint(node, index, projection.nodes.length); graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4, color: selected?.focusNodeIds?.includes(node.id) ? '#f6c95f' : graphColor(node), node }); });
+  const densityScale = Math.max(.3, Math.min(1, Math.sqrt(100 / projection.nodes.length)));
+  projection.nodes.forEach((node, index) => {
+    const known = supplied?.positions?.[node.id];
+    const seed = graphPoint(node, index, projection.nodes.length);
+    const anchor = supplied?.positions?.[graphSelected];
+    const point = known ?? (anchor ? { x: anchor.x + seed.x * .3, y: anchor.y + seed.y * .3 } : seed);
+    graph.addNode(node.id, { label: node.name ?? node.id, x: point.x, y: point.y, size: (node.layer === 'semantic' ? 8 : node.kind === 'file' ? 6 : 4) * densityScale, color: selected?.focusNodeIds?.includes(node.id) ? '#f6c95f' : graphColor(node), node });
+  });
   for (const edge of projection.edges) {
     if (!edge.from || !edge.to || !graph.hasNode(edge.from) || !graph.hasNode(edge.to) || edge.from === edge.to) continue;
-    try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: edge.status === 'resolved' ? 1.2 : .75, color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
+    try { graph.addEdgeWithKey(edge.id, edge.from, edge.to, { size: (edge.status === 'resolved' ? 1.2 : .75) * Math.max(.5, densityScale), color: edge.status === 'resolved' ? '#53667e' : edge.status === 'candidate' ? '#b9823c' : '#b94f56', edge }); } catch { /* graph truth stays inspectable in list/raw modes */ }
   }
   let hoveredNode = '';
-  const focusedNodes = () => hoveredNode ? new Set([hoveredNode]) : new Set([...selectedGraphNodes].filter(id => graph.hasNode(id)));
+  let focusVersion = -1, focusHover = '';
+  let focusCache = new Set<string>(), neighborCache = new Set<string>();
+  const focusedNodes = () => {
+    if (focusVersion !== graphIntentSequence || focusHover !== hoveredNode) {
+      focusVersion = graphIntentSequence; focusHover = hoveredNode;
+      focusCache = hoveredNode ? new Set([hoveredNode]) : new Set([...selectedGraphNodes].filter(id => graph.hasNode(id)));
+      neighborCache = new Set(focusCache);
+      for (const id of focusCache) for (const neighbor of graph.neighbors(id)) neighborCache.add(neighbor);
+    }
+    return focusCache;
+  };
   renderer = new Sigma(graph, container, { allowInvalidContainer: true, enableEdgeEvents: true, renderEdgeLabels: projection.nodes.length < 120, labelColor: { color: '#dcecff' }, edgeLabelColor: { color: '#aabed3' }, labelDensity: .35, labelGridCellSize: 85, labelRenderedSizeThreshold: 5, zIndex: true,
     nodeReducer: (id, data) => {
       const focus = focusedNodes();
       if (!focus.size) return { ...data, color: selected?.focusNodeIds?.includes(id) ? '#f6c95f' : data.color };
-      const relevant = focus.has(id) || [...focus].some(node => graph.areNeighbors(node, id));
-      return { ...data, color: focus.has(id) ? '#f6c95f' : relevant ? data.color : '#34414f', zIndex: focus.has(id) ? 2 : 0 };
+      const relevant = neighborCache.has(id);
+      return { ...data, color: focus.has(id) ? '#f6c95f' : relevant ? data.color : '#34414f', size: focus.has(id) ? Math.max(6, data.size) : data.size, zIndex: focus.has(id) ? 2 : 0 };
     },
     edgeReducer: (id, data) => {
       const focus = focusedNodes();
@@ -674,6 +712,7 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
       ctx.fillStyle = '#f2fbff'; ctx.textBaseline = 'middle'; ctx.fillText(label, x + 7, data.y); ctx.restore();
     },
   });
+  if (supplied?.bounds) renderer.setCustomBBox(supplied.bounds);
   if (restoreCamera) renderer.getCamera().setState(restoreCamera);
   renderer.on('enterNode', ({ node }) => { hoveredNode = node; renderer?.refresh(); });
   renderer.on('leaveNode', () => { hoveredNode = ''; renderer?.refresh(); });
@@ -691,6 +730,7 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
     if (label) { label.textContent = `Selected: ${graph.getNodeAttribute(event.node, 'label')}${selectedGraphNodes.size > 1 ? ` · ${selectedGraphNodes.size} selected` : ''}`; label.hidden = false; }
     const neighborhood = root.querySelector<HTMLButtonElement>('#graph-neighborhood')!;
     neighborhood.hidden = false; neighborhood.disabled = displayedContext.subject === graphSelected && !displayedContext.investigation;
+    root.querySelector<HTMLButtonElement>('#graph-expand')!.hidden = false;
     root.querySelector<HTMLButtonElement>('#graph-clear-selection')!.hidden = false;
     void openInspector(event.node, undefined, String(graph.getNodeAttribute(event.node, 'label')));
     if (directionChangedSubject) void renderGraph(root, epoch);
@@ -705,10 +745,52 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
     const to = graph.getNodeAttribute(graph.target(event.edge), 'label') as string;
     void openRelationship(edge, from, to);
   });
+  root.querySelector<HTMLButtonElement>('#graph-expand')?.addEventListener('click', async () => {
+    if (!graphSelected || !graph.hasNode(graphSelected) || !renderer) return;
+    const subject = graphSelected;
+    const key = `${allProjection.graphId ?? ''}\u0000${subject}`;
+    const previous = expansionLimits.get(key);
+    if (previous?.complete) { update('The requested one-hop resolved neighborhood is already loaded; other relationship statuses may still be incomplete.'); return; }
+    const limit = Math.min(graphLimit, previous ? previous.limit * 2 : 80);
+    if (previous && limit <= previous.limit) { update(`The request limit of ${limit} nodes has been reached. Increase Maximum nodes in Filters to request more.`); return; }
+    const activeRenderer = renderer;
+    const intent = ++graphIntentSequence;
+    const isCurrentExpansion = () => current() && renderer === activeRenderer && graphIntentSequence === intent && graphSelected === subject;
+    const report = (message: string) => { if (isCurrentExpansion()) update(message); };
+    report('Loading one-hop neighbors…');
+    const expand = root.querySelector<HTMLButtonElement>('#graph-expand')!; expand.disabled = true;
+    try {
+      const result = await getJson('/graph/data', new URLSearchParams({ view: graphLens, node: subject, depth: '1', limit: String(limit), ...(allProjection.graphId ? { graphId: allProjection.graphId } : {}) }), report) as Projection;
+      if (!isCurrentExpansion()) return;
+      if ((allProjection.graphId && result.graphId !== allProjection.graphId) || (allProjection.revision && result.revision !== allProjection.revision)) throw new Error('The returned neighborhood does not match the displayed snapshot.');
+      const nodes = new Map(allProjection.nodes.map(node => [node.id, node]));
+      const edges = new Map(allProjection.edges.map(edge => [edge.id, edge]));
+      const before = nodes.size;
+      const displayLimit = Math.max(2000, allProjection.nodes.length);
+      let displayBounded = false;
+      for (const node of result.nodes) { if (!nodes.has(node.id) && nodes.size >= displayLimit) { displayBounded = true; continue; } nodes.set(node.id, node); }
+      for (const edge of result.edges) if ((!edge.from || nodes.has(edge.from)) && (!edge.to || nodes.has(edge.to))) edges.set(edge.id, edge);
+      expansionLimits.set(key, { limit, complete: !result.truncated });
+      const positions: GraphPositions = { ...supplied?.positions };
+      graph.forEachNode((id, attributes) => { positions[id] = { x: attributes.x, y: attributes.y }; });
+      const camera = activeRenderer.getCamera().getState();
+      const bounds = activeRenderer.getCustomBBox() ?? activeRenderer.getBBox();
+      graphHistory.push({ ...displayedContext, focus: subject, selectedNodes: [...selectedGraphNodes], selectedEdges: [...selectedGraphEdges], camera, projection: allProjection, positions, bounds });
+      const added = nodes.size - before;
+      const notice = `${added} added from ${String(graph.getNodeAttribute(subject, 'label'))} · ${result.truncated ? `request bounded at ${limit}; expand again for more` : 'one-hop request complete'}${displayBounded ? ' · display limit reached' : ''} · traversal follows resolved links`;
+      const merged: Projection = { ...allProjection, nodes: [...nodes.values()], edges: [...edges.values()], truncated: Boolean(allProjection.truncated || result.truncated || displayBounded) };
+      await renderGraph(root, epoch, camera, { projection: merged, positions, bounds, focus: subject, settle: added > 0, notice });
+    } catch (error) {
+      if (isCurrentExpansion()) update(`Could not expand neighbors: ${error instanceof Error ? error.message : String(error)}. Try again.`);
+    } finally { if (expand.isConnected) expand.disabled = false; }
+  });
   root.querySelector<HTMLButtonElement>('#graph-neighborhood')?.addEventListener('click', () => {
     if (!graphSelected || !graph.hasNode(graphSelected)) return;
     const camera = renderer?.getCamera().getState();
-    ++graphIntentSequence; graphHistory.push({ ...displayedContext, ...(camera ? { camera } : {}) }); investigationVisible = false; graphDirectionFilter = '';
+    const positions: GraphPositions = { ...supplied?.positions };
+    graph.forEachNode((id, attributes) => { positions[id] = { x: attributes.x, y: attributes.y }; });
+    const bounds = renderer?.getCustomBBox() ?? renderer?.getBBox();
+    ++graphIntentSequence; graphHistory.push({ ...displayedContext, focus: graphSelected, selectedNodes: [...selectedGraphNodes], selectedEdges: [...selectedGraphEdges], projection: allProjection, positions, ...(camera ? { camera } : {}), ...(bounds ? { bounds } : {}) }); investigationVisible = false; graphDirectionFilter = '';
     selectedGraphNodes.clear(); selectedGraphEdges.clear(); void renderGraph(root, epoch);
   });
   root.querySelector<HTMLButtonElement>('#graph-clear-selection')?.addEventListener('click', () => {
@@ -716,7 +798,7 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
     ++graphIntentSequence; graphSelected = ''; graphDirectionFilter = ''; selectedGraphNodes.clear(); selectedGraphEdges.clear(); hoveredNode = '';
     if (directionWasActive) { void renderGraph(root, epoch); return; }
     root.querySelector<HTMLElement>('#graph-selected-label')!.hidden = true;
-    for (const id of ['graph-neighborhood', 'graph-clear-selection', 'graph-scope', 'graph-compare-selection']) root.querySelector<HTMLButtonElement>(`#${id}`)!.hidden = true;
+    for (const id of ['graph-expand', 'graph-neighborhood', 'graph-clear-selection', 'graph-scope', 'graph-compare-selection']) root.querySelector<HTMLButtonElement>(`#${id}`)!.hidden = true;
     renderer?.refresh();
   });
   root.querySelector<HTMLButtonElement>('#graph-scope')?.addEventListener('click', () => {
@@ -733,12 +815,42 @@ async function renderGraph(root: HTMLElement, epoch: number, restoreCamera?: Gra
     if (factor === undefined) { if (reduced) camera.setState({ x: .5, y: .5, angle: 0, ratio: 1 }); else void camera.animatedReset(); }
     else { const ratio = camera.getState().ratio * factor; if (reduced) camera.setState({ ratio }); else void camera.animate({ ratio }, { duration: 180 }); }
   };
-  root.querySelector<HTMLButtonElement>('#graph-reset')?.addEventListener('click', () => moveCamera());
+  root.querySelector<HTMLButtonElement>('#graph-reset')?.addEventListener('click', () => { renderer?.setCustomBBox(null); moveCamera(); });
   root.querySelector<HTMLButtonElement>('#graph-zoom-in')?.addEventListener('click', () => moveCamera(.7));
   root.querySelector<HTMLButtonElement>('#graph-zoom-out')?.addEventListener('click', () => moveCamera(1.4));
   graphResizeObserver = new ResizeObserver(() => { if (renderer && container.isConnected && container.clientWidth && container.clientHeight) renderer.refresh(); });
   graphResizeObserver.observe(container);
-  graphStatus.textContent = `${selected ? `Following ${selected.operation}${selected.page?.nextOffset != null ? ' · more results available' : ''} · ` : ''}${projection.nodes.length} of ${allProjection.nodes.length} shown · ${graph.size} relationships${graphDirectionFilter ? ` · ${graphDirectionFilter} from selected subject` : ''}${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}`;
+  const statusText = `${selected ? `Following ${selected.operation}${selected.page?.nextOffset != null ? ' · more results available' : ''} · ` : ''}${projection.nodes.length} of ${allProjection.nodes.length} shown · ${graph.size} relationships${graphDirectionFilter ? ` · ${graphDirectionFilter} from selected subject` : ''}${projection.edges.length !== graph.size ? ` · ${projection.edges.length - graph.size} not drawable` : ''}${projection.truncated ? ' · bounded' : ''}${supplied?.notice ? ` · ${supplied.notice}` : ''}`;
+  graphStatus.textContent = statusText;
+  if ((!supplied?.positions || supplied.settle) && graph.order > 1 && graph.size) {
+    // Compute on a separate graph in a worker so interaction and reduced-motion
+    // preferences are respected. Existing positions are fixed during expansion.
+    const layoutGraph = graph.copy();
+    if (supplied?.positions) layoutGraph.forEachNode(id => layoutGraph.setNodeAttribute(id, 'fixed', Boolean(supplied.positions?.[id])));
+    const visibleRenderer = renderer;
+    let layoutUpdated = false;
+    layoutGraph.on('eachNodeAttributesUpdated', () => { layoutUpdated = true; });
+    try {
+      const supervisor = new ForceLayout(layoutGraph, { settings: { barnesHutOptimize: graph.order > 150, scalingRatio: 30, gravity: 1, slowDown: 5, linLogMode: true, strongGravityMode: true } });
+      layoutSupervisor = supervisor;
+      supervisor.start();
+      graphStatus.textContent = `${statusText} · Arranging relationships…`;
+      layoutTimer = window.setTimeout(() => {
+        if (layoutSupervisor !== supervisor) return;
+        supervisor.kill(); layoutSupervisor = null; layoutTimer = undefined;
+        if (!current() || renderer !== visibleRenderer) return;
+        if (!layoutUpdated) { graphStatus.textContent = `${statusText} · Relationship layout unavailable`; return; }
+        graph.updateEachNodeAttributes((id, attributes) => {
+          const point = layoutGraph.getNodeAttributes(id);
+          return Number.isFinite(point.x) && Number.isFinite(point.y) ? { ...attributes, x: point.x, y: point.y } : attributes;
+        }, { attributes: ['x', 'y'] });
+        visibleRenderer.refresh(); graphStatus.textContent = statusText;
+      }, graph.order > 250 ? 1600 : 900);
+    } catch {
+      stopGraphLayout();
+      graphStatus.textContent = `${statusText} · Relationship layout unavailable`;
+    }
+  }
 }
 
 async function renderQuery(epoch: number, prefill = '', host: HTMLElement = content): Promise<void> {
@@ -1192,7 +1304,7 @@ async function activateSection(next: Section, queryPrefill = ''): Promise<void> 
   ++exploreSequence; explorePending = null;
   section = next;
   for (const button of navButtons) button.classList.toggle('active', button.dataset.section === section);
-  graphResizeObserver?.disconnect(); graphResizeObserver = null;
+  stopGraphLayout(); graphResizeObserver?.disconnect(); graphResizeObserver = null;
   renderer?.kill(); renderer = null;
   if (!document.getElementById('question-dock')) queryPanel.remove();
   content.replaceChildren();
