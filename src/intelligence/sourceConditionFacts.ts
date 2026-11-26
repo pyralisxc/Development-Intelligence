@@ -39,6 +39,7 @@ export interface SourceEffect {
 export interface SourceBinding {
   name: string;
   sourceLine: number;
+  rawStartLine: number;
   sourceOffset: number;
   identifierOffset: number;
   sourceEnd: number;
@@ -46,6 +47,14 @@ export interface SourceBinding {
   expressionStructure: SourceExpression;
   initializerStart: number | null;
   initializerEnd: number | null;
+  /** A for-in binding is a key; a for-of binding is an iterated value. */
+  iterationKind?: 'key' | 'value';
+  iterationSource?: string;
+  iterationStart?: number;
+  iterationEnd?: number;
+  iterationStructure?: SourceExpression;
+  /** Source pattern selectors, without asserting the resulting runtime value. */
+  bindingPath?: Array<{ kind: 'property' | 'index' | 'rest'; key?: string; index?: number; defaultExpression?: string }>;
   requiredConditions: SourceRequirement[];
   controlContext: SourceControlContext[];
   requirementsComplete: boolean;
@@ -129,6 +138,37 @@ export function analyzeSourceConditionStatements(
   const unknownConstructs: Array<{ line: number; kind: string }> = [];
   const boundedOut = false;
   const lineOf = (node: ts.Node) => parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
+  const recordBinding = (decl: ts.VariableDeclaration, requires: SourceRequirement[], context: SourceControlContext[], complete: boolean,
+    iteration?: { kind: 'key' | 'value'; expression: ts.Expression; declarationStart: number }) => {
+    type BindingStep = NonNullable<SourceBinding['bindingPath']>[number];
+    const visitName = (name: ts.BindingName, bindingPath: BindingStep[], defaults: ts.Expression[]) => {
+      if (ts.isIdentifier(name)) {
+        bindings.push({ name: name.text, sourceLine: lineOf(name),
+          rawStartLine: parsed.getLineAndCharacterOfPosition(iteration?.declarationStart ?? decl.getStart(parsed)).line + 1,
+          sourceOffset: decl.getStart(parsed), identifierOffset: name.getStart(parsed), sourceEnd: decl.getEnd(),
+          declaration: iteration ? parsed.text.slice(iteration.declarationStart, iteration.expression.getEnd()) : decl.getText(parsed),
+          expressionStructure: { kind: 'VariableDeclaration', start: iteration?.declarationStart ?? decl.getStart(parsed), end: decl.getEnd(),
+            children: [structure(name, parsed, true), ...defaults.map(item => structure(item, parsed, true)),
+              ...(decl.initializer ? [structure(decl.initializer, parsed, true)] : [])] }, initializerStart: decl.initializer?.getStart(parsed) ?? null,
+          initializerEnd: decl.initializer?.getEnd() ?? null,
+          ...(bindingPath.length ? { bindingPath } : {}),
+          ...(iteration ? { iterationKind: iteration.kind, iterationSource: expression(iteration.expression, parsed),
+            iterationStart: iteration.expression.getStart(parsed), iterationEnd: iteration.expression.getEnd(),
+            iterationStructure: structure(iteration.expression, parsed, true) } : {}),
+          requiredConditions: [...requires], controlContext: [...context], requirementsComplete: complete && context.length === 0 });
+        return;
+      }
+      name.elements.forEach((element, index) => {
+        if (ts.isOmittedExpression(element)) return;
+        const step: BindingStep = element.dotDotDotToken ? { kind: 'rest' }
+          : ts.isArrayBindingPattern(name) ? { kind: 'index', index }
+            : { kind: 'property', key: element.propertyName?.getText(parsed) ?? element.name.getText(parsed) };
+        if (element.initializer) step.defaultExpression = element.initializer.getText(parsed);
+        visitName(element.name, [...bindingPath, step], element.initializer ? [...defaults, element.initializer] : defaults);
+      });
+    };
+    visitName(decl.name, [], []);
+  };
   const recordEffect = (kind: SourceEffect['kind'], node: ts.Node, sourceExpression: ts.Node | undefined, requires: SourceRequirement[], context: SourceControlContext[], complete: boolean) => {
     effects.push({ kind, sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), expression: expression(sourceExpression, parsed),
       ...(sourceExpression ? { expressionStructure: structure(sourceExpression, parsed) } : {}),
@@ -241,11 +281,7 @@ export function analyzeSourceConditionStatements(
         }
       } else if (ts.isVariableStatement(stmt)) {
         for (const decl of stmt.declarationList.declarations) {
-          if (ts.isIdentifier(decl.name)) bindings.push({ name: decl.name.text, sourceLine: lineOf(decl),
-            sourceOffset: decl.getStart(parsed), identifierOffset: decl.name.getStart(parsed), sourceEnd: decl.getEnd(),
-            declaration: decl.getText(parsed), expressionStructure: structure(decl, parsed, true), initializerStart: decl.initializer?.getStart(parsed) ?? null,
-            initializerEnd: decl.initializer?.getEnd() ?? null, requiredConditions: [...active], controlContext: [...context],
-            requirementsComplete: complete && context.length === 0 });
+          recordBinding(decl, active, context, complete);
           scanExpression(decl.initializer, active, context, complete);
           if (decl.initializer && (ts.isCallExpression(decl.initializer)
             || (ts.isAwaitExpression(decl.initializer) && ts.isCallExpression(decl.initializer.expression)))) {
@@ -256,6 +292,14 @@ export function analyzeSourceConditionStatements(
         || ts.isForStatement(stmt) || ts.isForInStatement(stmt) || ts.isForOfStatement(stmt)
         || ts.isWhileStatement(stmt) || ts.isDoStatement(stmt)) {
         unknownConstructs.push({ line: lineOf(stmt), kind: ts.SyntaxKind[stmt.kind] ?? 'control-flow' });
+        if ((ts.isForInStatement(stmt) || ts.isForOfStatement(stmt)) && ts.isVariableDeclarationList(stmt.initializer)) {
+          for (const decl of stmt.initializer.declarations) recordBinding(decl, active, context, complete, {
+            kind: ts.isForInStatement(stmt) ? 'key' : 'value', expression: stmt.expression,
+            declarationStart: stmt.initializer.getStart(parsed),
+          });
+        } else if (ts.isForStatement(stmt) && stmt.initializer && ts.isVariableDeclarationList(stmt.initializer)) {
+          for (const decl of stmt.initializer.declarations) recordBinding(decl, active, context, complete);
+        }
         const visitBody = (body: ts.Statement, kind: string, controlExpression?: ts.Node) => {
           const part: SourceControlContext = { kind, sourceLine: lineOf(body), sourceOffset: body.getStart(parsed),
             ...(controlExpression ? { expression: expression(controlExpression, parsed), expressionStart: controlExpression.getStart(parsed), expressionEnd: controlExpression.getEnd() } : {}) };

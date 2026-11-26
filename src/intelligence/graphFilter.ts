@@ -100,8 +100,8 @@ type MatchedSourceLine = { text: string; line: number | null; groups: number; gr
 /** Match one source fact by syntax and line, without attributing nested callables to their creator. */
 function matchedSourceLines(node: GraphNode, termGroups: string[][], includesTerm: (value: string, term: string) => boolean): { lines: MatchedSourceLine[]; nestedCallable: boolean } {
   const value = node.value && typeof node.value === 'object' && !Array.isArray(node.value)
-    ? node.value as { nestedCallable?: boolean; sourceLine?: unknown; expressionStructure?: unknown; predicateStructure?: unknown } : null;
-  const startLine = typeof value?.sourceLine === 'number' ? value.sourceLine : Number(/:(\d+)(?::|$)/u.exec(node.locator)?.[1] ?? 0);
+    ? node.value as { nestedCallable?: boolean; sourceLine?: unknown; rawStartLine?: unknown; expressionStructure?: unknown; predicateStructure?: unknown } : null;
+  const startLine = typeof value?.rawStartLine === 'number' ? value.rawStartLine : typeof value?.sourceLine === 'number' ? value.sourceLine : Number(/:(\d+)(?::|$)/u.exec(node.locator)?.[1] ?? 0);
   const raw = node.raw ?? '', rawLines = raw.split(/\r?\n/u), groupsByLine = new Map<number, Set<number>>();
   const addLineTerms = (text: string, index: number) => {
     const normalized = words(text), groups = groupsByLine.get(index) ?? new Set<number>();
@@ -894,6 +894,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   // a graph path, including transitive initializer references. The links say
   // what a source expression references, not what executed or what value it had.
   const roots = sourceFamilies.flatMap(family => family.facts.filter(fact => (fact.matchedLines.length > 0
+    || (!language.negated && (!relationshipKinds.size || direction === 'outbound')
+      && (fact.matchedKind || (fact.effectKind && requestedEffects.some(effect => fact.effectKind!.split('-').includes(effect)))))
     || fact.externalDeclarations.some(declaration => declaration.matchedGroups.length > 0))
     && (fact.kind === 'source-condition' || (fact.kind === 'source-effect'
       && ['call', 'write', 'return', 'throw'].includes(fact.effectKind ?? '')
@@ -901,8 +903,10 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   let bindingGraph = indexedBindingGraph(graph, roots);
   if (!bindingGraph) {
     const bindingEdges = new Map<string, typeof graph.edges>();
-    for (const edge of graph.edges) if (edge.kind === 'references-binding' && edge.status === 'resolved' && edge.from && edge.to
-        && byId.get(edge.to)?.kind === 'source-binding') {
+    for (const edge of graph.edges) if (edge.status === 'resolved' && edge.from && edge.to
+        && ((edge.kind === 'references-binding' && byId.get(edge.to)?.kind === 'source-binding')
+          || (edge.kind === 'has-source-occurrence' && byId.get(edge.from)?.kind === 'source-binding' && byId.get(edge.to)?.kind === 'source-reference')
+          || (edge.kind === 'references-symbol' && byId.get(edge.from)?.kind === 'source-reference'))) {
       const list = bindingEdges.get(edge.from) ?? []; list.push(edge); bindingEdges.set(edge.from, list);
     }
     const pending = [...new Set(roots)], visited = new Set(pending), nodes = new Map<string, GraphNode>();
@@ -1058,7 +1062,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   }
   const sourceExtensions = new Set(subjectPage.map(node => /\.([a-z0-9]+)$/iu.exec(node.sourceId)?.[0]?.toLowerCase()).filter((value): value is string => Boolean(value)));
   const sourceAnalysis = SOURCE_ANALYSIS_SUPPORT.filter(entry => entry.extensions.some(extension => sourceExtensions.has(extension)))
-    .map(entry => ({ technology: entry.technology, precision: entry.precision }));
+    .map(entry => ({ technology: entry.technology, precision: entry.precision, basis: 'current-engine-capability', graphAnalyzerVersion: graph.analyzerVersion }));
   return {
     question: input.text,
     sourceAnalysis,

@@ -151,13 +151,28 @@ export function compilerTypeScriptReferences(input: {
     }
     return false;
   };
+  // The lexical body of a nested callback belongs to that callable. Keep
+  // initializer references outside it without attributing the body's names
+  // to the binding that merely contains the callback.
+  const addScopedRanges = (file: string, fact: GraphNode, value: unknown, context: boolean) => {
+    if (!containsCallable(value)) { addRange(file, fact, value, context); return; }
+    const pending: unknown[] = [value];
+    while (pending.length) {
+      const part = pending.pop() as { kind?: unknown; children?: unknown } | undefined;
+      if (!part || typeof part !== 'object') continue;
+      if (typeof part.kind === 'string' && ['ArrowFunction', 'FunctionExpression', 'FunctionDeclaration', 'MethodDeclaration'].includes(part.kind)) continue;
+      if (containsCallable(part)) { if (Array.isArray(part.children)) pending.push(...part.children); }
+      else addRange(file, fact, part, context);
+    }
+  };
   for (const node of input.nodes) {
     if (node.sourceId.startsWith('repo:') && node.value && typeof node.value === 'object' && !Array.isArray(node.value)) {
       const file = node.sourceId.slice(5);
-      const value = node.value as { identifierOffset?: unknown; sourceOffset?: unknown; sourceEnd?: unknown; expressionStructure?: unknown; predicateStructure?: unknown; controlContext?: unknown };
+      const value = node.value as { identifierOffset?: unknown; sourceOffset?: unknown; sourceEnd?: unknown; iterationStart?: unknown; iterationEnd?: unknown; iterationStructure?: unknown; expressionStructure?: unknown; predicateStructure?: unknown; controlContext?: unknown };
       if (node.kind === 'source-binding' && typeof value.identifierOffset === 'number') {
         localBindings.set([file, value.identifierOffset].join('\0'), node);
-        addRange(file, node, { start: value.sourceOffset, end: value.sourceEnd }, false);
+        addScopedRanges(file, node, value.expressionStructure ?? { start: value.sourceOffset, end: value.sourceEnd }, false);
+        addScopedRanges(file, node, value.iterationStructure ?? { start: value.iterationStart, end: value.iterationEnd }, false);
       } else if (node.kind === 'source-effect' || node.kind === 'source-condition') {
         const expression = node.kind === 'source-effect' ? value.expressionStructure : value.predicateStructure;
         if (node.kind !== 'source-effect' || !containsCallable(expression)) addRange(file, node, expression, false);
@@ -518,10 +533,10 @@ export function compilerTypeScriptReferences(input: {
         const position = identifier.getStart(source);
         while (nextRange < ranges.length && ranges[nextRange]!.start <= position) active.push(ranges[nextRange++]!);
         for (let i = active.length - 1; i >= 0; i--) if (active[i]!.end <= position) active.splice(i, 1);
-        if (!active.length || (ts.isVariableDeclaration(identifier.parent) && identifier.parent.name === identifier)) continue;
+        if (!active.length || ((ts.isVariableDeclaration(identifier.parent) || ts.isBindingElement(identifier.parent)) && identifier.parent.name === identifier)) continue;
         const symbol = checker.getSymbolAtLocation(identifier);
         const declaration = symbol?.valueDeclaration;
-        if (!declaration || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) continue;
+        if (!declaration || (!ts.isVariableDeclaration(declaration) && !ts.isBindingElement(declaration)) || !ts.isIdentifier(declaration.name)) continue;
         const declarationSource = declaration.getSourceFile();
         const declarationFile = relativeFile(input.root, declarationSource.fileName);
         const target = declarationFile ? localBindings.get([declarationFile, declaration.name.getStart(declarationSource)].join('\0')) : undefined;

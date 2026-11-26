@@ -257,6 +257,42 @@ export async function projectLocalScipEvidence(input: {
   const unindexedSourcePaths = [...eligiblePaths].filter(file =>
     /\.[cm]?[jt]sx?$/iu.test(file) && (!prefix || file.startsWith(prefix + '/')) && !actual.has(file)).sort();
 
+  // Source bindings can contain a reference that SCIP resolves to a symbol
+  // DI's local-binding pass did not create (for example a module constant).
+  // Join the exact identifier occurrence, never a name-only match, and keep
+  // nested callable bodies under their own lexical owners.
+  const bindingOccurrences = new Map<string, Map<string, GraphNode[]>>();
+  const startsByFile = new Map<string, number[]>();
+  for (const binding of input.graph.nodes) {
+    if (binding.kind !== 'source-binding' || !binding.sourceId.startsWith('repo:') || !binding.value || typeof binding.value !== 'object' || Array.isArray(binding.value)) continue;
+    const file = actual.get(binding.sourceId.slice(5));
+    if (!file) continue;
+    const value = binding.value as { identifierOffset?: unknown; expressionStructure?: unknown; iterationStructure?: unknown };
+    let starts = startsByFile.get(file.file);
+    if (!starts) {
+      starts = [0];
+      for (const match of file.text.matchAll(/\r\n|\r|\n/gu)) starts.push(match.index! + match[0].length);
+      startsByFile.set(file.file, starts);
+    }
+    let occurrences = bindingOccurrences.get(file.file);
+    if (!occurrences) { occurrences = new Map(); bindingOccurrences.set(file.file, occurrences); }
+    const pending = [value.expressionStructure, value.iterationStructure];
+    while (pending.length) {
+      const part = pending.pop() as { kind?: unknown; start?: unknown; end?: unknown; children?: unknown } | undefined;
+      if (!part || typeof part !== 'object') continue;
+      if (typeof part.kind === 'string' && ['ArrowFunction', 'FunctionExpression', 'FunctionDeclaration', 'MethodDeclaration'].includes(part.kind)) continue;
+      if (Array.isArray(part.children) && part.children.length) { pending.push(...part.children); continue; }
+      if (part.kind !== 'Identifier' || typeof part.start !== 'number' || typeof part.end !== 'number' || part.start === value.identifierOffset) continue;
+      let low = 0, high = starts.length;
+      while (low < high) { const mid = (low + high) >>> 1; if (starts[mid]! <= part.start) low = mid + 1; else high = mid; }
+      const line = Math.max(0, low - 1), column = part.start - starts[line]!;
+      const key = [line, column, part.end - part.start].join('\0');
+      const list = occurrences.get(key) ?? [];
+      if (!list.some(node => node.id === binding.id)) list.push(binding);
+      occurrences.set(key, list);
+    }
+  }
+
   const declarationIndex = new Map<string, GraphNode[]>();
   for (const node of input.graph.nodes) {
     if (!node.name || !DECLARATION_KINDS.has(node.kind) || !node.sourceId.startsWith('repo:')) continue;
@@ -440,6 +476,13 @@ export async function projectLocalScipEvidence(input: {
         strategy: SCIP_EVIDENCE_STRATEGY, confidence: 1, status: 'resolved',
         evidence: [locator], layer: 'structural', checkpoint: false });
       producerContainment.set(contains.id, contains);
+      for (const binding of bindingOccurrences.get(file.file)?.get([occurrence.range.line, unicodePosition, text.length].join('\0')) ?? []) {
+        const bindingReference = resolution({ from: binding.id, to: occurrenceId, kind: 'has-source-occurrence',
+          strategy: 'scip-source-binding-occurrence.v1', confidence: independentProof || input.producerRanOnCheckout ? 1 : null,
+          status: independentProof || input.producerRanOnCheckout ? 'resolved' : 'candidate',
+          evidence: [binding.locator, ...sourceEvidence], ...(binding.evidenceIds ? { evidenceIds: binding.evidenceIds } : {}), layer: 'structural', checkpoint: false });
+        producerContainment.set(bindingReference.id, bindingReference);
+      }
       const occurrenceEdge = resolution({ from: occurrenceId, to: target.target.id,
         kind: 'references-symbol', strategy: SCIP_EVIDENCE_STRATEGY,
         confidence: independentProof || input.producerRanOnCheckout ? 1 : null,
