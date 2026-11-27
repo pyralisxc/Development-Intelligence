@@ -102,6 +102,8 @@ Broad selection counts inflection alternatives as one question concept, distingu
 
 Question and interaction investigations share the recorded behavior relationship vocabulary. Question selection can follow captured argument-to-parameter, binding, and interface handoffs while preserving each relationship's original status; a reference is not automatically a call or observed data flow. An exact selected subject can project the current page of navigation relationships into directed path steps, with shared or revisited nodes identified and disconnected page fragments kept separate. The projection references graph IDs and does not replace graph records or coverage.
 
+An HTTP occurrence can continue through its recorded route resolution during selective question retrieval, and an RPC occurrence can continue through recorded candidate SQL-definition relationships. The latter paths keep the original candidate status and migration source locations; matching a routine name does not establish which definition is deployed.
+
 When a question has at least two term groups and any subject matches two or more, the broad term filter currently selects only those stronger matches. It reports the number of weaker lexical matches excluded from that selection; they are not evidence that excluded subjects are irrelevant. A different scope or question can inspect them.
 
 ### Evidence and conflicts
