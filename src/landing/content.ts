@@ -1,10 +1,28 @@
 /** Public landing content. Edit these fields to change the site's language and roadmap. */
 export const landing = {
   requestEmail: 'Cameron.r.locke96@gmail.com',
+  founder: {
+    name: 'Cameron Locke',
+    cardforgeUrl: 'https://cardforges.com/cameron',
+    introduction: 'I’m Cameron Locke, an independent builder and the person behind Development Intelligence and CardForge Studio.',
+    motivation: 'I’m building Development Intelligence to make the systems we create easier to understand. As projects grow, I want people and the agents working with them to be able to follow code, relationships, and evidence back to their source—so understanding can grow along with the software.',
+    direction: 'DI is working and in active development. I’m building it toward an environment where people can explore their software, ask better questions, and keep context close as they work.',
+  },
+  questions: [
+    'Where is this behavior defined?',
+    'What calls or depends on this part of the code?',
+    'What changed between these source states?',
+    'What evidence supports this relationship?',
+  ],
+  technologies: [
+    { name: 'TypeScript & JavaScript', text: 'Compiler-aware analysis and the deepest current cross-file call understanding.' },
+    { name: 'C#, Java, Python & Go', text: 'Language-aware source structure and relationships, with depth that varies by language.' },
+    { name: 'More source formats', text: 'DI also analyzes formats including CSS, structured text, and Unity files. Coverage depends on the input and analysis.' },
+  ],
   hero: { eyebrow: 'DEVELOPMENT INTELLIGENCE', title: 'See your software more clearly.', text: 'A connected environment for understanding code, tracing relationships, and following the evidence—built for the people and agents working on your projects.' },
   principles: [
     { title: 'Evidence has a source', text: 'Follow findings back to the source and context that support them.' },
-    { title: 'Intelligence without invention', text: 'Deterministic analysis builds intelligence that stands on its own. AI can use it without inventing the evidence.' },
+    { title: 'Intelligence without invention', text: 'DI builds source-grounded evidence through deterministic analysis. People and agents can inspect the support and its limits.' },
     { title: 'Uncertainty stays visible', text: 'A candidate, a missing observation, and a proven relationship are not the same thing.' },
     { title: 'One connected understanding', text: 'The graph, source, questions, and evidence are ways into a shared investigation.' },
   ],
@@ -37,8 +55,8 @@ export const landing = {
   directions:[
     {id:'rules', title:'Rules that reveal architectural impact', teaser:'Turn architectural intent into rules you can apply and investigate.', text:'Build on explicit expectations with custom and architectural rules that can be applied to a codebase. Explore where a rule reaches, what it affects, and the evidence behind its findings.', items:['Custom rules applied to code','Affected components and relationships','Deeper evidence-backed audits']},
     {id:'ide', title:'From investigation to editing', teaser:'Bring source editing and saving into the investigation.', text:'Extend the workspace so you can move from a question and its evidence to editing source directly, then save to the durable destination selected for that working graph.', items:['Edit source in the workspace','Save to the selected destination','Keep graph state and source currentness clear']},
-    {id:'systems', title:'Understanding across repositories', teaser:'Follow relationships beyond the boundaries of one project.', text:'Expand access to authorized repositories beyond a personal GitHub account, and connect understanding across repositories while preserving the identity and provenance of each source.', items:['Additional authorized repositories','Cross-repository relationships','Source identity and provenance']},
+    {id:'systems', title:'Understanding across repositories', teaser:'Follow relationships beyond the boundaries of one project.', text:'Build on bounded investigations across repository graphs with broader access to authorized repositories and deeper cross-repository connections, while preserving each source’s identity and provenance.', items:['Additional authorized repositories','Cross-repository relationships','Source identity and provenance']},
     {id:'storage', title:'Intelligence that can move with you', teaser:'Make graph storage, movement, and availability more flexible.', text:'Build on local and connected environments with clearer ways to transfer durable graphs between supported locations and recover access to intelligence across computers and services.', items:['Transfer graphs between locations','Durable storage and recovery','Access across connected environments']},
-    {id:'evidence', title:'Source meets the running system', teaser:'Add durable runtime and database evidence to the source picture.', text:'Extend source-level investigation with bounded, durable observations from databases and running environments. Connect those observations to source while retaining when and where the evidence came from.', items:['Database and runtime snapshots','Connect observations to source','Time and provenance in context']},
+    {id:'evidence', title:'Source meets the running system', teaser:'Add durable runtime and database evidence to the source picture.', text:'Build on bounded runtime and technical-source observations with durable evidence from databases and running environments. Connect observations to source while retaining when and where they came from.', items:['Database and runtime snapshots','Connect observations to source','Time and provenance in context']},
   ],
 };
