@@ -26,7 +26,7 @@ import { WorkspaceStore } from './accounts/workspace.js';
 import { advanceHostedJob, dispatchHostedAccounts } from './accounts/hostedQueue.js';
 import { hostedTransferStatus, startHostedTransfer, stopHostedTransfer } from './accounts/hosted.js';
 import { renderAccountWorkbench } from './accounts/view.js';
-import { renderLanding, renderRoadmap } from './landing/view.js';
+import { renderLanding, renderRoadmap, renderRequestAccess, renderAbout } from './landing/view.js';
 import { accountGithubBranches, accountGithubRepositories, accountGithubToken } from './accounts/github.js';
 
 const MODERN_VERSION = '2026-07-28';
@@ -202,10 +202,16 @@ export function createDevelopmentIntelligenceServer() {
       return;
     }
     if (requestUrl.pathname === '/' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1' && req.method === 'GET') {
-      res.writeHead(200, htmlHeaders()); res.end(renderLanding(process.env.DEVINT_ACCESS_REQUEST_URL)); return;
+      res.writeHead(200, htmlHeaders()); res.end(renderLanding()); return;
     }
     if (requestUrl.pathname === '/roadmap' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1' && req.method === 'GET') {
-      res.writeHead(200, htmlHeaders()); res.end(renderRoadmap(process.env.DEVINT_ACCESS_REQUEST_URL)); return;
+      res.writeHead(200, htmlHeaders()); res.end(renderRoadmap()); return;
+    }
+    if (requestUrl.pathname === '/request-access' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1' && req.method === 'GET') {
+      res.writeHead(200, htmlHeaders()); res.end(renderRequestAccess(process.env.DEVINT_ACCESS_REQUEST_URL)); return;
+    }
+    if (requestUrl.pathname === '/about' && process.env.DEVINT_ACCOUNT_WORKBENCH === '1' && req.method === 'GET') {
+      res.writeHead(200, htmlHeaders()); res.end(renderAbout()); return;
     }
     if (requestUrl.pathname === '/account' && req.method === 'GET') {
       try { const branchHost = process.env.VERCEL_BRANCH_URL?.trim(); const origin = branchHost ? `https://${branchHost}` : accountOrigin(req); const page = renderAccountWorkbench(process.env.CLERK_PUBLISHABLE_KEY?.trim() ?? '', origin); res.writeHead(200, htmlHeaders()); res.end(page); }
