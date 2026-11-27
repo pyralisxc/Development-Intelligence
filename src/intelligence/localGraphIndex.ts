@@ -619,6 +619,8 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
         DELETE FROM callback_delta; DELETE FROM edge_delta;
         INSERT OR IGNORE INTO edge_delta SELECT e.id FROM frontier s JOIN nodes n ON n.id=s.id CROSS JOIN edges e INDEXED BY edge_src ON e.src=s.id
         WHERE e.kind IN ('has-parameter','has-condition','has-effect','has-source-binding','has-source-control','contains-source-span','contains-source-call','has-source-occurrence','has-argument','argument-for','spreads-properties','has-interaction','registers-interaction','calls-site','callback-argument','declares','handled_by','requires-condition','has-declared-signature','references-binding')
+        OR (e.kind='candidate-sql-definition' AND n.kind='rpc-call')
+        OR (e.kind='resolves_to' AND n.kind='http-call')
         OR (e.kind IN ('dispatches','triggers','routes-to','links_to','registered-as','handles-method','implemented-by') AND n.kind IN ('route','api','ui-element','dom-interaction','interaction-handler','http-call','rpc-call','mcp-tool','tool-registration'))
         OR (e.kind='contains' AND n.kind IN ('function','method','constructor') AND EXISTS(SELECT 1 FROM nodes t WHERE t.id=e.dst AND t.kind='ui-element'))
         OR (e.kind IN ('calls','invokes') AND EXISTS(SELECT 1 FROM handlers h WHERE h.id=n.id))

@@ -514,7 +514,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     // shared value or helper.
     const groupingKinds = new Set(['has-interaction', 'registers-interaction', 'spreads-properties', 'potential-value-from', 'potentially-provided-by', 'handled_by', 'binds_to', 'calls', 'calls-site', 'resolves_to', 'invokes', 'dispatches', 'triggers', 'routes-to', 'links_to', 'registered-as', 'handles-method', 'implemented-by']);
     const handoffKinds = new Set([...BEHAVIOR_PATH_RELATIONS].filter(kind => groupingKinds.has(kind)));
-    for (const kind of ['contains', 'has-argument', 'argument-for', 'has-parameter', 'has-source-binding', 'references-binding']) handoffKinds.add(kind);
+    for (const kind of ['contains', 'has-argument', 'argument-for', 'has-parameter', 'has-source-binding', 'references-binding', 'candidate-sql-definition']) handoffKinds.add(kind);
     const handoffs = new Map<string, typeof graph.edges>();
     for (const edge of graph.edges) {
       if (!edge.from || !edge.to || !handoffKinds.has(edge.kind) || edge.status === 'unresolved') continue;
