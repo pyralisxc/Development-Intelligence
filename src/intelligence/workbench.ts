@@ -1,4 +1,5 @@
 import { graphFamilyMemberships } from './graphFamilies.js';
+import { lexicalActionHints } from './lexicalKnowledge.js';
 import { indexedIncidentEdges, materializeIndexedQuestionGraph } from './localGraphIndex.js';
 import { investigationSelection, questionSelection } from './investigation.js';
 import { listAuthorizedGithubOwners, loadRegistry } from '../config/registry.js';
@@ -16,7 +17,7 @@ import { auditSemanticCandidates } from './semanticAudit.js';
 import { deriveCurrentSemanticTruth } from './semanticCurrentTruth.js';
 import { graphRecordWeight } from './capacity.js';
 import { interfaceRuntimeObservationContract, isInterfaceRuntimeObservationSource } from './interfaceRuntimeObservation.js';
-import { filterGraph, interpretGraphLanguage, planGraphSubjects, rememberGraphSubjects, type GraphFilterInput } from './graphFilter.js';
+import { filterGraph, interpretGraphLanguage, planGraphSubjects, rememberGraphSubjects, requestedActionTokens, ambiguousActionCandidates, type GraphFilterInput } from './graphFilter.js';
 
 function displayName(node: GraphNode | undefined, fallback?: string | null): string {
   return node?.name ?? fallback ?? node?.id ?? 'unknown';
@@ -1640,7 +1641,18 @@ export async function queryWorkbenchRequest(input: {
   const questions = explicit.length ? explicit : decomposeQuestionText(originalText);
   if (!questions.length) throw new Error('text or questions must contain at least one question');
 
+  const lexicalHints = new Map<string, Record<string, Awaited<ReturnType<typeof lexicalActionHints>>>>();
+  for (const question of questions) {
+    const language = interpretGraphLanguage(question);
+    const enabled = !language.negated && language.termGroups.length > 1;
+    const ambiguous = enabled ? ambiguousActionCandidates(language.tokens) : [];
+    const lookups = await Promise.all(ambiguous.map(async token => [token.lemma, await lexicalActionHints(token.lemma)] as const));
+    const inferred = new Set(lookups.filter(([, hints]) => hints.length > 0).map(([lemma]) => lemma));
+    const tokens = enabled ? requestedActionTokens(language.tokens, inferred).filter(token => language.termGroups.some(group => group.includes(token.lemma))) : [];
+    lexicalHints.set(question, Object.fromEntries(await Promise.all(tokens.map(async token => [token.lemma, await lexicalActionHints(token.lemma)] as const))));
+  }
   const filterInput = (question: string, effectiveScope?: string): GraphFilterInput => ({ text: question,
+        ...(Object.keys(lexicalHints.get(question) ?? {}).length ? { lexicalHints: lexicalHints.get(question)! } : {}),
         ...(effectiveScope ? { scope: effectiveScope } : {}),
         ...(input.offset !== undefined ? { offset: input.offset } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -1896,6 +1908,9 @@ export async function queryWorkbenchRequest(input: {
           for (const node of group.subjects) if (!members.has(node.id)) { members.add(node.id); existing.subjects.push(node); }
           const links = new Set(existing.links.map((item: any) => item.id));
           for (const item of group.links) if (!links.has(item.id)) { links.add(item.id); existing.links.push(item); }
+          const matches = [...(existing.ranking?.actionFacts ?? []), ...(group.ranking?.actionFacts ?? [])];
+          const paths = [existing.ranking?.actionPathEdgeIds, group.ranking?.actionPathEdgeIds].filter(Array.isArray).flat();
+          if (matches.length) existing.ranking = { ...existing.ranking, actionFacts: matches, actionPathEdgeIds: [...new Set(paths)] };
         }
       }
       // Connect selected callable subjects through their bound source call sites.
@@ -1912,18 +1927,27 @@ export async function queryWorkbenchRequest(input: {
       });
       const connectedCallSummary = connectedCalls.length
         ? `Connected call sites in source order (branches and loops can change which calls apply):\n${connectedCalls.join('\n')}\n\n` : '';
+      const hasMatchedActions = displayGroups.some(group => (group.ranking?.actionFacts ?? []).length > 0);
       const presentedPathEdges = new Set<string>();
+      const presentedActionFacts = new Set<string>();
+      const selectedNodesById = new Map(graph.nodes.map(node => [node.id, node]));
+      const matchedSourceFacts = new Map<string, { owner: any; fact: any }>();
+      for (const family of result.sourceFamilies ?? []) for (const fact of family.facts ?? [])
+        matchedSourceFacts.set(fact.id, { owner: family, fact });
       const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
         ? (Array.isArray(result.connectedGroups)
-          ? `${connectedCallSummary}Connected source paths (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
+          ? `${hasMatchedActions ? '' : connectedCallSummary}Connected source paths (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
             + displayGroups.map((group: any) => {
-              const members: any[] = [...group.subjects, ...(group.linkNodes ?? [])];
+              const focusedIds = Array.isArray(group.ranking?.actionPathEdgeIds) ? new Set<string>(group.ranking.actionPathEdgeIds) : null;
+              const visibleLinks = focusedIds ? group.links.filter((edge: any) => focusedIds.has(edge.id)) : group.links;
+              const pathNodes = focusedIds ? new Set<string>([group.anchorId, ...(group.ranking?.actionFacts ?? []).map((match: any) => match.subjectId), ...visibleLinks.flatMap((edge: any) => [edge.from, edge.to])]) : null;
+              const members: any[] = [...group.subjects, ...(group.linkNodes ?? [])].filter((node: any) => !pathNodes || pathNodes.has(node.id));
               const byMember = new Map<string, any>(members.map((item: any) => [item.id, item]));
-              const groupIds = new Set<string>(members.map((item: any) => item.id));
+              const groupIds = new Set<string>([...group.subjects, ...(group.linkNodes ?? [])].map((item: any) => item.id));
               const outgoing = new Map<string, any[]>();
               const incoming = new Set<string>();
               const incomingEdges = new Map<string, any[]>();
-              for (const edge of group.links) {
+              for (const edge of visibleLinks) {
                 const rows = outgoing.get(edge.from) ?? [];
                 rows.push(edge); outgoing.set(edge.from, rows); incoming.add(edge.to);
                 const reverse = incomingEdges.get(edge.to) ?? []; reverse.push(edge); incomingEdges.set(edge.to, reverse);
@@ -1932,7 +1956,7 @@ export async function queryWorkbenchRequest(input: {
               // do not print an already displayed subtree again in full.
               const leadsToNew = new Set<string>();
               const reverseQueue: string[] = [];
-              for (const edge of group.links) if (!presentedPathEdges.has(edge.id) && !leadsToNew.has(edge.from)) {
+              for (const edge of visibleLinks) if (!presentedPathEdges.has(edge.id) && !leadsToNew.has(edge.from)) {
                 leadsToNew.add(edge.from); reverseQueue.push(edge.from);
               }
               for (let at = 0; at < reverseQueue.length; at++) for (const edge of incomingEdges.get(reverseQueue[at]!) ?? []) {
@@ -1971,8 +1995,24 @@ export async function queryWorkbenchRequest(input: {
               for (const item of members.filter(item => !incoming.has(item.id))) walk(item.id);
               for (const item of members) if ((outgoing.get(item.id) ?? []).some((edge: any) => !visitedEdges.has(edge.id) && !presentedPathEdges.has(edge.id))) walk(item.id);
               const anchor = group.subjects.find((item: any) => item.id === group.anchorId) ?? group.subjects[0];
-              return `${group.sourceCategory === 'test-source' ? 'Test source' : 'Source'} path:\n${lines.join('\n')}\n${anchor ? [anchor].map((item: any) => {
-                const includeSource = true;
+              const actionLines = (group.ranking?.actionFacts ?? []).flatMap((match: any) => {
+                const detail = matchedSourceFacts.get(match.factId);
+                if (!detail || presentedActionFacts.has(match.factId)) return [];
+                const line = (detail.fact.matchedLines ?? []).find((item: any) => item.line === match.line);
+                if (!line) return [];
+                presentedActionFacts.add(match.factId);
+                const conditions = (detail.fact.requirements ?? []).map((item: any) => `${item.expectedTruth ? '' : 'not '}(${item.predicate ?? item.conditionId})`);
+                const contexts = (detail.fact.controlContext ?? []).map((item: any) => `${item.kind}${item.expression ? ` (${item.expression})` : ''}`);
+                const declaration = match.language ? selectedNodesById.get(match.language.declarationId) : undefined;
+                const description = declaration?.value && typeof declaration.value === 'object' && !Array.isArray(declaration.value)
+                  ? (declaration.value as { description?: unknown }).description : undefined;
+                const declaredMeaning = typeof description === 'string' ? (description.trim().split(/(?<=[.!?])\s+|[,;:]/u)[0] ?? '') : '';
+                return [`• ${detail.owner.subjectName ?? match.subjectId} (${detail.fact.locator}): ${line.text}${conditions.length ? ` when ${conditions.join(' and ')}` : ''}${contexts.length ? ` within ${contexts.join(' > ')}` : ''}${detail.fact.requirementsComplete ? '' : ' (additional control requirements not yet derived)'}${match.language ? ` [${match.language.relation === 'literal' ? `declared action: ${match.language.requested}` : `language candidate: ${match.language.requested} → ${match.language.word}`}; declared API ${declaration?.locator ?? match.language.declarationId}${declaredMeaning ? `: ${declaredMeaning}` : ''}]` : ''}`];
+              });
+              const pathLabel = group.sourceCategory === 'test-source' ? 'Test source' : 'Source';
+              const relevance = hasMatchedActions ? ((group.ranking?.actionFacts ?? []).length ? ' (matching source call)' : ' (other connected candidate)') : '';
+              return `${pathLabel} path${relevance}:\n${lines.join('\n')}${actionLines.length ? `\nMatching source calls:\n${actionLines.join('\n')}` : ''}\n${anchor ? [anchor].map((item: any) => {
+                const includeSource = !actionLines.length;
                 const previous = describedSubjects.get(item.id);
                 if (previous === true || (previous === false && !includeSource)) return `• ${item.name ?? item.id} (${item.locator}; described above)`;
                 describedSubjects.set(item.id, includeSource);
@@ -1980,7 +2020,7 @@ export async function queryWorkbenchRequest(input: {
               }).join('\n') : ''}`;
             }).join('\n\n')
           : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map((item: any) => describeFamily(item)).join(' | ')}`)
-          + '. Paths follow source relationships; a subject can appear in multiple paths, and candidate links identify possible handoffs. Inspect source and connection details for full records.'
+          + `${hasMatchedActions && connectedCallSummary ? `\n\n${connectedCallSummary.trim()}` : ''}. Paths follow source relationships; a subject can appear in multiple paths, and candidate links identify possible handoffs. Inspect source and connection details for full records.`
         : '';
       const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation
         && result.families.some((family: any) => family.id === subject.id && family.total)
@@ -2043,6 +2083,7 @@ export async function queryWorkbenchRequest(input: {
         const plannedInput = filterInput(questions[0]!, input.scope);
         let planned: ReturnType<typeof planGraphSubjects> | undefined;
         const graph = materializeIndexedQuestionGraph(envelope, analyzed, {
+          includeDeclaredActions: Boolean(Object.keys(plannedInput.lexicalHints ?? {}).length),
           selectSubjects(candidate) {
             planned = planGraphSubjects(candidate, plannedInput);
             return { ids: planned.subjects.map(node => node.id), selection: planned.selection };

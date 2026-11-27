@@ -503,7 +503,7 @@ export function indexedRelationshipKinds(graph: IntelligenceGraph): string[] | n
 export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questions: Array<{ text: string; terms: string[] }>, options: {
   selectSubjects: (candidate: IntelligenceGraph) => { ids: string[]; selection: string };
   rememberSelection: (selected: IntelligenceGraph) => void;
-  depth?: number; scope?: string; comparisonIds?: string[]; comparisonScope?: string; comparisonKinds?: string[];
+  depth?: number; scope?: string; comparisonIds?: string[]; comparisonScope?: string; comparisonKinds?: string[]; includeDeclaredActions?: boolean;
 }): IntelligenceGraph | null {
   const index = bound.get(graph);
   if (!index) return null;
@@ -567,8 +567,12 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
     db.exec(`INSERT OR IGNORE INTO selected SELECT n.owner FROM frontier f JOIN nodes n ON n.id=f.id WHERE n.kind IN ('source-condition','source-effect','source-binding') AND n.owner IS NOT NULL;
       INSERT OR IGNORE INTO selected SELECT m.family_id FROM selected s CROSS JOIN families m ON m.node_id=s.id WHERE EXISTS (SELECT 1 FROM json_each(m.roles) WHERE value='callback');
       INSERT OR IGNORE INTO selected SELECT n.id FROM selected s CROSS JOIN nodes n INDEXED BY node_owner ON n.owner=s.id WHERE n.kind IN ('source-condition','source-effect','source-binding');
-      INSERT OR IGNORE INTO selected_edges SELECT e.id FROM frontier f CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=f.id WHERE e.status <> 'unresolved' AND e.kind IN ('has-source-occurrence','calls-site','has-declared-signature');
-      INSERT OR IGNORE INTO selected SELECT e.src FROM selected_edges x CROSS JOIN edges e ON e.id=x.id JOIN nodes n ON n.id=e.src WHERE e.src IS NOT NULL;`);
+      INSERT OR IGNORE INTO selected_edges SELECT e.id FROM frontier f CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=f.id WHERE e.status <> 'unresolved' AND e.kind IN ('has-source-occurrence','calls-site','has-declared-signature');`);
+    if (options.includeDeclaredActions) db.exec(`
+      INSERT OR IGNORE INTO selected_edges SELECT e.id FROM frontier f JOIN nodes n ON n.id=f.id CROSS JOIN edges e INDEXED BY edge_src ON e.src=f.id WHERE n.kind='source-effect' AND e.status='resolved' AND e.kind='contains-source-call';
+      INSERT OR IGNORE INTO selected_edges SELECT e.id FROM selected_edges x JOIN edges source ON source.id=x.id CROSS JOIN edges e INDEXED BY edge_src ON e.src=source.dst WHERE source.kind='contains-source-call' AND e.status='resolved' AND e.kind='has-declared-signature';
+      INSERT OR IGNORE INTO selected SELECT e.dst FROM selected_edges x JOIN edges e ON e.id=x.id JOIN nodes n ON n.id=e.dst WHERE e.kind IN ('contains-source-call','has-declared-signature');`);
+    db.exec(`INSERT OR IGNORE INTO selected SELECT e.src FROM selected_edges x CROSS JOIN edges e ON e.id=x.id JOIN nodes n ON n.id=e.src WHERE e.src IS NOT NULL;`);
     let chosen = exactSubjects;
     if (!chosen) {
       const candidateNodes = db.prepare('SELECT n.selection_body FROM selected s CROSS JOIN nodes n ON n.id=s.id ORDER BY n.ordinal').all().map((row: any) => JSON.parse(row.selection_body));
@@ -595,7 +599,7 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
         INSERT OR IGNORE INTO selected_edges SELECT e.id FROM frontier f CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=f.id;
         INSERT OR IGNORE INTO next_frontier SELECT e.dst FROM frontier f CROSS JOIN edges e INDEXED BY edge_src ON e.src=f.id JOIN nodes n ON n.id=e.dst WHERE e.dst IS NOT NULL;
         INSERT OR IGNORE INTO next_frontier SELECT e.src FROM frontier f CROSS JOIN edges e INDEXED BY edge_dst ON e.dst=f.id JOIN nodes n ON n.id=e.src WHERE e.src IS NOT NULL;
-        DELETE FROM next_frontier WHERE id IN (SELECT id FROM visited);
+        DELETE FROM next_frontier WHERE EXISTS (SELECT 1 FROM visited WHERE visited.id=next_frontier.id);
         DELETE FROM frontier; INSERT INTO frontier SELECT id FROM next_frontier; INSERT OR IGNORE INTO selected SELECT id FROM next_frontier; INSERT OR IGNORE INTO expansion SELECT id FROM next_frontier; INSERT OR IGNORE INTO visited SELECT id FROM next_frontier; DELETE FROM next_frontier;`);
       if (!Number(db.prepare('SELECT count(*) n FROM frontier').get().n)) break;
     }
@@ -605,15 +609,17 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
       DELETE FROM frontier; INSERT INTO frontier SELECT id FROM expansion; INSERT INTO edge_delta SELECT id FROM selected_edges`);
     for (;;) {
       db.exec(`INSERT OR IGNORE INTO callback_delta SELECT e.dst FROM edge_delta x CROSS JOIN edges e ON e.id=x.id WHERE e.dst IS NOT NULL AND (e.kind IN ('callback-argument','handled_by') OR (e.kind='binds_to' AND EXISTS(SELECT 1 FROM nodes n WHERE n.id=e.src AND n.kind='interaction-handler')));
-        DELETE FROM callback_delta WHERE id IN (SELECT id FROM callbacks);
+        DELETE FROM callback_delta WHERE EXISTS (SELECT 1 FROM callbacks WHERE callbacks.id=callback_delta.id);
         INSERT OR IGNORE INTO callbacks SELECT id FROM callback_delta;
+        INSERT OR IGNORE INTO selected SELECT id FROM callback_delta;
         INSERT OR IGNORE INTO frontier SELECT id FROM callback_delta;
         INSERT OR IGNORE INTO handler_delta SELECT e.dst FROM edge_delta x CROSS JOIN edges e ON e.id=x.id JOIN nodes n ON n.id=e.src JOIN nodes t ON t.id=e.dst
-          WHERE e.status <> 'unresolved' AND t.kind IN ('function','method') AND
+          WHERE e.status <> 'unresolved' AND e.kind IN ('resolves_to','handled_by','handles-method') AND t.kind IN ('function','method') AND
           ((e.kind='resolves_to' AND n.kind='call-reference' AND EXISTS(SELECT 1 FROM callbacks c WHERE c.id=n.owner))
             OR (e.kind IN ('handled_by','handles-method') AND n.kind IN ('http-call','route','api','interaction-handler')));
-        DELETE FROM handler_delta WHERE id IN (SELECT id FROM handlers);
+        DELETE FROM handler_delta WHERE EXISTS (SELECT 1 FROM handlers WHERE handlers.id=handler_delta.id);
         INSERT OR IGNORE INTO handlers SELECT id FROM handler_delta;
+        INSERT OR IGNORE INTO selected SELECT id FROM handler_delta;
         INSERT OR IGNORE INTO frontier SELECT id FROM handler_delta;
         DELETE FROM handler_delta;
         DELETE FROM callback_delta; DELETE FROM edge_delta;
@@ -625,12 +631,11 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
         OR (e.kind='contains' AND n.kind IN ('function','method','constructor') AND EXISTS(SELECT 1 FROM nodes t WHERE t.id=e.dst AND t.kind='ui-element'))
         OR (e.kind IN ('calls','invokes') AND EXISTS(SELECT 1 FROM handlers h WHERE h.id=n.id))
         OR (e.kind IN ('binds_to','resolves_to','potential-value-from','potentially-provided-by','calls','invokes') AND (n.kind IN ('call-reference','interaction-handler','component-prop-binding','jsx-prop-spread','ui-element') OR (n.kind='function' AND n.name='callback') OR EXISTS(SELECT 1 FROM callbacks c WHERE c.id=n.id)));
-        DELETE FROM edge_delta WHERE id IN (SELECT id FROM selected_edges);
+        DELETE FROM edge_delta WHERE EXISTS (SELECT 1 FROM selected_edges WHERE selected_edges.id=edge_delta.id);
         INSERT OR IGNORE INTO selected_edges SELECT id FROM edge_delta;
-        INSERT OR IGNORE INTO next_frontier SELECT e.src FROM edge_delta x CROSS JOIN edges e ON e.id=x.id CROSS JOIN nodes n ON n.id=e.src WHERE e.src IS NOT NULL;
         INSERT OR IGNORE INTO next_frontier SELECT e.dst FROM edge_delta x CROSS JOIN edges e ON e.id=x.id CROSS JOIN nodes n ON n.id=e.dst WHERE e.dst IS NOT NULL;
         INSERT OR IGNORE INTO next_frontier SELECT n.id FROM frontier s CROSS JOIN nodes n INDEXED BY node_owner ON n.owner=s.id;
-        DELETE FROM next_frontier WHERE id IN (SELECT id FROM selected);`);
+        DELETE FROM next_frontier WHERE EXISTS (SELECT 1 FROM selected WHERE selected.id=next_frontier.id);`);
       const progress = db.prepare('SELECT (SELECT count(*) FROM selected) n, (SELECT count(*) FROM selected_edges) e, (SELECT count(*) FROM next_frontier) pending, (SELECT count(*) FROM edge_delta) new_edges').get();
       if (!Number(progress.pending) && !Number(progress.new_edges)) break;
       db.exec('INSERT OR IGNORE INTO selected SELECT id FROM next_frontier; DELETE FROM frontier; INSERT INTO frontier SELECT id FROM next_frontier; DELETE FROM next_frontier');

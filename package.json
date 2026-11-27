@@ -50,7 +50,8 @@
     "tree-sitter-powershell": "0.26.6",
     "typescript": "5.8.3",
     "wink-eng-lite-web-model": "1.8.1",
-    "wink-nlp": "2.4.0"
+    "wink-nlp": "2.4.0",
+    "wordpos": "2.1.0"
   },
   "devDependencies": {
     "@types/node": "22.20.3",
