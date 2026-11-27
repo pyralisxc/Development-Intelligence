@@ -1,3 +1,4 @@
+import type { ActionHint } from './lexicalKnowledge.js';
 import { graphFamilyMemberships } from './graphFamilies.js';
 import winkNLP from 'wink-nlp';
 import model from 'wink-eng-lite-web-model';
@@ -12,6 +13,7 @@ const its = nlp.its;
 
 export interface GraphFilterInput {
   text: string;
+  lexicalHints?: Record<string, ActionHint[]>;
   scope?: string;
   offset?: number;
   limit?: number;
@@ -60,6 +62,32 @@ export function interpretGraphLanguage(text: string): { tokens: LanguageToken[];
     [...new Set([token.text.toLowerCase(), token.lemma].filter(term => term.length > 1))]).filter(group => group.length);
   const terms = [...new Set(termGroups.flat())];
   return { tokens, terms, termGroups, negated: /\b(?:not|no|never|without|none|cannot|can't|doesn't|don't|isn't|aren't)\b/iu.test(text) };
+}
+
+export function ambiguousActionCandidates(tokens: LanguageToken[]): LanguageToken[] {
+  return tokens.flatMap((token, index) => {
+    if (token.partOfSpeech !== 'VERB' || !/[a-z](?:ed|ing)$/iu.test(token.text)
+      || !['NOUN', 'PROPN'].includes(tokens[index + 1]?.partOfSpeech ?? '')) return [];
+    const previous = tokens[index - 1];
+    if (!previous || previous.stop || !['NOUN', 'PROPN'].includes(previous.partOfSpeech)) return [];
+    const before = tokens.slice(0, index - 1), auxiliary = before.findLastIndex(item => item.partOfSpeech === 'AUX');
+    return auxiliary >= 0 && before.slice(auxiliary + 1).some(item => ['NOUN', 'PROPN'].includes(item.partOfSpeech)) ? [previous] : [];
+  });
+}
+
+export function requestedActionTokens(tokens: LanguageToken[], inferred = new Set<string>()): LanguageToken[] {
+  const isAction = (token: LanguageToken) => token.partOfSpeech === 'VERB' || inferred.has(token.lemma);
+  return tokens.filter((token, index) => {
+    if (!isAction(token)) return false;
+    if (!/[a-z](?:ed|ing)$/iu.test(token.text)) return true;
+    const before = tokens.slice(0, index), after = tokens.slice(index + 1);
+    const nounAt = after.findIndex(item => ['NOUN', 'PROPN'].includes(item.partOfSpeech));
+    if (nounAt < 0 || after.slice(0, nounAt + 1).some(item => ['and', 'or'].includes(item.lemma))) return true;
+    const priorVerb = before.findLastIndex(isAction);
+    const hasPriorAction = priorVerb >= 0 && !before.slice(priorVerb + 1).some(item => ['and', 'or'].includes(item.lemma));
+    const hasLaterAction = after.slice(nounAt + 1).some(isAction);
+    return !hasPriorAction && !hasLaterAction;
+  });
 }
 
 function words(value: string): string {
@@ -152,7 +180,8 @@ function containsName(question: string, name: string, caseSensitive = false): bo
 
 export const GRAPH_SUBJECT_KINDS = new Set(['function', 'method', 'constructor', 'class', 'interface', 'type', 'declaration', 'file', 'route', 'api', 'feature', 'capability', 'surface', 'ui-element', 'dom-interaction', 'interaction-handler', 'provider', 'mcp-tool', 'tool-registration', 'rpc-call', 'http-call', 'sql-function', 'sql-procedure', 'call-reference', 'variable-reference', 'parameter', 'argument', 'source-binding']);
 
-type SubjectSelection = { subjects: GraphNode[]; excludedWeakerMatches: number; matchedTermGroups: Map<string, number>; matchedGroupIndexes: Map<string, number[]>; matchedNameGroups: Map<string, number>; fullyDescribedSubjects: Set<string>; selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' };
+type ActionFactMatch = { subjectId: string; factId: string; line: number | null; actionGroups: number[]; objectGroups: number[]; language?: { requested: string; word: string; relation: 'literal' | 'synonym' | 'hypernym'; sense?: string | number; relatedSense?: string | number; siteId: string; declarationId: string; sourceEdgeId: string; signatureEdgeId: string } };
+type SubjectSelection = { actionFacts: Map<string, ActionFactMatch[]>; subjects: GraphNode[]; excludedWeakerMatches: number; matchedTermGroups: Map<string, number>; matchedGroupIndexes: Map<string, number[]>; matchedNameGroups: Map<string, number>; fullyDescribedSubjects: Set<string>; selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' };
 const plannedSelections = new WeakMap<IntelligenceGraph, Map<string, SubjectSelection>>();
 
 function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, language: ReturnType<typeof interpretGraphLanguage>, byId: Map<string, GraphNode>, familyOf: (node: GraphNode) => GraphFamilyMembership[], includesTerm: (value: string, term: string) => boolean, preferTestSources: boolean, kinds: Set<string>): SubjectSelection {
@@ -184,6 +213,12 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
   const matchedGroupIndexes = new Map<string, number[]>();
   const matchedNameGroups = new Map<string, number>();
   const fullyDescribedSubjects = new Set<string>();
+  const actionFacts = new Map<string, ActionFactMatch[]>();
+  const actionTokens = requestedActionTokens(language.tokens, new Set(Object.keys(input.lexicalHints ?? {})));
+  const actionGroups = new Set(language.termGroups.flatMap((group, index) => actionTokens.some(token =>
+    group.includes(token.lemma)) ? [index] : []));
+  const objectGroups = new Set(language.termGroups.flatMap((group, index) => language.tokens.some(token =>
+    ['NOUN', 'PROPN', 'ADJ'].includes(token.partOfSpeech) && group.includes(token.lemma)) ? [index] : []));
   let selection: 'repository' | 'scope' | 'exact-name' | 'terms' | 'none' = 'none';
   // Repository is an ordinary graph scope, not a collection of question
   // templates. More specific nouns, negation and explicit filters continue
@@ -257,6 +292,7 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
         bestFactMatch.set(owner, score);
         factTerms.set(owner, new Set(groups.flatMap(index => (language.termGroups[index] ?? []).map(words))));
       };
+      const sourceCallFacts = new Map<string, { owner: string; lines: MatchedSourceLine[] }>();
       const sourceFacts = graph.nodes.filter(fact => ['source-condition', 'source-effect', 'source-binding'].includes(fact.kind));
       // The planning index stores compact selection fields. Read matching
       // source records from the retained graph before inspecting their syntax;
@@ -275,6 +311,82 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
         if (!terms.some(term => includesTerm(text, term))) continue;
         const { lines } = matchedSourceLines(fact, language.termGroups, includesTerm);
         for (const line of lines) considerGroups(value.functionId, line.groupIndexes);
+        if (fact.kind === 'source-effect' && (fact.value as { kind?: unknown }).kind === 'call' && lines.length) sourceCallFacts.set(fact.id, { owner: value.functionId, lines });
+        // A candidate action must occur in the callee of a written source call,
+        // not merely in a string, comment or unrelated statement. Pair it with
+        // another question concept on that same source line; the recorded call
+        // and its owning subject remain the evidence, not the word match.
+        if (fact.kind === 'source-effect' && (fact.value as { kind?: unknown }).kind === 'call' && actionGroups.size && objectGroups.size
+          && lines.some(line => line.groupIndexes.some(index => actionGroups.has(index))
+            && line.groupIndexes.some(index => objectGroups.has(index) && !actionGroups.has(index)))) {
+          const structure = (fact.value as { expressionStructure?: unknown }).expressionStructure;
+          type Part = { kind?: unknown; text?: unknown; start?: unknown; children?: unknown };
+          const root = structure && typeof structure === 'object' ? structure as Part : undefined;
+          const stack: Part[] = root ? [root] : [];
+          const source = fact.value as { rawStartLine?: unknown; sourceLine?: unknown };
+          const startLine = typeof source.rawStartLine === 'number' ? source.rawStartLine : typeof source.sourceLine === 'number' ? source.sourceLine : Number(/:(\d+)(?::|$)/u.exec(fact.locator)?.[1] ?? 0);
+          const callees: Array<{ text: string; line: number | null }> = [];
+          while (stack.length) {
+            const part = stack.pop()!;
+            if (typeof part.kind === 'string' && ['ArrowFunction', 'FunctionExpression', 'FunctionDeclaration', 'MethodDeclaration'].includes(part.kind)) continue;
+            const children = Array.isArray(part.children) ? part.children as Part[] : [];
+            if (part.kind === 'CallExpression' && children[0]) {
+              const pending = [children[0]], names: string[] = [];
+              while (pending.length) { const current = pending.pop()!; if (typeof current.text === 'string') names.push(current.text); if (Array.isArray(current.children)) pending.push(...current.children as Part[]); }
+              const position = typeof children[0].start === 'number' && typeof root?.start === 'number' ? Math.max(0, children[0].start - root.start) : 0;
+              const line = startLine ? startLine + (fact.raw ?? '').slice(0, position).split('\n').length - 1 : null;
+              callees.push({ text: words(names.join(' ')), line });
+            }
+            stack.push(...children);
+          }
+          for (const line of lines) {
+            const actions = line.groupIndexes.filter(index => actionGroups.has(index)
+              && language.termGroups[index]!.some(term => callees.some(callee => callee.line === line.line && includesTerm(callee.text, words(term)))));
+            const objects = line.groupIndexes.filter(index => objectGroups.has(index) && !actionGroups.has(index));
+            if (!actions.length || !objects.length) continue;
+            const matches = actionFacts.get(value.functionId) ?? [];
+            matches.push({ subjectId: value.functionId, factId: fact.id, line: line.line, actionGroups: actions, objectGroups: objects });
+            actionFacts.set(value.functionId, matches);
+          }
+        }
+      }
+      // Related language only proposes a candidate. Require an actual source
+      // expression linked to that exact call, its resolved declaration, and
+      // distinct object context in the expression and its lexical owner.
+      const callSources = new Map<string, Array<{ factId: string; edgeId: string; owner: string; lines: MatchedSourceLine[] }>>();
+      for (const edge of graph.edges) if (edge.kind === 'contains-source-call' && edge.status === 'resolved' && edge.from && edge.to) {
+        const source = sourceCallFacts.get(edge.from); if (!source) continue;
+        const list = callSources.get(edge.to) ?? []; list.push({ ...source, factId: edge.from, edgeId: edge.id }); callSources.set(edge.to, list);
+      }
+      for (const edge of graph.edges) if (edge.kind === 'has-declared-signature' && edge.status === 'resolved' && edge.from && edge.to) {
+        const declaration = byId.get(edge.to);
+        const description = declaration?.value && typeof declaration.value === 'object' && !Array.isArray(declaration.value)
+          ? (declaration.value as { description?: unknown }).description : undefined;
+        if (typeof description !== 'string') continue;
+        const firstClause = words((description.trim().split(/(?<=[.!?])\s+|[,;:]/u)[0] ?? '').replace(/`[^`]*`/gu, ' '));
+        for (const source of callSources.get(edge.from) ?? []) {
+          const owner = byId.get(source.owner);
+          const lexical = owner ? familyOf(owner).filter(member => member.roles.includes('callback')).map(member => byId.get(member.id)?.name ?? '') : [];
+          const ownerWords = words([owner?.name ?? '', ...lexical].join(' '));
+          const ownerObjects = [...objectGroups].filter(index => language.termGroups[index]!.some(term => includesTerm(ownerWords, words(term))));
+          for (const [requested, hints] of Object.entries(input.lexicalHints ?? {})) {
+            const actionIndex = language.termGroups.findIndex(group => group.includes(requested));
+            if (!actionGroups.has(actionIndex)) continue;
+            const hint = includesTerm(firstClause, words(requested))
+              ? { word: requested, relation: 'literal' as const }
+              : hints.find(item => includesTerm(firstClause, words(item.word)));
+            if (!hint) continue;
+            for (const line of source.lines) {
+              const direct = line.groupIndexes.filter(index => objectGroups.has(index) && !actionGroups.has(index));
+              const objects = [...new Set([...direct, ...ownerObjects])];
+              if (!direct.length || !ownerObjects.some(index => !direct.includes(index))) continue;
+              const matches = actionFacts.get(source.owner) ?? [];
+              matches.push({ subjectId: source.owner, factId: source.factId, line: line.line, actionGroups: [actionIndex], objectGroups: objects,
+                language: { requested, ...hint, siteId: edge.from, declarationId: edge.to, sourceEdgeId: source.edgeId, signatureEdgeId: edge.id } });
+              actionFacts.set(source.owner, matches);
+            }
+          }
+        }
       }
       // A written occurrence contributes the concepts on that occurrence;
       // unrelated sites do not become one artificial match.
@@ -396,7 +508,7 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
       selection = 'scope';
     }
   }
-  return { subjects, excludedWeakerMatches, matchedTermGroups, matchedGroupIndexes, matchedNameGroups, fullyDescribedSubjects, selection };
+  return { subjects, excludedWeakerMatches, matchedTermGroups, matchedGroupIndexes, matchedNameGroups, fullyDescribedSubjects, actionFacts, selection };
 }
 
 /** Use the same subject selection for planning and graph filtering. */
@@ -436,7 +548,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   let direction = input.direction ?? 'both';
   const planned = plannedSelections.get(graph)?.get(JSON.stringify(input))
     ?? selectSubjects(graph, input, language, byId, familyOf, includesTerm, preferTestSources, kinds);
-  const { subjects, excludedWeakerMatches, matchedTermGroups, matchedGroupIndexes, matchedNameGroups, fullyDescribedSubjects, selection } = planned;
+  const { subjects, excludedWeakerMatches, matchedTermGroups, matchedGroupIndexes, matchedNameGroups, fullyDescribedSubjects, actionFacts, selection } = planned;
   // Bind action words to the graph's relationship vocabulary, then use their
   // position relative to the selected subject to choose traversal direction.
   // A symbol reference is never promoted to a call by language matching.
@@ -593,7 +705,7 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
   // entry point. Present the captured paths from each matched subject to its
   // next matched subjects as independently pageable investigations. Shared
   // junctions may appear in more than one path; no synthetic edge is added.
-  const lexicalMatches = (group: { anchorId: string; subjects: GraphNode[] }) => {
+  const lexicalMatches = (group: { anchorId: string; subjects: GraphNode[]; links: IntelligenceGraph['edges'] }) => {
     const groups = new Set(matchedGroupIndexes.get(group.anchorId) ?? []);
     let callbacks = 0;
     for (const node of group.subjects) if (node.id !== group.anchorId
@@ -601,10 +713,36 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       callbacks += 1;
       for (const index of matchedGroupIndexes.get(node.id) ?? []) groups.add(index);
     }
-    return { groups: groups.size, callbacks };
+    const matches = group.subjects.filter(node => node.id === group.anchorId
+      || familyOf(node).some(member => member.id === group.anchorId && member.roles.includes('callback')))
+      .flatMap(node => actionFacts.get(node.id) ?? []);
+    // Keep the actual directed route from this anchor to a matching source
+    // owner. Other recorded branches stay in the group as graph context.
+    const outgoing = new Map<string, typeof group.links>(), incoming = new Map<string, typeof group.links>();
+    for (const edge of group.links) if (edge.from && edge.to) {
+      const forward = outgoing.get(edge.from) ?? []; forward.push(edge); outgoing.set(edge.from, forward);
+      const reverse = incoming.get(edge.to) ?? []; reverse.push(edge); incoming.set(edge.to, reverse);
+    }
+    const reachable = new Set([group.anchorId]), queue = [group.anchorId];
+    for (let at = 0; at < queue.length; at++) for (const edge of outgoing.get(queue[at]!) ?? [])
+      if (edge.to && !reachable.has(edge.to)) { reachable.add(edge.to); queue.push(edge.to); }
+    const pathMatches = matches.filter(match => reachable.has(match.subjectId));
+    const actions = new Set(pathMatches.flatMap(match => match.actionGroups));
+    const objects = new Set(pathMatches.flatMap(match => match.objectGroups));
+    const modifiers = [...objects].filter(index => language.tokens.some(token => token.partOfSpeech === 'ADJ'
+      && language.termGroups[index]?.includes(token.lemma))).length;
+    const targets = [...new Set(pathMatches.map(match => match.subjectId))];
+    const backwards = new Set(targets), pending = [...targets], actionPathEdgeIds = new Set<string>();
+    for (let at = 0; at < pending.length; at++) for (const edge of incoming.get(pending[at]!) ?? []) {
+      if (!edge.from || !reachable.has(edge.from)) continue;
+      actionPathEdgeIds.add(edge.id);
+      if (!backwards.has(edge.from)) { backwards.add(edge.from); pending.push(edge.from); }
+    }
+    return { groups: groups.size, callbacks, actionFacts: pathMatches, actions: actions.size, objects: objects.size, modifiers,
+      actionPathEdgeIds: targets.length ? [...actionPathEdgeIds] : null };
   };
   const lexicalMatchCache = new WeakMap<object, ReturnType<typeof lexicalMatches>>();
-  const lexicalMatch = (group: { anchorId: string; subjects: GraphNode[] }) => {
+  const lexicalMatch = (group: { anchorId: string; subjects: GraphNode[]; links: IntelligenceGraph['edges'] }) => {
     let match = lexicalMatchCache.get(group);
     if (!match) { match = lexicalMatches(group); lexicalMatchCache.set(group, match); }
     return match;
@@ -659,6 +797,9 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
     // name; all paths remain pageable and connectivity is not proof of relevance.
     return (preferTestSources ? -sourceOrder : sourceOrder)
       || Number(fullyDescribedSubjects.has(b.anchorId)) - Number(fullyDescribedSubjects.has(a.anchorId))
+      || lexicalMatch(b).actions - lexicalMatch(a).actions
+      || lexicalMatch(b).modifiers - lexicalMatch(a).modifiers
+      || lexicalMatch(b).objects - lexicalMatch(a).objects
       || lexicalMatch(b).groups - lexicalMatch(a).groups
       || Number(lexicalMatch(b).callbacks > 0) - Number(lexicalMatch(a).callbacks > 0)
       || Number(b.links.length > 0) - Number(a.links.length > 0)
@@ -1080,7 +1221,8 @@ export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): 
       anchorId: group.anchorId, subjects: group.subjects, links: group.links, linkNodes: group.linkNodes, sourceCategory: group.sourceCategory,
       ranking: { descriptionMatchesAllTerms: fullyDescribedSubjects.has(group.anchorId), matchedNameGroups: matchedNameGroups.get(group.anchorId) ?? 0,
         matchedTermGroups: matchedTermGroups.get(group.anchorId) ?? 0,
-        matchedLexicalTermGroups: lexicalMatch(group).groups,
+        matchedLexicalTermGroups: lexicalMatch(group).groups, actionFacts: lexicalMatch(group).actionFacts,
+        actionPathEdgeIds: lexicalMatch(group).actionPathEdgeIds,
         matchedConnectedTermGroups: group.subjects.reduce((max, node) => Math.max(max, matchedTermGroups.get(node.id) ?? 0), 0),
         connected: connectedAtRanking.get(group) ?? false },
     })) } : {}),

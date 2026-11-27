@@ -43,21 +43,33 @@ export function observedGraphIds(graph: IntelligenceGraph, value: unknown, index
 
 export function questionSelection(graph: IntelligenceGraph, result: any) {
   const grouped = Array.isArray(result.connectedGroups);
-  const subjects = grouped ? result.connectedGroups.flatMap((group: any) => group.subjects ?? []) : result.subjects ?? [];
-  const links = grouped ? result.connectedGroups.flatMap((group: any) => group.links ?? [])
-    : (result.navigation?.relationships ?? []).map((item: any) => item.edge);
+  const subjects = grouped ? result.connectedGroups.flatMap((group: any) => {
+    if (!Array.isArray(group.ranking?.actionPathEdgeIds)) return group.subjects ?? [];
+    const ids = new Set([group.anchorId, ...(group.ranking.actionFacts ?? []).map((match: any) => match.subjectId)]);
+    return (group.subjects ?? []).filter((node: any) => ids.has(node.id));
+  }) : result.subjects ?? [];
+  const links = grouped ? result.connectedGroups.flatMap((group: any) => {
+    if (!Array.isArray(group.ranking?.actionPathEdgeIds)) return group.links ?? [];
+    const ids = new Set(group.ranking.actionPathEdgeIds);
+    return (group.links ?? []).filter((edge: any) => ids.has(edge.id));
+  }) : (result.navigation?.relationships ?? []).map((item: any) => item.edge);
+  const groupContextNodes = grouped ? result.connectedGroups.flatMap((group: any) => (group.subjects ?? []).map((node: any) => node.id)) : [];
+  const groupContextEdges = grouped ? result.connectedGroups.flatMap((group: any) => (group.links ?? []).map((edge: any) => edge.id)) : [];
   const comparison = result.comparison?.items ?? [];
+  const actionMatches = grouped ? result.connectedGroups.flatMap((group: any) => group.ranking?.actionFacts ?? []) : [];
   const callEdgeIds = (result.sourceFamilies ?? []).flatMap((family: any) => (family.sourceCalls ?? [])
     .flatMap((call: any) => [call.occurrenceEdgeId, call.bindingEdgeId]))
     .filter((id: unknown): id is string => typeof id === 'string');
   const focus = {
-    nodeIds: [...subjects.map((node: any) => node.id), ...comparison.map((item: any) => item.node?.id)].filter((id: unknown): id is string => typeof id === 'string'),
-    edgeIds: [...links.map((edge: any) => edge?.id), ...comparison.flatMap((item: any) => item.relationshipIds ?? []), ...callEdgeIds].filter((id: unknown): id is string => typeof id === 'string'),
+    nodeIds: [...subjects.map((node: any) => node.id), ...comparison.map((item: any) => item.node?.id),
+      ...actionMatches.flatMap((match: any) => [match.factId, match.language?.siteId, match.language?.declarationId])].filter((id: unknown): id is string => typeof id === 'string'),
+    edgeIds: [...links.map((edge: any) => edge?.id), ...comparison.flatMap((item: any) => item.relationshipIds ?? []), ...(actionMatches.length ? [] : callEdgeIds),
+      ...actionMatches.flatMap((match: any) => [match.language?.sourceEdgeId, match.language?.signatureEdgeId])].filter((id: unknown): id is string => typeof id === 'string'),
   };
   // The graph follows the displayed paths and their relevant source context.
   // Other family facts remain available in result.sourceFamilies; adding all
   // of them to the visual selection can obscure the path with unrelated code.
-  const contextNodeIds: string[] = (result.sourceFamilies ?? []).flatMap((family: any) => {
+  const contextNodeIds: string[] = [...groupContextNodes, ...(result.sourceFamilies ?? []).flatMap((family: any) => {
     const focused = new Set((family.focusedFacts ?? []).map((fact: any) => fact.id));
     const facts = (family.facts ?? []).filter((fact: any) => focused.has(fact.id)
       || fact.matchedKind || (fact.matchedLines ?? []).length
@@ -66,13 +78,13 @@ export function questionSelection(graph: IntelligenceGraph, result: any) {
       ...(fact.requirements ?? []).map((requirement: any) => requirement.conditionNodeId),
       ...(fact.externalDeclarations ?? []).map((declaration: any) => declaration.id)])];
   })
-    .filter((id: unknown): id is string => typeof id === 'string');
+    .filter((id: unknown): id is string => typeof id === 'string')];
   for (const node of result.bindingGraph?.nodes ?? []) if (typeof node.id === 'string') contextNodeIds.push(node.id);
   const selectedNodes = new Set([...focus.nodeIds, ...contextNodeIds]);
   const factEdges = (indexedIncidentEdges(graph, selectedNodes, 'outbound') ?? graph.edges).filter(edge => edge.from && edge.to && selectedNodes.has(edge.from) && selectedNodes.has(edge.to)
     && ['has-condition', 'has-effect', 'has-source-binding', 'references-binding', 'contains-source-call', 'has-declared-signature', 'has-source-control', 'requires-condition', 'calls-site'].includes(edge.kind));
   return investigationSelection(graph, 'question', { ...focus, contextNodeIds,
-    contextEdgeIds: [...factEdges.map(edge => edge.id), ...(result.bindingGraph?.edges ?? []).map((edge: any) => edge.id)], page: result.page, scope: result.scope });
+    contextEdgeIds: [...groupContextEdges, ...callEdgeIds, ...factEdges.map(edge => edge.id), ...(result.bindingGraph?.edges ?? []).map((edge: any) => edge.id)], page: result.page, scope: result.scope });
 }
 
 /** Select only the records on the requested page and on the appropriate side. */
