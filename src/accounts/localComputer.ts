@@ -81,7 +81,7 @@ export async function linkComputer(home: string, workbench: string, openVerifica
       res.writeHead(400, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('Sign-in did not complete. Return to DI and try again.'); rejectCode(new Error('Computer sign-in was declined or did not complete')); return;
     }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
-    res.end('<!doctype html><title>Development Intelligence</title><p>Sign-in received. Return to Development Intelligence while it finishes linking.</p>');
+    res.end('<!doctype html><title>Development Intelligence</title><script>history.replaceState(null, "", "/di-auth/callback")</script><p>Sign-in received. Return to Development Intelligence while it finishes linking.</p>');
     resolveCode(code);
   });
   await new Promise<void>((resolve, reject) => { callback.once('error', reject); callback.listen(49177, '127.0.0.1', () => { callback.off('error', reject); resolve(); }); });
