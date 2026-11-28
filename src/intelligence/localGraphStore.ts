@@ -363,6 +363,39 @@ export async function removeLocalGraphTarget(root: string, project: string, name
   });
 }
 
+/** Remove only generations owned by this named account graph, preserving shared targets. */
+export async function removeAccountGraph(root: string, project: string, accountGraphId: string, snapshot: { graphId: string; legacyTarget?: { name: string; graphId: string } } | undefined, assertClaim: () => Promise<void>): Promise<void> {
+  if (!/^[a-f0-9]{32}$/u.test(accountGraphId)) throw new Error('Invalid account graph identity');
+  const directory = projectDirectory(root, project);
+  try { await fs.access(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  await withCatalogLock(directory, async () => {
+    await assertClaim();
+    const catalog = await catalogAt(directory);
+    if (!catalog) return;
+    if (catalog.project !== project) throw new Error('Graph catalog belongs to another project');
+    const targets = { ...(catalog.targets ?? {}) }, candidates = new Set<string>();
+    const current = `.di-account-current-${accountGraphId}`, stage = `.di-account-stage-${accountGraphId}-`;
+    if (targets[current] && snapshot && !catalog.entries.some(entry => entry.generation === targets[current] && entry.graphId === snapshot.graphId)) throw new Error('Stored graph does not match the selected snapshot');
+    for (const [name, generation] of Object.entries(targets)) {
+      if (name === current || name.startsWith(stage)) { candidates.add(generation); delete targets[name]; }
+    }
+    const legacy = snapshot?.legacyTarget;
+    if (legacy && targets[legacy.name] && catalog.entries.some(entry => entry.generation === targets[legacy.name] && entry.graphId === legacy.graphId)) {
+      const generation = targets[legacy.name]!;
+      if (!Object.entries(targets).some(([name, value]) => name !== legacy.name && value === generation)) { delete targets[legacy.name]; candidates.add(generation); }
+    }
+    const protectedGenerations = new Set(Object.values(targets));
+    const retired = catalog.entries.filter(entry => candidates.has(entry.generation) && !protectedGenerations.has(entry.generation));
+    const retiredIds = new Set(retired.map(entry => entry.generation));
+    const entries = catalog.entries.filter(entry => !retiredIds.has(entry.generation));
+    const active = retiredIds.has(catalog.active) ? (Object.values(targets)[0] ?? entries[0]?.generation ?? '') : catalog.active;
+    await assertClaim();
+    await writeCatalog(directory, { ...catalog, active, entries, targets, pendingDelete: retired.map(entry => entry.generation) });
+    await finishCatalogDeletes(directory);
+    if (!entries.length && !Object.keys(targets).length) await fs.rm(path.join(directory, 'catalog.json'), { force: true });
+  });
+}
+
 export async function readLocalSourceGraph(root: string, project: string, graphId?: string, generation?: string, skipIndex = false): Promise<IntelligenceGraph> {
   const directory = projectDirectory(root, project);
   try { await fs.access(directory); }
