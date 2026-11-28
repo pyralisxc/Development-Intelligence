@@ -83,7 +83,7 @@ function nodeSearchText(node: GraphNode): string {
 }
 
 function edgeSearchText(edge: GraphEdge): string {
-  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...edge.evidence]
+  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...(edge.evidenceLayers ?? []).map(layer => layer.strategy), ...edge.evidence]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();

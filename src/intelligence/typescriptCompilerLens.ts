@@ -549,13 +549,29 @@ export function compilerTypeScriptReferences(input: {
           link.locations.add(`${file}:${location.line + 1}:${location.character + 1}`); links.set(key, link);
         }
       }
+      const bindingLinks = new Map<string, Array<{ from: GraphNode; to: GraphNode; context: boolean; locations: Set<string> }>>();
       for (const link of links.values()) {
+        const key = JSON.stringify([link.from.id, link.to.id]);
+        const group = bindingLinks.get(key) ?? [];
+        group.push(link); bindingLinks.set(key, group);
+      }
+      for (const group of bindingLinks.values()) {
         if (resolvedBindings >= budget.maxBindings) break;
+        // A source fact can reference the same binding in its expression and
+        // enclosing control. Retain each role and its exact source locations
+        // as layers of the one fact-to-binding relationship.
+        const selected = group.slice(0, budget.maxBindings - resolvedBindings);
+        const link = selected[0]!;
+        const evidence = [...new Set(selected.flatMap(item => [...item.locations, item.to.locator]))].sort();
+        const evidenceIds = [...new Set([...(link.from.evidenceIds ?? []), ...(link.to.evidenceIds ?? [])])].sort();
+        const strategy = (context: boolean) => context ? 'typescript-checker-control-binding' : 'typescript-checker-expression-binding';
         resultEdges.push(resolution({ from: link.from.id, to: link.to.id,
-          kind: 'references-binding', strategy: link.context ? 'typescript-checker-control-binding' : 'typescript-checker-expression-binding',
-          confidence: 1, status: 'resolved', evidence: [...link.locations, link.to.locator],
-          evidenceIds: [...(link.from.evidenceIds ?? []), ...(link.to.evidenceIds ?? [])], layer: 'structural', checkpoint: false }));
-        resolvedBindings += 1;
+          kind: 'references-binding', strategy: selected.length === 1 ? strategy(link.context) : 'typescript-checker-layered-binding',
+          confidence: 1, status: 'resolved', evidence, evidenceIds,
+          ...(selected.length > 1 ? { evidenceLayers: selected.map(item => ({ strategy: strategy(item.context),
+            evidenceIndexes: [...item.locations, item.to.locator].map(value => evidence.indexOf(value)), evidenceIds })) } : {}),
+          layer: 'structural', checkpoint: false }));
+        resolvedBindings += selected.length;
       }
     }
     for (const [key, sites] of componentCalls) for (const site of sites) for (const binding of componentBindings.get(key) ?? []) {

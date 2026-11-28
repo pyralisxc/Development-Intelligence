@@ -24,7 +24,7 @@ function nodeText(node: GraphNode): string {
 }
 
 function edgeText(edge: GraphEdge): string {
-  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...edge.evidence].join(' ');
+  return [edge.id, edge.kind, edge.layer, edge.strategy, edge.status, ...(edge.evidenceLayers ?? []).map(layer => layer.strategy), ...edge.evidence].join(' ');
 }
 
 function queryTextMatches(value: string, query: string): boolean {

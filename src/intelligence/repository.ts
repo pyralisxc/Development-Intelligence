@@ -25,7 +25,7 @@ import { positiveIntegerSetting } from './capacity.js';
 import { SourceStageCache } from './sourceStageCache.js';
 
 export const GRAPH_DIRECTORY = '.development-intelligence';
-export const ANALYZER_VERSION = '2.48.0-source-iteration-bindings';
+export const ANALYZER_VERSION = '2.49.0-layered-binding-evidence';
 
 type LanguageProducerInput = { bytes: Uint8Array; fallbackError?: string } | { error: string } | null;
 
@@ -2594,8 +2594,8 @@ export async function advanceRepositoryGraph(input: {
     const compiler = compilerTypeScriptReferences({
       root: input.root, sourceTexts: allTypescript, nodes, fileNodes, options: loadCompilerOptions(input.root),
     });
-    nodes.push(...compiler.nodes);
-    edges.push(...compiler.edges);
+    for (const node of compiler.nodes) nodes.push(node);
+    for (const edge of compiler.edges) edges.push(edge);
     const warning = compilerPrecisionWarning(compiler);
     if (warning) warnings.push(warning);
   }
@@ -2837,8 +2837,8 @@ async function buildPreparedRepositoryGraph(input: {
   const compiler = compilerTypeScriptReferences({
     root: input.root, sourceTexts, nodes, fileNodes, options: loadCompilerOptions(input.root),
   });
-  nodes.push(...compiler.nodes);
-  edges.push(...compiler.edges);
+  for (const node of compiler.nodes) nodes.push(node);
+  for (const edge of compiler.edges) edges.push(edge);
   await deriveCrossFileAndFrameworkFacts({
     root: input.root, sourceTexts, nodes, edges, evidence, fileNodes,
   });
