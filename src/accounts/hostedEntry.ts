@@ -27,16 +27,32 @@ async function main(): Promise<void> {
     });
     return writes;
   };
+  let published = job.stage === 'cleanup';
   try {
     await publish({ state: 'running', progress: { stage: 'starting' } });
-    const result = await executeAccountGraphJob({ ...job, graph }, scratchDir, 3, async () => token,
+    const result = job.stage === 'cleanup' ? job.cleanupResult : await executeAccountGraphJob({ ...job, graph }, scratchDir, 3, async () => token,
       async progress => await publish({ state: 'running', progress }), async () => {
         const response = await fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId }) });
         if (response.status !== 409) throw new Error('Hosted graph claim is no longer active');
       });
+    if (job.kind === 'build' && job.snapshotStaging && job.graphLease && job.graph.storage.computer === 'hosted' && (!job.previousSnapshot || (job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location))) {
+      const built = result as { graphId?: unknown } | undefined;
+      if (!built || typeof built.graphId !== 'string' || !built.graphId) throw new Error('The graph build did not return a generation');
+      const { withLocalSourceGraphEnvelope, reconcileAccountGraphStages } = await import('../intelligence/localGraphStore.js');
+      if (!published) {
+        await withLocalSourceGraphEnvelope(dataDir, job.project.id, () => undefined, built.graphId);
+        published = true; // A lost response can follow a successful publication.
+        const response = await fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId, publishResult: result }) });
+        if (!response.ok) throw new Error('Hosted graph publication was not confirmed');
+      }
+      await reconcileAccountGraphStages(dataDir, job.project.id, job.graph.id, built.graphId, async () => {
+        const response = await fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId, publishResult: result }) });
+        if (!response.ok) throw new Error('Hosted graph retirement claim is no longer active');
+      });
+    }
     await publish({ state: 'complete', result });
   } catch (error) {
-    await publish({ state: 'failed', error: error instanceof Error ? error.message : String(error) });
+    await publish(published ? { state: 'running', progress: { stage: 'waiting-to-retry-graph-retirement' } } : { state: 'failed', error: error instanceof Error ? error.message : String(error) });
     process.exitCode = 1;
   } finally {
     // The scoped claim lets the account service record the result and stop the

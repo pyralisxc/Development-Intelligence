@@ -220,6 +220,29 @@ export async function executeAccountGraphJob(
   }
 }
 
+/** Publish a usable linked-store generation, then retire its predecessor under the same claim. */
+export async function finishLinkedSnapshot(job: BuildJob, result: unknown, update: (data: Record<string, unknown>) => Promise<unknown>): Promise<boolean> {
+  if (!job.snapshotStaging || !job.graphLease || !job.claimId || job.graph.storage.computer !== job.assignedComputer || job.graph.storage.computer === 'hosted') return false;
+  if (job.previousSnapshot && (job.previousSnapshot.storage.computer !== job.graph.storage.computer || job.previousSnapshot.storage.location !== job.graph.storage.location)) return false;
+  const built = result as { graphId?: unknown } | null;
+  if (!built || typeof built.graphId !== 'string' || !built.graphId) throw new Error('The graph build did not return a generation');
+  if (job.stage !== 'cleanup') {
+    const { withLocalSourceGraphEnvelope } = await import('../intelligence/localGraphStore.js');
+    await withLocalSourceGraphEnvelope(job.graph.storage.location, job.project.id, () => undefined, built.graphId);
+  }
+  try {
+    if (job.stage !== 'cleanup') await update({ state: 'publishing', result });
+    const { reconcileAccountGraphStages } = await import('../intelligence/localGraphStore.js');
+    await reconcileAccountGraphStages(job.graph.storage.location, job.project.id, job.graph.id, built.graphId, async () => { await update({ progress: { stage: 'retiring-replaced-graph' } }); });
+    await update({ state: 'complete', result });
+  } catch {
+    // The account has already published this generation. Keep its claim and
+    // retry cleanup through the existing lease if this attempt is interrupted.
+    await update({ progress: { stage: 'waiting-to-retry-graph-retirement' } }).catch(() => {});
+  }
+  return true;
+}
+
 /** Polling uses the same local graph worker as the CLI and Workbench. */
 export async function runComputer(home: string, scratchDir: string, retain: number): Promise<void> {
   const credentials = await read(home);
@@ -251,6 +274,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
     const update = (data: Record<string, unknown>) => send({ action: 'computer-update-build', jobId: job.id, update: { ...data, claimId: job.claimId } });
     let renewal: ReturnType<typeof setInterval> | undefined;
     try {
+      if (job.kind === 'build' && job.stage === 'cleanup') { if (!await finishLinkedSnapshot(job, job.cleanupResult, update)) throw new Error('This graph retirement requires its storage computer'); continue; }
       if (job.kind === 'browse') {
         const directory = path.resolve(job.path ?? os.homedir());
         const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -270,7 +294,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         if (job.snapshotStaging && job.graphLease && job.previousSnapshot && job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location) await reconcileAccountGraphStages(job.graph.storage.location, job.project.id, job.graph.id, job.previousSnapshot.graphId, async () => { await update({ progress: { stage: 'reconciling-graph-storage' } }); });
         await importLocalSourceGraph(staging, job.graph.storage.location, job.project.id, built.graphId, job.snapshotStaging && job.claimId ? `.di-account-stage-${job.graph.id}-${job.claimId}` : job.graph.name, retain, Boolean(job.snapshotStaging));
         if (renewal) clearInterval(renewal);
-        await update({ state: 'complete', result: built });
+        if (!await finishLinkedSnapshot(job, built, update)) await update({ state: 'complete', result: built });
         await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
         continue;
       }
@@ -333,7 +357,8 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         for (let index = 0; index < parts; index++) await send({ action: 'computer-investigation-part', jobId: job.id, claimId: job.claimId, index, part: bytes.subarray(index * size, (index + 1) * size).toString('base64') });
         if (renewal) clearInterval(renewal);
         await update({ state: 'complete', resultParts: parts });
-      } else await update({ state: 'complete', result });
+      } else if (job.kind === 'build' && await finishLinkedSnapshot(job, result, update)) { /* completed by the storage owner */ }
+      else await update({ state: 'complete', result });
     } catch (error) {
       if (renewal) clearInterval(renewal);
       await update({ state: 'failed', error: error instanceof Error ? error.message : String(error) });
