@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { Redis } from '@upstash/redis';
 
 export type Project = { id: string; name: string };
@@ -17,13 +18,49 @@ export type GraphDefinition = {
   transfer?: { kind: 'shared-folder'; buildLocation: string; storageLocation: string } | { kind: 'direct-hosted' };
   updatePolicy: 'snapshot';
 };
-export type Computer = { sharedTransferV2?: boolean; id: string; name: string; platform: string; lastSeen: string; state: 'linked' | 'revoked' };
+export type Computer = { sharedTransferV2?: boolean; connection?: 'active' | 'paused'; id: string; name: string; platform: string; lastSeen: string; state: 'linked' | 'revoked' };
 export type BuildJob = { retainedLegacyTargets?: string[]; cleanupLegacyTarget?: LegacyGraphTarget; discardWhenComplete?: boolean; sharedTransferClaim?: string; claimScopedTransfer?: boolean; graphLease?: boolean; previousSnapshot?: SnapshotReference; snapshotStaging?: boolean; id: string; kind?: 'build' | 'question' | 'investigation'; question?: string; graphId?: string; request?: { path: string; method: 'GET' | 'POST'; query?: string; body?: unknown }; graph: GraphDefinition; project: Project; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; progress?: unknown; sourceStage?: { reused: number; total: number }; result?: unknown; resultKey?: string; resultParts?: number; resultExpiresAt?: number; transferGraphId?: string; previousTransfer?: { claimId: string; graphId: string }; error?: string; assignedComputer?: string; stage?: 'build' | 'transfer' | 'cleanup'; cleanupResult?: Record<string, unknown>; hosted?: { sandbox: string; command: string; statusFile: string } };
 export type BrowseJob = { id: string; kind: 'browse'; computerId: string; path?: string; state: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; leaseUntil?: number; claimId?: string; result?: unknown; resultKey?: string; error?: string };
 type ComputerJob = BuildJob | BrowseJob;
 // Investigation results are transient transport payloads; saved build results
 // carry graph identity and must remain available until their own lifecycle ends.
 const INVESTIGATION_RESULT_TTL_SECONDS = 24 * 60 * 60;
+
+/** Keep transport closure visible so a connected worker can restore its session. */
+class AccountSubscription extends EventEmitter {
+  private readonly abort = new AbortController();
+  constructor(url: string, token: string, channel: string) {
+    super();
+    void this.read(url, token, channel).catch(error => {
+      if (!this.abort.signal.aborted && this.listenerCount('error')) this.emit('error', error);
+    });
+  }
+  private async read(url: string, token: string, channel: string): Promise<void> {
+    const endpoint = `${url.replace(/\/$/u, '')}/subscribe/${encodeURIComponent(channel)}`;
+    const response = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' }, signal: this.abort.signal });
+    if (!response.ok || !response.body) throw new Error(`Computer event subscription failed (${response.status})`);
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('Computer event subscription closed');
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n'); buffer = lines.pop() ?? '';
+        if (buffer.length > 1_000_000) throw new Error('Computer event message is too large');
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim(), first = data.indexOf(','), second = data.indexOf(',', first + 1);
+          if (first < 0 || second < 0) continue;
+          const kind = data.slice(0, first), raw = data.slice(second + 1);
+          if (kind === 'subscribe') this.emit('subscribe');
+          else if (kind === 'message') { let message: unknown = raw; try { message = JSON.parse(raw); } catch {} this.emit('message', { message }); }
+        }
+      }
+    } finally { await reader.cancel().catch(() => {}); }
+  }
+  async unsubscribe(): Promise<void> { this.abort.abort(); }
+}
 
 function invalid(message: string): never { throw Object.assign(new Error(message), { status: 400 }); }
 function value(input: unknown, label: string): string {
@@ -121,7 +158,10 @@ export class WorkspaceStore {
   private async enqueue(job: ComputerJob): Promise<void> {
     await this.ensureIndexed();
     const computer = job.kind === 'browse' ? job.computerId : job.assignedComputer ?? job.graph.buildComputer;
-    await this.redis.eval<unknown[], number>(`redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]); local job=cjson.decode(ARGV[2]); if job.kind=='investigation' or job.kind=='question' then redis.call('HEXPIRE',KEYS[1],86400,'FIELDS',1,ARGV[1]) end; redis.call('ZADD',KEYS[2],ARGV[3],ARGV[1]); if ARGV[4]=='1' then redis.call('ZADD',KEYS[3],ARGV[3],ARGV[1]) end; if ARGV[5]=='1' then redis.call('ZADD',KEYS[4],ARGV[3],ARGV[6]) end; return 1`, [this.key('builds'), this.key(`queue:${computer}`), this.key('build-history'), this.hostedAccountsKey], [job.id, JSON.stringify(job), Date.now(), job.kind === 'investigation' || job.kind === 'question' || job.kind === 'browse' ? '0' : '1', computer === 'hosted' ? '1' : '0', this.userId]);
+    if (computer !== 'hosted' && !await this.probeComputer(computer)) {
+      throw Object.assign(new Error('The selected computer is paused or not responding. Start DI on that computer and try again.'), { status: 409 });
+    }
+    await this.redis.eval<unknown[], number>(`redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]); local job=cjson.decode(ARGV[2]); if job.kind=='investigation' or job.kind=='question' then redis.call('HEXPIRE',KEYS[1],86400,'FIELDS',1,ARGV[1]) end; redis.call('ZADD',KEYS[2],ARGV[3],ARGV[1]); if ARGV[4]=='1' then redis.call('ZADD',KEYS[3],ARGV[3],ARGV[1]) end; if ARGV[5]=='1' then redis.call('ZADD',KEYS[4],ARGV[3],ARGV[6]) else redis.call('PUBLISH',KEYS[2]..':events','1') end; return 1`, [this.key('builds'), this.key(`queue:${computer}`), this.key('build-history'), this.hostedAccountsKey], [job.id, JSON.stringify(job), Date.now(), job.kind === 'investigation' || job.kind === 'question' || job.kind === 'browse' ? '0' : '1', computer === 'hosted' ? '1' : '0', this.userId]);
   }
   /** Explicitly enroll pre-existing hosted work without executing it as part of a read. */
   async registerHostedWork(): Promise<boolean> {
@@ -151,16 +191,10 @@ export class WorkspaceStore {
     const job: BrowseJob = { id: recordId(), kind: 'browse', computerId: selected, ...(folder === undefined || folder === '' ? {} : { path: value(folder, 'Folder') }), state: 'queued', createdAt: new Date().toISOString() };
     await this.enqueue(job); return job;
   }
-  async beginComputerLink(): Promise<string> {
-    const code = randomBytes(16).toString('hex');
-    await this.redis.set(this.key(`pairing:${code}`), 'approved', { ex: 600 });
-    return code;
-  }
-  async linkComputer(input: unknown, pairingCode: unknown): Promise<{ computer: Computer; secret: string }> {
-    const code = id(pairingCode);
-    if (await this.redis.getdel(this.key(`pairing:${code}`)) !== 'approved') throw Object.assign(new Error('Computer link request expired; start linking from the Workbench'), { status: 403 });
+  /** A computer belongs to the authenticated account that explicitly signed in on it. */
+  async linkComputer(input: unknown): Promise<{ computer: Computer; secret: string }> {
     const data = object(input);
-    const computer: Computer = { id: recordId(), name: value(data.name, 'Computer name'), platform: value(data.platform, 'Platform'), lastSeen: new Date().toISOString(), state: 'linked' };
+    const computer: Computer = { id: recordId(), name: value(data.name, 'Computer name'), platform: value(data.platform, 'Platform'), lastSeen: new Date().toISOString(), state: 'linked', connection: 'paused' };
     const secret = randomBytes(32).toString('base64url');
     const digest = createHash('sha256').update(secret).digest('hex');
     // The device credential is separate from the public computer metadata.
@@ -178,6 +212,67 @@ export class WorkspaceStore {
     }
     return computer;
   }
+  private computerChannel(computerId: string): string { return `${this.key(`queue:${computerId}`)}:events`; }
+
+  /** The computer starts only because its owner explicitly connected it. */
+  async connectComputer(computerId: unknown, secret: unknown): Promise<Computer> {
+    const key = id(computerId), digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
+    const raw = await this.redis.eval<unknown[], string | null>(`local itemRaw=redis.call('HGET',KEYS[1],ARGV[1]); local expected=redis.call('HGET',KEYS[2],ARGV[1]); if not itemRaw or expected~=ARGV[2] then return nil end; local item=cjson.decode(itemRaw); if item.state~='linked' then return nil end; item.connection='active'; item.lastSeen=ARGV[3]; local out=cjson.encode(item); redis.call('HSET',KEYS[1],ARGV[1],out); return out`, [this.key('computers'), this.key('computer-secrets')], [key, digest, new Date().toISOString()]);
+    if (!raw) throw Object.assign(new Error('Computer is not linked to this account'), { status: 403 });
+    return typeof raw === 'string' ? JSON.parse(raw) as Computer : raw as unknown as Computer;
+  }
+
+  /** Pausing preserves the account-owned computer and its graph settings. */
+  async pauseComputer(computerId: unknown): Promise<void> {
+    const key = id(computerId), channel = this.computerChannel(key);
+    const changed = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local item=cjson.decode(raw); if item.state~='linked' then return 0 end; item.connection='paused'; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(item)); redis.call('PUBLISH',KEYS[2],cjson.encode({type='pause'})); return 1`, [this.key('computers'), channel], [key]);
+    if (changed !== 1) invalid('Choose a linked computer');
+  }
+
+  /** A connected computer receives work notifications without polling the queue. */
+  private subscribe(channel: string): AccountSubscription {
+    const url = process.env.UPSTASH_REDIS_REST_URL?.trim() || process.env.KV_REST_API_URL?.trim();
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() || process.env.KV_REST_API_TOKEN?.trim();
+    if (!url || !token) throw new Error('Account storage is not configured');
+    return new AccountSubscription(url, token, channel);
+  }
+
+  async watchComputer(computerId: unknown, secret: unknown): Promise<AccountSubscription> {
+    const computer = await this.verifyComputer(computerId, secret);
+    if (computer.connection !== 'active') throw Object.assign(new Error('This computer connection is paused'), { status: 410 });
+    return this.subscribe(this.computerChannel(computer.id));
+  }
+
+  /** Find a known queued or leased job's next eligibility without idle polling. */
+  async nextComputerWorkAt(computerId: unknown): Promise<number | null> {
+    const key = id(computerId);
+    const result = await this.redis.eval<unknown[], string | number | null>(`local next=redis.call('ZRANGE',KEYS[1],0,0,'WITHSCORES'); if #next<2 then return nil end; return next[2]`, [this.key(`queue:${key}`)], []);
+    const value = Number(result);
+    return result === null || !Number.isFinite(value) ? null : value;
+  }
+
+  /** Probe only when the person requests current status. */
+  async probeComputer(computerId: unknown): Promise<boolean> {
+    const key = id(computerId), computer = (await this.computers()).find(item => item.id === key && item.state === 'linked');
+    if (!computer || computer.connection !== 'active') return false;
+    const nonce = recordId(), reply = this.key(`probe:${nonce}`), channel = this.computerChannel(key);
+    const subscription = this.subscribe(reply);
+    try {
+      return await new Promise<boolean>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(false), 5000);
+        subscription.on('subscribe', () => { void this.redis.publish(channel, { type: 'probe', nonce }).catch(error => { clearTimeout(timer); reject(error); }); });
+        subscription.on('message', event => { if (event.message === key) { clearTimeout(timer); resolve(true); } });
+        subscription.on('error', error => { clearTimeout(timer); reject(error); });
+      });
+    } finally { subscription.removeAllListeners(); await subscription.unsubscribe().catch(() => {}); }
+  }
+
+  async answerComputerProbe(computerId: unknown, secret: unknown, nonce: unknown): Promise<void> {
+    const computer = await this.verifyComputer(computerId, secret), probe = id(nonce);
+    if (computer.connection !== 'active') return;
+    await this.redis.publish(this.key(`probe:${probe}`), computer.id);
+  }
+
   async heartbeat(computerId: unknown, secret: unknown, sharedTransferV2?: boolean): Promise<Computer> {
     const computerKey = id(computerId);
     const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
@@ -187,7 +282,7 @@ export class WorkspaceStore {
   }
   async revokeComputer(computerId: unknown): Promise<BuildJob[]> {
     const computerKey = id(computerId);
-    const revoked = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local computer=cjson.decode(raw); computer.state='revoked'; redis.call('HDEL',KEYS[2],ARGV[1]); redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(computer)); return 1`, [this.key('computers'), this.key('computer-secrets')], [computerKey]);
+    const revoked = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local computer=cjson.decode(raw); computer.state='revoked'; redis.call('HDEL',KEYS[2],ARGV[1]); redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(computer)); redis.call('PUBLISH',KEYS[3],cjson.encode({type='pause'})); return 1`, [this.key('computers'), this.key('computer-secrets'), this.computerChannel(computerKey)], [computerKey]);
     if (revoked !== 1) invalid('Computer does not exist');
     const queue = this.key(`queue:${computerKey}`), ids = await this.redis.zrange<string[]>(queue, 0, -1);
     const transfers: BuildJob[] = [];
@@ -249,6 +344,9 @@ export class WorkspaceStore {
     if (graph.buildComputer === 'hosted' && graph.source.kind === 'local-folder') invalid('A hosted build needs a repository source accessible to the hosted service');
     if (graph.buildComputer !== graph.storage.computer && (graph.buildComputer === 'hosted' || graph.storage.computer === 'hosted') && !(graph.buildComputer !== 'hosted' && graph.storage.computer === 'hosted' && graph.transfer?.kind === 'direct-hosted')) invalid('This build and storage combination is not available yet');
     if (graph.buildComputer !== graph.storage.computer && !graph.transfer) invalid('Choose a transfer method for different build and storage computers');
+    if (graph.transfer?.kind === 'shared-folder' && !await this.probeComputer(graph.storage.computer)) {
+      throw Object.assign(new Error('The storage computer is paused or not responding. Start DI on that computer and try again.'), { status: 409 });
+    }
     const { currentSnapshot: _currentSnapshot, snapshotInitialized: _snapshotInitialized, ...buildGraph } = graph;
     const job: BuildJob = { id: recordId(), kind: 'build', graph: buildGraph, project, assignedComputer: graph.buildComputer, stage: 'build', state: 'queued', createdAt: new Date().toISOString() };
     await this.enqueue(job); return job;
@@ -257,7 +355,8 @@ export class WorkspaceStore {
   async retryDirectBuild(jobId: unknown): Promise<BuildJob> {
     const key = id(jobId), existing = await this.redis.hget<BuildJob>(this.key('builds'), key);
     if (!existing || existing.kind !== 'build' || existing.state !== 'failed' || existing.graph.transfer?.kind !== 'direct-hosted' || existing.graph.storage.computer !== 'hosted' || existing.graph.buildComputer === 'hosted') invalid('This build cannot be retried as a direct transfer');
-    const raw = await this.redis.eval<unknown[], string | null>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return nil end; local job=cjson.decode(raw); if job.state~='failed' or job.kind~='build' or not job.graph.transfer or job.graph.transfer.kind~='direct-hosted' then return nil end; if job.claimId and job.transferGraphId then job.previousTransfer={claimId=job.claimId,graphId=job.transferGraphId} end; job.state='queued'; job.stage='build'; job.assignedComputer=job.graph.buildComputer; job.error=nil; job.claimId=nil; job.leaseUntil=nil; job.transferGraphId=nil; job.progress={stage='retrying-build-or-transfer'}; local out=cjson.encode(job); redis.call('HSET',KEYS[1],ARGV[1],out); redis.call('ZADD',KEYS[2],ARGV[2],ARGV[1]); return out`, [this.key('builds'), this.key(`queue:${existing.graph.buildComputer}`)], [key, Date.now()]);
+    if (!await this.probeComputer(existing.graph.buildComputer)) throw Object.assign(new Error('The build computer is paused or not responding. Start DI on that computer and try again.'), { status: 409 });
+    const raw = await this.redis.eval<unknown[], string | null>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return nil end; local job=cjson.decode(raw); if job.state~='failed' or job.kind~='build' or not job.graph.transfer or job.graph.transfer.kind~='direct-hosted' then return nil end; if job.claimId and job.transferGraphId then job.previousTransfer={claimId=job.claimId,graphId=job.transferGraphId} end; job.state='queued'; job.stage='build'; job.assignedComputer=job.graph.buildComputer; job.error=nil; job.claimId=nil; job.leaseUntil=nil; job.transferGraphId=nil; job.progress={stage='retrying-build-or-transfer'}; local out=cjson.encode(job); redis.call('HSET',KEYS[1],ARGV[1],out); redis.call('ZADD',KEYS[2],ARGV[2],ARGV[1]); redis.call('PUBLISH',KEYS[2]..':events','1'); return out`, [this.key('builds'), this.key(`queue:${existing.graph.buildComputer}`)], [key, Date.now()]);
     if (!raw) invalid('This build is no longer available to retry');
     return typeof raw === 'string' ? JSON.parse(raw) as BuildJob : raw as unknown as BuildJob;
   }
@@ -343,9 +442,10 @@ export class WorkspaceStore {
     await this.ensureIndexed();
     const supportedWorker = snapshotStaging && sharedTransferV2 && snapshotHandoffVersion === 1;
     const computer = await this.heartbeat(computerId, secret, supportedWorker);
+    if (computer.connection !== 'active') throw Object.assign(new Error('This computer connection is paused'), { status: 410 });
     const now = Date.now();
     const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
-    const claimed = await this.redis.eval<unknown[], string | null>(`if redis.call('HGET',KEYS[3],ARGV[4])~=ARGV[5] then return nil end; local ids=redis.call('ZRANGEBYSCORE',KEYS[2],'-inf',ARGV[1],'LIMIT',0,1); if #ids==0 then return nil end; local raw=redis.call('HGET',KEYS[1],ids[1]); if not raw then redis.call('ZREM',KEYS[2],ids[1]); return nil end; local job=cjson.decode(raw); if job.kind=='build' and ARGV[8]~='1' then if job.stage=='cleanup' then job.progress={stage='update-linked-worker-to-finish-graph-retirement'}; redis.call('HSET',KEYS[1],ids[1],cjson.encode(job)); return nil end; job.state='failed'; job.error='Update the linked DI worker to the current Preview build, then run Build & Save again. The last saved graph remains available.'; job.leaseUntil=nil; redis.call('HSET',KEYS[1],ids[1],cjson.encode(job)); redis.call('ZREM',KEYS[2],ids[1]); local oldLock=ARGV[7]..job.graph.id; if redis.call('GET',oldLock)==job.id then redis.call('DEL',oldLock) end; return nil end; if job.kind=='build' and job.stage=='cleanup' then if ARGV[6]~='1' then return nil end; local graphRaw=redis.call('HGET',KEYS[4],job.graph.id); local graph=graphRaw and cjson.decode(graphRaw); if not graph or not graph.currentSnapshot or graph.currentSnapshot.jobId~=job.id or not job.cleanupResult or graph.currentSnapshot.graphId~=job.cleanupResult.graphId then local staleLock=ARGV[7]..job.graph.id; if redis.call('GET',staleLock)==job.id then redis.call('DEL',staleLock) end; job.state='complete'; job.leaseUntil=nil; job.cleanupResult=nil; job.cleanupLegacyTarget=nil; redis.call('HSET',KEYS[1],ids[1],cjson.encode(job)); redis.call('ZREM',KEYS[2],ids[1]); return nil end end; if job.discardWhenComplete and (job.kind=='investigation' or job.kind=='question') then redis.call('ZREM',KEYS[2],ids[1]); return nil end; if job.kind=='build' and job.stage=='transfer' and job.claimScopedTransfer and ARGV[8]~='1' then job.state='failed'; job.error='This staged transfer requires an updated DI worker on the storage computer'; job.leaseUntil=nil; redis.call('HSET',KEYS[1],job.id,cjson.encode(job)); redis.call('ZREM',KEYS[2],job.id); local lock=ARGV[7]..job.graph.id; if redis.call('GET',lock)==job.id then redis.call('DEL',lock) end; return nil end; if job.kind=='build' and job.stage=='build' and job.graph.transfer and job.graph.transfer.kind=='shared-folder' then local dest=redis.call('HGET',KEYS[5],job.graph.storage.computer); local other=dest and cjson.decode(dest); if not other or other.state~='linked' or other.sharedTransferV2~=true then job.state='failed'; job.error='Update and connect the storage computer to the current Preview worker, then run Build & Save again. The last saved graph remains available.'; job.leaseUntil=nil; redis.call('HSET',KEYS[1],job.id,cjson.encode(job)); redis.call('ZREM',KEYS[2],job.id); local oldLock=ARGV[7]..job.graph.id; if redis.call('GET',oldLock)==job.id then redis.call('DEL',oldLock) end; return nil end; job.claimScopedTransfer=true end; if job.state=='running' and job.kind=='build' and job.graph.transfer and job.graph.transfer.kind=='direct-hosted' and job.claimId and job.transferGraphId then job.previousTransfer={claimId=job.claimId,graphId=job.transferGraphId} end; if job.kind=='build' then local lock=ARGV[7]..job.graph.id; local held=redis.call('GET',lock); if held and held~=job.id then return nil end; redis.call('SET',lock,job.id,'PX',900000); job.graphLease=true; local rawGraph=redis.call('HGET',KEYS[4],job.graph.id); if rawGraph then job.previousSnapshot=cjson.decode(rawGraph).currentSnapshot end end; job.state='running'; job.leaseUntil=tonumber(ARGV[2]); job.claimId=ARGV[3]; job.snapshotStaging=nil; if ARGV[6]=='1' and job.kind=='build' then job.snapshotStaging=true end; local value=cjson.encode(job); redis.call('HSET',KEYS[1],ids[1],value); if job.kind=='investigation' or job.kind=='question' then redis.call('HEXPIRE',KEYS[1],86400,'FIELDS',1,ids[1]) end; redis.call('ZADD',KEYS[2],ARGV[2],ids[1]); return value`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets'), this.key('graphs'), this.key('computers')], [now, now + 900_000, recordId(), computer.id, digest, supportedWorker ? '1' : '0', `${this.root}:graph-lease:`, supportedWorker ? '1' : '0']);
+    const claimed = await this.redis.eval<unknown[], string | null>(`if redis.call('HGET',KEYS[3],ARGV[4])~=ARGV[5] then return nil end; local ids=redis.call('ZRANGEBYSCORE',KEYS[2],'-inf',ARGV[1],'LIMIT',0,1); if #ids==0 then return nil end; local computerRaw=redis.call('HGET',KEYS[5],ARGV[4]); if not computerRaw or cjson.decode(computerRaw).connection~='active' then return nil end; local raw=redis.call('HGET',KEYS[1],ids[1]); if not raw then redis.call('ZREM',KEYS[2],ids[1]); return nil end; local job=cjson.decode(raw); if job.kind=='build' and ARGV[8]~='1' then if job.stage=='cleanup' then job.progress={stage='update-linked-worker-to-finish-graph-retirement'}; redis.call('HSET',KEYS[1],ids[1],cjson.encode(job)); return nil end; job.state='failed'; job.error='Update the linked DI worker to the current Preview build, then run Build & Save again. The last saved graph remains available.'; job.leaseUntil=nil; redis.call('HSET',KEYS[1],ids[1],cjson.encode(job)); redis.call('ZREM',KEYS[2],ids[1]); local oldLock=ARGV[7]..job.graph.id; if redis.call('GET',oldLock)==job.id then redis.call('DEL',oldLock) end; return nil end; if job.kind=='build' and job.stage=='cleanup' then if ARGV[6]~='1' then return nil end; local graphRaw=redis.call('HGET',KEYS[4],job.graph.id); local graph=graphRaw and cjson.decode(graphRaw); if not graph or not graph.currentSnapshot or graph.currentSnapshot.jobId~=job.id or not job.cleanupResult or graph.currentSnapshot.graphId~=job.cleanupResult.graphId then local staleLock=ARGV[7]..job.graph.id; if redis.call('GET',staleLock)==job.id then redis.call('DEL',staleLock) end; job.state='complete'; job.leaseUntil=nil; job.cleanupResult=nil; job.cleanupLegacyTarget=nil; redis.call('HSET',KEYS[1],ids[1],cjson.encode(job)); redis.call('ZREM',KEYS[2],ids[1]); return nil end end; if job.discardWhenComplete and (job.kind=='investigation' or job.kind=='question') then redis.call('ZREM',KEYS[2],ids[1]); return nil end; if job.kind=='build' and job.stage=='transfer' and job.claimScopedTransfer and ARGV[8]~='1' then job.state='failed'; job.error='This staged transfer requires an updated DI worker on the storage computer'; job.leaseUntil=nil; redis.call('HSET',KEYS[1],job.id,cjson.encode(job)); redis.call('ZREM',KEYS[2],job.id); local lock=ARGV[7]..job.graph.id; if redis.call('GET',lock)==job.id then redis.call('DEL',lock) end; return nil end; if job.kind=='build' and job.stage=='build' and job.graph.transfer and job.graph.transfer.kind=='shared-folder' then local dest=redis.call('HGET',KEYS[5],job.graph.storage.computer); local other=dest and cjson.decode(dest); if not other or other.state~='linked' or other.sharedTransferV2~=true then job.state='failed'; job.error='Update and connect the storage computer to the current Preview worker, then run Build & Save again. The last saved graph remains available.'; job.leaseUntil=nil; redis.call('HSET',KEYS[1],job.id,cjson.encode(job)); redis.call('ZREM',KEYS[2],job.id); local oldLock=ARGV[7]..job.graph.id; if redis.call('GET',oldLock)==job.id then redis.call('DEL',oldLock) end; return nil end; job.claimScopedTransfer=true end; if job.state=='running' and job.kind=='build' and job.graph.transfer and job.graph.transfer.kind=='direct-hosted' and job.claimId and job.transferGraphId then job.previousTransfer={claimId=job.claimId,graphId=job.transferGraphId} end; if job.kind=='build' then local lock=ARGV[7]..job.graph.id; local held=redis.call('GET',lock); if held and held~=job.id then return nil end; redis.call('SET',lock,job.id,'PX',900000); job.graphLease=true; local rawGraph=redis.call('HGET',KEYS[4],job.graph.id); if rawGraph then job.previousSnapshot=cjson.decode(rawGraph).currentSnapshot end end; job.state='running'; job.leaseUntil=tonumber(ARGV[2]); job.claimId=ARGV[3]; job.snapshotStaging=nil; if ARGV[6]=='1' and job.kind=='build' then job.snapshotStaging=true end; local value=cjson.encode(job); redis.call('HSET',KEYS[1],ids[1],value); if job.kind=='investigation' or job.kind=='question' then redis.call('HEXPIRE',KEYS[1],86400,'FIELDS',1,ids[1]) end; redis.call('ZADD',KEYS[2],ARGV[2],ids[1]); return value`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets'), this.key('graphs'), this.key('computers')], [now, now + 900_000, recordId(), computer.id, digest, supportedWorker ? '1' : '0', `${this.root}:graph-lease:`, supportedWorker ? '1' : '0']);
     if (!claimed) return null;
     const job = await this.hydrateClaimedSnapshot(typeof claimed === 'string' ? JSON.parse(claimed) as ComputerJob : claimed as unknown as ComputerJob);
     return job.resultKey ? { ...job, result: await this.redis.get(job.resultKey) } : job;
@@ -443,7 +543,7 @@ export class WorkspaceStore {
     if (resultParts !== undefined && (!Number.isSafeInteger(resultParts) || Number(resultParts) < 1)) invalid('Invalid investigation result manifest');
     if (data.state === 'complete' && resultParts === undefined) { const pending = await this.redis.hget<ComputerJob>(this.key('builds'), buildId); if (!pending) invalid('Build claim is no longer active'); if (!('discardWhenComplete' in pending && pending.discardWhenComplete)) await this.redis.set(resultKey, result ?? null, pending?.kind === 'question' || pending?.kind === 'investigation' ? { ex: INVESTIGATION_RESULT_TTL_SECONDS } : undefined); }
     const digest = typeof secret === 'string' ? createHash('sha256').update(secret).digest('hex') : '';
-    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[3],ARGV[2])~=ARGV[7] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or (job.assignedComputer or job.graph.buildComputer); if job.state~='running' or owner~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; if job.graphLease and redis.call('GET',ARGV[11]..job.graph.id)~=job.id then return 0 end; local update=cjson.decode(ARGV[4]); if job.discardWhenComplete and (update.state=='complete' or update.state=='failed') then redis.call('DEL',KEYS[4]); redis.call('ZREM',KEYS[2],ARGV[1]); redis.call('HDEL',KEYS[1],ARGV[1]); return 1 end; if update.state=='complete' and job.kind=='build' and job.stage=='build' and job.claimScopedTransfer then local bytes=redis.call('GET',KEYS[4]); if not bytes then return 0 end; local ok,result=pcall(cjson.decode,bytes); if not ok or type(result)~='table' or result.sharedTransferClaim~=ARGV[3] then return 0 end; job.sharedTransferClaim=ARGV[3] end; if job.graphLease then redis.call('PEXPIRE',ARGV[11]..job.graph.id,900000) end; if update.state=='complete' then if job.kind=='build' and update.retainedLegacyTargets then job.retainedLegacyTargets=update.retainedLegacyTargets end; if job.kind=='build' and update.sourceStage then job.sourceStage=update.sourceStage end; if update.resultParts then if job.kind~='investigation' or redis.call('HLEN',KEYS[4])~=update.resultParts then return 0 end; job.resultParts=update.resultParts; local now=redis.call('TIME'); job.resultExpiresAt=tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000)+tonumber(ARGV[10])*1000; redis.call('EXPIRE',KEYS[4],ARGV[10]) end; job.resultKey=ARGV[6]; job.result=nil; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]); if job.kind=='build' and job.stage=='build' and job.graph.buildComputer~=job.graph.storage.computer and not update.hostedTransferred then job.state='queued'; job.stage='transfer'; job.assignedComputer=job.graph.storage.computer; job.progress={stage='waiting-for-storage-computer'}; job.claimId=nil; redis.call('ZADD',ARGV[8]..job.assignedComputer,ARGV[9],ARGV[1]) else job.state='complete' end elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]); redis.call('ZADD',KEYS[2],ARGV[5],ARGV[1]) end; if job.graphLease and (job.state=='complete' or job.state=='failed') then redis.call('DEL',ARGV[11]..job.graph.id) end; if job.state=='complete' and job.kind=='build' then local rawGraph=redis.call('HGET',KEYS[5],job.graph.id); local rawResult=redis.call('GET',KEYS[4]); if not rawGraph or not rawResult then job.state='failed'; job.error='The completed build has no usable saved graph reference' else local ok,result=pcall(cjson.decode,rawResult); if not ok or type(result)~='table' or type(result.graphId)~='string' or result.graphId=='' then job.state='failed'; job.error='The completed build has no usable saved graph reference' else local graph=cjson.decode(rawGraph); local old=graph.currentSnapshot; if not old or old.requestedAt<job.createdAt or (old.requestedAt==job.createdAt and old.jobId<job.id) then graph.snapshotInitialized=true; graph.currentSnapshot={graphId=result.graphId,revision=result.revision,sourceState=result.sourceState,sourceFingerprint=result.sourceFingerprint,requestedAt=job.createdAt,jobId=job.id,source=job.graph.source,storage=job.graph.storage}; redis.call('HSET',KEYS[5],job.graph.id,cjson.encode(graph)) end end end end; if job.kind=='build' and job.state=='complete' then if job.stage=='cleanup' then local currentRaw=redis.call('HGET',KEYS[5],job.graph.id); if currentRaw then local currentGraph=cjson.decode(currentRaw); if currentGraph.currentSnapshot and currentGraph.currentSnapshot.jobId==job.id then currentGraph.currentSnapshot.legacyTarget=nil; redis.call('HSET',KEYS[5],job.graph.id,cjson.encode(currentGraph)) end end end; job.cleanupResult=nil; job.cleanupLegacyTarget=nil end; if job.kind=='investigation' or job.kind=='question' then if job.state=='complete' or job.state=='failed' then job.request=nil; job.question=nil end end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); if job.kind=='investigation' or job.kind=='question' then redis.call('HEXPIRE',KEYS[1],86400,'FIELDS',1,ARGV[1]) end; return 1`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets'), resultKey, this.key('graphs')], [buildId, computer.id, claimId, JSON.stringify(small), Date.now() + 900_000, resultKey, digest, `${this.root}:queue:`, Date.now(), INVESTIGATION_RESULT_TTL_SECONDS, `${this.root}:graph-lease:`]);
+    const changed = await this.redis.eval<unknown[], number>(`if redis.call('HGET',KEYS[3],ARGV[2])~=ARGV[7] then return 0 end; local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); local owner=job.kind=='browse' and job.computerId or (job.assignedComputer or job.graph.buildComputer); if job.state~='running' or owner~=ARGV[2] or job.claimId~=ARGV[3] then return 0 end; if job.graphLease and redis.call('GET',ARGV[11]..job.graph.id)~=job.id then return 0 end; local update=cjson.decode(ARGV[4]); if job.discardWhenComplete and (update.state=='complete' or update.state=='failed') then redis.call('DEL',KEYS[4]); redis.call('ZREM',KEYS[2],ARGV[1]); redis.call('HDEL',KEYS[1],ARGV[1]); return 1 end; if update.state=='complete' and job.kind=='build' and job.stage=='build' and job.claimScopedTransfer then local bytes=redis.call('GET',KEYS[4]); if not bytes then return 0 end; local ok,result=pcall(cjson.decode,bytes); if not ok or type(result)~='table' or result.sharedTransferClaim~=ARGV[3] then return 0 end; job.sharedTransferClaim=ARGV[3] end; if job.graphLease then redis.call('PEXPIRE',ARGV[11]..job.graph.id,900000) end; if update.state=='complete' then if job.kind=='build' and update.retainedLegacyTargets then job.retainedLegacyTargets=update.retainedLegacyTargets end; if job.kind=='build' and update.sourceStage then job.sourceStage=update.sourceStage end; if update.resultParts then if job.kind~='investigation' or redis.call('HLEN',KEYS[4])~=update.resultParts then return 0 end; job.resultParts=update.resultParts; local now=redis.call('TIME'); job.resultExpiresAt=tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000)+tonumber(ARGV[10])*1000; redis.call('EXPIRE',KEYS[4],ARGV[10]) end; job.resultKey=ARGV[6]; job.result=nil; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]); if job.kind=='build' and job.stage=='build' and job.graph.buildComputer~=job.graph.storage.computer and not update.hostedTransferred then job.state='queued'; job.stage='transfer'; job.assignedComputer=job.graph.storage.computer; job.progress={stage='waiting-for-storage-computer'}; job.claimId=nil; redis.call('ZADD',ARGV[8]..job.assignedComputer,ARGV[9],ARGV[1]); if job.assignedComputer~='hosted' then redis.call('PUBLISH',ARGV[8]..job.assignedComputer..':events','1') end else job.state='complete' end elseif update.state=='failed' then job.state='failed'; job.error=update.error; job.leaseUntil=nil; redis.call('ZREM',KEYS[2],ARGV[1]) else job.progress=update.progress; job.leaseUntil=tonumber(ARGV[5]); redis.call('ZADD',KEYS[2],ARGV[5],ARGV[1]) end; if job.graphLease and (job.state=='complete' or job.state=='failed') then redis.call('DEL',ARGV[11]..job.graph.id) end; if job.state=='complete' and job.kind=='build' then local rawGraph=redis.call('HGET',KEYS[5],job.graph.id); local rawResult=redis.call('GET',KEYS[4]); if not rawGraph or not rawResult then job.state='failed'; job.error='The completed build has no usable saved graph reference' else local ok,result=pcall(cjson.decode,rawResult); if not ok or type(result)~='table' or type(result.graphId)~='string' or result.graphId=='' then job.state='failed'; job.error='The completed build has no usable saved graph reference' else local graph=cjson.decode(rawGraph); local old=graph.currentSnapshot; if not old or old.requestedAt<job.createdAt or (old.requestedAt==job.createdAt and old.jobId<job.id) then graph.snapshotInitialized=true; graph.currentSnapshot={graphId=result.graphId,revision=result.revision,sourceState=result.sourceState,sourceFingerprint=result.sourceFingerprint,requestedAt=job.createdAt,jobId=job.id,source=job.graph.source,storage=job.graph.storage}; redis.call('HSET',KEYS[5],job.graph.id,cjson.encode(graph)) end end end end; if job.kind=='build' and job.state=='complete' then if job.stage=='cleanup' then local currentRaw=redis.call('HGET',KEYS[5],job.graph.id); if currentRaw then local currentGraph=cjson.decode(currentRaw); if currentGraph.currentSnapshot and currentGraph.currentSnapshot.jobId==job.id then currentGraph.currentSnapshot.legacyTarget=nil; redis.call('HSET',KEYS[5],job.graph.id,cjson.encode(currentGraph)) end end end; job.cleanupResult=nil; job.cleanupLegacyTarget=nil end; if job.kind=='investigation' or job.kind=='question' then if job.state=='complete' or job.state=='failed' then job.request=nil; job.question=nil end end; redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); if job.kind=='investigation' or job.kind=='question' then redis.call('HEXPIRE',KEYS[1],86400,'FIELDS',1,ARGV[1]) end; return 1`, [this.key('builds'), this.key(`queue:${computer.id}`), this.key('computer-secrets'), resultKey, this.key('graphs')], [buildId, computer.id, claimId, JSON.stringify(small), Date.now() + 900_000, resultKey, digest, `${this.root}:queue:`, Date.now(), INVESTIGATION_RESULT_TTL_SECONDS, `${this.root}:graph-lease:`]);
     if (changed !== 1 && data.state === 'complete') {
       const current = await this.redis.hget<ComputerJob>(this.key('builds'), buildId);
       if (current?.resultKey !== resultKey) await this.redis.del(resultKey);

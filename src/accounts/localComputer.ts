@@ -3,12 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import { createHash, randomBytes } from 'node:crypto';
 import { runChecked } from '../util/process.js';
 import { runLocalGraphWorker } from '../intelligence/canonicalReconcileWorker.js';
 import type { BuildJob, BrowseJob } from './workspace.js';
 import { gitAuth } from '../source/gitAuth.js';
 
-type Discovery = { device_authorization_endpoint: string; token_endpoint: string };
+type Discovery = { authorization_endpoint: string; token_endpoint: string };
 type DeviceCredentials = { origin: string; clientId: string; tokenEndpoint: string; refreshToken: string; computerId: string; secret: string };
 
 function trustedUrl(raw: string, allowLocal = false): URL {
@@ -49,8 +51,8 @@ async function workspace(origin: string, token: string, data: unknown): Promise<
   return result;
 }
 
-/** Link this installation using Clerk's device grant; a secret is never embedded in the installer. */
-export async function linkComputer(home: string, workbench: string, pairingCode: string, openVerification?: (url: string) => void): Promise<void> {
+/** Link with browser sign-in and a loopback PKCE callback; no code is typed by the user. */
+export async function linkComputer(home: string, workbench: string, openVerification?: (url: string) => void): Promise<void> {
   const origin = trustedUrl(workbench, true).origin;
   const configResponse = await fetch(new URL('/account/client-config', origin), { redirect: 'error' });
   if (!configResponse.ok) throw new Error('This Workbench does not yet offer computer linking');
@@ -59,37 +61,53 @@ export async function linkComputer(home: string, workbench: string, pairingCode:
   const discoveryResponse = await fetch(new URL('/.well-known/openid-configuration', issuer), { redirect: 'error' });
   if (!discoveryResponse.ok) throw new Error('Clerk authorization discovery failed');
   const discovery = await discoveryResponse.json() as Discovery;
-  for (const endpoint of [discovery.device_authorization_endpoint, discovery.token_endpoint]) {
+  for (const endpoint of [discovery.authorization_endpoint, discovery.token_endpoint]) {
     if (trustedUrl(endpoint).origin !== issuer.origin) throw new Error('Unexpected Clerk authorization endpoint');
   }
-  const request = await postForm(discovery.device_authorization_endpoint, { client_id: config.clientId, scope: 'openid profile offline_access' });
-  if (request.error || !request.device_code || !request.user_code || !request.verification_uri || !Number.isFinite(request.expires_in) || !Number.isFinite(request.interval)) throw new Error('Clerk did not start computer authorization');
-  console.log(`Open ${request.verification_uri} and enter ${request.user_code} to link this computer.`);
-  if (request.verification_uri_complete) console.log(`Or open ${request.verification_uri_complete}`);
-  if (openVerification) {
-    const verification = trustedUrl(request.verification_uri_complete || request.verification_uri);
-    // Never open a destination supplied by an unrelated authorization server.
-    if (verification.origin === issuer.origin) openVerification(verification.href);
-    else console.log('Open the authorization address above to continue.');
-  }
-  const until = Date.now() + request.expires_in * 1000;
-  let interval = request.interval * 1000;
-  while (Date.now() < until) {
-    await new Promise(resolve => setTimeout(resolve, interval));
-    const tokens = await postForm(discovery.token_endpoint, { client_id: config.clientId, grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: request.device_code });
-    if (tokens.error === 'authorization_pending') continue;
-    if (tokens.error === 'slow_down') { interval += 5000; continue; }
+  if (!openVerification) throw new Error('Open this link from DI on the computer you want to connect');
+  const redirectUri = 'http://127.0.0.1:49177/di-auth/callback';
+  const state = randomBytes(32).toString('base64url');
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  let resolveCode!: (code: string) => void, rejectCode!: (error: Error) => void;
+  const codePromise = new Promise<string>((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
+  const callback = createServer((req, res) => {
+    const incoming = new URL(req.url || '/', redirectUri);
+    if (req.method !== 'GET' || incoming.pathname !== '/di-auth/callback' || incoming.searchParams.get('state') !== state) {
+      res.writeHead(400, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('This sign-in request is not valid.'); return;
+    }
+    const code = incoming.searchParams.get('code');
+    if (!code || incoming.searchParams.has('error')) {
+      res.writeHead(400, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('Sign-in did not complete. Return to DI and try again.'); rejectCode(new Error('Computer sign-in was declined or did not complete')); return;
+    }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    res.end('<!doctype html><title>Development Intelligence</title><p>Sign-in received. Return to Development Intelligence while it finishes linking.</p>');
+    resolveCode(code);
+  });
+  await new Promise<void>((resolve, reject) => { callback.once('error', reject); callback.listen(49177, '127.0.0.1', () => { callback.off('error', reject); resolve(); }); });
+  const timer = setTimeout(() => rejectCode(new Error('Computer sign-in timed out; start linking again')), 10 * 60_000);
+  try {
+    const authorization = trustedUrl(discovery.authorization_endpoint);
+    authorization.search = new URLSearchParams({ client_id: config.clientId, response_type: 'code', redirect_uri: redirectUri, scope: 'openid profile offline_access', state, code_challenge: challenge, code_challenge_method: 'S256' }).toString();
+    console.log('Continue sign-in in your browser to link this computer.');
+    openVerification(authorization.href);
+    const code = await codePromise;
+    const tokens = await postForm(discovery.token_endpoint, { client_id: config.clientId, grant_type: 'authorization_code', code, redirect_uri: redirectUri, code_verifier: verifier });
     if (tokens.error || !tokens.access_token || !tokens.refresh_token) throw new Error(`Computer authorization did not complete: ${tokens.error || 'missing credentials'}`);
-    const linked = await workspace(origin, tokens.access_token, { action: 'link-computer', pairingCode, computer: { name: os.hostname(), platform: `${os.platform()} ${os.arch()}` } });
+    const linked = await workspace(origin, tokens.access_token, { action: 'link-computer', computer: { name: os.hostname(), platform: `${os.platform()} ${os.arch()}` } });
     await save(home, { origin, clientId: config.clientId, tokenEndpoint: discovery.token_endpoint, refreshToken: tokens.refresh_token, computerId: linked.computer.id, secret: linked.secret });
-    console.log(`Linked ${linked.computer.name} to ${origin}.`); return;
-  }
-  throw new Error('Computer authorization expired; start the link again');
+    console.log(`Linked ${linked.computer.name} to ${origin}.`);
+  } finally { clearTimeout(timer); callback.close(); }
 }
 
 /** The linked desktop opens the same account Workbench used by the browser. */
 export async function accountWorkbenchOrigin(home: string): Promise<string> {
   return trustedUrl((await read(home)).origin, true).origin;
+}
+
+export async function accountComputerIdentity(home: string): Promise<{ origin: string; computerId: string }> {
+  const credentials = await read(home);
+  return { origin: trustedUrl(credentials.origin, true).origin, computerId: credentials.computerId };
 }
 
 export async function computerHeartbeat(home: string): Promise<void> {
@@ -98,7 +116,7 @@ export async function computerHeartbeat(home: string): Promise<void> {
   if (tokens.error || !tokens.access_token) throw new Error('Computer authorization expired; link this computer again');
   if (tokens.refresh_token) { credentials.refreshToken = tokens.refresh_token; await save(home, credentials); }
   const computer = await workspace(credentials.origin, tokens.access_token, { action: 'computer-heartbeat', computerId: credentials.computerId, secret: credentials.secret });
-  console.log(`Connected ${computer.name} to ${credentials.origin}.`);
+  console.log(`${computer.name} is linked to ${credentials.origin}; connection ${computer.connection === 'active' ? 'was started (availability not checked)' : 'is paused'}.`);
 }
 
 /** Execute the same account graph job on a linked computer or hosted runtime. */
@@ -244,12 +262,57 @@ export async function finishLinkedSnapshot(job: BuildJob, result: unknown, updat
   return true;
 }
 
-/** Polling uses the same local graph worker as the CLI and Workbench. */
+/** A connected computer waits for work over one event stream. */
+async function watchAccountWork(origin: string, token: string, computerId: string, secret: string, onEvent: (event: unknown) => void): Promise<{ wait: () => Promise<void>; close: () => void }> {
+  const controller = new AbortController();
+  const handshake = setTimeout(() => controller.abort(), 20_000);
+  let response: Response;
+  try { response = await fetch(new URL('/account/computer-events', trustedUrl(origin, true)), {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ computerId, secret }), redirect: 'error', signal: controller.signal,
+  }); } catch (error) { clearTimeout(handshake); throw error; }
+  if (!response.ok || !response.body) { clearTimeout(handshake); throw Object.assign(new Error(`Computer connection failed (${response.status})`), { status: response.status }); }
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let pending = false, ended: Error | null = null, waiter: { resolve: () => void; reject: (error: Error) => void } | null = null;
+  let ready = false, readyResolve!: () => void, readyReject!: (error: Error) => void;
+  const readyPromise = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  const fail = (error: Error) => { ended = error; if (!ready) readyReject(error); if (waiter) { waiter.reject(error); waiter = null; } };
+  const notify = () => { if (waiter) { waiter.resolve(); waiter = null; } else pending = true; };
+  void (async () => {
+    let buffer = '';
+    try {
+      for (;;) {
+        const part = await reader.read();
+        if (part.done) throw new Error('Computer connection closed');
+        buffer += decoder.decode(part.value, { stream: true }).replace(/\r\n/g, '\n');
+        let boundary: number;
+        while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+          const data = frame.split('\n').find(line => line.startsWith('data:'))?.slice(5).trim();
+          if (!data) continue;
+          let event: unknown;
+          try { event = JSON.parse(data); } catch { continue; }
+          if (event === 'ready' && !ready) { ready = true; readyResolve(); }
+          else if (event === 1 || (event && typeof event === 'object' && (event as { type?: unknown }).type === 'pause')) {
+            onEvent(event); notify();
+          } else onEvent(event);
+        }
+      }
+    } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); }
+  })();
+  try { await readyPromise; } catch (error) { controller.abort(); throw error; } finally { clearTimeout(handshake); }
+  return {
+    wait: async () => { if (ended) throw ended; if (pending) { pending = false; return; } await new Promise<void>((resolve, reject) => { waiter = { resolve, reject }; }); },
+    close: () => controller.abort(),
+  };
+}
+
+/** An explicitly connected computer uses the same graph worker as the CLI and Workbench. */
 export async function runComputer(home: string, scratchDir: string, retain: number): Promise<void> {
   const credentials = await read(home);
   let accessToken = '', expiresAt = 0;
   let refreshing: Promise<void> | null = null;
-  const send = async (payload: Record<string, unknown>) => {
+  const ensureAccess = async () => {
     if (Date.now() >= expiresAt) {
       refreshing ??= (async () => {
         const tokens = await postForm(credentials.tokenEndpoint, { client_id: credentials.clientId, grant_type: 'refresh_token', refresh_token: credentials.refreshToken });
@@ -259,19 +322,37 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
       })().finally(() => { refreshing = null; });
       await refreshing;
     }
+  };
+  const send = async (payload: Record<string, unknown>) => {
+    await ensureAccess();
     return await workspace(credentials.origin, accessToken, { ...payload, computerId: credentials.computerId, secret: credentials.secret });
   };
-  console.log(`Waiting for DI account work from ${credentials.origin}.`);
+  console.log(`Connecting this computer to ${credentials.origin}.`);
+  await send({ action: 'computer-connect' });
+  let paused = false;
+  let events: Awaited<ReturnType<typeof watchAccountWork>> | null = null;
   for (;;) {
+    if (paused) { events?.close(); console.log('Computer connection paused.'); return; }
     let job: BuildJob | BrowseJob | null;
-    try { job = await send({ action: 'computer-claim-build', snapshotStaging: true, sharedTransferV2: true, snapshotHandoffVersion: 1 }) as BuildJob | BrowseJob | null; }
-    catch (error) {
+    try {
+      if (!events) { await ensureAccess(); events = await watchAccountWork(credentials.origin, accessToken, credentials.computerId, credentials.secret, event => {
+        if (!event || typeof event !== 'object') return;
+        const message = event as { type?: unknown; nonce?: unknown };
+        if (message.type === 'pause') paused = true;
+        else if (message.type === 'probe' && typeof message.nonce === 'string') void send({ action: 'computer-probe-response', nonce: message.nonce }).catch(() => {});
+      }); }
+      if (paused) continue;
+      job = await send({ action: 'computer-claim-build', snapshotStaging: true, sharedTransferV2: true, snapshotHandoffVersion: 1 }) as BuildJob | BrowseJob | null;
+      if (!job) { await events.wait(); continue; }
+    } catch (error) {
+      events?.close(); events = null;
       const message = error instanceof Error ? error.message : String(error);
-      if (/authorization expired|not linked to this account/i.test(message)) throw error;
+      if (paused || (error as { status?: number })?.status === 410) { console.log('Computer connection paused.'); return; }
+      if (/authorization expired|not linked to this account/i.test(message) || [401, 403].includes((error as { status?: number })?.status ?? 0)) throw error;
       console.error(`Account connection interrupted: ${message}`);
+      // Restore a session the user explicitly left active, without querying for work while idle.
       await new Promise(resolve => setTimeout(resolve, 5000)); continue;
     }
-    if (!job) { await new Promise(resolve => setTimeout(resolve, 5000)); continue; }
     const update = (data: Record<string, unknown>) => send({ action: 'computer-update-build', jobId: job.id, update: { ...data, claimId: job.claimId } });
     let renewal: ReturnType<typeof setInterval> | undefined;
     const resumeHostedRetirement = async (built: { graphId: string }) => {
