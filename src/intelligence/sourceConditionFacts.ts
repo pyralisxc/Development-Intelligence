@@ -23,8 +23,9 @@ export interface SourceControlContext {
 export interface SourceEffect {
   kind: 'return' | 'return-call' | 'throw' | 'call' | 'write' | 'initializer-call';
   sourceLine: number;
-  /** Exact AST start offset, distinct when statements share a line. */
+  /** Exact AST span, including the end needed to distinguish nested expressions. */
   sourceOffset?: number;
+  sourceEnd?: number;
   expression: string;
   /** Structured source expression with exact offsets in the selected file. */
   expressionStructure?: SourceExpression;
@@ -170,7 +171,7 @@ export function analyzeSourceConditionStatements(
     visitName(decl.name, [], []);
   };
   const recordEffect = (kind: SourceEffect['kind'], node: ts.Node, sourceExpression: ts.Node | undefined, requires: SourceRequirement[], context: SourceControlContext[], complete: boolean) => {
-    effects.push({ kind, sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), expression: expression(sourceExpression, parsed),
+    effects.push({ kind, sourceLine: lineOf(node), sourceOffset: node.getStart(parsed), sourceEnd: node.getEnd(), expression: expression(sourceExpression, parsed),
       ...(sourceExpression ? { expressionStructure: structure(sourceExpression, parsed) } : {}),
       expressionSha256: digest(node.getText(parsed)),
       requiredConditions: [...requires], controlContext: [...context], requirementsComplete: complete && context.length === 0,

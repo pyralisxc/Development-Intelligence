@@ -1749,8 +1749,8 @@ export async function queryWorkbenchRequest(input: {
         const effects = effectsByCall.get(edge.to) ?? new Set<string>(); effects.add(edge.from); effectsByCall.set(edge.to, effects);
       }
       // A call occurrence and a source effect are distinct graph facts. Join
-      // only the same callable, file and exact syntax offset; a declaration
-      // edge may represent several sites with different guards.
+      // the recorded exact-span link first; old retained graphs may only have
+      // offset evidence. A declaration edge can cover sites with different guards.
       const callConditions = (item: any): string => {
         if (item.edge.kind !== 'calls-site') return '';
         const offset = /:call-offset-(\d+)-\d+$/u.exec(item.to?.locator ?? '')?.[1];
@@ -1759,7 +1759,9 @@ export async function queryWorkbenchRequest(input: {
         const effects = effectsByCall.get(item.to?.id) ?? new Set<string>();
         const matches = (family?.facts ?? []).filter((fact: any) => fact.kind === 'source-effect'
           && fact.effectKind === 'call' && fact.sourceId === item.to?.sourceId
-          && (effects.has(fact.id) || fact.locator.endsWith(`:effect-offset-${offset}`)));
+          && (effects.size ? effects.has(fact.id)
+            : fact.locator.endsWith(`:effect-offset-${offset}`)
+              || (fact.locator.includes(`:effect-offset-${offset}-end-`) && fact.expression === item.to?.raw)));
         if (matches.length !== 1) return '';
         const fact = matches[0];
         const conditions = (fact.requirements ?? []).map((requirement: any) =>
