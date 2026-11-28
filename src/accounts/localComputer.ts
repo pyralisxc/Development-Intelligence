@@ -111,6 +111,7 @@ export async function executeAccountGraphJob(
   assertClaim?: () => Promise<void>,
 ): Promise<unknown> {
   let temporary: string | null = null;
+  let sharedScratch: string | null = null;
   let renewal: ReturnType<typeof setInterval> | undefined;
   try {
     if (job.kind === 'build' && job.graph.transfer?.kind === 'direct-hosted') {
@@ -183,7 +184,11 @@ export async function executeAccountGraphJob(
         } finally { server.close(); }
       }
     } else {
-      const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer?.kind === 'shared-folder' ? path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id) : job.graph.transfer?.kind === 'direct-hosted' ? path.join(scratchDir, 'di-hosted-transfer', job.id) : null;
+      if (job.claimScopedTransfer) {
+        if (!job.claimId || !/^[a-f0-9]{32}$/u.test(job.id) || !/^[a-f0-9]{32}$/u.test(job.claimId) || job.graph.transfer?.kind !== 'shared-folder') throw new Error('Invalid claim-scoped graph transfer');
+        sharedScratch = await fs.mkdtemp(path.join(os.tmpdir(), 'di-shared-build-'));
+      }
+      const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer?.kind === 'shared-folder' ? (sharedScratch ?? path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id)) : job.graph.transfer?.kind === 'direct-hosted' ? path.join(scratchDir, 'di-hosted-transfer', job.id) : null;
       if (!dataDir) throw new Error('A transfer method is required for this graph');
       if (job.snapshotStaging && job.graphLease && job.previousSnapshot && job.graph.buildComputer === job.graph.storage.computer && job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location) {
         const { reconcileAccountGraphStages } = await import('../intelligence/localGraphStore.js');
@@ -195,6 +200,12 @@ export async function executeAccountGraphJob(
         activeProgress = progress;
         if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); void report(progress).catch(() => {}); }
       });
+      if (job.claimScopedTransfer && sharedScratch && job.claimId && job.graph.transfer?.kind === 'shared-folder') {
+        const { backupLocalSourceGraphs } = await import('../intelligence/localGraphStore.js');
+        const transferRoot = path.join(job.graph.transfer.buildLocation, '.di-transfers', `${job.id}-${job.claimId}`);
+        await backupLocalSourceGraphs(sharedScratch, transferRoot);
+        result = { ...(result as Record<string, unknown>), sharedTransferClaim: job.claimId };
+      }
       if (job.graph.transfer?.kind === 'direct-hosted') {
         const temporary = path.join(dataDir, `build-result.${process.pid}.tmp`);
         await fs.writeFile(temporary, JSON.stringify(result), { mode: 0o600 });
@@ -205,6 +216,7 @@ export async function executeAccountGraphJob(
   } finally {
     if (renewal) clearInterval(renewal);
     if (temporary) await fs.rm(temporary, { recursive: true, force: true });
+    if (sharedScratch) await fs.rm(sharedScratch, { recursive: true, force: true });
   }
 }
 
@@ -228,7 +240,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
   console.log(`Waiting for DI account work from ${credentials.origin}.`);
   for (;;) {
     let job: BuildJob | BrowseJob | null;
-    try { job = await send({ action: 'computer-claim-build', snapshotStaging: true }) as BuildJob | BrowseJob | null; }
+    try { job = await send({ action: 'computer-claim-build', snapshotStaging: true, sharedTransferV2: true }) as BuildJob | BrowseJob | null; }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/authorization expired|not linked to this account/i.test(message)) throw error;
@@ -249,9 +261,10 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         continue;
       }
       if (job.kind === 'build' && job.stage === 'transfer') {
-        const built = job.result as { graphId?: unknown } | undefined;
+        const built = job.result as { graphId?: unknown; sharedTransferClaim?: unknown } | undefined;
         if (typeof built?.graphId !== 'string' || job.graph.transfer?.kind !== 'shared-folder') throw new Error('The graph transfer has no shared-folder generation');
-        const staging = path.join(job.graph.transfer.storageLocation, '.di-transfers', job.id);
+        if (job.claimScopedTransfer && (typeof built.sharedTransferClaim !== 'string' || !/^[a-f0-9]{32}$/u.test(built.sharedTransferClaim) || built.sharedTransferClaim !== job.sharedTransferClaim)) throw new Error('The graph transfer claim is unavailable');
+        const staging = path.join(job.graph.transfer.storageLocation, '.di-transfers', job.claimScopedTransfer ? `${job.id}-${built.sharedTransferClaim}` : job.id);
         renewal = setInterval(() => { void update({ progress: { stage: 'transferring-to-storage' } }).catch(() => {}); }, 60_000);
         const { importLocalSourceGraph, reconcileAccountGraphStages } = await import('../intelligence/localGraphStore.js');
         if (job.snapshotStaging && job.graphLease && job.previousSnapshot && job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location) await reconcileAccountGraphStages(job.graph.storage.location, job.project.id, job.graph.id, job.previousSnapshot.graphId, async () => { await update({ progress: { stage: 'reconciling-graph-storage' } }); });
