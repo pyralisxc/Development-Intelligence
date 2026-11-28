@@ -24,7 +24,7 @@ import { withVercelRequestContext } from './vercelRequestContext.js';
 import { accountOrigin, authenticateAccount } from './accounts/clerk.js';
 import { WorkspaceStore } from './accounts/workspace.js';
 import { advanceHostedJob, dispatchHostedAccounts } from './accounts/hostedQueue.js';
-import { hostedTransferStatus, startHostedTransfer, stopHostedTransfer } from './accounts/hosted.js';
+import { hostedTransferStatus, startHostedTransfer, stopHostedTransfer, stopHostedGraphJob } from './accounts/hosted.js';
 import { renderAccountWorkbench } from './accounts/view.js';
 import { renderLanding, renderRoadmap, renderRequestAccess, renderAbout } from './landing/view.js';
 import { accountGithubBranches, accountGithubRepositories, accountGithubToken } from './accounts/github.js';
@@ -249,7 +249,11 @@ export function createDevelopmentIntelligenceServer() {
         const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
         if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
         const embedded = requestUrl.searchParams.get('embedded') === '1';
-        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded, job.graph.storage.computer === 'hosted' ? 'Stored in DI hosted storage' : `Stored on linked computer (${job.graph.storage.computer})`);
+        const computers = await store.computers();
+        const configured = graph.query ?? job.graph.storage;
+        const eligible = [configured.computer, job.graph.storage.computer].filter((computer, index, all) => all.indexOf(computer) === index).filter(computer => computer === 'hosted' ? job.graph.storage.computer === 'hosted' : computers.some(item => item.id === computer && item.state === 'linked'));
+        const runOptions = eligible.map(computer => ({ id: computer, label: computer === 'hosted' ? 'Hosted' : computers.find(item => item.id === computer)?.name ?? 'Linked computer' }));
+        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded, job.graph.storage.computer === 'hosted' ? 'Stored in DI hosted storage' : `Stored on linked computer (${job.graph.storage.computer})`, runOptions);
         res.writeHead(200, embedded ? { ...htmlHeaders(), 'x-frame-options': 'SAMEORIGIN' } : htmlHeaders()); res.end(page); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
@@ -318,7 +322,8 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'retry-build' && identity.tokenType === 'session_token') { json(res, 200, await store.retryDirectBuild(body.jobId)); return; }
         if (body.action === 'build-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueBuild(body.graphId), accountOrigin(req))); return; }
         if (body.action === 'ask-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueQuestion(body.graphId, body.question), accountOrigin(req))); return; }
-        if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueInvestigation(body.graphId, body.request, body.snapshotGraphId), accountOrigin(req))); return; }
+        if (body.action === 'discard-investigation' && identity.tokenType === 'session_token') { const discarded = await store.discardInvestigation(body.jobId); if (discarded?.assignedComputer === 'hosted' && discarded.hosted) await stopHostedGraphJob(discarded.hosted).catch(() => {}); json(res, 200, { discarded: true }); return; }
+        if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueInvestigation(body.graphId, body.request, body.snapshotGraphId, body.runOn), accountOrigin(req))); return; }
         if (body.action === 'browse-folders' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBrowse(body.computerId, body.path)); return; }
         if (body.action === 'begin-computer-link' && identity.tokenType === 'session_token') { json(res, 200, { code: await store.beginComputerLink() }); return; }
         if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer, body.pairingCode)); return; }

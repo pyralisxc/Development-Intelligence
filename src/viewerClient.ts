@@ -13,7 +13,7 @@ import dockviewCss from 'dockview/dist/styles/dockview.css';
 
 declare global {
   interface Window {
-    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; accountGraphId?: string; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string; revision?: string | null };
+    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; accountGraphId?: string; runOptions?: Array<{ id: string; label: string }>; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string; revision?: string | null };
   }
 }
 
@@ -194,22 +194,34 @@ async function getJson(path: string, params: URLSearchParams, progress?: Progres
   return await response.json();
 }
 
-async function postJson(path: string, body: Record<string, unknown>, progress?: ProgressReporter): Promise<any> {
-  if (viewerConfig.accountGraphId) return await accountInvestigation({ path, method: 'POST', body }, progress);
+async function postJson(path: string, body: Record<string, unknown>, progress?: ProgressReporter, runOn?: string): Promise<any> {
+  if (viewerConfig.accountGraphId) return await accountInvestigation({ path, method: 'POST', body }, progress, runOn);
   const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ project: viewerConfig.project, ...(!body.graphId && viewerConfig.ref ? { ref: viewerConfig.ref } : {}), ...(!body.graphId && viewerConfig.graphId ? { graphId: viewerConfig.graphId } : {}), ...body }) });
   if (response.status === 401) { window.location.assign(`/login?returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`); throw new Error('Authentication required'); }
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
 }
 
-async function accountInvestigation(request: Record<string, unknown>, progress?: ProgressReporter): Promise<any> {
+const pendingInvestigations = new Set<string>();
+window.addEventListener('pagehide', () => {
+  for (const jobId of pendingInvestigations) navigator.sendBeacon('/account/workspace', new Blob([JSON.stringify({ action: 'discard-investigation', jobId })], { type: 'application/json' }));
+});
+async function discardInvestigation(jobId: string): Promise<void> {
+  const response = await fetch('/account/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'discard-investigation', jobId }), keepalive: true });
+  if (!response.ok) throw new Error('Could not discard the temporary request');
+  pendingInvestigations.delete(jobId);
+}
+
+async function accountInvestigation(request: Record<string, unknown>, progress?: ProgressReporter, runOn?: string): Promise<any> {
   progress?.('Starting request for the saved snapshot…');
   let created: Response;
-  try { created = await fetch('/account/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'investigate-graph', graphId: viewerConfig.accountGraphId, snapshotGraphId: viewerConfig.graphId, request }) }); }
+  try { created = await fetch('/account/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'investigate-graph', graphId: viewerConfig.accountGraphId, snapshotGraphId: viewerConfig.graphId, request, ...(runOn ? { runOn } : {}) }) }); }
   catch { throw new Error('Could not confirm whether the request started. It may still be running; try again only if needed.'); }
   if (created.status === 401) { window.location.assign('/account'); throw new Error('Sign in to continue'); }
   const job = await created.json();
   if (!created.ok) throw new Error(job.error ?? 'Could not start investigation');
+  pendingInvestigations.add(job.id);
+  try {
   let interruptions = 0;
   for (;;) {
     await new Promise(resolve => setTimeout(resolve, interruptions ? 3000 : 1000));
@@ -218,7 +230,7 @@ async function accountInvestigation(request: Record<string, unknown>, progress?:
     catch {
       progress?.('Connection interrupted; checking the same request again…');
       if (++interruptions < 4) continue;
-      throw new Error('Lost the connection to this request. It may still be running; try again only if needed.');
+      throw new Error('The connection to this request was lost. Run the question again.');
     }
     if (response.status === 401) { window.location.assign('/account'); throw new Error('Sign in to continue'); }
     const current = await response.json();
@@ -247,6 +259,7 @@ async function accountInvestigation(request: Record<string, unknown>, progress?:
     }
     if (current.state === 'failed') throw new Error(current.error ?? 'Investigation failed');
   }
+  } finally { void discardInvestigation(job.id).catch(() => {}); }
 }
 
 function setHead(actions = ''): void {
@@ -867,7 +880,7 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
   }
   if (prefill) queryDraft = prefill;
   prefill = queryDraft;
-  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" aria-label="Question about the selected graph" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden aria-label="Question source"><option value="">Development Intelligence</option></select><button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><label>Investigation passes <input id="query-max-passes" aria-label="Maximum investigation passes" type="number" min="1" value="${queryMaxPasses}"></label><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted"><span id="query-active-scope" role="status">Scope: entire selected graph</span> <button type="button" id="query-clear-scope" hidden>Clear scope</button></p><p class="muted">Answers use the selected saved graph and its source state.</p></div><button type="button" id="load-query-sources">Choose a technical source</button><div id="query-source-status" role="status" class="muted"></div><div id="query-progress" role="status" aria-live="polite" class="muted"></div><div id="query-result" class="query-result" aria-live="polite"></div>`;
+  queryPanel.innerHTML = `<div class="card"><h3>Ask / query</h3><div class="query-box"><textarea id="query-text" aria-label="Question about the selected graph" placeholder="Ask about this graph…">${esc(prefill)}</textarea><select id="query-source" hidden aria-label="Question source"><option value="">Development Intelligence</option></select>${viewerConfig.accountGraphId && viewerConfig.runOptions?.length ? `<label>Run on <select id="query-run-on" aria-label="Run question on">${viewerConfig.runOptions.map(option => `<option value="${esc(option.id)}">${esc(option.label)}</option>`).join('')}</select></label>` : ''}<button class="primary" id="run-query">Run</button></div><details><summary>Refine graph selection</summary><div class="query-box"><input id="query-scope" aria-label="Scope" placeholder="File, directory or graph ID"><input id="query-node-kinds" aria-label="Node kinds" placeholder="Node kinds, comma-separated"><input id="query-edge-kinds" aria-label="Relationship kinds" placeholder="Relationship kinds, comma-separated"><select id="query-direction" aria-label="Relationship direction"><option value="">From the question</option><option value="both">Both directions</option><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select><input id="query-comparison-ids" aria-label="Comparison IDs" placeholder="Comparison graph IDs, comma-separated"><input id="query-comparison-scope" aria-label="Comparison scope" placeholder="Comparison file or directory"><input id="query-comparison-kinds" aria-label="Comparison node kinds" placeholder="Comparison node kinds, comma-separated"><input id="query-condition" aria-label="Condition contains" placeholder="Condition contains"><select id="query-condition-truth" aria-label="Condition truth"><option value="">Either condition value</option><option value="true">Condition true</option><option value="false">Condition false</option></select><input id="query-effect-kinds" aria-label="Effect kinds" placeholder="Effect kinds, comma-separated"><input id="query-depth" aria-label="Relationship depth" type="number" min="1" value="1"><label>Investigation passes <input id="query-max-passes" aria-label="Maximum investigation passes" type="number" min="1" value="${queryMaxPasses}"></label><input id="query-limit" aria-label="Results per page" type="number" min="1" value="${queryPageSize}"></div></details><p class="muted"><span id="query-active-scope" role="status">Scope: entire selected graph</span> <button type="button" id="query-clear-scope" hidden>Clear scope</button></p><p class="muted">Answers use the selected saved graph and its source state.</p></div><button type="button" id="load-query-sources">Choose a technical source</button><div id="query-source-status" role="status" class="muted"></div><div id="query-progress" role="status" aria-live="polite" class="muted"></div><div id="query-result" class="query-result" aria-live="polite"></div>`;
   queryPanelReady = true;
   queryPanel.querySelector<HTMLInputElement>('#query-scope')?.addEventListener('input', event => { delete (event.currentTarget as HTMLInputElement).dataset.displayName; updateQuestionScope(); });
   queryPanel.querySelector<HTMLButtonElement>('#query-clear-scope')?.addEventListener('click', () => { const scope = queryPanel.querySelector<HTMLInputElement>('#query-scope'); if (scope) { scope.value = ''; delete scope.dataset.displayName; } updateQuestionScope(); });
@@ -925,7 +938,7 @@ async function renderQuery(epoch: number, prefill = '', host: HTMLElement = cont
       queryPageSize = limit; savePositiveSetting('queryPageSize', limit);
       const result = await postJson('/workbench/query', { text, offset, depth, limit, maxPasses, ...(investigationGraphId() ? { graphId: investigationGraphId()! } : {}), ...(direction ? { direction } : {}),
         ...(scope ? { scope } : {}), ...(nodeKinds.length ? { nodeKinds } : {}),
-        ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) }, update);
+        ...(relationshipKinds.length ? { relationshipKinds } : {}), ...(comparisonIds.length ? { comparisonIds } : {}), ...(comparisonScope ? { comparisonScope } : {}), ...(comparisonKinds.length ? { comparisonKinds } : {}), ...(conditionContains ? { conditionContains } : {}), ...(conditionValue ? { conditionTruth: conditionValue === 'true' } : {}), ...(effectKinds.length ? { effectKinds } : {}), ...(sourceId ? { sourceId } : {}) }, update, queryPanel.querySelector<HTMLSelectElement>('#query-run-on')?.value);
       if (sequence !== querySequence) return;
       update('');
       const page = result.result?.page;
