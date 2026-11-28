@@ -73,7 +73,7 @@ export function tracePortfolioGraphs(participants: PortfolioParticipant[], unava
   for (const participant of participants) for (const edge of participant.graph.edges) {
     if (!edge.from || !edge.to || !statuses.has(edge.status)) continue;
     const from = namespacePortfolioId(participant.key, edge.from), to = namespacePortfolioId(participant.key, edge.to);
-    if (nodes.has(from) && nodes.has(to)) add({ id: namespacePortfolioId(participant.key, edge.id), scope: 'repository', participant: participant.key, project: participant.project, originalEdgeId: edge.id, from, to, kind: edge.kind, status: edge.status, strategy: edge.strategy, evidence: edge.evidence, evidenceIds: edge.evidenceIds ?? [] });
+    if (nodes.has(from) && nodes.has(to)) add({ id: namespacePortfolioId(participant.key, edge.id), scope: 'repository', participant: participant.key, project: participant.project, originalEdgeId: edge.id, from, to, kind: edge.kind, status: edge.status, strategy: edge.strategy, evidence: edge.evidence, evidenceIds: edge.evidenceIds ?? [], ...(edge.evidenceLayers?.length ? { evidenceLayers: edge.evidenceLayers } : {}) });
   }
   for (const link of buildPortfolioLinks(participants)) if (statuses.has(link.status) && nodes.has(link.from.nodeId) && nodes.has(link.to.nodeId)) add({ id: link.id, scope: 'cross-repository', from: link.from.nodeId, to: link.to.nodeId, kind: link.kind, status: link.status, strategy: link.strategy, identifier: link.identifier, provenance: { from: link.from, to: link.to, note: link.note ?? null } });
   const visited = new Map<string, number>([[input.start, 0]]), queue = [input.start], selected = new Map<string, PortfolioTraceHop>();

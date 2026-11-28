@@ -165,7 +165,7 @@ function nodeTailText(node: GraphNode): string {
 }
 
 function edgeTailText(edge: GraphEdge): string {
-  return edge.evidence.join(' ');
+  return [...(edge.evidenceLayers ?? []).map(layer => layer.strategy), ...edge.evidence].join(' ');
 }
 
 function layerOf(value: { layer?: GraphNodeLayer }): GraphNodeLayer {

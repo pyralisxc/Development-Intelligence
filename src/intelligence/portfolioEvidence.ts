@@ -1,4 +1,4 @@
-import type { GraphNode, IntelligenceGraph, RelationshipStatus } from '../types.js';
+import type { GraphEdgeEvidenceLayer, GraphNode, IntelligenceGraph, RelationshipStatus } from '../types.js';
 import { stableHash } from '../util/hash.js';
 
 export type PortfolioParticipant = { key: string; project: string; graph: IntelligenceGraph };
@@ -6,7 +6,7 @@ export type PortfolioUnavailable = { key: string; project: string; ref?: string;
 export type PortfolioEndpoint = { participant: string; project: string; nodeId: string; locator: string; requested?: string };
 export type PortfolioLink = { id: string; kind: string; status: 'resolved' | 'candidate'; strategy: string; identifier: string; from: PortfolioEndpoint; to: PortfolioEndpoint; note?: string };
 export type PortfolioTraceNode = { participant: string; project: string; nodeId: string; originalNodeId: string; kind: string; layer: string; name: string | null; locator: string };
-export type PortfolioTraceHop = { id: string; scope: 'repository' | 'cross-repository'; from: string; to: string; kind: string; status: RelationshipStatus; strategy: string; participant?: string; project?: string; originalEdgeId?: string; identifier?: string; evidence?: string[]; evidenceIds?: string[]; provenance?: { from: PortfolioEndpoint; to: PortfolioEndpoint; note: string | null } };
+export type PortfolioTraceHop = { id: string; scope: 'repository' | 'cross-repository'; from: string; to: string; kind: string; status: RelationshipStatus; strategy: string; participant?: string; project?: string; originalEdgeId?: string; identifier?: string; evidence?: string[]; evidenceIds?: string[]; evidenceLayers?: GraphEdgeEvidenceLayer[]; provenance?: { from: PortfolioEndpoint; to: PortfolioEndpoint; note: string | null } };
 
 type Evidence = { key: string; project: string; nodeId: string; locator: string; identifier: string; family: string };
 type Dependency = Evidence & { dependencyType: string; requested: string };
