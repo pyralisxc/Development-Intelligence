@@ -241,12 +241,10 @@ export function createDevelopmentIntelligenceServer() {
         const identity = await authenticateAccount(req, res); if (!identity) return;
         if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
         const store = new WorkspaceStore(identity.userId), graphId = requestUrl.searchParams.get('id');
-        const graph = (await store.graphs()).find(item => item.id === graphId);
+        const graph = await store.graphWithSnapshot(graphId);
         if (!graph) { json(res, 404, { error: 'Graph not found' }); return; }
-        const newest = (await store.builds(false)).filter(item => item.graph.id === graph.id && item.kind === 'build' && item.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-        const job = newest ? await store.build(newest.id) : null;
-        if (job?.kind === 'browse') throw new Error('Invalid graph build');
-        const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
+        const job = graph.currentSnapshot;
+        const result = job as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
         if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
         const embedded = requestUrl.searchParams.get('embedded') === '1';
         const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded, job.graph.storage.computer === 'hosted' ? 'Stored in DI hosted storage' : `Stored on linked computer (${job.graph.storage.computer})`);
@@ -293,16 +291,11 @@ export function createDevelopmentIntelligenceServer() {
           if (jobId) { json(res, 200, await store.build(jobId)); return; }
           const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds(false)]);
           const snapshots = await Promise.all(graphs.map(async graph => {
-            const latest = builds.filter(job => job.kind === 'build' && job.graph.id === graph.id && job.state === 'complete')
-              .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+            const latest = (await store.graphWithSnapshot(graph.id))?.currentSnapshot;
             if (!latest) return { graphId: graph.id, snapshot: null };
-            const saved = await store.build(latest.id);
-            const result = saved && saved.kind !== 'browse' ? saved.result as { graphId?: unknown; revision?: unknown; sourceState?: unknown; sourceFingerprint?: unknown } | undefined : undefined;
-            return { graphId: graph.id, snapshot: { graphId: typeof result?.graphId === 'string' ? result.graphId : null,
-              revision: typeof result?.revision === 'string' ? result.revision : null,
-              sourceFingerprint: typeof result?.sourceFingerprint === 'string' ? result.sourceFingerprint : null,
-              sourceState: result?.sourceState ?? null, requestedAt: latest.createdAt,
-              source: latest.graph.source, storage: latest.graph.storage } };
+            return { graphId: graph.id, snapshot: { graphId: latest.graphId, revision: latest.revision ?? null,
+              sourceFingerprint: latest.sourceFingerprint ?? null, sourceState: latest.sourceState ?? null,
+              requestedAt: latest.requestedAt, source: latest.graph.source, storage: latest.graph.storage } };
           }));
           json(res, 200, { projects, graphs, computers, layout, builds, snapshots }); return;
         }
