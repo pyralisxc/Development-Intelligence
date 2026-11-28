@@ -147,7 +147,7 @@ export async function executeAccountGraphJob(
       process.env.DEVINT_LOCAL_GRAPH_DIR = graphDirectory;
       const { localSourceGraphHistory } = await import('../intelligence/localGraphStore.js');
       const catalog = await localSourceGraphHistory(graphDirectory, job.project.id);
-      if (!catalog?.entries.some(entry => entry.graphId === job.graphId)) throw new Error('The selected graph is not available at the query service location');
+      if (!catalog?.entries.some(entry => entry.graphId === job.graphId)) throw new Error('The selected graph snapshot is no longer available at the query service location. Reopen the graph and run the request again.');
       activeProgress = { stage: 'querying-snapshot', graphId: job.graphId, location: graphDirectory };
       await report(activeProgress);
       const repository = job.graph.source.kind === 'git' ? trustedUrl(root).href : pathToFileURL(path.resolve(root)).href;

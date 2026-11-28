@@ -95,7 +95,7 @@ export class WorkspaceStore {
     if (!job || job.kind !== 'investigation' || job.state !== 'complete' || !job.resultKey || !job.resultParts || !Number.isSafeInteger(index) || index < 0 || index >= job.resultParts) invalid('Investigation result part is unavailable');
     const part = await this.redis.hget<string>(job.resultKey, String(index));
     if (typeof part !== 'string' || !part.startsWith('b:')) {
-      if (job.resultExpiresAt && Date.now() >= job.resultExpiresAt && !await this.redis.exists(job.resultKey)) throw Object.assign(new Error('This temporary investigation result expired. Run the investigation again on the same saved snapshot.'), { status: 410 });
+      if (job.resultExpiresAt && Date.now() >= job.resultExpiresAt && !await this.redis.exists(job.resultKey)) throw Object.assign(new Error('This temporary investigation result expired. Reopen the graph and run the investigation again.'), { status: 410 });
       throw new Error('Investigation result is incomplete');
     }
     return part.slice(2);
