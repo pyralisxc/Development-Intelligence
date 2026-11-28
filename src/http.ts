@@ -241,19 +241,19 @@ export function createDevelopmentIntelligenceServer() {
         const identity = await authenticateAccount(req, res); if (!identity) return;
         if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
         const store = new WorkspaceStore(identity.userId), graphId = requestUrl.searchParams.get('id');
-        const graph = (await store.graphs()).find(item => item.id === graphId);
+        const graph = await store.graphWithSnapshot(graphId);
         if (!graph) { json(res, 404, { error: 'Graph not found' }); return; }
-        const newest = (await store.builds(false)).filter(item => item.graph.id === graph.id && item.kind === 'build' && item.state === 'complete').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-        const job = newest ? await store.build(newest.id) : null;
-        if (job?.kind === 'browse') throw new Error('Invalid graph build');
-        const result = job?.result as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
+        const job = graph.currentSnapshot;
+        const result = job as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
         if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
+        const project = await store.project(graph.projectId);
+        if (!project) { json(res, 404, { error: 'Project not found' }); return; }
         const embedded = requestUrl.searchParams.get('embedded') === '1';
         const computers = await store.computers();
-        const configured = graph.query ?? job.graph.storage;
-        const eligible = [configured.computer, job.graph.storage.computer].filter((computer, index, all) => all.indexOf(computer) === index).filter(computer => computer === 'hosted' ? job.graph.storage.computer === 'hosted' : computers.some(item => item.id === computer && item.state === 'linked'));
+        const configured = graph.query ?? job.storage;
+        const eligible = [configured.computer, job.storage.computer].filter((computer, index, all) => all.indexOf(computer) === index).filter(computer => computer === 'hosted' ? job.storage.computer === 'hosted' : computers.some(item => item.id === computer && item.state === 'linked'));
         const runOptions = eligible.map(computer => ({ id: computer, label: computer === 'hosted' ? 'Hosted' : computers.find(item => item.id === computer)?.name ?? 'Linked computer' }));
-        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded, job.graph.storage.computer === 'hosted' ? 'Stored in DI hosted storage' : `Stored on linked computer (${job.graph.storage.computer})`, runOptions);
+        const page = renderGraphViewer({ project: project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, project.name, embedded, job.storage.computer === 'hosted' ? 'Stored in DI hosted storage' : `Stored on linked computer (${job.storage.computer})`, runOptions);
         res.writeHead(200, embedded ? { ...htmlHeaders(), 'x-frame-options': 'SAMEORIGIN' } : htmlHeaders()); res.end(page); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
@@ -262,7 +262,7 @@ export function createDevelopmentIntelligenceServer() {
         const body = await readJson(req);
         if (typeof body.userId !== 'string' || !body.userId) { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
         const store = new WorkspaceStore(body.userId);
-        if (!await store.verifyHostedTransferLease(body.jobId, body.claimId, body.graphId, body.token)) { json(res, 403, { error: 'Graph transfer claim expired' }); return; }
+        if (!await store.verifyHostedTransferLease(body.jobId, body.claimId, body.graphId, body.token, body.requirePublished === true)) { json(res, 403, { error: 'Graph transfer claim expired' }); return; }
         json(res, 200, { active: true }); return;
       } catch { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
     }
@@ -280,9 +280,40 @@ export function createDevelopmentIntelligenceServer() {
         const store = new WorkspaceStore(body.userId), job = await store.build(body.jobId);
         if (!job || job.kind === 'browse' || job.assignedComputer !== 'hosted' || job.claimId !== body.claimId || !job.hosted) { json(res, 403, { error: 'Invalid hosted job claim' }); return; }
         if (job.state === 'complete' || job.state === 'failed') { json(res, 200, { complete: true }); return; }
+        if (!await store.hostedClaimActive(job.id, body.claimId)) { json(res, 403, { error: 'Invalid hosted job claim' }); return; }
+        if (body.publishResult !== undefined) { await store.publishHostedBuild(job.id, body.claimId, body.publishResult); json(res, 200, { published: true }); return; }
         const updated = await advanceHostedJob(store, body.userId, job);
         json(res, updated?.state === 'complete' || updated?.state === 'failed' ? 200 : 409, { complete: updated?.state === 'complete' || updated?.state === 'failed' }); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
+    }
+    if (requestUrl.pathname === '/account/computer-events' && req.method === 'POST') {
+      try {
+        const identity = await authenticateAccount(req, res);
+        if (!identity) return;
+        if (identity.tokenType !== 'oauth_token') { json(res, 403, { error: 'Use a linked computer session' }); return; }
+        const body = await readJson(req), store = new WorkspaceStore(identity.userId);
+        const subscription = await store.watchComputer(body.computerId, body.secret);
+        let closed = false, dueTimer: ReturnType<typeof setTimeout> | undefined;
+        const close = () => { if (closed) return; closed = true; if (dueTimer) clearTimeout(dueTimer); subscription.removeAllListeners(); void subscription.unsubscribe().catch(() => {}); };
+        const scheduleKnownWork = async () => {
+          if (dueTimer) clearTimeout(dueTimer);
+          const due = await store.nextComputerWorkAt(body.computerId);
+          if (closed || due === null || due <= Date.now()) return;
+          dueTimer = setTimeout(() => { if (!closed && res.headersSent) res.write('data: 1\n\n'); }, Math.min(due - Date.now() + 1, 2_147_483_647));
+        };
+        res.on('close', close);
+        subscription.on('subscribe', () => { void (async () => {
+          const current = await store.verifyComputer(body.computerId, body.secret);
+          if (current.connection !== 'active') throw Object.assign(new Error('This computer connection is paused'), { status: 410 });
+          if (closed) return;
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no' });
+          res.write('data: "ready"\n\n');
+          await scheduleKnownWork();
+        })().catch(error => { if (!closed && !res.headersSent) json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); else if (!closed) res.destroy(); close(); }); });
+        subscription.on('message', event => { if (!closed && res.headersSent) { res.write(`data: ${JSON.stringify(event.message)}\n\n`); if (event.message === 1) void scheduleKnownWork().catch(() => res.destroy()); } });
+        subscription.on('error', () => { if (!closed) res.destroy(); close(); });
+      } catch (error) { if (!res.headersSent) json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); else res.destroy(); }
+      return;
     }
     if (requestUrl.pathname === '/account/workspace') {
       try {
@@ -297,16 +328,11 @@ export function createDevelopmentIntelligenceServer() {
           if (jobId) { json(res, 200, await store.build(jobId)); return; }
           const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds(false)]);
           const snapshots = await Promise.all(graphs.map(async graph => {
-            const latest = builds.filter(job => job.kind === 'build' && job.graph.id === graph.id && job.state === 'complete')
-              .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+            const latest = (await store.graphWithSnapshot(graph.id))?.currentSnapshot;
             if (!latest) return { graphId: graph.id, snapshot: null };
-            const saved = await store.build(latest.id);
-            const result = saved && saved.kind !== 'browse' ? saved.result as { graphId?: unknown; revision?: unknown; sourceState?: unknown; sourceFingerprint?: unknown } | undefined : undefined;
-            return { graphId: graph.id, snapshot: { graphId: typeof result?.graphId === 'string' ? result.graphId : null,
-              revision: typeof result?.revision === 'string' ? result.revision : null,
-              sourceFingerprint: typeof result?.sourceFingerprint === 'string' ? result.sourceFingerprint : null,
-              sourceState: result?.sourceState ?? null, requestedAt: latest.createdAt,
-              source: latest.graph.source, storage: latest.graph.storage } };
+            return { graphId: graph.id, snapshot: { graphId: latest.graphId, revision: latest.revision ?? null,
+              sourceFingerprint: latest.sourceFingerprint ?? null, sourceState: latest.sourceState ?? null,
+              requestedAt: latest.requestedAt, source: latest.source, storage: latest.storage } };
           }));
           json(res, 200, { projects, graphs, computers, layout, builds, snapshots }); return;
         }
@@ -325,10 +351,13 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'discard-investigation' && identity.tokenType === 'session_token') { const discarded = await store.discardInvestigation(body.jobId); if (discarded?.assignedComputer === 'hosted' && discarded.hosted) await stopHostedGraphJob(discarded.hosted).catch(() => {}); json(res, 200, { discarded: true }); return; }
         if (body.action === 'investigate-graph' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.queueInvestigation(body.graphId, body.request, body.snapshotGraphId, body.runOn), accountOrigin(req))); return; }
         if (body.action === 'browse-folders' && identity.tokenType === 'session_token') { json(res, 200, await store.queueBrowse(body.computerId, body.path)); return; }
-        if (body.action === 'begin-computer-link' && identity.tokenType === 'session_token') { json(res, 200, { code: await store.beginComputerLink() }); return; }
-        if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer, body.pairingCode)); return; }
+        if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer)); return; }
+        if (body.action === 'pause-computer' && identity.tokenType === 'session_token') { await store.pauseComputer(body.computerId); json(res, 200, { paused: true }); return; }
+        if (body.action === 'probe-computer' && identity.tokenType === 'session_token') { json(res, 200, { online: await store.probeComputer(body.computerId) }); return; }
+        if (body.action === 'computer-connect' && identity.tokenType === 'oauth_token') { json(res, 200, await store.connectComputer(body.computerId, body.secret)); return; }
+        if (body.action === 'computer-probe-response' && identity.tokenType === 'oauth_token') { await store.answerComputerProbe(body.computerId, body.secret, body.nonce); json(res, 200, { answered: true }); return; }
         if (body.action === 'computer-heartbeat' && identity.tokenType === 'oauth_token') { json(res, 200, await store.heartbeat(body.computerId, body.secret)); return; }
-        if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret)); return; }
+        if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret, body.snapshotStaging === true, body.sharedTransferV2 === true, body.snapshotHandoffVersion === 1 ? 1 : 0)); return; }
         if (body.action === 'computer-investigation-part' && identity.tokenType === 'oauth_token') { await store.putInvestigationPart(body.computerId, body.secret, body.jobId, body.claimId, body.index, body.part); json(res, 200, { saved: true }); return; }
         if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
         if ((['computer-start-hosted-transfer', 'computer-hosted-transfer-status', 'computer-stop-hosted-transfer'].includes(body.action)) && identity.tokenType === 'oauth_token') {

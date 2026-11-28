@@ -3,27 +3,18 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { createInterface } from 'node:readline/promises';
 
 const home = path.dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(await fs.readFile(path.join(home, 'local-settings.json'), 'utf8'));
 const [command = 'help', ...args] = process.argv.slice(2);
-async function setAccountAutostart(enabled) {
+async function removeAccountAutostart() {
   const startupDir = process.platform === 'win32'
     ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
     : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'autostart');
   const target = path.join(startupDir, process.platform === 'win32' ? 'Development Intelligence Linked Computer.vbs' : 'development-intelligence-linked-computer.desktop');
-  if (!enabled) { await fs.rm(target, { force: true }); return; }
-  await fs.mkdir(startupDir, { recursive: true });
-  const launcher = fileURLToPath(import.meta.url);
-  if (process.platform === 'win32') {
-    const commandLine = `"${process.execPath}" "${launcher}" account-run`;
-    await fs.writeFile(target, `CreateObject("WScript.Shell").Run "${commandLine.replace(/"/g, '""')}", 0, False\r\n`);
-  } else {
-    const quote = value => `"${value.replace(/%/g, '%%').replace(/[\\"`$]/g, '\\$&')}"`;
-    await fs.writeFile(target, `[Desktop Entry]\nType=Application\nName=Development Intelligence Linked Computer\nExec=${quote(process.execPath)} ${quote(launcher)} account-run\nTerminal=false\n`);
-  }
+  await fs.rm(target, { force: true });
 }
+
 async function startAccountAgent() {
   const stateDir = path.join(config.dataDir, 'account');
   try { await fs.access(path.join(stateDir, 'linked-account.json')); } catch { return; }
@@ -38,35 +29,37 @@ if (command === 'protocol-link' || command === 'link' || command === 'account-st
   const stateDir = path.join(config.dataDir, 'account');
   if (command === 'protocol-link') {
     const link = new URL(args[0] || '');
-    const workbench = link.searchParams.get('workbench'), pair = link.searchParams.get('pair');
-    if (link.protocol !== 'devint:' || link.hostname !== 'link' || link.pathname || link.hash || [...link.searchParams.keys()].some(key => !['workbench', 'pair'].includes(key)) || link.searchParams.getAll('workbench').length !== 1 || link.searchParams.getAll('pair').length !== 1 || !workbench || !pair || !/^[a-f0-9]{32}$/.test(pair)) throw new Error('Invalid computer link. Start again in the Workbench.');
+    const workbench = link.searchParams.get('workbench');
+    if (link.protocol !== 'devint:' || !['link', 'connect'].includes(link.hostname) || link.pathname || link.hash || [...link.searchParams.keys()].some(key => !['workbench', 'computer'].includes(key)) || link.searchParams.getAll('workbench').length !== 1 || !workbench) throw new Error('Invalid computer link. Start again in the Workbench.');
     const destination = new URL(workbench);
     if (destination.origin !== workbench || destination.username || destination.password || (destination.protocol !== 'https:' && !(destination.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(destination.hostname)))) throw new Error('Invalid Workbench address. Start again in the Workbench.');
+    if (link.hostname === 'connect') {
+      if (link.searchParams.getAll('computer').length !== 1) throw new Error('Choose a linked computer in the Workbench.');
+      const identity = await account.accountComputerIdentity(stateDir);
+      if (identity.origin !== destination.origin || identity.computerId !== link.searchParams.get('computer')) throw new Error('This is a different linked computer. Start DI on the selected computer.');
+      await startAccountAgent();
+      console.log('Connecting this computer.');
+      process.exit(0);
+    }
+    if (link.searchParams.has('computer')) throw new Error('Invalid computer link. Start again in the Workbench.');
     try { await fs.access(path.join(stateDir, 'linked-account.json')); console.error('This installation already has a linked account. Direct relinking is not available while an existing connection may be running.'); process.exit(1); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
-    console.log(`Link this computer to ${destination.origin}? DI will start the linked service when you sign in.`);
-    const terminal = createInterface({ input: process.stdin, output: process.stdout });
-    const answer = await terminal.question('Type yes to continue: '); terminal.close();
-    if (answer.trim().toLowerCase() !== 'yes') { console.log('Computer linking cancelled.'); process.exit(0); }
-    await account.linkComputer(stateDir, workbench, pair, url => {
+    await account.linkComputer(stateDir, workbench, url => {
       const opener = process.platform === 'win32' ? spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore', windowsHide: true }) : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
-      opener.on('error', () => console.log('Open the authorization address shown above.')); opener.unref();
+      opener.on('error', () => console.error('Could not open the browser for sign-in.')); opener.unref();
     });
-    await setAccountAutostart(true);
-    await startAccountAgent();
-    console.log('The computer is linked. You can return to the Workbench.');
+    console.log('The computer is linked. Connect it when you are ready to use it.');
   } else if (command === 'link') {
     const at = args.indexOf('--workbench');
-    const pairAt = args.indexOf('--pair-code');
-    if (at < 0 || !args[at + 1] || pairAt < 0 || !args[pairAt + 1]) throw new Error('Start linking in your Workbench and run the displayed command on this computer');
-    await account.linkComputer(stateDir, args[at + 1], args[pairAt + 1]);
-    if (!args.includes('--no-autostart')) await setAccountAutostart(true);
-    await startAccountAgent();
+    if (at < 0 || !args[at + 1]) throw new Error('Start linking in your Workbench and run the displayed command on this computer');
+    try { await fs.access(path.join(stateDir, 'linked-account.json')); throw new Error('This installation already has a linked account.'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await account.linkComputer(stateDir, args[at + 1], url => { const opener = process.platform === 'win32' ? spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore', windowsHide: true }) : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }); opener.on('error', () => console.error('Could not open the browser for sign-in.')); opener.unref(); });
   } else if (command === 'account-status') await account.computerHeartbeat(stateDir);
   else if (command === 'account-autostart') {
-    if (!['on', 'off'].includes(args[0])) throw new Error('Use di-local account-autostart on or off');
-    await setAccountAutostart(args[0] === 'on');
-    console.log(`Linked computer startup ${args[0]}.`);
+    if (args[0] !== 'off') throw new Error('Automatic computer startup is no longer supported. Start the connection when needed.');
+    await removeAccountAutostart();
+    console.log('Removed the previous automatic startup entry.');
   }
   else {
     const lockPath = path.join(stateDir, 'computer.lock');
@@ -85,7 +78,7 @@ if (command === 'protocol-link' || command === 'link' || command === 'account-st
 }
 const commands = { capacity: 'working-capacity', build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', storage: 'working-storage', reindex: 'working-reindex', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', parity: 'working-parity', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve', 'oss-evidence': 'oss-evidence', 'joern-build': 'joern-build' };
 if (!commands[command]) {
-  console.log('DI local: link --workbench URL --pair-code CODE [--no-autostart] | account-status | account-run | account-autostart on|off | capacity | build [--target NAME] | build-revision --ref REF [--target NAME] | history | storage | reindex [--target NAME] | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open [--local] | mcp');
+  console.log('DI local: link --workbench URL | account-status | account-run | account-autostart off | capacity | build [--target NAME] | build-revision --ref REF [--target NAME] | history | storage | reindex [--target NAME] | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open [--local] | mcp');
   console.log('Options: --repo-path PATH --project NAME --data-dir PATH --retain COUNT --port PORT; query: --max-passes COUNT');
   process.exit(command === 'help' ? 0 : 2);
 }
@@ -100,7 +93,6 @@ const env = { ...process.env, DEVINT_SCRATCH_DIR: config.scratchDir, DEVINT_LOCA
   ...(config.graphWorkerHeapMB ? { DEVINT_GRAPH_WORKER_HEAP_MB: String(config.graphWorkerHeapMB) } : {}),
   ...(config.scipHeapMB ? { DEVINT_SCIP_HEAP_MB: String(config.scipHeapMB) } : {}) };
 if (command === 'open') {
-  await startAccountAgent();
   if (!args.includes('--local')) {
     try {
       const account = await import(path.join(home, 'dist', 'src', 'accounts', 'localComputer.js'));

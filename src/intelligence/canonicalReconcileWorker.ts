@@ -23,6 +23,7 @@ export interface LocalGraphWorkerInput {
   retain: number;
   ref?: string;
   target?: string;
+  stageOnly?: boolean;
   joern?: { bytes: Uint8Array; version: string; projectPrefix?: string };
 }
 
@@ -202,7 +203,7 @@ async function workerMain(input: WorkerInput | LocalGraphWorkerInput | PreviewGr
       ? await buildLocalRevisionGraph(input.root, input.ref, input.project, input.joern, progress)
       : await buildLocalWorkingGraph(input.root, input.project, input.joern, progress);
     progress({ stage: 'publishing-graph-and-index' });
-    const retained = await saveLocalSourceGraph(input.dataDir, graph, input.retain, input.target ?? 'working', !input.ref);
+    const retained = await saveLocalSourceGraph(input.dataDir, graph, input.retain, input.target ?? 'working', !input.ref && !input.stageOnly);
     const { files: _files, ...coverage } = graph.coverage ?? {};
     parentPort?.postMessage({ ok: true, result: { project: graph.project, target: input.target ?? (input.ref ?? 'working'), graphId: graph.graphId,
       revision: graph.repositoryRevision, sourceState: graph.sourceState, sourceFingerprint: graph.sourceFingerprint,

@@ -90,6 +90,11 @@ if (!sameRuntime) {
   } finally { await fs.rm(stagedRuntime, { force: true }); }
 }
 await fs.writeFile(path.join(installDir, 'local-settings.json'), JSON.stringify({ ...prior, installDir, dataDir, scratchDir, desktopDir, repoPath, project, retain, cacheSize, port, graphWorkerHeapMB, scipHeapMB }, null, 2));
+// Older releases registered a linked worker at login. Connections are now started explicitly.
+const priorStartupDir = process.platform === 'win32'
+  ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+  : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'autostart');
+await fs.rm(path.join(priorStartupDir, process.platform === 'win32' ? 'Development Intelligence Linked Computer.vbs' : 'development-intelligence-linked-computer.desktop'), { force: true });
 await fs.mkdir(desktopDir, { recursive: true });
 let desktop;
 if (process.platform === 'win32') {
