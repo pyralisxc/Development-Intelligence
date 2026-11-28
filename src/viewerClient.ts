@@ -1393,7 +1393,7 @@ if (document.getElementById('question-dock')) {
     .di-dockview .inspector{resize:none}
     .di-dockview #graphs-panel,.di-dockview #activity-panel,.di-dockview #workbench-home{display:block;width:100%;height:100%;min-width:0;min-height:0;overflow:auto;box-sizing:border-box;padding:12px;background:#101824;color:#dbe7f6}
     .di-dockview #graphs-panel h2,.di-dockview #activity-panel h2{font-size:15px;margin:0 0 12px}.di-dockview #graphs-panel button,.di-dockview #activity-panel button,.di-dockview #workbench-home button{background:#14243a;color:#dbe7f6;border:1px solid #334963;border-radius:5px;padding:6px 9px;cursor:pointer}
-    .di-dockview .graph-item,.di-dockview .activity-entry{padding:10px 0;border-bottom:1px solid #33445a}.di-dockview .graph-meta,.di-dockview .build-state{font-size:12px;color:#a8bbd0;overflow-wrap:anywhere}
+    .di-dockview .graph-item,.di-dockview .activity-entry{padding:10px 0;border-bottom:1px solid #33445a}.di-dockview .graph-meta,.di-dockview .build-state{display:grid;gap:3px;margin-top:6px;font-size:12px;color:#a8bbd0;overflow-wrap:anywhere}.di-dockview .home-summary,.di-dockview .home-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
 
     .di-dockview .workspace #content:has(.graph-shell){display:flex;flex-direction:column;overflow:hidden}
     .di-dockview .investigation-layout:has(.graph-shell){flex:1;min-height:0;align-items:stretch}
