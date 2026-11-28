@@ -354,6 +354,9 @@ export class WorkspaceStore {
     if (!raw) return null;
     return await this.hydrateClaimedSnapshot(typeof raw === 'string' ? JSON.parse(raw) as BuildJob : raw as unknown as BuildJob) as BuildJob;
   }
+  async hostedClaimActive(jobId: string, claimId: string): Promise<boolean> {
+    return await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.assignedComputer~='hosted' or job.claimId~=ARGV[2] then return 0 end; if job.graphLease and redis.call('GET',ARGV[3]..job.graph.id)~=job.id then return 0 end; return 1`, [this.key('builds')], [id(jobId), id(claimId), `${this.root}:graph-lease:`]) === 1;
+  }
   async hostedStarted(jobId: string, claimId: string, handle: NonNullable<BuildJob['hosted']>): Promise<void> {
     const changed = await this.redis.eval<unknown[], number>(`local raw=redis.call('HGET',KEYS[1],ARGV[1]); if not raw then return 0 end; local job=cjson.decode(raw); if job.state~='running' or job.assignedComputer~='hosted' or job.claimId~=ARGV[2] then return 0 end; job.hosted=cjson.decode(ARGV[3]); redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(job)); return 1`, [this.key('builds')], [id(jobId), id(claimId), JSON.stringify(handle)]);
     if (changed !== 1) invalid('Hosted job claim is no longer active');

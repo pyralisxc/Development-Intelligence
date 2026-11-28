@@ -276,6 +276,7 @@ export function createDevelopmentIntelligenceServer() {
         const store = new WorkspaceStore(body.userId), job = await store.build(body.jobId);
         if (!job || job.kind === 'browse' || job.assignedComputer !== 'hosted' || job.claimId !== body.claimId || !job.hosted) { json(res, 403, { error: 'Invalid hosted job claim' }); return; }
         if (job.state === 'complete' || job.state === 'failed') { json(res, 200, { complete: true }); return; }
+        if (!await store.hostedClaimActive(job.id, body.claimId)) { json(res, 403, { error: 'Invalid hosted job claim' }); return; }
         const updated = await advanceHostedJob(store, body.userId, job);
         json(res, updated?.state === 'complete' || updated?.state === 'failed' ? 200 : 409, { complete: updated?.state === 'complete' || updated?.state === 'failed' }); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
