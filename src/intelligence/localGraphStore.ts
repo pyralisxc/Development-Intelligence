@@ -8,7 +8,7 @@ import { graphFamilyMemberships } from './graphFamilies.js';
 
 type Field = 'nodes' | 'edges' | 'evidence';
 type Entry = { generation: string; graphId: string; createdAt: string; sourceFingerprint: string | null; lastBuiltAt?: string };
-type Catalog = { version: 1; project: string; active: string; entries: Entry[]; targets?: Record<string, string> };
+type Catalog = { version: 1; project: string; active: string; entries: Entry[]; targets?: Record<string, string>; pendingDelete?: string[] };
 type Part = { field: Field; file: string; sha256: string };
 type Manifest = { version: 1; graph: IntelligenceGraph; parts: Part[] };
 
@@ -31,6 +31,19 @@ async function writeCatalog(directory: string, catalog: Catalog): Promise<void> 
   const temporary = path.join(directory, `.catalog-${randomBytes(12).toString('hex')}.tmp`);
   await fs.writeFile(temporary, JSON.stringify(catalog));
   await fs.rename(temporary, path.join(directory, 'catalog.json'));
+}
+
+/** Complete only explicitly retired, still-unreferenced generations after an interruption. */
+async function finishCatalogDeletes(directory: string): Promise<void> {
+  const catalog = await catalogAt(directory);
+  if (!catalog?.pendingDelete?.length) return;
+  const protectedGenerations = new Set([catalog.active, ...catalog.entries.map(entry => entry.generation), ...Object.values(catalog.targets ?? {})]);
+  for (const generation of catalog.pendingDelete) {
+    if (!/^[a-f0-9]{32}$/u.test(generation)) throw new Error('Invalid pending graph generation');
+    if (!protectedGenerations.has(generation)) await fs.rm(path.join(directory, generation), { recursive: true, force: true });
+  }
+  const { pendingDelete: _pendingDelete, ...complete } = catalog;
+  await writeCatalog(directory, complete);
 }
 
 /** Serialize publication and reads so terminal, Workbench and MCP cannot race retention. */
@@ -59,7 +72,7 @@ async function withCatalogLock<T>(directory: string, fn: () => Promise<T>, immut
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
-  try { return await fn(); }
+  try { await finishCatalogDeletes(directory); return await fn(); }
   finally { await fs.rm(lock, { recursive: true, force: true }); }
 }
 
@@ -198,8 +211,8 @@ export async function reconcileAccountGraphStages(root: string, project: string,
     const protectedGenerations = new Set([active, ...Object.values(targets)]);
     const retired = catalog.entries.filter(entry => removed.has(entry.generation) && !protectedGenerations.has(entry.generation));
     const retiredIds = new Set(retired.map(entry => entry.generation));
-    await writeCatalog(directory, { ...catalog, active, entries: catalog.entries.filter(entry => !retiredIds.has(entry.generation)), targets });
-    for (const entry of retired) if (/^[a-f0-9]{32}$/u.test(entry.generation)) await fs.rm(path.join(directory, entry.generation), { recursive: true, force: true });
+    await writeCatalog(directory, { ...catalog, active, entries: catalog.entries.filter(entry => !retiredIds.has(entry.generation)), targets, pendingDelete: retired.map(entry => entry.generation) });
+    await finishCatalogDeletes(directory);
   });
 }
 
