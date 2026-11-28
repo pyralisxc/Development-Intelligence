@@ -185,7 +185,7 @@ export async function executeAccountGraphJob(
       const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer?.kind === 'shared-folder' ? path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id) : job.graph.transfer?.kind === 'direct-hosted' ? path.join(scratchDir, 'di-hosted-transfer', job.id) : null;
       if (!dataDir) throw new Error('A transfer method is required for this graph');
       result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir,
-        scratchDir, retain, target: job.graph.name, ...(ref ? { ref } : {}) }, progress => {
+        scratchDir, retain, target: job.snapshotStaging && job.claimId ? `.di-account-stage-${job.claimId}` : job.graph.name, ...(job.snapshotStaging ? { stageOnly: true } : {}), ...(ref ? { ref } : {}) }, progress => {
         activeProgress = progress;
         if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); void report(progress).catch(() => {}); }
       });
@@ -222,7 +222,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
   console.log(`Waiting for DI account work from ${credentials.origin}.`);
   for (;;) {
     let job: BuildJob | BrowseJob | null;
-    try { job = await send({ action: 'computer-claim-build' }) as BuildJob | BrowseJob | null; }
+    try { job = await send({ action: 'computer-claim-build', snapshotStaging: true }) as BuildJob | BrowseJob | null; }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/authorization expired|not linked to this account/i.test(message)) throw error;
