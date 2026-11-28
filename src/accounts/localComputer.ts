@@ -132,6 +132,13 @@ export async function executeAccountGraphJob(
   let sharedScratch: string | null = null;
   let renewal: ReturnType<typeof setInterval> | undefined;
   try {
+    if (job.kind === 'remove') {
+      if (!job.removalSnapshot) return { removed: true };
+      const { removeAccountGraph } = await import('../intelligence/localGraphStore.js');
+      if (!assertClaim) throw new Error('Graph removal requires an active claim');
+      await removeAccountGraph(job.graph.storage.location, job.project.id, job.graph.id, job.removalSnapshot, assertClaim);
+      return { removed: true };
+    }
     if (job.kind === 'build' && job.graph.transfer?.kind === 'direct-hosted') {
       const staging = path.join(scratchDir, 'di-hosted-transfer', job.id), checkpoint = path.join(staging, 'build-result.json');
       const saved = await fs.readFile(checkpoint, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
@@ -342,7 +349,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         else if (message.type === 'probe' && typeof message.nonce === 'string') void send({ action: 'computer-probe-response', nonce: message.nonce }).catch(() => {});
       }); }
       if (paused) continue;
-      job = await send({ action: 'computer-claim-build', snapshotStaging: true, sharedTransferV2: true, snapshotHandoffVersion: 1 }) as BuildJob | BrowseJob | null;
+      job = await send({ action: 'computer-claim-build', snapshotStaging: true, sharedTransferV2: true, snapshotHandoffVersion: 1, removalVersion: 1 }) as BuildJob | BrowseJob | null;
       if (!job) { await events.wait(); continue; }
     } catch (error) {
       events?.close(); events = null;

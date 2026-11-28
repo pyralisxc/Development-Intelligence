@@ -326,7 +326,9 @@ export function createDevelopmentIntelligenceServer() {
           const jobId = requestUrl.searchParams.get('job');
           if (jobId && requestUrl.searchParams.has('part')) { json(res, 200, { part: await store.investigationPart(jobId, Number(requestUrl.searchParams.get('part'))) }); return; }
           if (jobId) { json(res, 200, await store.build(jobId)); return; }
-          const [projects, graphs, computers, layout, builds] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout(), store.builds(false)]);
+          // Complete any interrupted removal finalization before reading the account lists.
+          const builds = await store.builds(false);
+          const [projects, graphs, computers, layout] = await Promise.all([store.projects(), store.graphs(), store.computers(), store.layout()]);
           const snapshots = await Promise.all(graphs.map(async graph => {
             const latest = (await store.graphWithSnapshot(graph.id))?.currentSnapshot;
             if (!latest) return { graphId: graph.id, snapshot: null };
@@ -341,6 +343,9 @@ export function createDevelopmentIntelligenceServer() {
           json(res, 403, { error: 'Account changes require the Workbench origin' }); return;
         }
         const body = await readJson(req);
+        if ((body.action === 'remove-project' || body.action === 'remove-graph') && identity.tokenType === 'session_token') { const jobs = await store.removeWorkspaceItem(body.action === 'remove-project' ? 'project' : 'graph', body.id); for (const job of jobs) if (job.assignedComputer === 'hosted') await advanceHostedJob(store, identity.userId, job, accountOrigin(req)); json(res, 200, { jobs }); return; }
+        if ((body.action === 'forget-project' || body.action === 'forget-graph') && identity.tokenType === 'session_token') { await store.forgetWorkspaceItem(body.action === 'forget-project' ? 'project' : 'graph', body.id); json(res, 200, { removed: true }); return; }
+        if (body.action === 'retry-removal' && identity.tokenType === 'session_token') { json(res, 200, await advanceHostedJob(store, identity.userId, await store.retryRemoval(body.jobId), accountOrigin(req))); return; }
         if (body.action === 'save-project' && identity.tokenType === 'session_token') { json(res, 200, await store.saveProject(body.project)); return; }
         if (body.action === 'save-graph' && identity.tokenType === 'session_token') { json(res, 200, await store.saveGraph(body.graph)); return; }
         if (body.action === 'save-layout' && identity.tokenType === 'session_token') { await store.saveLayout(body.layout); json(res, 200, { saved: true }); return; }
@@ -357,7 +362,7 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'computer-connect' && identity.tokenType === 'oauth_token') { json(res, 200, await store.connectComputer(body.computerId, body.secret)); return; }
         if (body.action === 'computer-probe-response' && identity.tokenType === 'oauth_token') { await store.answerComputerProbe(body.computerId, body.secret, body.nonce); json(res, 200, { answered: true }); return; }
         if (body.action === 'computer-heartbeat' && identity.tokenType === 'oauth_token') { json(res, 200, await store.heartbeat(body.computerId, body.secret)); return; }
-        if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret, body.snapshotStaging === true, body.sharedTransferV2 === true, body.snapshotHandoffVersion === 1 ? 1 : 0)); return; }
+        if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret, body.snapshotStaging === true, body.sharedTransferV2 === true, body.snapshotHandoffVersion === 1 ? 1 : 0, body.removalVersion === 1 ? 1 : 0)); return; }
         if (body.action === 'computer-investigation-part' && identity.tokenType === 'oauth_token') { await store.putInvestigationPart(body.computerId, body.secret, body.jobId, body.claimId, body.index, body.part); json(res, 200, { saved: true }); return; }
         if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
         if ((['computer-start-hosted-transfer', 'computer-hosted-transfer-status', 'computer-stop-hosted-transfer'].includes(body.action)) && identity.tokenType === 'oauth_token') {
