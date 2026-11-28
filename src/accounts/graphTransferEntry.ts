@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import { Readable } from 'node:stream';
 import { checkedGraphTransferManifest, receiveGraphTransfer, type GraphFile, type GraphTransferManifest } from './graphTransfer.js';
 
-type TransferInput = { token: string; project: string; graphId: string; target: string; retain: number; stageOnly?: boolean; previousGraphId?: string; accountGraphId?: string; lease?: { origin: string; userId: string; jobId: string; claimId: string } };
+type TransferInput = { token: string; project: string; graphId: string; target: string; retain: number; stageOnly?: boolean; previousGraphId?: string; accountGraphId?: string; legacyTarget?: { name: string; graphId: string }; lease?: { origin: string; userId: string; jobId: string; claimId: string } };
 type Arrival = { stream: ReadableStream<Uint8Array>; response: any };
 
 /** One short-lived, claim-scoped transfer endpoint inside the destination Sandbox. */
@@ -61,8 +61,8 @@ async function main(): Promise<void> {
         if (!input.stageOnly || !input.accountGraphId) throw new Error('Graph retirement is unavailable for this transfer');
         if (receiving) await receiving;
         const { reconcileAccountGraphStages } = await import('../intelligence/localGraphStore.js');
-        await reconcileAccountGraphStages(destination, input.project, input.accountGraphId, input.graphId, () => assertClaim(true));
-        reply(res, 200, { retired: true, graphId: input.graphId }); return;
+        const outcome = await reconcileAccountGraphStages(destination, input.project, input.accountGraphId, input.graphId, () => assertClaim(true), input.legacyTarget);
+        reply(res, 200, { retired: true, graphId: input.graphId, ...outcome }); return;
       }
       if (req.method === 'POST' && url.pathname === '/commit') {
         if (!receiving) throw new Error('Graph transfer has not started');

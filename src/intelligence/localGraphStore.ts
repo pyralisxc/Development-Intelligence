@@ -193,10 +193,10 @@ export function accountGraphStageTarget(graphId: string, claimId: string): strin
  * publication claim. The caller must supply the authoritative current graph captured under that
  * claim; never infer liveness from file age.
  */
-export async function reconcileAccountGraphStages(root: string, project: string, graphId: string, currentGraphId: string, assertClaim: () => Promise<void>): Promise<void> {
+export async function reconcileAccountGraphStages(root: string, project: string, graphId: string, currentGraphId: string, assertClaim: () => Promise<void>, legacyTarget?: { name: string; graphId: string }): Promise<{ retainedTargets: string[] }> {
   if (!currentGraphId || !/^[a-f0-9]{32}$/u.test(graphId)) throw new Error('Invalid account graph reference');
   const directory = projectDirectory(root, project), prefix = `.di-account-stage-${graphId}-`, targetName = `.di-account-current-${graphId}`;
-  await withCatalogLock(directory, async () => {
+  return await withCatalogLock(directory, async () => {
     await assertClaim();
     const catalog = await catalogAt(directory);
     if (!catalog || catalog.project !== project) throw new Error('Account graph storage is unavailable');
@@ -206,6 +206,14 @@ export async function reconcileAccountGraphStages(root: string, project: string,
     const targets = { ...(catalog.targets ?? { working: catalog.active }), [targetName]: current.generation };
     const removed = new Set<string>();
     if (previousCurrent && previousCurrent !== current.generation) removed.add(previousCurrent);
+    // A legacy target is eligible only with the exact historical build receipt,
+    // matching stored generation, and no independent target retaining it.
+    if (legacyTarget && legacyTarget.name && !legacyTarget.name.startsWith('.di-account-') && !/[\u0000-\u001f\u007f]/u.test(legacyTarget.name)) {
+      const generation = targets[legacyTarget.name];
+      const entry = catalog.entries.find(item => item.generation === generation && item.graphId === legacyTarget.graphId);
+      const shared = Object.entries(targets).some(([name, value]) => value === generation && name !== legacyTarget.name && name !== targetName && !name.startsWith(prefix));
+      if (entry && generation && generation !== current.generation && !shared) { delete targets[legacyTarget.name]; removed.add(generation); }
+    }
     for (const name of Object.keys(targets)) if (name.startsWith(prefix)) { removed.add(targets[name]!); delete targets[name]; }
     const active = removed.has(catalog.active) ? current.generation : catalog.active;
     const protectedGenerations = new Set([active, ...Object.values(targets)]);
@@ -215,6 +223,8 @@ export async function reconcileAccountGraphStages(root: string, project: string,
     await assertClaim();
     await writeCatalog(directory, { ...catalog, active, entries: catalog.entries.filter(entry => !retiredIds.has(entry.generation)), targets, pendingDelete: retired.map(entry => entry.generation) });
     await finishCatalogDeletes(directory);
+    const legacyGenerations = new Set(catalog.entries.filter(item => legacyTarget && item.graphId === legacyTarget.graphId && item.generation !== current.generation).map(item => item.generation));
+    return { retainedTargets: Object.entries(targets).filter(([, generation]) => legacyGenerations.has(generation)).map(([name]) => name) };
   });
 }
 

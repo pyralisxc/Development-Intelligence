@@ -233,8 +233,9 @@ export async function finishLinkedSnapshot(job: BuildJob, result: unknown, updat
   try {
     if (job.stage !== 'cleanup') await update({ state: 'publishing', result });
     const { reconcileAccountGraphStages } = await import('../intelligence/localGraphStore.js');
-    await reconcileAccountGraphStages(job.graph.storage.location, job.project.id, job.graph.id, built.graphId, async () => { await update({ progress: { stage: 'retiring-replaced-graph' } }); });
-    await update({ state: 'complete', result });
+    const cleanup = await reconcileAccountGraphStages(job.graph.storage.location, job.project.id, job.graph.id, built.graphId, async () => { await update({ progress: { stage: 'retiring-replaced-graph' } }); }, job.stage === 'cleanup' ? job.cleanupLegacyTarget : job.previousSnapshot?.legacyTarget);
+    const retainedLegacyTargets = [...new Set([...(job.retainedLegacyTargets ?? []), ...cleanup.retainedTargets])];
+    await update({ state: 'complete', result, ...(retainedLegacyTargets.length ? { retainedLegacyTargets } : {}) });
   } catch {
     // The account has already published this generation. Keep its claim and
     // retry cleanup through the existing lease if this attempt is interrupted.
@@ -263,7 +264,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
   console.log(`Waiting for DI account work from ${credentials.origin}.`);
   for (;;) {
     let job: BuildJob | BrowseJob | null;
-    try { job = await send({ action: 'computer-claim-build', snapshotStaging: true, sharedTransferV2: true }) as BuildJob | BrowseJob | null; }
+    try { job = await send({ action: 'computer-claim-build', snapshotStaging: true, sharedTransferV2: true, snapshotHandoffVersion: 1 }) as BuildJob | BrowseJob | null; }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/authorization expired|not linked to this account/i.test(message)) throw error;
@@ -296,7 +297,9 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         }
         const response = await fetch(new URL('/retire', endpoint), { method: 'POST', headers: { authorization: `Bearer ${target.token}` }, redirect: 'error', signal: AbortSignal.timeout(30000) });
         if (!response.ok) throw new Error('Hosted graph retirement was not confirmed');
-        await update({ state: 'complete', result: built, hostedTransferred: true });
+        const outcome = await response.json() as { retainedTargets?: string[] };
+        const retainedLegacyTargets = [...new Set([...(job.kind === 'build' ? job.retainedLegacyTargets ?? [] : []), ...(outcome.retainedTargets ?? [])])];
+        await update({ state: 'complete', result: built, hostedTransferred: true, ...(retainedLegacyTargets.length ? { retainedLegacyTargets } : {}) });
       } catch {
         await update({ progress: { stage: 'waiting-to-retry-graph-retirement' } }).catch(() => {});
       } finally {
@@ -382,7 +385,9 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
               await update({ state: 'publishing', result: built, hostedTransferred: true });
               const retired = await fetch(new URL('/retire', endpoint), { method: 'POST', headers: { authorization: `Bearer ${target.token}` }, redirect: 'error', signal: AbortSignal.timeout(30000) });
               if (!retired.ok) throw new Error('Hosted graph retirement was not confirmed');
-              await update({ state: 'complete', result: built, hostedTransferred: true });
+              const outcome = await retired.json() as { retainedTargets?: string[] };
+              const retainedLegacyTargets = [...new Set([...(job.retainedLegacyTargets ?? []), ...(outcome.retainedTargets ?? [])])];
+              await update({ state: 'complete', result: built, hostedTransferred: true, ...(retainedLegacyTargets.length ? { retainedLegacyTargets } : {}) });
               await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
             } catch { await update({ progress: { stage: 'waiting-to-retry-graph-retirement' } }).catch(() => {}); }
           } else {

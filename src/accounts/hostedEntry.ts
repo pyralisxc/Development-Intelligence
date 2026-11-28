@@ -35,6 +35,7 @@ async function main(): Promise<void> {
         const response = await fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId }) });
         if (response.status !== 409) throw new Error('Hosted graph claim is no longer active');
       });
+    let retainedLegacyTargets: string[] = job.retainedLegacyTargets ?? [];
     if (job.kind === 'build' && job.snapshotStaging && job.graphLease && job.graph.storage.computer === 'hosted' && (!job.previousSnapshot || (job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location))) {
       const built = result as { graphId?: unknown } | undefined;
       if (!built || typeof built.graphId !== 'string' || !built.graphId) throw new Error('The graph build did not return a generation');
@@ -45,12 +46,13 @@ async function main(): Promise<void> {
         const response = await fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId, publishResult: result }) });
         if (!response.ok) throw new Error('Hosted graph publication was not confirmed');
       }
-      await reconcileAccountGraphStages(dataDir, job.project.id, job.graph.id, built.graphId, async () => {
+      const cleanup = await reconcileAccountGraphStages(dataDir, job.project.id, job.graph.id, built.graphId, async () => {
         const response = await fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId, publishResult: result }) });
         if (!response.ok) throw new Error('Hosted graph retirement claim is no longer active');
-      });
+      }, job.stage === 'cleanup' ? job.cleanupLegacyTarget : job.previousSnapshot?.legacyTarget);
+      retainedLegacyTargets = [...new Set([...retainedLegacyTargets, ...cleanup.retainedTargets])];
     }
-    await publish({ state: 'complete', result });
+    await publish({ state: 'complete', result, ...(retainedLegacyTargets.length ? { retainedLegacyTargets } : {}) });
   } catch (error) {
     await publish(published ? { state: 'running', progress: { stage: 'waiting-to-retry-graph-retirement' } } : { state: 'failed', error: error instanceof Error ? error.message : String(error) });
     process.exitCode = 1;

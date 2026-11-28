@@ -325,7 +325,7 @@ export function createDevelopmentIntelligenceServer() {
         if (body.action === 'begin-computer-link' && identity.tokenType === 'session_token') { json(res, 200, { code: await store.beginComputerLink() }); return; }
         if (body.action === 'link-computer' && identity.tokenType === 'oauth_token') { json(res, 200, await store.linkComputer(body.computer, body.pairingCode)); return; }
         if (body.action === 'computer-heartbeat' && identity.tokenType === 'oauth_token') { json(res, 200, await store.heartbeat(body.computerId, body.secret)); return; }
-        if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret, body.snapshotStaging === true, body.sharedTransferV2 === true)); return; }
+        if (body.action === 'computer-claim-build' && identity.tokenType === 'oauth_token') { json(res, 200, await store.claimBuild(body.computerId, body.secret, body.snapshotStaging === true, body.sharedTransferV2 === true, body.snapshotHandoffVersion === 1 ? 1 : 0)); return; }
         if (body.action === 'computer-investigation-part' && identity.tokenType === 'oauth_token') { await store.putInvestigationPart(body.computerId, body.secret, body.jobId, body.claimId, body.index, body.part); json(res, 200, { saved: true }); return; }
         if (body.action === 'computer-update-build' && identity.tokenType === 'oauth_token') { await store.updateBuild(body.computerId, body.secret, body.jobId, body.update); json(res, 200, { saved: true }); return; }
         if ((['computer-start-hosted-transfer', 'computer-hosted-transfer-status', 'computer-stop-hosted-transfer'].includes(body.action)) && identity.tokenType === 'oauth_token') {
