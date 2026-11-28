@@ -172,63 +172,33 @@ export async function localSourceGraphHistory(root: string, project: string): Pr
 }
 
 /** Keep an in-flight account generation distinct from the published target. */
-export function accountGraphStageTarget(jobId: string): string {
-  if (!/^[a-f0-9]{32}$/u.test(jobId)) throw new Error('Invalid graph build identity');
-  return `.di-account-stage-${jobId}`;
-}
-
-/**
- * Promote a staged generation only if the storage target still identifies the
- * expected predecessor. A mismatch leaves the stage intact for reconciliation.
- * Call only after the account owner has committed the corresponding reference.
- */
-export async function publishAccountGraphStage(root: string, project: string, jobId: string, targetName: string, expectedPreviousGraphId: string | null, retain = 3): Promise<boolean> {
-  if (!targetName.trim() || !Number.isSafeInteger(retain) || retain < 1) throw new Error('Invalid account graph target');
-  const stageName = accountGraphStageTarget(jobId), directory = projectDirectory(root, project);
-  return await withCatalogLock(directory, async () => {
-    const catalog = await catalogAt(directory);
-    if (!catalog || catalog.project !== project) throw new Error('Account graph storage is unavailable');
-    const targets = { ...(catalog.targets ?? { working: catalog.active }) };
-    const stage = targets[stageName];
-    const staged = catalog.entries.find(entry => entry.generation === stage);
-    if (!staged) throw new Error('The staged graph is unavailable');
-    const previous = catalog.entries.find(entry => entry.generation === targets[targetName]);
-    if ((previous?.graphId ?? null) !== expectedPreviousGraphId) return false;
-    targets[targetName] = staged.generation;
-    delete targets[stageName];
-    const active = previous?.generation === catalog.active ? staged.generation : catalog.active;
-    const keep = new Set([active, ...Object.values(targets)]);
-    for (const entry of catalog.entries) { if (keep.size >= retain) break; keep.add(entry.generation); }
-    const kept = catalog.entries.filter(entry => keep.has(entry.generation));
-    await writeCatalog(directory, { ...catalog, active, entries: kept, targets });
-    for (const old of catalog.entries.filter(entry => !keep.has(entry.generation))) {
-      if (/^[a-f0-9]{32}$/u.test(old.generation)) await fs.rm(path.join(directory, old.generation), { recursive: true, force: true });
-    }
-    return true;
-  });
+export function accountGraphStageTarget(graphId: string, claimId: string): string {
+  if (!/^[a-f0-9]{32}$/u.test(graphId) || !/^[a-f0-9]{32}$/u.test(claimId)) throw new Error('Invalid account graph or claim identity');
+  return `.di-account-stage-${graphId}-${claimId}`;
 }
 
 /**
  * Reconcile stages for one account graph while its caller holds the graph's
- * publication claim. The caller must supply the authoritative current graph and
- * all live build IDs from the same claim; never infer liveness from file age.
+ * publication claim. The caller must supply the authoritative current graph captured under that
+ * claim; never infer liveness from file age.
  */
-export async function reconcileAccountGraphStages(root: string, project: string, targetName: string, currentGraphId: string, obsoleteJobIds: string[]): Promise<void> {
-  if (!targetName.trim() || !currentGraphId) throw new Error('Invalid account graph reference');
-  const obsoleteTargets = obsoleteJobIds.map(accountGraphStageTarget);
-  const directory = projectDirectory(root, project);
+export async function reconcileAccountGraphStages(root: string, project: string, graphId: string, currentGraphId: string, assertClaim: () => Promise<void>): Promise<void> {
+  if (!currentGraphId || !/^[a-f0-9]{32}$/u.test(graphId)) throw new Error('Invalid account graph reference');
+  const directory = projectDirectory(root, project), prefix = `.di-account-stage-${graphId}-`, targetName = `.di-account-current-${graphId}`;
   await withCatalogLock(directory, async () => {
+    await assertClaim();
     const catalog = await catalogAt(directory);
     if (!catalog || catalog.project !== project) throw new Error('Account graph storage is unavailable');
     const current = catalog.entries.find(entry => entry.graphId === currentGraphId);
     if (!current) throw new Error('The current account graph is not available at this location');
     const targets = { ...(catalog.targets ?? { working: catalog.active }), [targetName]: current.generation };
     const removed = new Set<string>();
-    for (const name of obsoleteTargets) { if (targets[name]) removed.add(targets[name]); delete targets[name]; }
-    const protectedGenerations = new Set([catalog.active, ...Object.values(targets)]);
+    for (const name of Object.keys(targets)) if (name.startsWith(prefix)) { removed.add(targets[name]!); delete targets[name]; }
+    const active = removed.has(catalog.active) ? current.generation : catalog.active;
+    const protectedGenerations = new Set([active, ...Object.values(targets)]);
     const retired = catalog.entries.filter(entry => removed.has(entry.generation) && !protectedGenerations.has(entry.generation));
     const retiredIds = new Set(retired.map(entry => entry.generation));
-    await writeCatalog(directory, { ...catalog, entries: catalog.entries.filter(entry => !retiredIds.has(entry.generation)), targets });
+    await writeCatalog(directory, { ...catalog, active, entries: catalog.entries.filter(entry => !retiredIds.has(entry.generation)), targets });
     for (const entry of retired) if (/^[a-f0-9]{32}$/u.test(entry.generation)) await fs.rm(path.join(directory, entry.generation), { recursive: true, force: true });
   });
 }
@@ -263,7 +233,7 @@ export async function localSourceGraphStorage(root: string, project: string): Pr
 }
 
 /** Publish one already-built generation into another local store. */
-export async function importLocalSourceGraph(source: string, destination: string, project: string, graphId: string, targetName: string, retain = 3): Promise<void> {
+export async function importLocalSourceGraph(source: string, destination: string, project: string, graphId: string, targetName: string, retain = 3, stageOnly = false): Promise<void> {
   if (path.resolve(source) === path.resolve(destination)) throw new Error('Transfer staging and graph storage must be different folders');
   if (!Number.isSafeInteger(retain) || retain < 1 || !targetName.trim()) throw new Error('Invalid graph retention or name');
   const sourceDirectory = projectDirectory(source, project), sourceCatalog = await catalogAt(sourceDirectory);
@@ -305,7 +275,7 @@ export async function importLocalSourceGraph(source: string, destination: string
       }
       const entries = [entry, ...(previous?.entries ?? []).filter(item => item.generation !== entry.generation)];
       const targets = { ...(previous?.targets ?? (previous ? { working: previous.active } : {})), [targetName]: entry.generation };
-      const active = manifest.graph.sourceState ? entry.generation : previous?.active ?? entry.generation;
+      const active = !stageOnly && manifest.graph.sourceState ? entry.generation : previous?.active ?? entry.generation;
       const keep = new Set([active, ...Object.values(targets)]);
       for (const item of entries) { if (keep.size >= retain) break; keep.add(item.generation); }
       const kept = entries.filter(item => keep.has(item.generation));

@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import { Readable } from 'node:stream';
 import { checkedGraphTransferManifest, receiveGraphTransfer, type GraphFile, type GraphTransferManifest } from './graphTransfer.js';
 
-type TransferInput = { token: string; project: string; graphId: string; target: string; retain: number; lease?: { origin: string; userId: string; jobId: string; claimId: string } };
+type TransferInput = { token: string; project: string; graphId: string; target: string; retain: number; stageOnly?: boolean; previousGraphId?: string; accountGraphId?: string; lease?: { origin: string; userId: string; jobId: string; claimId: string } };
 type Arrival = { stream: ReadableStream<Uint8Array>; response: any };
 
 /** One short-lived, claim-scoped transfer endpoint inside the destination Sandbox. */
@@ -29,7 +29,12 @@ async function main(): Promise<void> {
         if (manifest && JSON.stringify(next) !== JSON.stringify(manifest)) throw new Error('Transfer manifest changed');
         if (!manifest) {
           manifest = next;
-          receiving = receiveGraphTransfer({ manifest, project: input.project, graphId: input.graphId, target: input.target, destination, scratch, retain: input.retain,
+          receiving = receiveGraphTransfer({ manifest, project: input.project, graphId: input.graphId, target: input.target, destination, scratch, retain: input.retain, stageOnly: Boolean(input.stageOnly), ...(input.previousGraphId && input.accountGraphId ? { previousGraphId: input.previousGraphId, accountGraphId: input.accountGraphId } : {}),
+            assertClaim: async () => {
+              if (!input.lease) throw new Error('Graph transfer claim is unavailable');
+              const response = await fetch(new URL('/account/hosted-transfer-lease', input.lease.origin), { method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: input.lease.userId, jobId: input.lease.jobId, claimId: input.lease.claimId, graphId: input.graphId, token: input.token }), signal: AbortSignal.timeout(10000) });
+              if (!response.ok) throw new Error('Graph transfer claim is no longer active');
+            },
             readFile: async (file: GraphFile) => {
               currentFile = file.name;
               const existing = arrivals.get(file.name); if (existing) { arrivals.delete(file.name); responses.set(file.name, existing.response); return existing.stream; }

@@ -108,6 +108,7 @@ export async function executeAccountGraphJob(
   retain: number,
   githubToken: () => Promise<string | null>,
   report: (progress: unknown) => Promise<unknown>,
+  assertClaim?: () => Promise<void>,
 ): Promise<unknown> {
   let temporary: string | null = null;
   let renewal: ReturnType<typeof setInterval> | undefined;
@@ -184,8 +185,13 @@ export async function executeAccountGraphJob(
     } else {
       const dataDir = job.graph.buildComputer === job.graph.storage.computer ? job.graph.storage.location : job.graph.transfer?.kind === 'shared-folder' ? path.join(job.graph.transfer.buildLocation, '.di-transfers', job.id) : job.graph.transfer?.kind === 'direct-hosted' ? path.join(scratchDir, 'di-hosted-transfer', job.id) : null;
       if (!dataDir) throw new Error('A transfer method is required for this graph');
+      if (job.snapshotStaging && job.graphLease && job.previousSnapshot && job.graph.buildComputer === job.graph.storage.computer && job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location) {
+        const { reconcileAccountGraphStages } = await import('../intelligence/localGraphStore.js');
+        if (!assertClaim) throw new Error('Account graph cleanup requires a verified claim');
+        await reconcileAccountGraphStages(dataDir, job.project.id, job.graph.id, job.previousSnapshot.graphId, assertClaim);
+      }
       result = await runLocalGraphWorker({ kind: 'local', project: job.project.id, root, dataDir,
-        scratchDir, retain, target: job.snapshotStaging && job.claimId ? `.di-account-stage-${job.claimId}` : job.graph.name, ...(job.snapshotStaging ? { stageOnly: true } : {}), ...(ref ? { ref } : {}) }, progress => {
+        scratchDir, retain, target: job.snapshotStaging && job.claimId ? `.di-account-stage-${job.graph.id}-${job.claimId}` : job.graph.name, ...(job.snapshotStaging ? { stageOnly: true } : {}), ...(ref ? { ref } : {}) }, progress => {
         activeProgress = progress;
         if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); void report(progress).catch(() => {}); }
       });
@@ -247,14 +253,15 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
         if (typeof built?.graphId !== 'string' || job.graph.transfer?.kind !== 'shared-folder') throw new Error('The graph transfer has no shared-folder generation');
         const staging = path.join(job.graph.transfer.storageLocation, '.di-transfers', job.id);
         renewal = setInterval(() => { void update({ progress: { stage: 'transferring-to-storage' } }).catch(() => {}); }, 60_000);
-        const { importLocalSourceGraph } = await import('../intelligence/localGraphStore.js');
-        await importLocalSourceGraph(staging, job.graph.storage.location, job.project.id, built.graphId, job.graph.name, retain);
+        const { importLocalSourceGraph, reconcileAccountGraphStages } = await import('../intelligence/localGraphStore.js');
+        if (job.snapshotStaging && job.graphLease && job.previousSnapshot && job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location) await reconcileAccountGraphStages(job.graph.storage.location, job.project.id, job.graph.id, job.previousSnapshot.graphId, async () => { await update({ progress: { stage: 'reconciling-graph-storage' } }); });
+        await importLocalSourceGraph(staging, job.graph.storage.location, job.project.id, built.graphId, job.snapshotStaging && job.claimId ? `.di-account-stage-${job.graph.id}-${job.claimId}` : job.graph.name, retain, Boolean(job.snapshotStaging));
         if (renewal) clearInterval(renewal);
         await update({ state: 'complete', result: built });
         await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
         continue;
       }
-      const result = await executeAccountGraphJob(job, scratchDir, retain, async () => (await send({ action: 'computer-github-token', jobId: job.id, claimId: job.claimId })).token as string | null, progress => update({ progress }));
+      const result = await executeAccountGraphJob(job, scratchDir, retain, async () => (await send({ action: 'computer-github-token', jobId: job.id, claimId: job.claimId })).token as string | null, progress => update({ progress }), async () => { await update({ progress: { stage: 'reconciling-graph-storage' } }); });
       if (renewal) clearInterval(renewal);
       if (job.kind === 'build' && job.graph.transfer?.kind === 'direct-hosted' && job.graph.storage.computer === 'hosted') {
         const built = result as { graphId?: unknown };

@@ -49,7 +49,7 @@ export async function startHostedTransfer(userId: string, job: BuildJob, graphId
     onCreate: async instance => {
       try {
         const file = '/tmp/di-transfer-input.json';
-        await instance.writeFiles([{ path: file, content: JSON.stringify({ token, project: job.project.id, graphId, target: job.graph.name, retain, lease: { origin, userId, jobId: job.id, claimId: job.claimId } }), mode: 0o600 }]);
+        await instance.writeFiles([{ path: file, content: JSON.stringify({ token, project: job.project.id, graphId, target: job.snapshotStaging ? `.di-account-stage-${job.graph.id}-${job.claimId}` : job.graph.name, retain, stageOnly: Boolean(job.snapshotStaging), ...(job.graphLease && job.previousSnapshot && job.previousSnapshot.storage.computer === 'hosted' ? { previousGraphId: job.previousSnapshot.graphId, accountGraphId: job.graph.id } : {}), lease: { origin, userId, jobId: job.id, claimId: job.claimId } }), mode: 0o600 }]);
         const command = await instance.runCommand({ cmd: 'bash', detached: true, args: ['-lc', 'npm ci && npm run build:server:runtime && node dist/src/accounts/graphTransferEntry.js /tmp/di-transfer-input.json /data/graphs /tmp/di-transfer 3457'] });
         await instance.writeFiles([{ path: '/tmp/di-transfer-command', content: command.cmdId, mode: 0o600 }]);
       } catch (error) { await instance.stop().catch(() => {}); throw error; }

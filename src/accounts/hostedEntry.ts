@@ -30,7 +30,10 @@ async function main(): Promise<void> {
   try {
     await publish({ state: 'running', progress: { stage: 'starting' } });
     const result = await executeAccountGraphJob({ ...job, graph }, scratchDir, 3, async () => token,
-      async progress => await publish({ state: 'running', progress }));
+      async progress => await publish({ state: 'running', progress }), async () => {
+        const response = await fetch(new URL('/account/hosted-finish', callback.origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: callback.userId, jobId: job.id, claimId: job.claimId }) });
+        if (response.status !== 409) throw new Error('Hosted graph claim is no longer active');
+      });
     await publish({ state: 'complete', result });
   } catch (error) {
     await publish({ state: 'failed', error: error instanceof Error ? error.message : String(error) });

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
-import { importLocalSourceGraph, localSourceGraphHistory } from '../intelligence/localGraphStore.js';
+import { importLocalSourceGraph, localSourceGraphHistory, reconcileAccountGraphStages } from '../intelligence/localGraphStore.js';
 
 type Entry = { generation: string; graphId: string; createdAt: string; sourceFingerprint: string | null };
 export type GraphFile = { name: string; size: number; sha256: string };
@@ -52,7 +52,7 @@ export async function describeGraphTransfer(root: string, project: string, graph
 
 /** Stage exact files and publish through the same validating graph-store import. */
 export async function receiveGraphTransfer(input: {
-  manifest: unknown; project: string; graphId: string; target: string; destination: string; scratch: string; retain: number;
+  manifest: unknown; project: string; graphId: string; target: string; destination: string; scratch: string; retain: number; stageOnly?: boolean; previousGraphId?: string; accountGraphId?: string; assertClaim?: () => Promise<void>;
   readFile: (file: GraphFile) => Promise<ReadableStream<Uint8Array>>;
   progress?: (completed: number, total: number) => void;
 }): Promise<void> {
@@ -79,7 +79,8 @@ export async function receiveGraphTransfer(input: {
       input.progress?.(++completed, manifest.files.length);
     }
     await fs.writeFile(path.join(directory, 'catalog.json'), JSON.stringify({ version: 1, project: input.project, active: manifest.entry.generation, entries: [manifest.entry], targets: { [input.target]: manifest.entry.generation } }), { mode: 0o600 });
-    await importLocalSourceGraph(staging, input.destination, input.project, input.graphId, input.target, input.retain);
+    if (input.stageOnly && input.previousGraphId && input.accountGraphId) { if (!input.assertClaim) throw new Error('Account graph cleanup requires a verified claim'); await reconcileAccountGraphStages(input.destination, input.project, input.accountGraphId, input.previousGraphId, input.assertClaim); }
+    await importLocalSourceGraph(staging, input.destination, input.project, input.graphId, input.target, input.retain, Boolean(input.stageOnly));
   } finally { await fs.rm(staging, { recursive: true, force: true }); }
 }
 
