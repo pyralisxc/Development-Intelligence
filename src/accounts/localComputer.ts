@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, type ServerResponse } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { runChecked } from '../util/process.js';
 import { runLocalGraphWorker } from '../intelligence/canonicalReconcileWorker.js';
@@ -70,6 +70,7 @@ export async function linkComputer(home: string, workbench: string, openVerifica
   const verifier = randomBytes(32).toString('base64url');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
   let resolveCode!: (code: string) => void, rejectCode!: (error: Error) => void;
+  let callbackResponse: ServerResponse | undefined;
   const codePromise = new Promise<string>((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
   const callback = createServer((req, res) => {
     const incoming = new URL(req.url || '/', redirectUri);
@@ -80,8 +81,8 @@ export async function linkComputer(home: string, workbench: string, openVerifica
     if (!code || incoming.searchParams.has('error')) {
       res.writeHead(400, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('Sign-in did not complete. Return to DI and try again.'); rejectCode(new Error('Computer sign-in was declined or did not complete')); return;
     }
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
-    res.end('<!doctype html><title>Development Intelligence</title><script>history.replaceState(null, "", "/di-auth/callback")</script><p>Sign-in received. Return to Development Intelligence while it finishes linking.</p>');
+    if (callbackResponse) { res.writeHead(409); res.end('This sign-in is already being completed.'); return; }
+    callbackResponse = res;
     resolveCode(code);
   });
   await new Promise<void>((resolve, reject) => { callback.once('error', reject); callback.listen(49177, '127.0.0.1', () => { callback.off('error', reject); resolve(); }); });
@@ -96,7 +97,12 @@ export async function linkComputer(home: string, workbench: string, openVerifica
     if (tokens.error || !tokens.access_token || !tokens.refresh_token) throw new Error(`Computer authorization did not complete: ${tokens.error || 'missing credentials'}`);
     const linked = await workspace(origin, tokens.access_token, { action: 'link-computer', computer: { name: os.hostname(), platform: `${os.platform()} ${os.arch()}` } });
     await save(home, { origin, clientId: config.clientId, tokenEndpoint: discovery.token_endpoint, refreshToken: tokens.refresh_token, computerId: linked.computer.id, secret: linked.secret });
+    callbackResponse?.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    callbackResponse?.end('<!doctype html><title>Development Intelligence</title><script>history.replaceState(null, "", "/di-auth/callback")</script><p>Computer linked. Return to the Workbench and select Refresh computers. Connect it when you are ready to use it.</p>');
     console.log(`Linked ${linked.computer.name} to ${origin}.`);
+  } catch (error) {
+    if (callbackResponse && !callbackResponse.headersSent) { callbackResponse.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }); callbackResponse.end('Computer linking did not complete. Return to the Workbench and try again.'); }
+    throw error;
   } finally { clearTimeout(timer); callback.close(); }
 }
 
