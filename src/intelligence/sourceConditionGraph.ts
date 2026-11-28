@@ -104,7 +104,9 @@ export function buildSourceConditionGraphFacts(input: {
   for (const effect of lens.effects) {
     const offset = effect.sourceOffset;
     if (typeof offset !== 'number') continue;
-    const at = sourcePath + ':' + effect.sourceLine + ':effect-offset-' + offset;
+    const end = effect.sourceEnd;
+    if (typeof end !== 'number') continue;
+    const at = sourcePath + ':' + effect.sourceLine + ':effect-offset-' + offset + '-end-' + end;
     const proof = evidenceRecord({
       sourceId, kind: 'source-effect-syntax', locator: at,
       field: 'offset:' + offset,
@@ -114,7 +116,7 @@ export function buildSourceConditionGraphFacts(input: {
       message: 'An expression, return, throw or write occurs in source; execution, side effects and guard satisfiability are not proven.',
     });
     const node = observation({
-      identity: [sourceId, owner.id, 'source-effect', offset, effect.kind],
+      identity: [sourceId, owner.id, 'source-effect', offset, end, effect.kind],
       sourceId, kind: 'source-effect', locator: at,
       name: 'Source ' + effect.kind + ' in ' + (owner.name ?? owner.id),
       raw: effect.expression,
