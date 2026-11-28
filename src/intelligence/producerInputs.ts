@@ -26,13 +26,16 @@ export async function withPreparedProducerInputs<T>(input: {
   const scratch = path.resolve(process.env.DEVINT_SCRATCH_DIR ?? os.tmpdir());
   await fs.mkdir(scratch, { recursive: true });
   if (input.workingTree && input.disposableCheckout) throw new Error('Working files require their own source snapshot');
+  const prefix = !input.disposableCheckout ? (await runChecked('git', ['-C', input.root, 'rev-parse', '--show-prefix'])).stdout.trimEnd() : '';
+  const repositoryRoot = !input.disposableCheckout ? (await runChecked('git', ['-C', input.root, 'rev-parse', '--show-toplevel'])).stdout.trimEnd() : input.root;
   const temporary = input.disposableCheckout ? null : await fs.mkdtemp(projectAccessScratchPrefix(scratch, 'checkout'));
-  const root = temporary ? path.join(temporary, 'source') : input.root;
+  const cloneRoot = temporary ? path.join(temporary, 'source') : input.root;
+  const root = prefix ? path.join(cloneRoot, prefix) : cloneRoot;
   try {
     input.progress?.({ stage: 'preparing-source' });
     if (temporary) {
-      await runChecked('git', ['clone', '--no-checkout', '--shared', '--', input.root, root]);
-      await runChecked('git', ['-C', root, 'checkout', '--detach', input.revision]);
+      await runChecked('git', ['clone', '--no-checkout', '--shared', '--', repositoryRoot, cloneRoot]);
+      await runChecked('git', ['-C', cloneRoot, 'checkout', '--detach', input.revision]);
     }
     if (input.workingTree) {
       const listed = await runChecked('git', ['-C', input.root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z']);
