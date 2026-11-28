@@ -246,8 +246,10 @@ export function createDevelopmentIntelligenceServer() {
         const job = graph.currentSnapshot;
         const result = job as { graphId?: string; revision?: string | null; sourceState?: { kind: 'working-tree'; headRevision: string } } | undefined;
         if (!job || !result?.graphId) { json(res, 404, { error: 'Build a graph snapshot first' }); return; }
+        const project = await store.project(graph.projectId);
+        if (!project) { json(res, 404, { error: 'Project not found' }); return; }
         const embedded = requestUrl.searchParams.get('embedded') === '1';
-        const page = renderGraphViewer({ project: job.project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, job.project.name, embedded, job.graph.storage.computer === 'hosted' ? 'Stored in DI hosted storage' : `Stored on linked computer (${job.graph.storage.computer})`);
+        const page = renderGraphViewer({ project: project.id, repositoryRevision: result.revision ?? null, ...(result.sourceState ? { sourceState: result.sourceState } : {}) }, undefined, result.graphId, [], false, graph.id, project.name, embedded, job.storage.computer === 'hosted' ? 'Stored in DI hosted storage' : `Stored on linked computer (${job.storage.computer})`);
         res.writeHead(200, embedded ? { ...htmlHeaders(), 'x-frame-options': 'SAMEORIGIN' } : htmlHeaders()); res.end(page); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
@@ -295,7 +297,7 @@ export function createDevelopmentIntelligenceServer() {
             if (!latest) return { graphId: graph.id, snapshot: null };
             return { graphId: graph.id, snapshot: { graphId: latest.graphId, revision: latest.revision ?? null,
               sourceFingerprint: latest.sourceFingerprint ?? null, sourceState: latest.sourceState ?? null,
-              requestedAt: latest.requestedAt, source: latest.graph.source, storage: latest.graph.storage } };
+              requestedAt: latest.requestedAt, source: latest.source, storage: latest.storage } };
           }));
           json(res, 200, { projects, graphs, computers, layout, builds, snapshots }); return;
         }
