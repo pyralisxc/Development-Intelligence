@@ -20,6 +20,7 @@ di-local build-revision --ref preview --target preview
 di-local history
 di-local query --question "What calls the graph builder?"
 di-local query --question "What calls the graph builder?" --text
+di-local query --question "What calls the graph builder?" --max-passes 5
 di-local query --target preview --question "What calls the graph builder?"
 di-local query --question "What calls the graph builder?" --details
 di-local compare --base preview --target working
@@ -61,3 +62,5 @@ Questions, node and relationship inspection, audits, parity expectations, and re
 In Explore, a question follows its current result page on the graph. Use **Show graph context** to return to the surrounding graph and **Show investigation** to return to the result. Select a node or line to inspect its records; shift-click selects multiple visible nodes. **Investigate repository audit** selects the audit's sampled graph records. Parity evaluations and comparison pages offer buttons to show observed records on the graph; comparison base and head remain separate source states. Change rows inspect their own side of the comparison, and changed records offer before and after inspection. Questions and inspection in a followed result use that result's graph identity. Source coverage, unresolved relationships, and additional result pages remain visible in their respective operation results.
 
 The `di-local storage` command reports each retained generation, its graph and index bytes, names, and whether it is active or has an index. Active and named generations are protected even when they exceed the selected retention count. Names can share a stored generation when its graph records and substantive metadata match; build time and the matching repository observation time are retained separately as the latest build time. A graph ID alone does not establish that match. Unpinning a name removes the name; eligible historical generations are pruned after a later successful publication. Graph backup copies catalog-referenced generations and their indexes, not source files or disposable analysis caches. To restore a missing or incompatible local index without rebuilding source, use `di-local reindex --target <name>`; omit `--target` for the active graph.
+
+The question refinement controls include the maximum investigation passes, saved on this browser. The default is five; DI stops sooner when it has no further available expansion. The answer reports the actual attempts. The CLI `--max-passes` and MCP `maxPasses` select the same setting for each request. This setting does not control graph depth or results per page.

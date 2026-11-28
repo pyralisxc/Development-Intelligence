@@ -178,9 +178,11 @@ async function main(): Promise<void> {
     process.env.DEVINT_PROJECTS_JSON = JSON.stringify({ [project]: { repository: pathToFileURL(path.resolve(root)).href, defaultRef: 'HEAD', revisionPolicy: 'repository-history' } });
     const offset = Number(arg('--offset') ?? '0'), limit = Number(arg('--limit') ?? '20');
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1) throw new Error('Query offset must be non-negative and limit must be positive');
+    const maxPasses = Number(arg('--max-passes') ?? '5');
+    if (!Number.isSafeInteger(maxPasses) || maxPasses < 1) throw new Error('Maximum investigation passes must be a positive whole number');
     const { queryWorkbenchRequest } = await import('./intelligence/workbench.js');
     const scope = arg('--scope');
-    const response = await queryWorkbenchRequest({ project, text: question, ...(graphId ? { graphId } : {}), ...(scope ? { scope } : {}), offset, limit });
+    const response = await queryWorkbenchRequest({ project, text: question, ...(graphId ? { graphId } : {}), ...(scope ? { scope } : {}), offset, limit, maxPasses });
     if (process.argv.includes('--details')) console.log(JSON.stringify(response, null, 2));
     else if (process.argv.includes('--text')) {
       const request = response.request as any;
