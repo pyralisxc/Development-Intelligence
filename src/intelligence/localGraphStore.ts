@@ -2,6 +2,9 @@ import { promises as fs } from 'node:fs';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 import type { IntelligenceGraph } from '../types.js';
 import { bindLocalGraphIndex, buildLocalGraphIndex, readIndexedQuestionEnvelope } from './localGraphIndex.js';
 import { graphFamilyMemberships } from './graphFamilies.js';
@@ -46,34 +49,29 @@ async function finishCatalogDeletes(directory: string): Promise<void> {
   await writeCatalog(directory, complete);
 }
 
-/** Serialize publication and reads so terminal, Workbench and MCP cannot race retention. */
+/** Serialize catalog access using SQLite's OS-backed locks, including across hosts. */
 async function withCatalogLock<T>(directory: string, fn: () => Promise<T>, immutableSnapshot = false): Promise<T> {
   if (immutableSnapshot) return await fn();
-  const lock = path.join(directory, '.catalog-lock');
-  for (;;) {
-    try {
-      await fs.mkdir(lock);
-      try { await fs.writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid })); }
-      catch (error) { await fs.rm(lock, { recursive: true, force: true }); throw error; }
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      try {
-        const owner = JSON.parse(await fs.readFile(path.join(lock, 'owner.json'), 'utf8')) as { pid?: number };
-        if (typeof owner.pid === 'number' && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
-          try { process.kill(owner.pid, 0); }
-          catch (probe) { if ((probe as NodeJS.ErrnoException).code === 'ESRCH') { await fs.rm(lock, { recursive: true, force: true }); continue; } }
-        }
-      } catch (readError) {
-        if (!(readError instanceof SyntaxError) && (readError as NodeJS.ErrnoException).code !== 'ENOENT') throw readError;
-        try { if (Date.now() - (await fs.stat(lock)).mtimeMs > 60_000) { await fs.rm(lock, { recursive: true, force: true }); continue; } }
-        catch (statError) { if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue; throw statError; }
+  // The file is solely an OS-lock carrier; graph data and metadata remain in catalog.json.
+  const DatabaseSync = require('node:sqlite').DatabaseSync;
+  const db = new DatabaseSync(path.join(directory, '.catalog-lock.sqlite'));
+  let acquired = false;
+  try {
+    db.exec('PRAGMA busy_timeout=0');
+    for (;;) {
+      try { db.exec('BEGIN EXCLUSIVE'); acquired = true; break; }
+      catch (error) {
+        const code = (error as { errcode?: number }).errcode;
+        if (code !== 5 && code !== 6) throw error;
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-      await new Promise(resolve => setTimeout(resolve, 100));
     }
+    await finishCatalogDeletes(directory);
+    return await fn();
+  } finally {
+    try { if (acquired) db.exec('ROLLBACK'); }
+    finally { db.close(); }
   }
-  try { await finishCatalogDeletes(directory); return await fn(); }
-  finally { await fs.rm(lock, { recursive: true, force: true }); }
 }
 
 /** Source graph generations are rebuildable; this directory never owns accepted semantic state. */
