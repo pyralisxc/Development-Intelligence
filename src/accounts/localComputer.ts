@@ -294,7 +294,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
           await update({ progress: { stage: 'waiting-for-hosted-storage' } });
           await new Promise(resolve => setTimeout(resolve, 3000));
         }
-        const response = await fetch(new URL('/retire', endpoint), { method: 'POST', headers: { authorization: `Bearer ${target.token}` }, redirect: 'error' });
+        const response = await fetch(new URL('/retire', endpoint), { method: 'POST', headers: { authorization: `Bearer ${target.token}` }, redirect: 'error', signal: AbortSignal.timeout(30000) });
         if (!response.ok) throw new Error('Hosted graph retirement was not confirmed');
         await update({ state: 'complete', result: built, hostedTransferred: true });
       } catch {
@@ -380,7 +380,7 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
           if (job.snapshotStaging && job.graphLease && (!job.previousSnapshot || (job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location))) {
             try {
               await update({ state: 'publishing', result: built, hostedTransferred: true });
-              const retired = await fetch(new URL('/retire', endpoint), { method: 'POST', headers: { authorization: `Bearer ${target.token}` }, redirect: 'error' });
+              const retired = await fetch(new URL('/retire', endpoint), { method: 'POST', headers: { authorization: `Bearer ${target.token}` }, redirect: 'error', signal: AbortSignal.timeout(30000) });
               if (!retired.ok) throw new Error('Hosted graph retirement was not confirmed');
               await update({ state: 'complete', result: built, hostedTransferred: true });
               await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
