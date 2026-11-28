@@ -125,6 +125,8 @@ if (process.platform === 'win32') {
   const protocolExec = protocolScript.replace(/%/g, '%%').replace(/[\\"`$]/g, '\\$&');
   const handler = path.join(applications, 'development-intelligence-link.desktop');
   await fs.writeFile(handler, `[Desktop Entry]\nType=Application\nName=Link Development Intelligence\nExec="${protocolExec}" %u\nTerminal=true\nNoDisplay=true\nMimeType=x-scheme-handler/devint;\n`);
+  const indexed = spawnSync('update-desktop-database', [applications], { encoding: 'utf8' });
+  if (indexed.status !== 0) console.warn('The desktop application index could not be updated. Computer link discovery may be unavailable until it is refreshed.');
   const registered = spawnSync('xdg-mime', ['default', 'development-intelligence-link.desktop', 'x-scheme-handler/devint'], { encoding: 'utf8' });
   if (registered.status !== 0) console.warn('Direct computer linking could not be registered. The command shown in the Workbench remains available.');
 }

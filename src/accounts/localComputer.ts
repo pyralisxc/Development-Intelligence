@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, type ServerResponse } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { runChecked } from '../util/process.js';
 import { runLocalGraphWorker } from '../intelligence/canonicalReconcileWorker.js';
@@ -70,6 +70,7 @@ export async function linkComputer(home: string, workbench: string, openVerifica
   const verifier = randomBytes(32).toString('base64url');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
   let resolveCode!: (code: string) => void, rejectCode!: (error: Error) => void;
+  let callbackResponse: ServerResponse | undefined;
   const codePromise = new Promise<string>((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
   const callback = createServer((req, res) => {
     const incoming = new URL(req.url || '/', redirectUri);
@@ -80,8 +81,8 @@ export async function linkComputer(home: string, workbench: string, openVerifica
     if (!code || incoming.searchParams.has('error')) {
       res.writeHead(400, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('Sign-in did not complete. Return to DI and try again.'); rejectCode(new Error('Computer sign-in was declined or did not complete')); return;
     }
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
-    res.end('<!doctype html><title>Development Intelligence</title><script>history.replaceState(null, "", "/di-auth/callback")</script><p>Sign-in received. Return to Development Intelligence while it finishes linking.</p>');
+    if (callbackResponse) { res.writeHead(409); res.end('This sign-in is already being completed.'); return; }
+    callbackResponse = res;
     resolveCode(code);
   });
   await new Promise<void>((resolve, reject) => { callback.once('error', reject); callback.listen(49177, '127.0.0.1', () => { callback.off('error', reject); resolve(); }); });
@@ -96,7 +97,12 @@ export async function linkComputer(home: string, workbench: string, openVerifica
     if (tokens.error || !tokens.access_token || !tokens.refresh_token) throw new Error(`Computer authorization did not complete: ${tokens.error || 'missing credentials'}`);
     const linked = await workspace(origin, tokens.access_token, { action: 'link-computer', computer: { name: os.hostname(), platform: `${os.platform()} ${os.arch()}` } });
     await save(home, { origin, clientId: config.clientId, tokenEndpoint: discovery.token_endpoint, refreshToken: tokens.refresh_token, computerId: linked.computer.id, secret: linked.secret });
+    callbackResponse?.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    callbackResponse?.end('<!doctype html><title>Development Intelligence</title><script>history.replaceState(null, "", "/di-auth/callback")</script><p>Computer linked. Return to the Workbench and select Refresh computers. Connect it when you are ready to use it.</p>');
     console.log(`Linked ${linked.computer.name} to ${origin}.`);
+  } catch (error) {
+    if (callbackResponse && !callbackResponse.headersSent) { callbackResponse.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }); callbackResponse.end('Computer linking did not complete. Return to the Workbench and try again.'); }
+    throw error;
   } finally { clearTimeout(timer); callback.close(); }
 }
 
@@ -108,6 +114,45 @@ export async function accountWorkbenchOrigin(home: string): Promise<string> {
 export async function accountComputerIdentity(home: string): Promise<{ origin: string; computerId: string }> {
   const credentials = await read(home);
   return { origin: trustedUrl(credentials.origin, true).origin, computerId: credentials.computerId };
+}
+
+/** Reuse a valid association; discard it only when the account confirms it was revoked. */
+export async function prepareComputerLink(home: string, workbench: string): Promise<'new' | 'linked'> {
+  let credentials: DeviceCredentials;
+  try { credentials = await read(home); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'new'; throw error; }
+  if (trustedUrl(credentials.origin, true).origin !== trustedUrl(workbench, true).origin) throw new Error('This installation is linked to another Workbench. Unlink it there, then run di-local unlink-local before linking a different account.');
+  const lock = await fs.readFile(path.join(home, 'computer.lock'), 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+  const pid = Number(lock);
+  if (lock !== null && (!Number.isSafeInteger(pid) || pid < 1)) throw new Error('The computer connection is starting or its lock is incomplete. Stop the connection and try again.');
+  if (pid > 0) {
+    try { process.kill(pid, 0); return 'linked'; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  }
+  const tokens = await postForm(credentials.tokenEndpoint, { client_id: credentials.clientId, grant_type: 'refresh_token', refresh_token: credentials.refreshToken });
+  if (tokens.error || !tokens.access_token) throw new Error('This installation’s sign-in expired. Run di-local unlink-local, then link it again from your Workbench.');
+  if (tokens.refresh_token) { credentials.refreshToken = tokens.refresh_token; await save(home, credentials); }
+  try {
+    await workspace(credentials.origin, tokens.access_token, { action: 'computer-heartbeat', computerId: credentials.computerId, secret: credentials.secret });
+    return 'linked';
+  } catch (error) {
+    if ((error as { status?: number }).status !== 403 || !(error instanceof Error) || error.message !== 'Computer is not linked to this account') throw error;
+    await forgetLocalComputer(home);
+    return 'new';
+  }
+}
+
+/** Remove only this installation's link after its worker has stopped. */
+export async function forgetLocalComputer(home: string): Promise<void> {
+  const lockPath = path.join(home, 'computer.lock');
+  const lock = await fs.readFile(lockPath, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+  const pid = Number(lock);
+  if (lock !== null && (!Number.isSafeInteger(pid) || pid < 1)) throw new Error('The computer connection is starting or its lock is incomplete. Stop the connection and try again.');
+  if (pid > 0) {
+    try { process.kill(pid, 0); throw new Error('Pause the computer connection before removing its local link.'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  }
+  await fs.rm(file(home), { force: true });
 }
 
 export async function computerHeartbeat(home: string): Promise<void> {

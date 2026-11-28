@@ -236,6 +236,15 @@ export function createDevelopmentIntelligenceServer() {
         json(res, 200, repository ? { branches: await accountGithubBranches(identity.userId, repository) } : await accountGithubRepositories(identity.userId)); return;
       } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); return; }
     }
+    if (requestUrl.pathname === '/account/workspace-shell' && req.method === 'GET') {
+      try {
+        const identity = await authenticateAccount(req, res); if (!identity) return;
+        if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
+        const page = renderGraphViewer({ project: 'account', repositoryRevision: null }, undefined, undefined, [], false, undefined, 'Workbench', true, undefined, [], true);
+        res.writeHead(200, htmlHeaders()); res.end(page);
+      } catch (error) { json(res, (error as any)?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }); }
+      return;
+    }
     if (requestUrl.pathname === '/account/graph' && req.method === 'GET') {
       try {
         const identity = await authenticateAccount(req, res); if (!identity) return;
