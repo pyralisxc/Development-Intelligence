@@ -233,7 +233,10 @@ async function accountInvestigation(request: Record<string, unknown>, progress?:
       const chunks: Uint8Array[] = [];
       for (let index = 0; index < current.resultParts; index++) {
         const partResponse = await fetch(`/account/workspace?job=${encodeURIComponent(job.id)}&part=${index}`);
-        if (!partResponse.ok) throw new Error('Could not retrieve investigation result');
+        if (!partResponse.ok) {
+          const problem = await partResponse.json().catch(() => null);
+          throw new Error(problem?.error ?? 'Could not retrieve investigation result');
+        }
         const { part } = await partResponse.json();
         const binary = atob(part);
         chunks.push(Uint8Array.from(binary, character => character.charCodeAt(0)));
