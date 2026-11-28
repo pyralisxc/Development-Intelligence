@@ -202,8 +202,10 @@ export async function reconcileAccountGraphStages(root: string, project: string,
     if (!catalog || catalog.project !== project) throw new Error('Account graph storage is unavailable');
     const current = catalog.entries.find(entry => entry.graphId === currentGraphId);
     if (!current) throw new Error('The current account graph is not available at this location');
+    const previousCurrent = catalog.targets?.[targetName];
     const targets = { ...(catalog.targets ?? { working: catalog.active }), [targetName]: current.generation };
     const removed = new Set<string>();
+    if (previousCurrent && previousCurrent !== current.generation) removed.add(previousCurrent);
     for (const name of Object.keys(targets)) if (name.startsWith(prefix)) { removed.add(targets[name]!); delete targets[name]; }
     const active = removed.has(catalog.active) ? current.generation : catalog.active;
     const protectedGenerations = new Set([active, ...Object.values(targets)]);
