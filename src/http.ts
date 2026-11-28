@@ -262,7 +262,7 @@ export function createDevelopmentIntelligenceServer() {
         const body = await readJson(req);
         if (typeof body.userId !== 'string' || !body.userId) { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
         const store = new WorkspaceStore(body.userId);
-        if (!await store.verifyHostedTransferLease(body.jobId, body.claimId, body.graphId, body.token)) { json(res, 403, { error: 'Graph transfer claim expired' }); return; }
+        if (!await store.verifyHostedTransferLease(body.jobId, body.claimId, body.graphId, body.token, body.requirePublished === true)) { json(res, 403, { error: 'Graph transfer claim expired' }); return; }
         json(res, 200, { active: true }); return;
       } catch { json(res, 403, { error: 'Invalid graph transfer claim' }); return; }
     }

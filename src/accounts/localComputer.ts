@@ -273,8 +273,42 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
     if (!job) { await new Promise(resolve => setTimeout(resolve, 5000)); continue; }
     const update = (data: Record<string, unknown>) => send({ action: 'computer-update-build', jobId: job.id, update: { ...data, claimId: job.claimId } });
     let renewal: ReturnType<typeof setInterval> | undefined;
+    const resumeHostedRetirement = async (built: { graphId: string }) => {
+      let started = false;
+      try {
+        let target: any;
+        for (;;) {
+          target = await send({ action: 'computer-start-hosted-transfer', jobId: job.id, claimId: job.claimId, graphId: built.graphId, retain });
+          if (!target.waiting) break;
+          await update({ progress: { stage: 'waiting-for-hosted-storage' } });
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+        started = true;
+        const endpoint = trustedUrl(target.endpoint), until = Date.now() + (job.kind === 'browse' ? 60 : (job.graph.hostedResources?.timeoutMinutes ?? 60)) * 60_000;
+        for (;;) {
+          let ready: Response | undefined;
+          try { ready = await fetch(new URL('/ready', endpoint), { headers: { authorization: `Bearer ${target.token}` }, redirect: 'error' }); } catch { /* receiver is starting */ }
+          if (ready?.ok) break;
+          if (ready?.status === 403) throw new Error('Hosted graph transfer authorization was rejected');
+          if (Date.now() >= until) throw new Error('Hosted graph transfer receiver did not become ready within its configured session');
+          await update({ progress: { stage: 'waiting-for-hosted-storage' } });
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+        const response = await fetch(new URL('/retire', endpoint), { method: 'POST', headers: { authorization: `Bearer ${target.token}` }, redirect: 'error' });
+        if (!response.ok) throw new Error('Hosted graph retirement was not confirmed');
+        await update({ state: 'complete', result: built, hostedTransferred: true });
+      } catch {
+        await update({ progress: { stage: 'waiting-to-retry-graph-retirement' } }).catch(() => {});
+      } finally {
+        if (started) await send({ action: 'computer-stop-hosted-transfer', jobId: job.id, claimId: job.claimId, graphId: built.graphId }).catch(() => {});
+      }
+    };
     try {
-      if (job.kind === 'build' && job.stage === 'cleanup') { if (!await finishLinkedSnapshot(job, job.cleanupResult, update)) throw new Error('This graph retirement requires its storage computer'); continue; }
+      if (job.kind === 'build' && job.stage === 'cleanup') {
+        if (job.graph.transfer?.kind === 'direct-hosted' && job.graph.storage.computer === 'hosted' && typeof job.cleanupResult?.graphId === 'string') await resumeHostedRetirement(job.cleanupResult as { graphId: string });
+        else if (!await finishLinkedSnapshot(job, job.cleanupResult, update)) throw new Error('This graph retirement requires its storage computer');
+        continue;
+      }
       if (job.kind === 'browse') {
         const directory = path.resolve(job.path ?? os.homedir());
         const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -343,9 +377,19 @@ export async function runComputer(home: string, scratchDir: string, retain: numb
           const { sendGraphTransfer } = await import('./graphTransfer.js');
           await sendGraphTransfer({ root: staging, project: job.project.id, graphId, endpoint: endpoint.href, token: target.token,
             progress: (completed, total, bytes, totalBytes) => { void update({ progress: { stage: 'transferring-to-hosted-storage', completed, total, bytes, totalBytes } }).catch(() => {}); } });
+          if (job.snapshotStaging && job.graphLease && (!job.previousSnapshot || (job.previousSnapshot.storage.computer === job.graph.storage.computer && job.previousSnapshot.storage.location === job.graph.storage.location))) {
+            try {
+              await update({ state: 'publishing', result: built, hostedTransferred: true });
+              const retired = await fetch(new URL('/retire', endpoint), { method: 'POST', headers: { authorization: `Bearer ${target.token}` }, redirect: 'error' });
+              if (!retired.ok) throw new Error('Hosted graph retirement was not confirmed');
+              await update({ state: 'complete', result: built, hostedTransferred: true });
+              await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+            } catch { await update({ progress: { stage: 'waiting-to-retry-graph-retirement' } }).catch(() => {}); }
+          } else {
+            await update({ state: 'complete', result: built, hostedTransferred: true });
+            await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+          }
           try { await send({ action: 'computer-stop-hosted-transfer', jobId: job.id, claimId: job.claimId, graphId }); started = false; } catch { /* The receiver also expires at the configured session duration. */ }
-          await update({ state: 'complete', result: built, hostedTransferred: true });
-          await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
         } finally {
           if (renewal) clearInterval(renewal);
           if (started) await send({ action: 'computer-stop-hosted-transfer', jobId: job.id, claimId: job.claimId, graphId }).catch(() => {});
