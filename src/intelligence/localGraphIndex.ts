@@ -500,11 +500,11 @@ export function indexedRelationshipKinds(graph: IntelligenceGraph): string[] | n
 /** Materialize candidates, their requested neighborhood, and the source and
  * family handoffs used by graph filtering. If the selected view approaches a
  * full graph, load the complete generation instead. */
-export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questions: Array<{ text: string; terms: string[] }>, options: {
-  selectSubjects: (candidate: IntelligenceGraph) => { ids: string[]; selection: string };
+export async function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questions: Array<{ text: string; terms: string[] }>, options: {
+  selectSubjects: (candidate: IntelligenceGraph, phase: 'aliases' | 'candidates') => Promise<{ ids: string[]; selection: string }>;
   rememberSelection: (selected: IntelligenceGraph) => void;
   depth?: number; scope?: string; comparisonIds?: string[]; comparisonScope?: string; comparisonKinds?: string[]; includeDeclaredActions?: boolean;
-}): IntelligenceGraph | null {
+}): Promise<IntelligenceGraph | null> {
   const index = bound.get(graph);
   if (!index) return null;
   const initial = new Set<string>();
@@ -531,7 +531,7 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
         if (nodes.length) {
           const candidate = { ...graph, nodes, edges: [], evidence: [] };
           bindLocalGraphIndex(candidate, index.generation, path.dirname(index.file));
-          const planned = options.selectSubjects(candidate);
+          const planned = await options.selectSubjects(candidate, 'aliases');
           if (planned.selection === 'exact-name') exactSubjects = planned.ids;
         }
       } finally { aliasDb.close(); }
@@ -581,7 +581,7 @@ export function materializeIndexedQuestionGraph(graph: IntelligenceGraph, questi
       bindLocalGraphIndex(candidate, index.generation, path.dirname(index.file));
       selectedViews.add(candidate); planningViews.add(candidate);
       const candidateCache = textCandidates.get(graph); if (candidateCache) textCandidates.set(candidate, candidateCache);
-      chosen = options.selectSubjects(candidate).ids;
+      chosen = (await options.selectSubjects(candidate, 'candidates')).ids;
     }
     const addSubject = db.prepare('INSERT OR IGNORE INTO subjects SELECT id FROM nodes WHERE id=?');
     for (const id of chosen) addSubject.run(id);

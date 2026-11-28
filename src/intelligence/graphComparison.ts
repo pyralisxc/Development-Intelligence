@@ -149,12 +149,12 @@ export function compareGraphRecords(leftGraph: IntelligenceGraph, rightGraph: In
     return to ?? '';
   };
   const edgeUnchangedSource = (edge: GraphEdge, index: Map<string, GraphNode>) => unchangedSource(edgeSource(edge, index));
-  const producerEdge = (edge: GraphEdge, index: Map<string, GraphNode>) => producerStrategies.has(edge.strategy) || Boolean((edge.from && index.get(edge.from) && producerNode(index.get(edge.from)!)) || (edge.to && index.get(edge.to) && producerNode(index.get(edge.to)!)));
+  const producerEdge = (edge: GraphEdge, index: Map<string, GraphNode>) => producerStrategies.has(edge.strategy) || Boolean(edge.evidenceLayers?.some(layer => producerStrategies.has(layer.strategy))) || Boolean((edge.from && index.get(edge.from) && producerNode(index.get(edge.from)!)) || (edge.to && index.get(edge.to) && producerNode(index.get(edge.to)!)));
   const pairEdge = (before: GraphEdge, after: GraphEdge) => {
     pairedLeft.add(before.id); pairedRight.add(after.id);
     if (before.status !== after.status || before.confidence !== after.confidence || before.checkpoint !== after.checkpoint) (edgeUnchangedSource(before, leftNodeIndex) || producerEdge(before, leftNodeIndex) || producerEdge(after, rightNodeIndex) ? edges.analysisChanged : edges.changed).push({ before, after });
     else if (before.from !== after.from || before.to !== after.to) (edgeUnchangedSource(before, leftNodeIndex) || producerEdge(before, leftNodeIndex) || producerEdge(after, rightNodeIndex) ? edges.analysisChanged : edges.moved).push({ before, after });
-    else if (evidenceChanged([before.evidence, before.evidenceIds], [after.evidence, after.evidenceIds])) edges.provenanceChanged.push({ before, after });
+    else if (evidenceChanged([before.evidence, before.evidenceIds, before.evidenceLayers], [after.evidence, after.evidenceIds, after.evidenceLayers])) edges.provenanceChanged.push({ before, after });
   };
   for (const [key, before] of leftGroups) {
     const after = rightGroups.get(key);

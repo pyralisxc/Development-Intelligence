@@ -401,6 +401,8 @@ export async function inspectEntity(input: { project: string; node: string; ref?
       status: edge.status,
       confidence: edge.confidence,
       strategy: edge.strategy ?? null,
+      evidence: edge.evidence,
+      evidenceLayers: edge.evidenceLayers ?? [],
       neighbor: neighborId ? { id: neighborId, name: displayName(neighbor, neighborId), kind: neighbor?.kind ?? 'unknown', layer: neighbor?.layer ?? 'structural', locator: neighbor?.locator ?? null } : null,
       evidenceIds: edge.evidenceIds ?? [],
     };
@@ -1631,6 +1633,7 @@ export async function queryWorkbenchRequest(input: {
   conditionTruth?: boolean | undefined;
   effectKinds?: string[] | undefined;
   depth?: number | undefined;
+  maxPasses?: number | undefined;
 }): Promise<Record<string, unknown>> {
   const requestStarted = Date.now();
   // Preserve explicit positions: a blank item is an isolated failure, never a silently removed question.
@@ -1641,15 +1644,21 @@ export async function queryWorkbenchRequest(input: {
   const questions = explicit.length ? explicit : decomposeQuestionText(originalText);
   if (!questions.length) throw new Error('text or questions must contain at least one question');
 
+  const maxPasses = input.maxPasses ?? 5;
+  if (!Number.isSafeInteger(maxPasses) || maxPasses < 1) throw new Error('Maximum investigation passes must be a positive whole number');
+  // One language interpretation travels with the question through planning,
+  // graph selection and presentation. Resolve only actual POS ambiguity here;
+  // ordinary related-word expansion waits until the direct graph pass is weak.
+  const interpretations = new Map(questions.map(question => [question, interpretGraphLanguage(question)]));
   const lexicalHints = new Map<string, Record<string, Awaited<ReturnType<typeof lexicalActionHints>>>>();
   for (const question of questions) {
-    const language = interpretGraphLanguage(question);
-    const enabled = !language.negated && language.termGroups.length > 1;
+    const language = interpretations.get(question)!;
+    const enabled = !input.sourceId && !language.negated && language.termGroups.length > 1;
     const ambiguous = enabled ? ambiguousActionCandidates(language.tokens) : [];
     const lookups = await Promise.all(ambiguous.map(async token => [token.lemma, await lexicalActionHints(token.lemma)] as const));
     const inferred = new Set(lookups.filter(([, hints]) => hints.length > 0).map(([lemma]) => lemma));
     const tokens = enabled ? requestedActionTokens(language.tokens, inferred).filter(token => language.termGroups.some(group => group.includes(token.lemma))) : [];
-    lexicalHints.set(question, Object.fromEntries(await Promise.all(tokens.map(async token => [token.lemma, await lexicalActionHints(token.lemma)] as const))));
+    lexicalHints.set(question, Object.fromEntries(tokens.map(token => [token.lemma, []])));
   }
   const filterInput = (question: string, effectiveScope?: string): GraphFilterInput => ({ text: question,
         ...(Object.keys(lexicalHints.get(question) ?? {}).length ? { lexicalHints: lexicalHints.get(question)! } : {}),
@@ -1669,6 +1678,38 @@ export async function queryWorkbenchRequest(input: {
         ...(input.depth !== undefined ? { depth: input.depth } : {}),
   });
 
+  type PreparedQuestion = { input: GraphFilterInput; plan: ReturnType<typeof planGraphSubjects>; sequence: { maxPasses: number; passes: Array<{ number: number; method: string; matchedSubjects: number; matchingActions: number }>; stopReason: string } };
+  let indexedPrepared: PreparedQuestion | undefined;
+  const prepareQuestion = async (graph: IntelligenceGraph, question: string, scope?: string, aliasesOnly = false): Promise<PreparedQuestion> => {
+    const language = interpretations.get(question)!;
+    let filter = filterInput(question, scope);
+    let plan = planGraphSubjects(graph, filter, language);
+    const pass = (number: number, method: string) => ({ number, method, matchedSubjects: plan.subjects.length,
+      matchingActions: [...plan.actionFacts.values()].reduce((total, facts) => total + facts.length, 0) });
+    const passes = [pass(1, 'literal')];
+    const actions = Object.keys(filter.lexicalHints ?? {});
+    const nounGroups = language.termGroups.flatMap((group, index) => language.tokens.some(token => ['NOUN', 'PROPN'].includes(token.partOfSpeech) && group.includes(token.lemma)) ? [index] : []);
+    const modifierGroups = language.termGroups.flatMap((group, index) => language.tokens.some(token => token.partOfSpeech === 'ADJ' && group.includes(token.lemma)) ? [index] : []);
+    const selected = new Set(plan.subjects.map(node => node.id));
+    const grounded = () => [...plan.actionFacts].some(([owner, facts]) => selected.has(owner) && facts.some(fact =>
+      nounGroups.some(index => fact.objectGroups.includes(index)) && modifierGroups.every(index => fact.objectGroups.includes(index))));
+    const canExpand = !aliasesOnly && plan.selection === 'terms' && actions.length > 0 && !language.negated && !grounded();
+    let stopReason = aliasesOnly ? 'exact-name' : grounded() ? 'matching-action-context' : canExpand ? 'pass-limit' : 'no-further-expansion';
+    if (canExpand && maxPasses > 1) {
+      const hints = Object.fromEntries(await Promise.all(actions.map(async action => [action, await lexicalActionHints(action)] as const)));
+      if (Object.values(hints).some(items => items.length)) {
+        lexicalHints.set(question, hints); filter = filterInput(question, scope);
+        plan = planGraphSubjects(graph, filter, language);
+        passes.push(pass(2, 'related-action'));
+        const secondSelected = new Set(plan.subjects.map(node => node.id));
+        const matched = [...plan.actionFacts].some(([owner, facts]) => secondSelected.has(owner) && facts.some(fact =>
+          nounGroups.some(index => fact.objectGroups.includes(index)) && modifierGroups.every(index => fact.objectGroups.includes(index))));
+        stopReason = matched ? 'matching-action-context' : 'no-further-expansion';
+      } else stopReason = 'no-further-expansion';
+    }
+    return { input: filter, plan, sequence: { maxPasses, passes, stopReason } };
+  };
+
   const run = async (graph: IntelligenceGraph): Promise<Record<string, unknown>> => {
   const mode = explicit.length ? 'explicit' : questions.length > 1 ? 'decomposed' : 'single';
 
@@ -1682,12 +1723,15 @@ export async function queryWorkbenchRequest(input: {
       const inheritedScope = !input.scope && previousSubject && /\b(?:it|its|itself)\b/iu.test(question)
         ? previousSubject : undefined;
       const effectiveScope = input.scope ?? inheritedScope;
-      const result = filterGraph(graph, filterInput(question, effectiveScope)) as any;
+      const prepared = indexedPrepared ?? await prepareQuestion(graph, question, effectiveScope);
+      indexedPrepared = undefined;
+      rememberGraphSubjects(graph, prepared.input, prepared.plan);
+      const result = filterGraph(graph, prepared.input, interpretations.get(question)) as any;
       if (result.interpretation.selection === 'repository' && !result.navigation.operation) {
         const orientation = await scopeOrientation({ project: input.project, graphId: graph.graphId, semanticSummaryOnly: true, orientationReuse: { graph }, rankBy: input.rankBy, semanticDepth: input.semanticDepth, limit: input.limit });
         previousSubject = undefined;
         items.push({ index, question, status: 'ok', intent: 'graph-filter', subject: null,
-          answer: orientation.summary, investigation: questionSelection(graph, result), routing: { tool: 'graph-filter', selection: 'repository' },
+          answer: orientation.summary, sequence: prepared.sequence, investigation: questionSelection(graph, result), routing: { tool: 'graph-filter', selection: 'repository' },
           result: { ...orientation, interpretation: result.interpretation } });
         continue;
       }
@@ -1927,7 +1971,17 @@ export async function queryWorkbenchRequest(input: {
       });
       const connectedCallSummary = connectedCalls.length
         ? `Connected call sites in source order (branches and loops can change which calls apply):\n${connectedCalls.join('\n')}\n\n` : '';
-      const hasMatchedActions = displayGroups.some(group => (group.ranking?.actionFacts ?? []).length > 0);
+      const language = interpretations.get(question)!;
+      const nounGroups = language.termGroups.flatMap((group, i) => language.tokens.some(token => ['NOUN', 'PROPN'].includes(token.partOfSpeech) && group.includes(token.lemma)) ? [i] : []);
+      const modifierGroups = language.termGroups.flatMap((group, i) => language.tokens.some(token => token.partOfSpeech === 'ADJ' && group.includes(token.lemma)) ? [i] : []);
+      const groundedAction = (fact: any) => nounGroups.some(i => fact.objectGroups.includes(i)) && modifierGroups.every(i => fact.objectGroups.includes(i));
+      const groundedGroups = displayGroups.filter(group => (group.ranking?.actionFacts ?? []).some(groundedAction));
+      // Keep the complete selection in the investigation, while leading the
+      // written answer with paths matching the requested action and target.
+      const answerGroups = groundedGroups.length ? groundedGroups : displayGroups;
+      const hasMatchedActions = groundedGroups.length > 0;
+      const searchingForAction = Object.keys(prepared.input.lexicalHints ?? {}).length > 0;
+
       const presentedPathEdges = new Set<string>();
       const presentedActionFacts = new Set<string>();
       const selectedNodesById = new Map(graph.nodes.map(node => [node.id, node]));
@@ -1936,8 +1990,8 @@ export async function queryWorkbenchRequest(input: {
         matchedSourceFacts.set(fact.id, { owner: family, fact });
       const scopedAnswer = !result.interpretation.negated && result.interpretation.selection === 'terms' && result.subjects.length
         ? (Array.isArray(result.connectedGroups)
-          ? `${hasMatchedActions ? '' : connectedCallSummary}Connected source paths (${result.connectedGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
-            + displayGroups.map((group: any) => {
+          ? `${!hasMatchedActions && searchingForAction ? 'No source call has yet matched the requested action and target terms together. The following are connected candidates.\n\n' : ''}${hasMatchedActions ? '' : connectedCallSummary}Connected source paths (${answerGroups.length} shown of ${result.connectedGroupTotal}; ${result.subjectTotal} matching subjects):\n\n`
+            + answerGroups.map((group: any) => {
               const focusedIds = Array.isArray(group.ranking?.actionPathEdgeIds) ? new Set<string>(group.ranking.actionPathEdgeIds) : null;
               const visibleLinks = focusedIds ? group.links.filter((edge: any) => focusedIds.has(edge.id)) : group.links;
               const pathNodes = focusedIds ? new Set<string>([group.anchorId, ...(group.ranking?.actionFacts ?? []).map((match: any) => match.subjectId), ...visibleLinks.flatMap((edge: any) => [edge.from, edge.to])]) : null;
@@ -1995,7 +2049,7 @@ export async function queryWorkbenchRequest(input: {
               for (const item of members.filter(item => !incoming.has(item.id))) walk(item.id);
               for (const item of members) if ((outgoing.get(item.id) ?? []).some((edge: any) => !visitedEdges.has(edge.id) && !presentedPathEdges.has(edge.id))) walk(item.id);
               const anchor = group.subjects.find((item: any) => item.id === group.anchorId) ?? group.subjects[0];
-              const actionLines = (group.ranking?.actionFacts ?? []).flatMap((match: any) => {
+              const actionLines = (group.ranking?.actionFacts ?? []).filter((match: any) => hasMatchedActions && groundedAction(match)).flatMap((match: any) => {
                 const detail = matchedSourceFacts.get(match.factId);
                 if (!detail || presentedActionFacts.has(match.factId)) return [];
                 const line = (detail.fact.matchedLines ?? []).find((item: any) => item.line === match.line);
@@ -2020,7 +2074,7 @@ export async function queryWorkbenchRequest(input: {
               }).join('\n') : ''}`;
             }).join('\n\n')
           : `Relevant source subjects (${result.subjects.length} shown of ${result.subjectTotal}): ${result.subjects.map((item: any) => describeFamily(item)).join(' | ')}`)
-          + `${hasMatchedActions && connectedCallSummary ? `\n\n${connectedCallSummary.trim()}` : ''}. Paths follow source relationships; a subject can appear in multiple paths, and candidate links identify possible handoffs. Inspect source and connection details for full records.`
+          + `${hasMatchedActions && answerGroups.length < displayGroups.length ? '\n\nOther connected candidates remain in the investigation details' : ''}. Paths follow source relationships; a subject can appear in multiple paths, and candidate links identify possible handoffs. Inspect source and connection details for full records.`
         : '';
       const familyAnswer = !result.interpretation.negated && subject && !result.navigation.operation
         && result.families.some((family: any) => family.id === subject.id && family.total)
@@ -2039,9 +2093,10 @@ export async function queryWorkbenchRequest(input: {
         ? `\n\nSelection is incomplete: the strongest displayed subject matches ${lexicalCoverage.bestDisplayedSubject} of ${lexicalCoverage.termGroups} question-term groups. These sources may not answer the full question; refine the subject or inspect more results.` : '';
       const excludedNote = lexicalCoverage?.excludedWeakerMatches
         ? `\n\n${lexicalCoverage.excludedWeakerMatches} subjects matched fewer question concepts and were excluded from this selection; refine the question or scope to inspect them.` : '';
-      items.push({ index, question, status: 'ok', intent: 'graph-filter', subject,
+      const passNote = prepared.sequence.stopReason === 'pass-limit' ? `\n\nInvestigation stopped at the configured limit of ${maxPasses} pass${maxPasses === 1 ? '' : 'es'}; additional related-word search was available.` : '';
+      items.push({ index, question, status: 'ok', intent: 'graph-filter', subject, sequence: prepared.sequence,
         ...(inheritedScope ? { inheritedSubject: inheritedScope } : {}),
-        answer: `${answer}${selectionNote}${excludedNote}${sourceAnalysis ? `\n\nCurrent DI source-analysis capabilities (selected graph analyzer: ${graph.analyzerVersion}; see graph coverage for this build): ${sourceAnalysis}.` : ''}` ,
+        answer: `${answer}${selectionNote}${excludedNote}${passNote}${sourceAnalysis ? `\n\nCurrent DI source-analysis capabilities (selected graph analyzer: ${graph.analyzerVersion}; see graph coverage for this build): ${sourceAnalysis}.` : ''}` ,
         routing: { tool: 'graph-filter', selection: result.interpretation.selection }, investigation: questionSelection(graph, result), result });
     }
     const request = { mode, graphId: graph.graphId, revision: graph.repositoryRevision, ...(graph.sourceState ? { sourceState: graph.sourceState } : {}),
@@ -2073,7 +2128,7 @@ export async function queryWorkbenchRequest(input: {
   };
 
   if (!input.sourceId && !input.rankBy && !input.semanticDepth && questions.length === 1 && questions.every(Boolean)) {
-    const analyzed = questions.map(text => ({ text, terms: interpretGraphLanguage(text).terms }));
+    const analyzed = questions.map(text => ({ text, terms: interpretations.get(text)!.terms }));
     const repositoryWords = new Set(['project', 'repository', 'repo', 'codebase']);
     const needsRepository = analyzed.some(item => item.terms.length && item.terms.every(term => repositoryWords.has(term)));
     if (!needsRepository) {
@@ -2081,22 +2136,23 @@ export async function queryWorkbenchRequest(input: {
       const result = await withIndexedLocalGraph(input.project, { ref: input.ref, graphId: input.graphId }, async envelope => {
         candidateSource = envelope;
         const plannedInput = filterInput(questions[0]!, input.scope);
-        let planned: ReturnType<typeof planGraphSubjects> | undefined;
-        const graph = materializeIndexedQuestionGraph(envelope, analyzed, {
+        let prepared: PreparedQuestion | undefined;
+        const graph = await materializeIndexedQuestionGraph(envelope, analyzed, {
           includeDeclaredActions: Boolean(Object.keys(plannedInput.lexicalHints ?? {}).length),
-          selectSubjects(candidate) {
-            planned = planGraphSubjects(candidate, plannedInput);
-            return { ids: planned.subjects.map(node => node.id), selection: planned.selection };
+          async selectSubjects(candidate, phase) {
+            prepared = await prepareQuestion(candidate, questions[0]!, input.scope, phase === 'aliases');
+            return { ids: prepared.plan.subjects.map(node => node.id), selection: prepared.plan.selection };
           },
           rememberSelection(selected) {
-            if (!planned) return;
+            if (!prepared) return;
             const fullSubjects = new Map(selected.nodes.map(node => [node.id, node]));
-            planned.subjects = planned.subjects.map(node => {
+            prepared.plan.subjects = prepared.plan.subjects.map(node => {
               const full = fullSubjects.get(node.id);
               if (!full) throw new Error(`Selected graph subject is unavailable: ${node.id}`);
               return full;
             });
-            rememberGraphSubjects(selected, plannedInput, planned);
+            indexedPrepared = prepared;
+            rememberGraphSubjects(selected, prepared.input, prepared.plan);
           },
           ...(input.depth !== undefined ? { depth: input.depth } : {}),
           ...(input.scope ? { scope: input.scope } : {}),

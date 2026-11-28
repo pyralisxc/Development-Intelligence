@@ -43,6 +43,7 @@ export interface ScipEvidenceProjection {
     candidateEdges: number;
     resolvedEdges: number;
     compilerCorroboratedOccurrences: number;
+    consolidatedReferences: number;
     compilerVerification: 'completed' | 'not-applicable' | 'bounded-out' | 'unavailable';
     ambiguousDefinitions: number;
     unresolvedOrUnsafeOccurrences: number;
@@ -524,7 +525,32 @@ export async function projectLocalScipEvidence(input: {
   }
   const resultEdges = input.producerRanOnCheckout ? input.graph.edges : [...input.graph.edges];
   for (const edge of producerContainment.values()) resultEdges.push(edge);
-  for (const edge of added) resultEdges.push(edge);
+  // The compiler and SCIP may independently establish the same file-to-symbol
+  // relationship. Keep one owner, retaining each producer's evidence and the
+  // separate source-occurrence nodes. Candidate relationships remain separate.
+  const nativeReferences = new Map<string, number[]>();
+  const referenceKey = (edge: GraphEdge) => JSON.stringify([edge.from, edge.to, edge.kind, edge.status]);
+  if (input.producerRanOnCheckout) for (let index = 0; index < resultEdges.length; index += 1) {
+    const edge = resultEdges[index]!;
+    if (edge.kind !== 'references-symbol' || edge.status !== 'resolved' || !edge.from?.startsWith('file:') || edge.strategy !== TYPESCRIPT_COMPILER_LENS) continue;
+    const key = referenceKey(edge);
+    nativeReferences.set(key, [...(nativeReferences.get(key) ?? []), index]);
+  }
+  let consolidatedReferences = 0;
+  for (const edge of added) {
+    const candidates = edge.kind === 'references-symbol' && edge.status === 'resolved' && edge.from?.startsWith('file:')
+      ? nativeReferences.get(referenceKey(edge)) : undefined;
+    if (candidates?.length !== 1) { resultEdges.push(edge); continue; }
+    const index = candidates[0]!;
+    const native = resultEdges[index]!;
+    const evidence = [...new Set([...native.evidence, ...edge.evidence])].sort();
+    const layer = (strategy: string, values: string[], evidenceIds?: string[]) => ({ strategy,
+      evidenceIndexes: values.map(value => evidence.indexOf(value)), ...(evidenceIds?.length ? { evidenceIds } : {}) });
+    resultEdges[index] = { ...native, evidence,
+      evidenceIds: [...new Set([...(native.evidenceIds ?? []), ...(edge.evidenceIds ?? [])])].sort(),
+      evidenceLayers: [layer(native.strategy, native.evidence, native.evidenceIds), layer(edge.strategy, edge.evidence, edge.evidenceIds)] };
+    consolidatedReferences += 1;
+  }
   return {
     graph: {
       ...input.graph,
@@ -546,6 +572,7 @@ export async function projectLocalScipEvidence(input: {
       candidateEdges: added.filter(edge => edge.status === 'candidate').length,
       resolvedEdges: added.filter(edge => edge.status === 'resolved').length,
       compilerCorroboratedOccurrences: corroborated,
+      consolidatedReferences,
       compilerVerification: compiler.state,
       ambiguousDefinitions: ambiguous,
       unresolvedOrUnsafeOccurrences: rejectedOccurrences,

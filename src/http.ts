@@ -618,6 +618,7 @@ export function createDevelopmentIntelligenceServer() {
         const questions = Array.isArray(body.questions) ? body.questions.filter((value: unknown) => typeof value === 'string') as string[] : undefined;
         if (!text && !questions?.length) throw Object.assign(new Error('text or questions must be non-empty'), { status: 400 });
         if (text && questions?.length) throw Object.assign(new Error('provide text or questions, not both'), { status: 400 });
+        if (body.maxPasses !== undefined && (!Number.isSafeInteger(body.maxPasses) || body.maxPasses < 1)) throw Object.assign(new Error('maxPasses must be a positive whole number'), { status: 400 });
         const result = await queryWorkbenchRequest({
           project: body.project,
           ...(text ? { text } : {}),
@@ -641,6 +642,7 @@ export function createDevelopmentIntelligenceServer() {
           conditionTruth: typeof body.conditionTruth === 'boolean' ? body.conditionTruth : undefined,
           effectKinds: Array.isArray(body.effectKinds) ? body.effectKinds.filter((item: unknown) => typeof item === 'string') : undefined,
           depth: typeof body.depth === 'number' ? body.depth : undefined,
+          maxPasses: typeof body.maxPasses === 'number' ? body.maxPasses : undefined,
         });
         json(res, 200, result);
       } catch (error) {

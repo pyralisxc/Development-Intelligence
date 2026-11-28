@@ -165,6 +165,13 @@ export interface GraphNode {
 
 export type RelationshipStatus = 'resolved' | 'candidate' | 'unresolved';
 
+/** A producer's evidence references entries in the owning relationship's evidence array. */
+export interface GraphEdgeEvidenceLayer {
+  strategy: string;
+  evidenceIndexes: number[];
+  evidenceIds?: string[];
+}
+
 export interface GraphEdge {
   id: string;
   from: string | null;
@@ -174,6 +181,7 @@ export interface GraphEdge {
   confidence: number | null;
   status: RelationshipStatus;
   evidence: string[];
+  evidenceLayers?: GraphEdgeEvidenceLayer[];
   layer?: GraphNodeLayer;
   checkpoint?: boolean;
   evidenceIds?: string[];

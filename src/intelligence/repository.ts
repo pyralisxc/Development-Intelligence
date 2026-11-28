@@ -410,6 +410,7 @@ export function mergeNodes(nodes: GraphNode[]): { nodes: GraphNode[]; conflicts:
         ...(sourceDecision && sourceDecision.outcome.startsWith('stronger-') ? ['weaker-source-assertion-overruled'] : []),
       ])].sort(),
       evidenceIds: [...new Set([...(current.evidenceIds ?? []), ...(node.evidenceIds ?? [])])].sort(),
+      ...((current.contributions?.length || node.contributions?.length) ? { contributions: [...new Map([...(current.contributions ?? []), ...(node.contributions ?? [])].map(item => [JSON.stringify(item), item])).values()] } : {}),
       checkpoint: Boolean(current.checkpoint || node.checkpoint),
     });
   }

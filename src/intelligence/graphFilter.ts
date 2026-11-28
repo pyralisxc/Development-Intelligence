@@ -512,12 +512,12 @@ function selectSubjects(graph: IntelligenceGraph, input: GraphFilterInput, langu
 }
 
 /** Use the same subject selection for planning and graph filtering. */
-export function planGraphSubjects(graph: IntelligenceGraph, input: GraphFilterInput): SubjectSelection {
+export function planGraphSubjects(graph: IntelligenceGraph, input: GraphFilterInput, interpreted?: ReturnType<typeof interpretGraphLanguage>): SubjectSelection {
   const familyIndex = openIndexedFamilyAccess(graph);
   try {
     const memberships = familyIndex ? null : graphFamilyMemberships(graph);
     const familyOf = (node: GraphNode) => familyIndex?.get(node.id) ?? memberships?.get(node.id) ?? [];
-    const language = interpretGraphLanguage(input.text);
+    const language = interpreted ?? interpretGraphLanguage(input.text);
     const preferTestSources = language.tokens.some(token => ['test', 'tests', 'spec', 'specs'].includes(token.lemma))
       || Boolean(input.scope && isWrittenTestSource(input.scope));
     return selectSubjects(graph, input, language, new Map(graph.nodes.map(node => [node.id, node])), familyOf, termMatcher(), preferTestSources, new Set(input.nodeKinds ?? []));
@@ -532,13 +532,13 @@ export function rememberGraphSubjects(graph: IntelligenceGraph, input: GraphFilt
 
 /** Language proposes terms and exact names; selection and navigation operate
  * exclusively on the graph's existing nodes and relationships. */
-export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput): Record<string, unknown> {
+export function filterGraph(graph: IntelligenceGraph, input: GraphFilterInput, interpreted?: ReturnType<typeof interpretGraphLanguage>): Record<string, unknown> {
   const familyIndex = isIndexedSelectedView(graph) ? openIndexedFamilyAccess(graph) : null;
   try {
   const memberships = familyIndex ? null : graphFamilyMemberships(graph);
   const familyOf = (node: GraphNode) => familyIndex?.get(node.id) ?? memberships?.get(node.id) ?? [];
   const includesTerm = termMatcher();
-  const language = interpretGraphLanguage(input.text);
+  const language = interpreted ?? interpretGraphLanguage(input.text);
   const preferTestSources = language.tokens.some(token => ['test', 'tests', 'spec', 'specs'].includes(token.lemma))
     || Boolean(input.scope && isWrittenTestSource(input.scope));
   const byId = new Map(graph.nodes.map(node => [node.id, node]));
