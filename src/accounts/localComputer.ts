@@ -110,6 +110,45 @@ export async function accountComputerIdentity(home: string): Promise<{ origin: s
   return { origin: trustedUrl(credentials.origin, true).origin, computerId: credentials.computerId };
 }
 
+/** Reuse a valid association; discard it only when the account confirms it was revoked. */
+export async function prepareComputerLink(home: string, workbench: string): Promise<'new' | 'linked'> {
+  let credentials: DeviceCredentials;
+  try { credentials = await read(home); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'new'; throw error; }
+  if (trustedUrl(credentials.origin, true).origin !== trustedUrl(workbench, true).origin) throw new Error('This installation is linked to another Workbench. Unlink it there, then run di-local unlink-local before linking a different account.');
+  const lock = await fs.readFile(path.join(home, 'computer.lock'), 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+  const pid = Number(lock);
+  if (lock !== null && (!Number.isSafeInteger(pid) || pid < 1)) throw new Error('The computer connection is starting or its lock is incomplete. Stop the connection and try again.');
+  if (pid > 0) {
+    try { process.kill(pid, 0); return 'linked'; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  }
+  const tokens = await postForm(credentials.tokenEndpoint, { client_id: credentials.clientId, grant_type: 'refresh_token', refresh_token: credentials.refreshToken });
+  if (tokens.error || !tokens.access_token) throw new Error('This installation’s sign-in expired. Run di-local unlink-local, then link it again from your Workbench.');
+  if (tokens.refresh_token) { credentials.refreshToken = tokens.refresh_token; await save(home, credentials); }
+  try {
+    await workspace(credentials.origin, tokens.access_token, { action: 'computer-heartbeat', computerId: credentials.computerId, secret: credentials.secret });
+    return 'linked';
+  } catch (error) {
+    if ((error as { status?: number }).status !== 403 || !(error instanceof Error) || error.message !== 'Computer is not linked to this account') throw error;
+    await forgetLocalComputer(home);
+    return 'new';
+  }
+}
+
+/** Remove only this installation's link after its worker has stopped. */
+export async function forgetLocalComputer(home: string): Promise<void> {
+  const lockPath = path.join(home, 'computer.lock');
+  const lock = await fs.readFile(lockPath, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+  const pid = Number(lock);
+  if (lock !== null && (!Number.isSafeInteger(pid) || pid < 1)) throw new Error('The computer connection is starting or its lock is incomplete. Stop the connection and try again.');
+  if (pid > 0) {
+    try { process.kill(pid, 0); throw new Error('Pause the computer connection before removing its local link.'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  }
+  await fs.rm(file(home), { force: true });
+}
+
 export async function computerHeartbeat(home: string): Promise<void> {
   const credentials = await read(home);
   const tokens = await postForm(credentials.tokenEndpoint, { client_id: credentials.clientId, grant_type: 'refresh_token', refresh_token: credentials.refreshToken });

@@ -13,7 +13,7 @@ import dockviewCss from 'dockview/dist/styles/dockview.css';
 
 declare global {
   interface Window {
-    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; accountGraphId?: string; runOptions?: Array<{ id: string; label: string }>; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string; revision?: string | null };
+    __DEVINT_VIEWER__?: { project: string; ref?: string; graphId?: string; accountGraphId?: string; runOptions?: Array<{ id: string; label: string }>; section?: string; local?: boolean; machineBuild?: boolean; buildRevision?: string; revision?: string | null; shellOnly?: boolean };
   }
 }
 
@@ -1353,11 +1353,14 @@ if (document.getElementById('question-dock')) {
   let dockApi: DockviewApi;
   const compactMedia = window.matchMedia('(max-width: 720px)');
   let compact = compactMedia.matches;
-  const layouts: { compact?: ReturnType<DockviewApi['toJSON']>; wide?: ReturnType<DockviewApi['toJSON']> } = {};
+  const layouts: { compact?: ReturnType<DockviewApi['toJSON']>; wide?: ReturnType<DockviewApi['toJSON']>; shell?: ReturnType<DockviewApi['toJSON']> } = {};
+  const layoutKey = () => viewerConfig.shellOnly ? 'shell' : compact ? 'compact' : 'wide';
+  let layoutGraphIdentity = '';
   const saveLayout = () => {
     if (!layoutReady || !dockApi) return;
-    layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
-    const layout = { layouts };
+    layouts[layoutKey()] = dockApi.toJSON();
+    if (!viewerConfig.shellOnly) layoutGraphIdentity = viewerConfig.accountGraphId || viewerConfig.graphId || '';
+    const layout = { layouts, graphIdentity: layoutGraphIdentity };
     const next = JSON.stringify(layout); if (next === lastLayout) return; lastLayout = next;
     parent.postMessage({ type: 'di-layout', layout }, location.origin);
   };
@@ -1366,12 +1369,6 @@ if (document.getElementById('question-dock')) {
   const filesPane = document.createElement('div'); filesPane.className = 'inspector-body'; filesPane.hidden = true;
   inspector.prepend(tabs); inspector.append(filesPane);
   const original = [inspector.querySelector<HTMLElement>('.inspector-head')!, inspectorTabs, inspectorProgress, inspectorBody];
-  const fileTabs = document.createElement('div'); fileTabs.className = 'inspector-tabs';
-  const fileBody = document.createElement('div'); fileBody.className = 'raw'; fileBody.hidden = true; fileBody.style.cssText = 'flex:1;min-height:0;overflow:auto;margin:8px;';
-  const fileStatus = document.createElement('div'); fileStatus.setAttribute('role', 'status');
-  const fileEditor = document.createElement('div');
-  fileBody.append(fileStatus, fileEditor);
-  let editor: EditorView | undefined;
   const fileLanguage = (file: string) => {
     if (/\.(tsx?|jsx?)$/i.test(file)) return javascript({ typescript: /\.tsx?$/i.test(file), jsx: /\.[jt]sx$/i.test(file) });
     if (/\.py$/i.test(file)) return python();
@@ -1383,7 +1380,7 @@ if (document.getElementById('question-dock')) {
   const navigation = shell.querySelector<HTMLElement>('.nav')!;
   const sourcePane = document.createElement('section'); sourcePane.className = 'di-source-pane';
   const sourceEmpty = document.createElement('p'); sourceEmpty.className = 'muted'; sourceEmpty.textContent = 'Choose a file from Inspector & files.'; sourceEmpty.style.margin = '12px';
-  sourcePane.append(fileTabs, sourceEmpty, fileBody);
+  sourcePane.append(sourceEmpty);
   const host = document.createElement('div'); host.className = 'dockview-theme-dark di-dockview';
   const style = document.createElement('style'); style.textContent = dockviewCss + `
     .shell{display:flex;flex-direction:column;min-width:0;min-height:0}.di-dockview{flex:1;min-height:0;width:100%}
@@ -1394,6 +1391,10 @@ if (document.getElementById('question-dock')) {
     .di-dockview #question-dock .query-box:has(#query-source[hidden]){grid-template-columns:minmax(0,1fr) auto}
     .di-dockview #question-dock button{background:#14243a;color:#dbe7f6;border:1px solid #334963;border-radius:5px;padding:5px 8px;cursor:pointer}
     .di-dockview .inspector{resize:none}
+    .di-dockview #graphs-panel,.di-dockview #activity-panel,.di-dockview #workbench-home{display:block;width:100%;height:100%;min-width:0;min-height:0;overflow:auto;box-sizing:border-box;padding:12px;background:#101824;color:#dbe7f6}
+    .di-dockview #graphs-panel h2,.di-dockview #activity-panel h2{font-size:15px;margin:0 0 12px}.di-dockview #graphs-panel button,.di-dockview #activity-panel button,.di-dockview #workbench-home button{background:#14243a;color:#dbe7f6;border:1px solid #334963;border-radius:5px;padding:6px 9px;cursor:pointer}
+    .di-dockview .graph-item,.di-dockview .activity-entry{padding:10px 0;border-bottom:1px solid #33445a}.di-dockview .graph-meta,.di-dockview .build-state{font-size:12px;color:#a8bbd0;overflow-wrap:anywhere}
+
     .di-dockview .workspace #content:has(.graph-shell){display:flex;flex-direction:column;overflow:hidden}
     .di-dockview .investigation-layout:has(.graph-shell){flex:1;min-height:0;align-items:stretch}
     .di-dockview #explore-result:has(.graph-shell){display:flex;flex-direction:column;min-height:0}
@@ -1408,55 +1409,117 @@ if (document.getElementById('question-dock')) {
   const parkedPanels = document.createElement('div'); parkedPanels.hidden = true;
   shell.replaceChildren(navigation, host, parkedPanels);
   const panes: Record<string, HTMLElement> = { graph: graphPane, questions: dock, inspector, source: sourcePane };
+  if (parent !== window) {
+    try {
+      for (const [id, elementId] of [['graphs', 'graphs-panel'], ['activity', 'activity-panel'], ['home', 'workbench-home']] as const) {
+        const element = parent.document.getElementById(elementId); if (element) { panes[id] = element; parkedPanels.append(element); }
+      }
+    } catch { /* Standalone or cross-origin viewers use their own panes. */ }
+  }
+
   dockApi = createDockview(host, { createComponent: ({ name }) => {
+    if (name === 'source-file') {
+      const element = document.createElement('section'); element.className = 'di-source-pane';
+      const status = document.createElement('div'); status.setAttribute('role', 'status'); status.style.padding = '8px';
+      const editorHost = document.createElement('div'); editorHost.style.cssText = 'flex:1;min-height:0;overflow:auto';
+      element.append(status, editorHost);
+      let editor: EditorView | undefined, disposed = false;
+      return {
+        element,
+        init: ({ params }) => {
+          const file = typeof params.file === 'string' ? params.file : '';
+          if (!file) { status.textContent = 'Source file is unavailable.'; return; }
+          const load = async () => {
+            status.textContent = 'Loading ' + file + '…';
+            try {
+              const result = await getJson('/workbench/source', new URLSearchParams({ file }), message => { if (!disposed) status.textContent = `${file}: ${message}`; });
+              if (disposed) return;
+              if (result.file !== file || (viewerConfig.graphId && result.graphId !== viewerConfig.graphId) || (viewerConfig.revision && result.revision !== viewerConfig.revision)) throw new Error('Source identity does not match the selected file and graph. Reopen the graph and try again.');
+              status.textContent = `${result.file} · ${result.revision ? 'revision ' + result.revision : 'working source snapshot'} · Read only`;
+              editor?.destroy(); editorHost.replaceChildren();
+              editor = new EditorView({ parent: editorHost, state: EditorState.create({ doc: result.content, extensions: [basicSetup, oneDark, fileLanguage(file), EditorState.readOnly.of(true), EditorView.editable.of(false)] }) });
+            } catch (error) {
+              if (disposed) return;
+              status.textContent = error instanceof Error ? error.message : String(error);
+              const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => void load(); status.append(' ', retry);
+            }
+          };
+          void load();
+        },
+        dispose: () => { disposed = true; editor?.destroy(); },
+      };
+    }
     const element = panes[name]; if (!element) throw new Error('Unknown workspace panel');
     return { element, init: () => {} };
   } });
   const addPanel = (id: string, placement?: 'left' | 'right' | 'above' | 'below' | 'within', size?: number) => {
     const existing = dockApi.getPanel(id); if (existing) { existing.api.setActive(); return; }
-    const titles: Record<string, string> = { graph: 'Graph', questions: 'Questions', inspector: 'Inspector & files', source: 'Source' };
+    const titles: Record<string, string> = { graph: 'Graph', questions: 'Questions', inspector: 'Inspector & files', source: 'Source', graphs: 'Graphs', activity: 'Activity', home: 'Home' };
     const graphWidth = dockApi.getPanel('graph')?.group.api.width ?? host.clientWidth;
     // Dockview may take space from neighboring groups as well as the reference
     // group. Keep Source in the graph group unless the whole row has room for
     // Graph, Source and Inspector together.
     const sourceAsTab = id === 'source' && (host.clientWidth < 1600 || graphWidth < 1000);
-    const direction = placement ?? ((compact && (id === 'inspector' || id === 'source')) || sourceAsTab ? 'within' : (id === 'questions' ? 'below' : 'right'));
+    const anchor = dockApi.getPanel('graph') ?? dockApi.getPanel('home');
+    const direction = placement ?? (id === 'graphs' ? 'left' : id === 'activity' ? 'below' : id === 'home' ? 'within' : (compact && (id === 'inspector' || id === 'source')) || sourceAsTab ? 'within' : (id === 'questions' ? 'below' : 'right'));
     const savedSize = Number.isFinite(size) && size! >= 100 ? size! : undefined;
     const sourceWidth = Math.min(460, Math.max(300, Math.floor(graphWidth * .48)));
-    const panel = dockApi.addPanel({ id, component: id, title: titles[id] ?? id, renderer: 'always', ...(direction === 'within' ? {} : id === 'questions' ? { initialHeight: savedSize ?? 220 } : id === 'inspector' ? { initialWidth: savedSize ?? 280 } : id === 'source' ? { initialWidth: sourceWidth } : {}), ...(id === 'graph' || !dockApi.getPanel('graph') ? {} : { position: { referencePanel: 'graph', direction } }) });
+    const panel = dockApi.addPanel({ id, component: id, title: titles[id] ?? id, renderer: 'always', ...(direction === 'within' ? {} : id === 'questions' ? { initialHeight: savedSize ?? 220 } : id === 'inspector' ? { initialWidth: savedSize ?? 280 } : id === 'source' ? { initialWidth: sourceWidth } : {}), ...(!anchor || id === anchor.id ? {} : { position: { referencePanel: anchor.id, direction } }) });
     if (direction !== 'within' && id !== 'graph') requestAnimationFrame(() => {
       if (dockApi.getPanel(id) !== panel) return;
       if (id === 'questions') panel.group.api.setSize({ height: savedSize ?? 220 });
       else panel.group.api.setSize({ width: savedSize ?? (id === 'source' ? sourceWidth : 280) });
     });
   };
-  const resetLayout = () => { dockApi.clear(); addPanel('graph'); addPanel('questions'); addPanel('inspector'); dockApi.getPanel('graph')?.api.setActive(); };
+  const resetLayout = () => {
+    dockApi.clear();
+    if (viewerConfig.shellOnly && panes.home) { addPanel('home'); if (panes.graphs) addPanel('graphs'); dockApi.getPanel('home')?.api.setActive(); }
+    else { addPanel('graph'); addPanel('questions'); addPanel('inspector'); if (panes.graphs) addPanel('graphs'); dockApi.getPanel('graph')?.api.setActive(); }
+  };
   document.addEventListener('di-show-questions', () => addPanel('questions'));
   resetLayout();
   const layoutControls = document.createElement('div'); layoutControls.className = 'di-layout-toolbar';
-  for (const [label, action] of [['Graph', () => addPanel('graph')], ['Questions', () => addPanel('questions')], ['Inspector & files', () => addPanel('inspector')], ['Reset layout', resetLayout]] as const) {
+  for (const [label, action] of [...(panes.graphs ? [['Graphs', () => addPanel('graphs')], ['Home', () => addPanel('home')], ['Activity', () => addPanel('activity')]] as const : []), ...(viewerConfig.shellOnly ? [] : [['Graph', () => addPanel('graph')], ['Questions', () => addPanel('questions')], ['Inspector & files', () => addPanel('inspector')]] as const), ['Reset layout', resetLayout] as const]) {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = action; layoutControls.append(button);
   }
   const moveMenu = document.createElement('details');
-  moveMenu.innerHTML = '<summary>Move panel</summary><div class="di-move-controls"><label>Panel<select aria-label="Panel to move"><option value="questions">Questions</option><option value="inspector">Inspector & files</option><option value="source">Source</option></select></label><label>Position relative to graph<select aria-label="Position relative to graph"><option value="left">Left</option><option value="right">Right</option><option value="top">Above</option><option value="bottom">Below</option><option value="center">As a tab</option></select></label><button type="button">Move</button><span role="status"></span></div>';
+  moveMenu.innerHTML = '<summary>Move tab</summary><div class="di-move-controls"><label>Tab<select aria-label="Tab to move"></select></label><label>Relative to<select aria-label="Destination tab"></select></label><label>Position<select aria-label="Position"><option value="left">Left</option><option value="right">Right</option><option value="top">Above</option><option value="bottom">Below</option><option value="center">In the same panel</option></select></label><button type="button">Move</button><span role="status"></span></div>';
+  const moving = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Tab to move"]')!;
+  const destination = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Destination tab"]')!;
+  const updateMoveChoices = () => {
+    const current = moving.value, target = destination.value;
+    moving.replaceChildren(); destination.replaceChildren();
+    for (const panel of dockApi.panels) {
+      const label = panel.title || panel.id;
+      moving.add(new Option(label, panel.id)); destination.add(new Option(label, panel.id));
+    }
+    if (dockApi.getPanel(current)) moving.value = current;
+    if (dockApi.getPanel(target)) destination.value = target;
+    else if (dockApi.getPanel('graph')) destination.value = 'graph';
+  };
+  moveMenu.addEventListener('toggle', () => { if (moveMenu.open) updateMoveChoices(); });
   moveMenu.querySelector('button')!.onclick = () => {
-    const panelId = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Panel to move"]')!.value;
-    const position = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Position relative to graph"]')!.value as 'left' | 'right' | 'top' | 'bottom' | 'center';
-    addPanel('graph'); addPanel(panelId);
-    const panel = dockApi.getPanel(panelId), graph = dockApi.getPanel('graph');
-    if (panel && graph) { panel.api.moveTo({ group: graph.group, position }); panel.api.setActive(); moveMenu.querySelector('[role="status"]')!.textContent = 'Panel moved.'; }
+    const position = moveMenu.querySelector<HTMLSelectElement>('[aria-label="Position"]')!.value as 'left' | 'right' | 'top' | 'bottom' | 'center';
+    const panel = dockApi.getPanel(moving.value), target = dockApi.getPanel(destination.value);
+    const status = moveMenu.querySelector('[role="status"]')!;
+    if (!panel || !target || panel.id === target.id) { status.textContent = 'Choose two different tabs.'; return; }
+    panel.api.moveTo({ group: target.group, position }); panel.api.setActive(); status.textContent = 'Tab moved.';
   };
   layoutControls.append(moveMenu);
   shell.prepend(layoutControls);
   dockApi.onDidLayoutChange(() => {
-    if (layoutReady && compactMedia.matches === compact) layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    if (layoutReady && compactMedia.matches === compact) layouts[layoutKey()] = dockApi.toJSON();
     window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(saveLayout, 700);
   });
   window.addEventListener('message', event => {
-    if (event.origin !== location.origin || event.source !== parent || event.data?.type !== 'di-layout') return;
+    if (event.origin !== location.origin || event.source !== parent) return;
+    if (event.data?.type === 'di-open-panel') { if (panes[event.data.id] && (!viewerConfig.shellOnly || ['home', 'graphs', 'activity'].includes(event.data.id))) addPanel(event.data.id); return; }
+    if (event.data?.type !== 'di-layout') return;
     const savedLayouts = event.data.layout?.layouts;
-    if (savedLayouts && typeof savedLayouts === 'object') { layouts.compact = savedLayouts.compact; layouts.wide = savedLayouts.wide; }
-    const saved = layouts[compact ? 'compact' : 'wide'];
+    layoutGraphIdentity = typeof event.data.layout?.graphIdentity === 'string' ? event.data.layout.graphIdentity : '';
+    const differentGraph = !viewerConfig.shellOnly && layoutGraphIdentity !== (viewerConfig.accountGraphId || viewerConfig.graphId || '');
+    if (savedLayouts && typeof savedLayouts === 'object') { layouts.compact = savedLayouts.compact; layouts.wide = savedLayouts.wide; layouts.shell = savedLayouts.shell; }
+    const saved = layouts[layoutKey()];
     if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } }
     else if (!savedLayouts && event.data.layout && typeof event.data.layout === 'object' && ('inspectorSide' in event.data.layout || 'questionPosition' in event.data.layout)) {
       const legacy = event.data.layout;
@@ -1465,54 +1528,37 @@ if (document.getElementById('question-dock')) {
       if (legacy.inspectorOpen !== false) addPanel('inspector', legacy.inspectorSide === 'left' ? 'left' : 'right', legacy.inspectorWidth);
       dockApi.getPanel('graph')?.api.setActive();
     }
-    if (!dockApi.getPanel('graph')) addPanel('graph');
-    requestAnimationFrame(() => { layoutReady = true; layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON(); });
+    if (differentGraph) for (const panel of [...dockApi.panels]) if (panel.id.startsWith('file:')) panel.api.close();
+    // Older layouts had one empty Source container with a second, private tab bar.
+    // Files now restore as independent Dockview tabs; retire that empty container.
+    dockApi.getPanel('source')?.api.close();
+    if (viewerConfig.shellOnly && panes.home && !dockApi.getPanel('home')) addPanel('home');
+    if (!viewerConfig.shellOnly && !dockApi.getPanel('graph')) addPanel('graph');
+    if (panes.graphs && !dockApi.getPanel('graphs')) addPanel('graphs');
+    requestAnimationFrame(() => { layoutReady = true; layouts[layoutKey()] = dockApi.toJSON(); });
   });
   compactMedia.addEventListener('change', event => {
-    if (!layouts[compact ? 'compact' : 'wide']) layouts[compact ? 'compact' : 'wide'] = dockApi.toJSON();
+    if (!layouts[layoutKey()]) layouts[layoutKey()] = dockApi.toJSON();
     compact = event.matches; layoutReady = false;
-    const saved = layouts[compact ? 'compact' : 'wide'];
+    const saved = layouts[layoutKey()];
     if (saved) { try { dockApi.fromJSON(saved); } catch { resetLayout(); } } else resetLayout();
-    if (!dockApi.getPanel('graph')) addPanel('graph');
+    if (viewerConfig.shellOnly && panes.home && !dockApi.getPanel('home')) addPanel('home');
+    if (!viewerConfig.shellOnly && !dockApi.getPanel('graph')) addPanel('graph');
+    if (panes.graphs && !dockApi.getPanel('graphs')) addPanel('graphs');
     requestAnimationFrame(() => { layoutReady = true; saveLayout(); });
   });
-  const graphTab = document.createElement('button'); graphTab.textContent = 'Return to graph'; fileTabs.append(graphTab);
-  let activeFile = '', fileSequence = 0;
-  const openFiles: string[] = [];
   dockApi.onDidRemovePanel(panel => { queueMicrotask(() => {
     if (dockApi.getPanel(panel.id) || !panes[panel.id]) return;
     parkedPanels.append(panes[panel.id]!);
   }); });
-  const showGraph = () => { ++fileSequence; activeFile = ''; fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', 'false')); fileBody.hidden = true; dockApi.getPanel('source')?.api.close(); addPanel('graph'); window.dispatchEvent(new Event('resize')); };
-  graphTab.onclick = showGraph;
+  const showGraph = () => { addPanel('graph'); window.dispatchEvent(new Event('resize')); };
   for (const button of navButtons) button.addEventListener('click', showGraph);
   const openFile = async (file: string) => {
-    let b = Array.from(fileTabs.querySelectorAll<HTMLButtonElement>('button')).find(item => item.dataset.file === file);
-    if (!b) {
-      const group = document.createElement('span'); b = document.createElement('button'); b.dataset.file = file; b.textContent = file.split('/').pop() ?? file; b.title = file;
-      const close = document.createElement('button'); close.type = 'button'; close.textContent = '×'; close.setAttribute('aria-label', 'Close ' + file);
-      close.onclick = () => {
-        const wasActive = activeFile === file; const index = openFiles.indexOf(file); if (index >= 0) openFiles.splice(index, 1); group.remove();
-        if (wasActive) { ++fileSequence; const previous = openFiles.at(-1); if (previous) void openFile(previous); else showGraph(); }
-      };
-      group.append(b, close); fileTabs.append(group);
-    }
-    b.onclick = () => void openFile(file);
-    const existing = openFiles.indexOf(file); if (existing >= 0) openFiles.splice(existing, 1); openFiles.push(file);
-    activeFile = file; const sequence = ++fileSequence;
-    fileTabs.querySelectorAll<HTMLButtonElement>('[data-file]').forEach(item => item.setAttribute('aria-current', item.dataset.file === file ? 'true' : 'false'));
-    addPanel('source'); sourceEmpty.hidden = true; fileBody.hidden = false; editor?.destroy(); editor = undefined; fileEditor.replaceChildren(); fileStatus.textContent = 'Loading ' + file + '…';
-    try {
-      const result = await getJson('/workbench/source', new URLSearchParams({ file }), message => { if (sequence === fileSequence && activeFile === file) fileStatus.textContent = `${file}: ${message}`; });
-      if (sequence !== fileSequence || activeFile !== file) return;
-      if (result.file !== file || (viewerConfig.graphId && result.graphId !== viewerConfig.graphId) || (viewerConfig.revision && result.revision !== viewerConfig.revision)) throw new Error('Source identity does not match the selected file and graph. Reopen the graph and try again.');
-      fileStatus.textContent = `${result.file} · ${result.revision ? 'revision ' + result.revision : 'working source snapshot'} · Read only`;
-      editor = new EditorView({ parent: fileEditor, state: EditorState.create({ doc: result.content, extensions: [basicSetup, oneDark, fileLanguage(file), EditorState.readOnly.of(true), EditorView.editable.of(false)] }) });
-    } catch (error) {
-      if (sequence !== fileSequence || activeFile !== file) return;
-      fileStatus.textContent = error instanceof Error ? error.message : String(error);
-      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.onclick = () => void openFile(file); fileStatus.append(' ', retry);
-    }
+    const id = 'file:' + encodeURIComponent(file), existing = dockApi.getPanel(id);
+    if (existing) { existing.api.setActive(); return; }
+    addPanel('graph');
+    const panel = dockApi.addPanel({ id, component: 'source-file', params: { file }, title: file.split('/').pop() ?? file, renderer: 'always', position: { referencePanel: 'graph', direction: 'within' } });
+    panel.api.setActive();
   };
   let loaded = false, filesLoading = false;
   tabs.querySelectorAll<HTMLButtonElement>('[data-pane]').forEach(button => button.onclick = async () => {
@@ -1581,4 +1627,4 @@ if (viewerConfig.machineBuild) {
   };
   void pollBuild();
 }
-void activateSection(section);
+if (!viewerConfig.shellOnly) void activateSection(section);

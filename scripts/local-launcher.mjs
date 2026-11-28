@@ -17,14 +17,14 @@ async function removeAccountAutostart() {
 
 async function startAccountAgent() {
   const stateDir = path.join(config.dataDir, 'account');
-  try { await fs.access(path.join(stateDir, 'linked-account.json')); } catch { return; }
+  try { await fs.access(path.join(stateDir, 'linked-account.json')); } catch { throw new Error('This installation is not linked. Choose Link a computer in the Workbench first.'); }
   const log = await fs.open(path.join(stateDir, 'computer.log'), 'a', 0o600);
   try {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'account-run'], { detached: true, stdio: ['ignore', log.fd, log.fd], windowsHide: true });
     child.unref();
   } finally { await log.close(); }
 }
-if (command === 'protocol-link' || command === 'link' || command === 'account-status' || command === 'account-run' || command === 'account-autostart') {
+if (command === 'protocol-link' || command === 'link' || command === 'account-status' || command === 'account-run' || command === 'account-autostart' || command === 'unlink-local') {
   const account = await import(path.join(home, 'dist', 'src', 'accounts', 'localComputer.js'));
   const stateDir = path.join(config.dataDir, 'account');
   if (command === 'protocol-link') {
@@ -42,8 +42,7 @@ if (command === 'protocol-link' || command === 'link' || command === 'account-st
       process.exit(0);
     }
     if (link.searchParams.has('computer')) throw new Error('Invalid computer link. Start again in the Workbench.');
-    try { await fs.access(path.join(stateDir, 'linked-account.json')); console.error('This installation already has a linked account. Direct relinking is not available while an existing connection may be running.'); process.exit(1); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (await account.prepareComputerLink(stateDir, workbench) === 'linked') { console.log('This computer is already linked. Connect it from the Workbench when needed.'); process.exit(0); }
     await account.linkComputer(stateDir, workbench, url => {
       const opener = process.platform === 'win32' ? spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore', windowsHide: true }) : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
       opener.on('error', () => console.error('Could not open the browser for sign-in.')); opener.unref();
@@ -52,10 +51,10 @@ if (command === 'protocol-link' || command === 'link' || command === 'account-st
   } else if (command === 'link') {
     const at = args.indexOf('--workbench');
     if (at < 0 || !args[at + 1]) throw new Error('Start linking in your Workbench and run the displayed command on this computer');
-    try { await fs.access(path.join(stateDir, 'linked-account.json')); throw new Error('This installation already has a linked account.'); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (await account.prepareComputerLink(stateDir, args[at + 1]) === 'linked') { console.log('This computer is already linked. Connect it from the Workbench when needed.'); process.exit(0); }
     await account.linkComputer(stateDir, args[at + 1], url => { const opener = process.platform === 'win32' ? spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore', windowsHide: true }) : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }); opener.on('error', () => console.error('Could not open the browser for sign-in.')); opener.unref(); });
-  } else if (command === 'account-status') await account.computerHeartbeat(stateDir);
+  } else if (command === 'unlink-local') { await account.forgetLocalComputer(stateDir); console.log('Removed this installation’s local link. Its account association must be unlinked in the Workbench.'); }
+  else if (command === 'account-status') await account.computerHeartbeat(stateDir);
   else if (command === 'account-autostart') {
     if (args[0] !== 'off') throw new Error('Automatic computer startup is no longer supported. Start the connection when needed.');
     await removeAccountAutostart();
@@ -78,7 +77,7 @@ if (command === 'protocol-link' || command === 'link' || command === 'account-st
 }
 const commands = { capacity: 'working-capacity', build: 'working-build', 'build-revision': 'revision-build', history: 'working-history', storage: 'working-storage', reindex: 'working-reindex', activate: 'working-activate', unpin: 'working-unpin', backup: 'working-backup', restore: 'working-restore', compare: 'working-compare', parity: 'working-parity', query: 'working-query', serve: 'working-serve', mcp: 'working-mcp', open: 'working-serve', 'oss-evidence': 'oss-evidence', 'joern-build': 'joern-build' };
 if (!commands[command]) {
-  console.log('DI local: link --workbench URL | account-status | account-run | account-autostart off | capacity | build [--target NAME] | build-revision --ref REF [--target NAME] | history | storage | reindex [--target NAME] | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open [--local] | mcp');
+  console.log('DI local: link --workbench URL | unlink-local | account-status | account-run | account-autostart off | capacity | build [--target NAME] | build-revision --ref REF [--target NAME] | history | storage | reindex [--target NAME] | activate --graph-id ID | compare [--base NAME --target NAME] | parity --base NAME [--target NAME] | query --question TEXT [--target NAME] [--text | --details] | oss-evidence [producer options] | serve | open [--local] | mcp');
   console.log('Options: --repo-path PATH --project NAME --data-dir PATH --retain COUNT --port PORT; query: --max-passes COUNT');
   process.exit(command === 'help' ? 0 : 2);
 }
