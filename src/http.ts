@@ -287,6 +287,7 @@ export function createDevelopmentIntelligenceServer() {
         const store = new WorkspaceStore(identity.userId);
         if (req.method === 'GET') {
           if (identity.tokenType !== 'session_token') { json(res, 403, { error: 'Use a browser account session' }); return; }
+          if (requestUrl.searchParams.has('presence')) { json(res, 200, { computers: await store.computers() }); return; }
           const jobId = requestUrl.searchParams.get('job');
           if (jobId && requestUrl.searchParams.has('part')) { json(res, 200, { part: await store.investigationPart(jobId, Number(requestUrl.searchParams.get('part'))) }); return; }
           if (jobId) { json(res, 200, await store.build(jobId)); return; }
