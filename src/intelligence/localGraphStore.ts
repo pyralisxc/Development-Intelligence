@@ -211,6 +211,8 @@ export async function reconcileAccountGraphStages(root: string, project: string,
     const protectedGenerations = new Set([active, ...Object.values(targets)]);
     const retired = catalog.entries.filter(entry => removed.has(entry.generation) && !protectedGenerations.has(entry.generation));
     const retiredIds = new Set(retired.map(entry => entry.generation));
+    // Recheck after reading and planning: a claim may have expired while the catalog was read.
+    await assertClaim();
     await writeCatalog(directory, { ...catalog, active, entries: catalog.entries.filter(entry => !retiredIds.has(entry.generation)), targets, pendingDelete: retired.map(entry => entry.generation) });
     await finishCatalogDeletes(directory);
   });
